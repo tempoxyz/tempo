@@ -18,6 +18,7 @@ tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
 
 reth-transaction-pool.workspace = true
+reth-evm.workspace = true
 reth-chainspec.workspace = true
 reth-primitives-traits.workspace = true
 reth-storage-api.workspace = true
@@ -31,6 +32,7 @@ revm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
+alloy-evm.workspace = true
 
 futures.workspace = true
 tracing.workspace = true

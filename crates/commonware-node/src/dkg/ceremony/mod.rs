@@ -1,6 +1,6 @@
 //! An actively running DKG ceremony.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::{Decode as _, Encode as _};
@@ -17,11 +17,10 @@ use commonware_p2p::{
     Receiver, Recipients, Sender,
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
-use commonware_runtime::{Clock, Storage};
-use commonware_storage::metadata::Metadata;
-use commonware_utils::{max_faults, sequence::U64, set::Ordered, union};
+use commonware_runtime::{Clock, Metrics as RuntimeMetrics, Storage};
+use commonware_utils::{max_faults, set::Ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
-use futures::{FutureExt as _, lock::Mutex};
+use futures::FutureExt as _;
 use indexmap::IndexSet;
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
@@ -29,12 +28,14 @@ use tracing::{Level, debug, error, info, instrument, warn};
 
 use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
 
-use crate::{consensus::block::Block, dkg::HardforkRegime};
+use crate::{
+    consensus::block::Block,
+    dkg::{HardforkRegime, manager::read_write_transaction::DkgReadWriteTransaction},
+};
 
 mod payload;
 mod persisted;
-
-pub(super) use persisted::State;
+pub(crate) use persisted::State;
 
 use payload::{Message, Payload, Share};
 use persisted::Dealing;
@@ -68,9 +69,9 @@ pub(super) struct Config {
     /// The players in the round.
     pub(super) players: Ordered<PublicKey>,
 }
-pub(super) struct Ceremony<TContext, TReceiver, TSender>
+
+pub(super) struct Ceremony<TReceiver, TSender>
 where
-    TContext: Clock + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver,
     TSender: Sender,
 {
@@ -99,27 +100,28 @@ where
     /// The local [Arbiter] for this round.
     arbiter: Arbiter<PublicKey, MinSig>,
 
-    ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
     metrics: Metrics,
 }
 
-impl<TContext, TReceiver, TSender> Ceremony<TContext, TReceiver, TSender>
+impl<TReceiver, TSender> Ceremony<TReceiver, TSender>
 where
-    TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Storage,
     TReceiver: Receiver<PublicKey = PublicKey>,
     TSender: Sender<PublicKey = PublicKey>,
 {
     /// Initialize a DKG ceremony.
     #[instrument(skip_all, fields(for_epoch = config.epoch), err)]
-    pub(super) async fn init(
+    pub(super) async fn init<TContext>(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
-        ceremony_metadata: Arc<Mutex<Metadata<TContext, U64, State>>>,
+        tx: &mut DkgReadWriteTransaction<TContext>,
         config: Config,
         metrics: Metrics,
-    ) -> eyre::Result<Self> {
+    ) -> eyre::Result<Self>
+    where
+        TContext: Clock + CryptoRngCore + RuntimeMetrics + Storage,
+    {
         // Reset the cumulants for the current ceremony back to zero instead
         // of creating fresh metrics: registering new metrics would just push
         // more and more into the prometheus registry without ever pruning.
@@ -155,12 +157,10 @@ where
 
         debug!("attempting to read ceremony state from disk");
         // TODO(janis): move this "recovery" logic to a function.
-        // Clone in order to not hold onto the lock too long.
-        let recovered = ceremony_metadata
-            .lock()
+        let recovered = tx
+            .get_ceremony(config.epoch)
             .await
-            .get(&config.epoch.into())
-            .cloned();
+            .wrap_err("failed to read ceremony state from disk")?;
 
         if let Some(recovered) = recovered {
             info!("found a previous ceremony state written to disk; recovering it");
@@ -249,27 +249,22 @@ where
                 });
             }
 
-            ceremony_metadata
-                .lock()
-                .await
-                .put_sync(
-                    config.epoch.into(),
-                    State {
-                        num_players: config
-                            .players
-                            .len()
-                            .try_into()
-                            .expect("there should never be more than u16::MAX players"),
-                        dealing: dealer_me.as_ref().map(|me| Dealing {
-                            commitment: me.commitment.clone(),
-                            shares: me.shares.clone(),
-                            acks: BTreeMap::new(),
-                        }),
-                        ..State::default()
-                    },
-                )
-                .await
-                .expect("must always be able to initialize the ceremony state to disk");
+            tx.set_ceremony(
+                config.epoch,
+                State {
+                    num_players: config
+                        .players
+                        .len()
+                        .try_into()
+                        .expect("there should never be more than u16::MAX players"),
+                    dealing: dealer_me.as_ref().map(|me| Dealing {
+                        commitment: me.commitment.clone(),
+                        shares: me.shares.clone(),
+                        acks: BTreeMap::new(),
+                    }),
+                    ..State::default()
+                },
+            );
         };
 
         metrics.how_often_player.inc_by(player_me.is_some() as u64);
@@ -291,7 +286,6 @@ where
             player_me,
             players_indexed,
             arbiter,
-            ceremony_metadata,
             receiver,
             sender,
             metrics,
@@ -305,7 +299,13 @@ where
     /// If we are both a dealer and a player, then we acknowledge our shares
     /// immediately without going over the p2p network.
     #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
-    pub(super) async fn distribute_shares(&mut self) -> eyre::Result<()> {
+    pub(super) async fn distribute_shares<TContext>(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer, not distributing shares");
             return Ok(());
@@ -354,27 +354,26 @@ where
                     "must only insert our own ack once",
                 );
 
-                self.ceremony_metadata
-                    .lock()
-                    .await
-                    .upsert_sync(self.config.epoch.into(), |info| {
-                        if let Some(dealing) = &mut info.dealing {
-                            dealing.acks.insert(self.config.me.public_key(), ack);
-                        } else {
-                            info.dealing = Some(Dealing {
-                                commitment: dealer_me.commitment.clone(),
-                                shares: dealer_me.shares.clone(),
-                                acks: BTreeMap::from([(self.config.me.public_key(), ack)]),
-                            });
-                        }
-                        info.received_shares.push((
-                            self.config.me.public_key(),
-                            dealer_me.commitment.clone(),
-                            share,
-                        ));
-                    })
-                    .await
-                    .expect("must be able to persists acks");
+                tx.update_ceremony(self.config.epoch, |info| {
+                    if let Some(dealing) = &mut info.dealing {
+                        dealing
+                            .acks
+                            .insert(self.config.me.public_key(), ack.clone());
+                    } else {
+                        info.dealing = Some(Dealing {
+                            commitment: dealer_me.commitment.clone(),
+                            shares: dealer_me.shares.clone(),
+                            acks: BTreeMap::from([(self.config.me.public_key(), ack.clone())]),
+                        });
+                    }
+                    info.received_shares.push((
+                        self.config.me.public_key(),
+                        dealer_me.commitment.clone(),
+                        share.clone(),
+                    ));
+                })
+                .await
+                .expect("must be able to persists acks");
                 // When self-distributing, we also "receive" the share and "send" an ack to ourselves
                 self.metrics.shares_distributed.inc();
                 self.metrics.acks_received.inc();
@@ -419,7 +418,13 @@ where
     ///
     /// If we receive an ack and are a dealer: track the ack.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn process_messages(&mut self) -> eyre::Result<()> {
+    pub(super) async fn process_messages<TContext>(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         while let Some(msg) = self.receiver.recv().now_or_never() {
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
@@ -437,10 +442,10 @@ where
 
             match msg.payload {
                 Payload::Ack(ack) => {
-                    let _: Result<_, _> = self.process_ack(peer, *ack).await;
+                    let _: Result<_, _> = self.process_ack(tx, peer, *ack).await;
                 }
                 Payload::Share(share) => {
-                    let _: Result<_, _> = self.process_share(peer, share).await;
+                    let _: Result<_, _> = self.process_share(tx, peer, share).await;
                 }
             }
         }
@@ -458,7 +463,15 @@ where
         err(level = Level::WARN),
         ret,
     )]
-    async fn process_ack(&mut self, peer: PublicKey, ack: Ack) -> eyre::Result<&'static str> {
+    async fn process_ack<TContext>(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
+        peer: PublicKey,
+        ack: Ack,
+    ) -> eyre::Result<&'static str>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         self.metrics.acks_received.inc();
         let Some(dealer_me) = &mut self.dealer_me else {
             return Ok("not a dealer, dropping ack");
@@ -493,22 +506,19 @@ where
             bail!("duplicate ack for peer");
         }
 
-        self.ceremony_metadata
-            .lock()
-            .await
-            .upsert_sync(self.config.epoch.into(), |info| {
-                if let Some(dealing) = &mut info.dealing {
-                    dealing.acks.insert(peer.clone(), ack);
-                } else {
-                    info.dealing = Some(Dealing {
-                        commitment: dealer_me.commitment.clone(),
-                        shares: dealer_me.shares.clone(),
-                        acks: BTreeMap::from([(peer.clone(), ack)]),
-                    });
-                }
-            })
-            .await
-            .expect("must always be able to persist tracked acks to disk");
+        tx.update_ceremony(self.config.epoch, |info| {
+            if let Some(dealing) = &mut info.dealing {
+                dealing.acks.insert(peer.clone(), ack.clone());
+            } else {
+                info.dealing = Some(Dealing {
+                    commitment: dealer_me.commitment.clone(),
+                    shares: dealer_me.shares.clone(),
+                    acks: BTreeMap::from([(peer.clone(), ack.clone())]),
+                });
+            }
+        })
+        .await
+        .expect("must always be able to persist tracked acks to disk");
 
         Ok("ack recorded")
     }
@@ -522,11 +532,15 @@ where
         err(level = Level::WARN),
         ret,
     )]
-    async fn process_share(
+    async fn process_share<TContext>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
         peer: PublicKey,
         Share { commitment, share }: Share,
-    ) -> eyre::Result<&'static str> {
+    ) -> eyre::Result<&'static str>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         self.metrics.shares_received.inc();
         let Some(player_me) = &mut self.player_me else {
             return Ok("not a player, dropping share");
@@ -537,15 +551,12 @@ where
             .share(peer.clone(), commitment.clone(), share.clone())
             .wrap_err("failed to record and track share")?;
 
-        self.ceremony_metadata
-            .lock()
-            .await
-            .upsert_sync(self.epoch().into(), |info| {
-                info.received_shares
-                    .push((peer.clone(), commitment.clone(), share));
-            })
-            .await
-            .expect("must always be able to persist tracked shares to disk");
+        tx.update_ceremony(self.epoch(), |info| {
+            info.received_shares
+                .push((peer.clone(), commitment.clone(), share.clone()));
+        })
+        .await
+        .expect("must always be able to persist tracked shares to disk");
 
         let payload = Ack::new(
             &union(&self.config.namespace, ACK_NAMESPACE),
@@ -579,11 +590,15 @@ where
     /// If the block contains this outcome, the ceremony will verify it and
     /// track it in its arbiter.
     #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_dealings_in_block(
+    pub(super) async fn process_dealings_in_block<TContext>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
         block: &Block,
         hardfork_regime: HardforkRegime,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         // Track empty vs failed metrics separately
         if block.header().extra_data().is_empty() {
             self.metrics.dealings_empty.inc();
@@ -600,6 +615,11 @@ where
                 return Err(error);
             }
         };
+
+        info!(
+            dealer = %block_outcome.dealer(),
+            "found DKG dealing in block",
+        );
 
         // Ensure the outcome is for the current round.
         ensure!(
@@ -669,36 +689,30 @@ where
             .wrap_err("failed to track dealer outcome in arbiter")?;
 
         let block_dealer = block_outcome.dealer().clone();
-        self.ceremony_metadata
-            .lock()
-            .await
-            .upsert_sync(self.epoch().into(), |info| {
-                if let Some(pos) = info
-                    .outcomes
-                    .iter()
-                    .position(|outcome| outcome.dealer() == block_outcome.dealer())
-                {
-                    info.outcomes[pos] = block_outcome;
-                } else {
-                    info.outcomes.push(block_outcome);
-                }
-            })
-            .await
-            .expect("must persist deal outcome");
+        tx.update_ceremony(self.epoch(), |info| {
+            if let Some(pos) = info
+                .outcomes
+                .iter()
+                .position(|outcome| outcome.dealer() == block_outcome.dealer())
+            {
+                info.outcomes[pos] = block_outcome.clone();
+            } else {
+                info.outcomes.push(block_outcome.clone());
+            }
+        })
+        .await
+        .expect("must persist deal outcome");
 
         if let Some(dealer_me) = &mut self.dealer_me
             && block_dealer == self.config.me.public_key()
         {
             let _ = dealer_me.outcome.take();
 
-            self.ceremony_metadata
-                .lock()
-                .await
-                .upsert_sync(self.epoch().into(), |info| {
-                    let _ = info.dealing_outcome.take();
-                })
-                .await
-                .expect("must persist deal outcome");
+            tx.update_ceremony(self.epoch(), |info| {
+                let _ = info.dealing_outcome.take();
+            })
+            .await
+            .expect("must persist deal outcome");
 
             info!(
                 "found own dealing in a block; removed it from ceremony to \
@@ -714,10 +728,14 @@ where
     ///
     /// If the node is not a dealer, then this is a no-op.
     #[instrument(skip_all, fields(epoch = self.epoch()), err)]
-    pub(super) async fn construct_intermediate_outcome(
+    pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
         hardfork_regime: HardforkRegime,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<()>
+    where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
         let Some(dealer_me) = &mut self.dealer_me else {
             debug!("not a dealer; skipping construction of deal outcome");
             return Ok(());
@@ -767,14 +785,11 @@ where
             )),
         };
 
-        self.ceremony_metadata
-            .lock()
-            .await
-            .upsert_sync(self.config.epoch.into(), |info| {
-                info.dealing_outcome = dealing_outcome.clone();
-            })
-            .await
-            .expect("must persist local outcome");
+        tx.update_ceremony(self.config.epoch, |info| {
+            info.dealing_outcome = dealing_outcome.clone();
+        })
+        .await
+        .expect("must persist local outcome");
 
         dealer_me.outcome = dealing_outcome;
 
@@ -806,7 +821,7 @@ where
                     error = %eyre::Report::new(error),
                     ?disqualified,
                     "failed to finalize arbiter; aborting ceremony and \
-                    returning previous dealers and commitment",
+                    returning previous participants and polynomial",
                 );
                 return Err(PrivateOutcome {
                     participants: self.config.dealers,
@@ -815,7 +830,8 @@ where
             }
         };
 
-        let new_role = if let Some(player_me) = self.player_me {
+        let mut my_share = None;
+        if let Some(player_me) = self.player_me {
             let my_index = self
                 .players_indexed
                 .get_index_of(&self.config.me.public_key())
@@ -831,43 +847,37 @@ where
                 })
                 .collect::<BTreeMap<_, _>>();
 
-            let n_commitments = commitments.len();
             let n_reveals = reveals.len();
 
-            let output = match player_me.finalize(commitments, reveals) {
-                Ok(output) => output,
+            match player_me.finalize(commitments, reveals) {
+                Ok(output) => {
+                    info!(n_reveals, "obtained a share from the DKG ceremomy");
+                    my_share.replace(output.share);
+                }
                 Err(error) => {
-                    error!(
+                    warn!(
+                        n_reveals,
                         error = %eyre::Report::new(error),
-                        "failed to finalize player; aborting ceremony and \
-                        returning previous dealers and commitment"
+                        "failed to finalize our share even though the overall \
+                        DKG ceremony was a success; will participate as a \
+                        verifier since we failed to participate as a player"
                     );
-                    return Err(PrivateOutcome {
-                        participants: self.config.dealers,
-                        role: self.previous_role,
-                    });
                 }
             };
+        }
 
-            info!(
-                ?disqualified,
-                n_commitments,
-                n_reveals,
-                "successfully finalized DKG ceremony; returning new \
-                    players and commitment"
-            );
-
-            Role::Signer {
-                public: output.public,
-                share: output.share,
-            }
-        } else {
-            Role::Verifier { public }
+        let my_role = match my_share {
+            Some(share) => Role::Signer { public, share },
+            None => Role::Verifier { public },
         };
+        info!(
+            ?disqualified,
+            "successfully finalized DKG ceremony; returning new participants polynomial"
+        );
 
         Ok(PrivateOutcome {
             participants: self.config.players,
-            role: new_role,
+            role: my_role,
         })
     }
 

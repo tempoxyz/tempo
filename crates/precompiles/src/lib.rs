@@ -3,13 +3,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod error;
-pub use error::Result;
-use tempo_chainspec::hardfork::TempoHardfork;
+pub use error::{IntoPrecompileResult, Result};
+
+pub mod storage;
+
 pub mod account_keychain;
 pub mod nonce;
 pub mod path_usd;
 pub mod stablecoin_exchange;
-pub mod storage;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip20_rewards_registry;
@@ -18,7 +19,7 @@ pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_util;
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
     nonce::NonceManager,
     path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
-    storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
+    storage::StorageCtx,
     tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
@@ -35,7 +36,7 @@ use crate::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
-pub use error::IntoPrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
 
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
@@ -58,7 +59,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
-pub use account_keychain::{AuthorizedKey, compute_keys_slot};
+pub use account_keychain::AuthorizedKey;
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -112,10 +113,11 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
 sol! {
     error DelegateCallNotAllowed();
+    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
-    ($id:expr, |$input:ident| $impl:expr) => {
+    ($id:expr, $chain_id:ident, $spec:ident, |$input:ident| $impl:expr) => {
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::new_reverted(
@@ -123,7 +125,16 @@ macro_rules! tempo_precompile {
                     DelegateCallNotAllowed {}.abi_encode().into(),
                 ));
             }
-            $impl.call($input.data, $input.caller)
+            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
+                $input.internals,
+                $input.gas,
+                $chain_id,
+                $spec,
+                $input.is_static,
+            );
+            crate::storage::StorageCtx::enter(&mut storage, || {
+                $impl.call($input.data, $input.caller)
+            })
         })
     };
 }
@@ -131,55 +142,45 @@ macro_rules! tempo_precompile {
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", |input| TipFeeManager::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
-        ))
+        tempo_precompile!("TipFeeManager", chain_id, spec, |input| {
+            TipFeeManager::new()
+        })
     }
 }
 
 pub struct TipAccountRegistrarPrecompile;
 impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", |input| TipAccountRegistrar::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
-                input.internals,
-                input.gas,
-                chain_id,
-                spec
-            ),
-        ))
+        tempo_precompile!("TipAccountRegistrar", chain_id, spec, |input| {
+            TipAccountRegistrar::new()
+        })
     }
 }
 
 pub struct TIP20RewardsRegistryPrecompile;
 impl TIP20RewardsRegistryPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20RewardsRegistry", |input| TIP20RewardsRegistry::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
-        ))
+        tempo_precompile!("TIP20RewardsRegistry", chain_id, spec, |input| {
+            TIP20RewardsRegistry::new()
+        })
     }
 }
 
 pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", |input| TIP403Registry::new(
-            &mut crate::storage::evm::EvmPrecompileStorageProvider::new(
-                input.internals,
-                input.gas,
-                chain_id,
-                spec
-            ),
-        ))
+        tempo_precompile!("TIP403Registry", chain_id, spec, |input| {
+            TIP403Registry::new()
+        })
     }
 }
 
 pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", |input| TIP20Factory::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
-        ))
+        tempo_precompile!("TIP20Factory", chain_id, spec, |input| {
+            TIP20Factory::new()
+        })
     }
 }
 
@@ -187,55 +188,52 @@ pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         let token_id = address_to_token_id_unchecked(address);
-        tempo_precompile!("TIP20Token", |input| TIP20Token::new(
-            token_id,
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
-        ))
+        tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            TIP20Token::new(token_id)
+        })
     }
 }
 
 pub struct StablecoinExchangePrecompile;
 impl StablecoinExchangePrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("StablecoinExchange", |input| StablecoinExchange::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
-        ))
+        tempo_precompile!("StablecoinExchange", chain_id, spec, |input| {
+            StablecoinExchange::new()
+        })
     }
 }
 
 pub struct NoncePrecompile;
 impl NoncePrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("NonceManager", |input| NonceManager::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
-        ))
+        tempo_precompile!("NonceManager", chain_id, spec, |input| {
+            NonceManager::new()
+        })
     }
 }
 
 pub struct AccountKeychainPrecompile;
 impl AccountKeychainPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", |input| AccountKeychain::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec)
-        ))
+        tempo_precompile!("AccountKeychain", chain_id, spec, |input| {
+            AccountKeychain::new()
+        })
     }
 }
 
 pub struct PathUSDPrecompile;
 impl PathUSDPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("PathUSD", |input| PathUSD::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
-        ))
+        tempo_precompile!("PathUSD", chain_id, spec, |input| { PathUSD::new() })
     }
 }
 
 pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", |input| ValidatorConfig::new(
-            &mut EvmPrecompileStorageProvider::new(input.internals, input.gas, chain_id, spec),
-        ))
+        tempo_precompile!("ValidatorConfig", chain_id, spec, |input| {
+            ValidatorConfig::new()
+        })
     }
 }
 
@@ -259,6 +257,12 @@ pub fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -271,6 +275,12 @@ fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -280,7 +290,7 @@ fn mutate_void<T: SolCall>(
 #[inline]
 fn fill_precompile_output(
     mut output: PrecompileOutput,
-    storage: &mut impl PrecompileStorageProvider,
+    storage: &mut StorageCtx,
 ) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
 
@@ -325,7 +335,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{storage::evm::EvmPrecompileStorageProvider, tip20::TIP20Token};
+    use crate::tip20::TIP20Token;
     use alloy::primitives::{Address, Bytes, U256};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
@@ -335,18 +345,13 @@ mod tests {
         context::ContextTr,
         database::{CacheDB, EmptyDB},
     };
+    use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_precompile_delegatecall() {
-        let precompile = tempo_precompile!("TIP20Token", |input| TIP20Token::new(
-            1,
-            &mut EvmPrecompileStorageProvider::new(
-                input.internals,
-                input.gas,
-                1,
-                Default::default()
-            ),
-        ));
+        let (chain_id, spec) = (1, TempoHardfork::default());
+        let precompile =
+            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
@@ -361,6 +366,7 @@ mod tests {
             internals: evm_internals,
             gas: 0,
             value: U256::ZERO,
+            is_static: false,
             target_address,
             bytecode_address,
         };
@@ -375,5 +381,71 @@ mod tests {
             }
             Err(_) => panic!("expected reverted output"),
         }
+    }
+
+    #[test]
+    fn test_precompile_static_call() {
+        let (chain_id, spec) = (1, TempoHardfork::default());
+        let precompile =
+            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+
+        let target_address = Address::random();
+
+        let call_static = |calldata: Bytes| {
+            let db = CacheDB::new(EmptyDB::new());
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 100_000,
+                is_static: true,
+                value: U256::ZERO,
+                target_address,
+                bytecode_address: target_address,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
+        };
+
+        // Static calls into mutating functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into mutate void functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into view functions should succeed
+        let result = call_static(Bytes::from(
+            ITIP20::balanceOfCall {
+                account: Address::random(),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(
+            !output.reverted,
+            "view function should not revert in static context"
+        );
     }
 }

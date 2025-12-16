@@ -21,12 +21,13 @@ tempo-precompiles.workspace = true
 tempo-telemetry-util.workspace = true
 
 alloy-consensus.workspace = true
-alloy-evm.workspace = true
 alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 
+async-lock.workspace = true
 axum.workspace = true
+blake3.workspace = true
 bytes.workspace = true
 clap.workspace = true
 

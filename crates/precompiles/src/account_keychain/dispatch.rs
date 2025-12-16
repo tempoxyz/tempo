@@ -1,12 +1,9 @@
 use super::{AccountKeychain, IAccountKeychain};
-use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate_void,
-    storage::PrecompileStorageProvider, unknown_selector, view,
-};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-impl<S: PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
+impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
@@ -64,6 +61,6 @@ impl<S: PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };
 
-        result.map(|res| fill_precompile_output(res, self.storage))
+        result.map(|res| fill_precompile_output(res, &mut self.storage))
     }
 }

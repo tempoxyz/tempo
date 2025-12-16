@@ -109,6 +109,7 @@ impl GenerateLocalnet {
                     execution_p2p_port,
 
                     execution_p2p_disc_key: execution_p2p_signing_key.display_secret().to_string(),
+                    execution_p2p_identity: format!("{execution_p2p_identity:x}"),
                 },
             ));
         }
@@ -147,11 +148,17 @@ impl GenerateLocalnet {
                 })?;
             let enode_key_dst = validator.dst_dir(&output).join("enode.key");
             std::fs::write(&enode_key_dst, config.execution_p2p_disc_key).wrap_err_with(|| {
-                format!(
-                    "failed writing signing share to `{}`",
-                    enode_key_dst.display()
-                )
+                format!("failed writing enode key to `{}`", enode_key_dst.display())
             })?;
+            let enode_identity_dst = validator.dst_dir(&output).join("enode.identity");
+            std::fs::write(&enode_identity_dst, &config.execution_p2p_identity).wrap_err_with(
+                || {
+                    format!(
+                        "failed writing enode identity to `{}`",
+                        enode_identity_dst.display()
+                    )
+                },
+            )?;
 
             println!("run the node with the following command:\n");
             let cmd = format!(
@@ -193,4 +200,5 @@ pub(crate) struct ConfigOutput {
     consensus_p2p_port: u16,
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,
+    execution_p2p_identity: String,
 }

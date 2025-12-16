@@ -21,7 +21,7 @@ build binary extra_args="":
 
 [group('localnet')]
 [doc('Generates a genesis file')]
-genesis accounts="1000" output="genesis.json" profile="maxperf":
+genesis accounts="1000" output="./" profile="maxperf":
     cargo run -p tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}}
 
 [group('localnet')]
@@ -32,7 +32,7 @@ localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" ar
     if [[ "{{reset}}" = "true" ]]; then
         rm -r ./localnet/ || true
         mkdir ./localnet/
-        just genesis {{accounts}} ./localnet/genesis.json {{profile}}
+        just genesis {{accounts}} ./localnet {{profile}}
     fi;
     cargo run --bin tempo --profile {{profile}} --features {{features}} -- \
                       node \

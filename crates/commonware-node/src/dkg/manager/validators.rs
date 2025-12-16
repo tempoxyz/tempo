@@ -1,6 +1,5 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::Address;
 use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint::UInt};
 use commonware_consensus::{types::Epoch, utils};
@@ -14,7 +13,7 @@ use reth_provider::{
 };
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
@@ -89,14 +88,13 @@ pub(super) async fn read_from_contract(
             .wrap_err("failed instantiating evm for genesis block")?;
 
         let ctx = evm.ctx_mut();
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
-
-        let mut validator_config = ValidatorConfig::new(&mut provider);
-        validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .wrap_err("failed to query contract for validator config")?
-    };
+        StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+            let validator_config = ValidatorConfig::new();
+            validator_config
+                .get_validators()
+                .wrap_err("failed to query contract for validator config")
+        })
+    }?;
 
     info!(?raw_validators, "read validators from contract",);
 
@@ -132,7 +130,7 @@ async fn decode_from_contract(
 /// 2. the player, that will become dealers in the next ceremony
 /// 3. the syncing players, that will become players in the next ceremony
 #[derive(Clone, Debug)]
-pub(super) struct ValidatorState {
+pub(crate) struct ValidatorState {
     dealers: OrderedAssociated<PublicKey, DecodedValidator>,
     players: OrderedAssociated<PublicKey, DecodedValidator>,
     syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
@@ -433,10 +431,9 @@ fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dkg::manager::validators::DecodedValidator;
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey};
-
-    use crate::dkg::manager::DecodedValidator;
 
     #[test]
     fn roundtrip_decoded_validator() {

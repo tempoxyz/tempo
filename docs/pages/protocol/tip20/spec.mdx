@@ -535,5 +535,5 @@ interface ITIP20Factory {
 - `totalSupply()` must always equal to the sum of all `balanceOf(account)` over all accounts.
 - `totalSupply()` must always be `<= supplyCap` 
 - When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `startReward`, `setRewardRecipient`, `claimRewards`) can succeed.
-- TIP20 tokens can not send any amount another TIP20 token address.
+- TIP20 tokens cannot be transferred to another TIP20 token contract address.
 - `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` never change `totalSupply()`.

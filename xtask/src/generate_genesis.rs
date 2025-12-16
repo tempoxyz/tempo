@@ -27,8 +27,17 @@ impl GenerateGenesis {
 
         let json =
             serde_json::to_string_pretty(&genesis).wrap_err("failed encoding genesis as JSON")?;
-        std::fs::write(&output, json)
-            .wrap_err_with(|| format!("failed writing genesis to file `{}`", output.display()))?;
+
+        std::fs::create_dir_all(&output).wrap_err_with(|| {
+            format!(
+                "failed to create directory and parents for `{}`",
+                output.display()
+            )
+        })?;
+        let genesis_dst = output.join("genesis.json");
+        std::fs::write(&genesis_dst, json).wrap_err_with(|| {
+            format!("failed writing genesis to file `{}`", genesis_dst.display())
+        })?;
 
         if let Some(consensus_config) = consensus_config {
             println!(
@@ -36,14 +45,13 @@ impl GenerateGenesis {
                 consensus_config.validators.len()
             );
             for validator in consensus_config.validators {
-                let parent = output.parent().expect("must not specify /");
-                std::fs::create_dir_all(validator.dst_dir(parent)).wrap_err_with(|| {
+                std::fs::create_dir_all(validator.dst_dir(&output)).wrap_err_with(|| {
                     format!(
                         "failed creating target directory to store validator specifici keys at `{}`",
                         validator.dst_dir(&output).display()
                     )
                 })?;
-                let signing_key_dst = validator.dst_signing_key(parent);
+                let signing_key_dst = validator.dst_signing_key(&output);
                 validator
                     .signing_key
                     .write_to_file(&signing_key_dst)
@@ -53,7 +61,7 @@ impl GenerateGenesis {
                             signing_key_dst.display()
                         )
                     })?;
-                let signing_share_dst = validator.dst_signing_share(parent);
+                let signing_share_dst = validator.dst_signing_share(&output);
                 validator
                     .signing_share
                     .write_to_file(&signing_share_dst)

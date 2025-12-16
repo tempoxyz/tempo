@@ -1,6 +1,7 @@
 use crate::{TempoExecutionData, TempoPayloadTypes};
 use reth_node_api::{InvalidPayloadAttributesError, NewPayloadError, PayloadValidator};
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
+use std::sync::Arc;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{Block, TempoHeader};
 
@@ -27,7 +28,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
             block,
             validator_set: _,
         } = payload;
-        Ok(block)
+        Ok(Arc::unwrap_or_clone(block))
     }
 
     fn validate_payload_attributes_against_header(
