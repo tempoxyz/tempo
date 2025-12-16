@@ -16,6 +16,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     gas_refunded: i64,
     gas_limit: u64,
     spec: TempoHardfork,
+    is_static: bool,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -25,6 +26,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         gas_limit: u64,
         chain_id: u64,
         spec: TempoHardfork,
+        is_static: bool,
     ) -> Self {
         Self {
             internals,
@@ -33,12 +35,13 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_refunded: 0,
             gas_limit,
             spec,
+            is_static,
         }
     }
 
-    /// Create a new storage provider with maximum gas limit.
+    /// Create a new storage provider with maximum gas limit and non static context
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
-        Self::new(internals, u64::MAX, cfg.chain_id, cfg.spec)
+        Self::new(internals, u64::MAX, cfg.chain_id, cfg.spec, false)
     }
 
     pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
@@ -193,6 +196,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    #[inline]
+    fn is_static(&self) -> bool {
+        self.is_static
     }
 }
 

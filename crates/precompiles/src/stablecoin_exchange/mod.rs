@@ -637,7 +637,7 @@ impl StablecoinExchange {
         // Create the flip order
         let order_id = self.increment_pending_order_id()?;
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
-            .expect("Invalid flip tick");
+            .map_err(|_| StablecoinExchangeError::invalid_flip_tick())?;
 
         // Store in pending queue
         self.orders.at(order_id).write(order)?;
@@ -767,7 +767,7 @@ impl StablecoinExchange {
             fill_amount
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow")
+                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             fill_amount
         };
@@ -817,12 +817,13 @@ impl StablecoinExchange {
             fill_amount
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow")
+                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             let quote_amount = fill_amount
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Amount out calculation overflow");
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
 
             fill_amount
@@ -1337,7 +1338,8 @@ impl StablecoinExchange {
                 .remaining()
                 .checked_mul(price as u128)
                 .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .expect("Quote amount calculation overflow");
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         } else {
             // Ask orders are in base token, refund base amount
