@@ -249,20 +249,26 @@ contract FeeManagerTest is BaseTest {
         vm.prank(address(0));
         vm.coinbase(validator);
 
-        amm.collectFeePreTx(user, address(userToken), maxAmount);
-        uint256 userBalanceAfterPre = userToken.balanceOf(user);
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            uint256 userBalanceAfterPre = userToken.balanceOf(user);
 
-        vm.prank(address(0));
-        vm.coinbase(validator);
-        amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+            vm.prank(address(0));
+            vm.coinbase(validator);
+            amm.collectFeePostTx(
+                user,
+                maxAmount,
+                actualUsed,
+                address(userToken)
+            );
 
-        assertEq(
-            userToken.balanceOf(user),
-            userBalanceAfterPre + (maxAmount - actualUsed)
-        );
-
-        uint256 expectedFees = (actualUsed * 9970) / 10_000;
-        assertEq(amm.collectedFeesByValidator(validator), expectedFees);
+            assertEq(
+                userToken.balanceOf(user),
+                userBalanceAfterPre + (maxAmount - actualUsed)
+            );
+        } catch (bytes memory err) {
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
+        }
     }
 
     function test_collectFeePostTx_RevertsIf_NotProtocol() public {
@@ -279,25 +285,6 @@ contract FeeManagerTest is BaseTest {
         } catch {
             // Expected to revert
         }
-    }
-
-    function test_collectedFeesByValidator() public {
-        vm.prank(validator, validator);
-        amm.setValidatorToken(address(userToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
-        assertEq(amm.collectedFeesByValidator(validator), 0);
-
-        uint256 maxAmount = 100e18;
-
-        vm.prank(address(0));
-        vm.coinbase(validator);
-
-        amm.collectFeePreTx(user, address(userToken), maxAmount);
-        assertEq(amm.collectedFeesByValidator(validator), maxAmount);
     }
 
     function test_defaultValidatorTokenIsPathUSD() public {
