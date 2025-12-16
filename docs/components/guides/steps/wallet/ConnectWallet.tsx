@@ -12,6 +12,7 @@ import LucideCheck from '~icons/lucide/check'
 import LucideWalletCards from '~icons/lucide/wallet-cards'
 import { Button, Step, StringFormatter, useCopyToClipboard } from '../../Demo'
 import type { DemoStepProps } from '../types'
+import { filterSupportedInjectedConnectors } from '../../../wallets'
 
 export function ConnectWallet(props: DemoStepProps) {
   const { stepNumber = 1 } = props
@@ -21,7 +22,7 @@ export function ConnectWallet(props: DemoStepProps) {
   const disconnect = useDisconnect()
   const connectors = useConnectors()
   const injectedConnectors = React.useMemo(
-    () => connectors.filter((connector) => connector.id !== 'webAuthn'),
+    () => filterSupportedInjectedConnectors(connectors),
     [connectors],
   )
   const switchChain = useSwitchChain()

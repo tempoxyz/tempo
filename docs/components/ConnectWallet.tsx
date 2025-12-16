@@ -7,6 +7,7 @@ import {
   useSwitchChain,
 } from 'wagmi'
 import { Button, Logout } from './guides/Demo'
+import { filterSupportedInjectedConnectors } from './wallets'
 
 export function ConnectWallet({
   showAddChain = true,
@@ -17,7 +18,7 @@ export function ConnectWallet({
   const connect = useConnect()
   const connectors = useConnectors()
   const injectedConnectors = React.useMemo(
-    () => connectors.filter((connector) => connector.id !== 'webAuthn'),
+    () => filterSupportedInjectedConnectors(connectors),
     [connectors],
   )
   const switchChain = useSwitchChain()
