@@ -389,6 +389,7 @@ where
 
         // this store is effectively a noop
         let blob_store = InMemoryBlobStore::default();
+        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
         let validator = TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone())
             .with_head_timestamp(ctx.head().timestamp)
             .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
@@ -401,7 +402,15 @@ where
             .with_custom_tx_type(TempoTxType::AA as u8)
             .with_custom_tx_type(TempoTxType::FeeToken as u8)
             .no_eip4844()
-            .build_with_tasks(ctx.task_executor().clone(), blob_store.clone());
+            .into_tasks_builder(blob_store.clone())
+            .map(|v| {
+                TempoTransactionValidator::new(
+                    v,
+                    self.aa_valid_after_max_secs,
+                    amm_liquidity_cache.clone(),
+                )
+            })
+            .build_and_spawn(ctx.task_executor().clone());
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
@@ -409,15 +418,7 @@ where
             aa_2d_limit: pool_config.pending_limit,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
-        let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
 
-        let validator = validator.map(|v| {
-            TempoTransactionValidator::new(
-                v,
-                self.aa_valid_after_max_secs,
-                amm_liquidity_cache.clone(),
-            )
-        });
         let protocol_pool = TxPoolBuilder::new(ctx)
             .with_validator(validator)
             .build(blob_store, pool_config.clone());

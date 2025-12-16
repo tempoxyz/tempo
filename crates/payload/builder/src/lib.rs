@@ -66,7 +66,10 @@ use tempo_transaction_pool::{
 use tracing::{Level, debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Clone)]
-pub struct TempoPayloadBuilder<Provider> {
+pub struct TempoPayloadBuilder<Provider>
+where
+    Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
     evm_config: TempoEvmConfig,
@@ -83,7 +86,10 @@ pub struct TempoPayloadBuilder<Provider> {
     highest_invalid_subblock: Arc<AtomicU64>,
 }
 
-impl<Provider> TempoPayloadBuilder<Provider> {
+impl<Provider> TempoPayloadBuilder<Provider>
+where
+    Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
@@ -99,7 +105,10 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     }
 }
 
-impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
+impl<Provider> TempoPayloadBuilder<Provider>
+where
+    Provider: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     /// Builds system transactions to execute at the start of the block.
     ///
     /// Returns a vector of system transactions that must be executed at the beginning of each block:

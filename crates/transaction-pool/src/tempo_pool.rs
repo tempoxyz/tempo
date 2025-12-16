@@ -30,7 +30,11 @@ use tempo_chainspec::TempoChainSpec;
 use tracing::instrument;
 
 /// Tempo transaction pool that routes based on nonce_key
-pub struct TempoTransactionPool<Client> {
+#[derive(Debug)]
+pub struct TempoTransactionPool<Client>
+where
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -41,7 +45,10 @@ pub struct TempoTransactionPool<Client> {
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
 }
 
-impl<Client> TempoTransactionPool<Client> {
+impl<Client> TempoTransactionPool<Client>
+where
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
@@ -188,22 +195,15 @@ where
 }
 
 // Manual Clone implementation
-impl<Client> Clone for TempoTransactionPool<Client> {
+impl<Client> Clone for TempoTransactionPool<Client>
+where
+    Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+{
     fn clone(&self) -> Self {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
         }
-    }
-}
-
-// Manual Debug implementation
-impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TempoTransactionPool")
-            .field("protocol_pool", &"Pool<...>")
-            .field("aa_2d_nonce_pool", &"AA2dPool<...>")
-            .finish_non_exhaustive()
     }
 }
 
