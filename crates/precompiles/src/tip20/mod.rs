@@ -641,6 +641,13 @@ impl TIP20Token {
         self.check_not_token_address(to)?;
         self.ensure_transfer_authorized(from, to)?;
 
+        // Only check access keys after Allegro Moderato hardfork
+        if self.storage.spec().is_allegro_moderato() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(from, self.address, amount)?;
+        }
+
         self._transfer(from, to, amount)?;
 
         Ok(true)
@@ -683,6 +690,13 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_not_token_address(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
+
+        // Only check access keys after Allegro Moderato hardfork
+        if self.storage.spec().is_allegro_moderato() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(msg_sender, self.address, call.amount)?;
+        }
 
         self._transfer(msg_sender, call.to, call.amount)?;
 
@@ -870,6 +884,13 @@ impl TIP20Token {
             return Err(
                 TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
             );
+        }
+
+        // Only check access keys after Allegro Moderato hardfork
+        if self.storage.spec().is_allegro_moderato() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(from, self.address, amount)?;
         }
 
         // Handle rewards (only after Moderato hardfork)

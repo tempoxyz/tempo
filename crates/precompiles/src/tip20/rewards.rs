@@ -1,5 +1,6 @@
 use crate::{
     TIP20_REWARDS_REGISTRY_ADDRESS,
+    account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip20::TIP20Token,
@@ -28,6 +29,13 @@ impl TIP20Token {
 
         if call.amount == U256::ZERO {
             return Err(TIP20Error::invalid_amount().into());
+        }
+
+        // Only check access keys after Allegro Moderato hardfork
+        if self.storage.spec().is_allegro_moderato() {
+            // Check and update spending limits for access keys
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(msg_sender, token_address, call.amount)?;
         }
 
         self._transfer(msg_sender, token_address, call.amount)?;
