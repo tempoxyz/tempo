@@ -42,11 +42,10 @@ contract FeeAMM is IFeeAMM {
         return pools[poolId];
     }
 
-    function checkSufficientLiquidity(
-        address userToken,
-        address validatorToken,
-        uint256 maxAmount
-    ) internal view {
+    function checkSufficientLiquidity(address userToken, address validatorToken, uint256 maxAmount)
+        internal
+        view
+    {
         bytes32 poolId = getPoolId(userToken, validatorToken);
         uint256 amountOutNeeded = (maxAmount * M) / SCALE;
         require(
@@ -55,11 +54,10 @@ contract FeeAMM is IFeeAMM {
         );
     }
 
-    function executeFeeSwap(
-        address userToken,
-        address validatorToken,
-        uint256 amountIn
-    ) internal returns (uint256 amountOut) {
+    function executeFeeSwap(address userToken, address validatorToken, uint256 amountIn)
+        internal
+        returns (uint256 amountOut)
+    {
         bytes32 poolId = getPoolId(userToken, validatorToken);
         Pool storage pool = pools[poolId];
 
@@ -204,7 +202,6 @@ contract FeeAMM is IFeeAMM {
         // Calculate pro-rata share of reserves
         amountUserToken = (liquidity * pool.reserveUserToken) / _totalSupply;
         amountValidatorToken = (liquidity * pool.reserveValidatorToken) / _totalSupply;
-
     }
 
     function sqrt(uint256 x) internal pure returns (uint256) {

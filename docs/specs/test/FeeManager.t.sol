@@ -210,12 +210,16 @@ contract FeeManagerTest is BaseTest {
         vm.prank(address(0));
         vm.coinbase(validator);
 
+        if (!isTempo) {
+            vm.expectRevert("INSUFFICIENT_LIQUIDITY_FOR_FEE_SWAP");
+        }
+
         try amm.collectFeePreTx(user, address(userToken), 100e18) {
-            if (!isTempo) {
+            if (isTempo) {
                 revert CallShouldHaveReverted();
             }
         } catch {
-            // Expected to revert - no pool for userToken -> altToken
+            // Expected to revert
         }
     }
 
@@ -242,7 +246,7 @@ contract FeeManagerTest is BaseTest {
 
         assertEq(userToken.balanceOf(user), userBalanceAfterPre + (maxAmount - actualUsed));
 
-        uint256 expectedFees = (actualUsed * 9970) / 10000;
+        uint256 expectedFees = (actualUsed * 9970) / 10_000;
         assertEq(amm.collectedFeesByValidator(validator), expectedFees);
     }
 
@@ -303,7 +307,7 @@ contract FeeManagerTest is BaseTest {
         amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
         vm.stopPrank();
 
-        uint256 expectedFees = (actualUsed * 9970) / 10000;
+        uint256 expectedFees = (actualUsed * 9970) / 10_000;
         assertEq(amm.collectedFeesByValidator(validator), expectedFees);
 
         uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
