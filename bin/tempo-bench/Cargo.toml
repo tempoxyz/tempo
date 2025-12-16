@@ -24,6 +24,7 @@ alloy = { workspace = true, features = [
     "signer-mnemonic",
     "signers",
     "sol-types",
+    "contract",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
