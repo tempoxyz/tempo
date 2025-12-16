@@ -197,52 +197,52 @@ where
 
     // No-op methods are unimplemented in read-only context.
     fn chain_id(&self) -> u64 {
-        panic!("'chain_id' not implemented in read-only context yet")
+        unreachable!("'chain_id' not implemented in read-only context yet")
     }
 
     fn timestamp(&self) -> U256 {
-        panic!("'timestamp' not implemented in read-only context yet")
+        unreachable!("'timestamp' not implemented in read-only context yet")
     }
 
     fn beneficiary(&self) -> Address {
-        panic!("'beneficiary' not implemented in read-only context yet")
+        unreachable!("'beneficiary' not implemented in read-only context yet")
     }
 
     fn tload(&mut self, _: Address, _: U256) -> TempoResult<U256> {
-        panic!("'tload' not implemented in read-only context yet")
+        unreachable!("'tload' not implemented in read-only context yet")
     }
 
     fn gas_used(&self) -> u64 {
-        panic!("'gas_used' not implemented in read-only context yet")
+        unreachable!("'gas_used' not implemented in read-only context yet")
     }
 
     fn gas_refunded(&self) -> i64 {
-        panic!("'gas_refunded' not implemented in read-only context yet")
+        unreachable!("'gas_refunded' not implemented in read-only context yet")
     }
 
     // Write operations are not supported in read-only context
     fn sstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
-        panic!("'sstore' not supported in read-only context")
+        unreachable!("'sstore' not supported in read-only context")
     }
 
     fn set_code(&mut self, _: Address, _: Bytecode) -> TempoResult<()> {
-        panic!("'set_code' not supported in read-only context")
+        unreachable!("'set_code' not supported in read-only context")
     }
 
     fn emit_event(&mut self, _: Address, _: LogData) -> TempoResult<()> {
-        panic!("'emit_event' not supported in read-only context")
+        unreachable!("'emit_event' not supported in read-only context")
     }
 
     fn tstore(&mut self, _: Address, _: U256, _: U256) -> TempoResult<()> {
-        panic!("'tstore' not supported in read-only context")
+        unreachable!("'tstore' not supported in read-only context")
     }
 
     fn deduct_gas(&mut self, _: u64) -> TempoResult<()> {
-        panic!("'deduct_gas' not supported in read-only context")
+        unreachable!("'deduct_gas' not supported in read-only context")
     }
 
     fn refund_gas(&mut self, _: i64) {
-        panic!("'refund_gas' not supported in read-only context")
+        unreachable!("'refund_gas' not supported in read-only context")
     }
 }
 
