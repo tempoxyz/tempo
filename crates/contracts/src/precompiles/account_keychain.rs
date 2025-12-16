@@ -15,7 +15,7 @@ sol! {
     /// Only the main account key can authorize/revoke keys, while secondary keys
     /// can be used for regular transactions within their spending limits.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
+    #[sol(rpc, abi)]
     interface IAccountKeychain {
         enum SignatureType {
             Secp256k1,

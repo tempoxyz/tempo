@@ -7,11 +7,9 @@ use commonware_cryptography::{
     ed25519::PublicKey,
 };
 use commonware_p2p::{Receiver, Sender, utils::mux::MuxHandle};
-use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, Storage};
-use commonware_storage::metadata::Metadata;
+use commonware_runtime::{Clock, ContextCell, Spawner, Storage};
 use commonware_utils::{
     quorum,
-    sequence::U64,
     set::{Ordered, OrderedAssociated},
 };
 use eyre::{OptionExt as _, WrapErr as _};
@@ -22,15 +20,12 @@ use tracing::{Span, info, instrument, warn};
 use crate::{
     consensus::block::Block,
     dkg::{
-        HardforkRegime,
+        HardforkRegime, RegimeEpochState,
         ceremony::{self, Ceremony},
-        manager::validators::ValidatorState,
+        manager::{read_write_transaction::DkgReadWriteTransaction, validators::ValidatorState},
     },
     epoch,
 };
-
-const CURRENT_EPOCH_KEY: U64 = U64::new(0);
-const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
 
 impl<TContext, TPeerManager> super::Actor<TContext, TPeerManager>
 where
@@ -38,7 +33,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     /// Runs the pre-allegretto initialization routines.
     ///
@@ -49,8 +44,11 @@ where
     /// If neither pre- nor post-allegretto artifacts are found, this method
     /// assumes that the node is starting from genesis.
     #[instrument(skip_all, err)]
-    pub(super) async fn pre_allegretto_init(&mut self) -> eyre::Result<()> {
-        if !self.post_allegretto_metadatas.exists() {
+    pub(super) async fn pre_allegretto_init(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) -> eyre::Result<()> {
+        if !tx.has_post_allegretto_state().await {
             let spec = self.config.execution_node.chain_spec();
             let public_polynomial = spec
                 .info
@@ -66,49 +64,41 @@ where
                 .ok_or_eyre("chainspec did not contain validators; cannot go on without them")?
                 .into_inner();
 
-            if self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .is_none()
-            {
-                self.pre_allegretto_metadatas
-                    .epoch_metadata
-                    .put_sync(
-                        CURRENT_EPOCH_KEY,
-                        EpochState {
-                            epoch: 0,
-                            participants: validators.keys().clone(),
-                            public: public_polynomial,
-                            share: self.config.initial_share.clone(),
-                        },
-                    )
-                    .await
-                    .expect("must always be able to persists state");
+            if !tx.has_pre_allegretto_state().await {
+                tx.set_epoch(EpochState {
+                    epoch: 0,
+                    participants: validators.keys().clone(),
+                    public: public_polynomial,
+                    share: self.config.initial_share.clone(),
+                });
             }
 
             // Safeguard when updating from older binaries that might not yet have written
             // the validators metadata.
             //
             // Note that pre-allegretto the validator set never changes.
-            let current_epoch = self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .get(&CURRENT_EPOCH_KEY)
-                .expect("we ensured above that the epoch state is initialized")
-                .epoch();
-            self.validators_metadata
-                .put_sync(
-                    // Write the validators for the *previous* epoch. This assumes
-                    // that after this state is written, self.register_current_epoch_state
-                    // is called that will set the validators for the *current*
-                    // epoch.
-                    current_epoch.saturating_sub(1).into(),
-                    ValidatorState::with_unknown_contract_state(validators.clone()),
-                )
-                .await
-                .expect("must always be able to write state");
+            let current_epoch: EpochState = tx
+                .get_epoch()
+                .await?
+                .expect("we ensured above that the epoch state is initialized");
+
+            // Write the validators for the *previous* epoch. This assumes
+            // that after this state is written, self.register_current_epoch_state
+            // is called that will set the validators for the *current* epoch.
+            tx.set_validators(
+                current_epoch.epoch().saturating_sub(1),
+                ValidatorState::with_unknown_contract_state(validators.clone()),
+            );
         }
+
+        if self.config.delete_signing_share
+            && let Some(mut epoch_state) = tx.get_epoch::<EpochState>().await?
+        {
+            warn!("delete-signing-share set; deleting signing share");
+            epoch_state.share.take();
+            tx.set_epoch(epoch_state);
+        }
+
         Ok(())
     }
 
@@ -137,19 +127,27 @@ where
             block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
             block.timestamp = block.timestamp(),
-            latest_epoch = self.current_epoch_state().epoch(),
+            latest_epoch = tracing::field::Empty,
         ),
     )]
     pub(super) async fn handle_finalized_pre_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
         block: Block,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
+        let epoch_state = tx
+            .get_epoch::<EpochState>()
+            .await
+            .expect("epoch state must be readable")
+            .expect("epoch state must exist");
+        Span::current().record("latest_epoch", epoch_state.epoch());
+
         // Special case the last height.
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
             info!("reached end of epoch - reporting new epoch and starting ceremony");
@@ -178,19 +176,10 @@ where
                     outcome
                 }
             };
+
             let (public, share) = outcome.role.into_key_pair();
 
-            let old_epoch_state = self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .remove(&CURRENT_EPOCH_KEY)
-                .expect("there must always be a current epoch state");
-
-            let next_epoch = old_epoch_state.epoch + 1;
-
-            self.pre_allegretto_metadatas
-                .epoch_metadata
-                .put(PREVIOUS_EPOCH_KEY, old_epoch_state);
+            let next_epoch = epoch_state.epoch + 1;
 
             let new_epoch_state = EpochState {
                 epoch: next_epoch,
@@ -198,24 +187,7 @@ where
                 public,
                 share,
             };
-            self.pre_allegretto_metadatas
-                .epoch_metadata
-                .put(CURRENT_EPOCH_KEY, new_epoch_state.clone());
 
-            self.pre_allegretto_metadatas
-                .epoch_metadata
-                .sync()
-                .await
-                .expect("must always be able to write epoch state to disk");
-
-            // Prune older ceremony.
-            if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
-                let mut ceremony_metadata = self.ceremony_metadata.lock().await;
-                ceremony_metadata.remove(&epoch.into());
-                ceremony_metadata.sync().await.expect("metadata must sync");
-            }
-
-            let epoch_state = self.current_epoch_state();
             if self
                 .config
                 .execution_node
@@ -228,7 +200,7 @@ where
                         from smart contract",
                 );
                 match self
-                    .transition_to_dynamic_validator_sets(ceremony_mux)
+                    .transition_to_dynamic_validator_sets(tx, ceremony_mux)
                     .await
                 {
                     Ok(new_ceremony) => {
@@ -238,9 +210,7 @@ where
                                 deleting current pre-allegretto epoch state and leaving \
                                 DKG logic to the post-hardfork routines",
                         );
-                        self.pre_allegretto_metadatas
-                            .delete_current_epoch_state()
-                            .await;
+                        tx.remove_epoch(HardforkRegime::PreAllegretto);
                         return;
                     }
                     Err(error) => {
@@ -254,18 +224,14 @@ where
                 }
             }
 
-            // NOTE: This acts as restart protection: on pre-allegretto,
-            // CURRENT_EPOCH_KEY is updated on the block *last height - 1*.
-            // If a node restarts, it immediately starts a ceremony for
-            // CURRENT_EPOCH_KEY, and then starts processing *last height*.
-            //
-            // This attempt to create a ceremony with the same mux subchannel
-            // and fail.
-            if ceremony.epoch() != epoch_state.epoch() {
-                *ceremony = self.start_pre_allegretto_ceremony(ceremony_mux).await;
+            *ceremony = self.start_pre_allegretto_ceremony(tx, ceremony_mux).await;
+            tx.set_previous_epoch(epoch_state);
+            tx.set_epoch(new_epoch_state.clone());
+            // Prune older ceremony.
+            if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
+                tx.remove_ceremony(epoch);
             }
-            self.register_current_epoch_state().await;
-
+            self.register_current_epoch_state(tx).await;
             return;
         }
 
@@ -274,10 +240,8 @@ where
         //
         // Recall, for an epoch length E the first heights are 0E, 1E, 2E, ...
         if block.height().is_multiple_of(self.config.epoch_length)
-            && let Some(old_epoch_state) = self
-                .pre_allegretto_metadatas
-                .epoch_metadata
-                .remove(&PREVIOUS_EPOCH_KEY)
+            && let Some(old_epoch_state) =
+                tx.get_previous_epoch::<EpochState>().await.ok().flatten()
         {
             self.config
                 .epoch_manager
@@ -288,22 +252,18 @@ where
                     .into(),
                 )
                 .await;
-            self.pre_allegretto_metadatas
-                .epoch_metadata
-                .sync()
-                .await
-                .expect("must always be able to persist state");
+            tx.remove_previous_epoch(HardforkRegime::PreAllegretto);
         }
 
         match epoch::relative_position(block.height(), self.config.epoch_length) {
             epoch::RelativePosition::FirstHalf => {
-                let _ = ceremony.distribute_shares().await;
-                let _ = ceremony.process_messages().await;
+                let _ = ceremony.distribute_shares(tx).await;
+                let _ = ceremony.process_messages(tx).await;
             }
             epoch::RelativePosition::Middle => {
-                let _ = ceremony.process_messages().await;
+                let _ = ceremony.process_messages(tx).await;
                 let _ = ceremony
-                    .construct_intermediate_outcome(HardforkRegime::PreAllegretto)
+                    .construct_intermediate_outcome(tx, HardforkRegime::PreAllegretto)
                     .await;
             }
             epoch::RelativePosition::SecondHalf => {
@@ -312,23 +272,26 @@ where
             }
         }
 
-        ceremony.add_finalized_block(block.clone()).await;
+        ceremony.add_finalized_block(tx, block.clone()).await;
     }
 
-    #[instrument(skip_all, fields(epoch = self.pre_allegretto_metadatas.current_epoch_state().unwrap().epoch()))]
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
     pub(super) async fn start_pre_allegretto_ceremony<TReceiver, TSender>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
+    ) -> Ceremony<TReceiver, TSender>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self
-            .pre_allegretto_metadatas
-            .epoch_metadata
-            .get(&CURRENT_EPOCH_KEY)
-            .expect("the epoch state must always during the lifetime of the actor");
+        let epoch_state: EpochState = tx
+            .get_epoch()
+            .await
+            .expect("must be able to read epoch")
+            .expect("the epoch state must always exist during the lifetime of the actor");
+        Span::current().record("epoch", epoch_state.epoch());
+
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
             me: self.config.me.clone(),
@@ -344,7 +307,7 @@ where
         let ceremony = ceremony::Ceremony::init(
             &mut self.context,
             mux,
-            self.ceremony_metadata.clone(),
+            tx,
             config,
             self.metrics.ceremony.clone(),
         )
@@ -368,99 +331,32 @@ where
 
     async fn transition_to_dynamic_validator_sets<TReceiver, TSender>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> eyre::Result<Ceremony<ContextCell<TContext>, TReceiver, TSender>>
+    ) -> eyre::Result<Ceremony<TReceiver, TSender>>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let epoch_state = self
-            .pre_allegretto_metadatas
-            .epoch_metadata
-            .get(&CURRENT_EPOCH_KEY)
-            .cloned()
-            .expect(
-                "when transitioning from pre-allegretto static validator sets to \
+        let epoch_state: EpochState = tx.get_epoch().await?.expect(
+            "when transitioning from pre-allegretto static validator sets to \
                 post-allegretto dynamic validator sets the pre-allegretto epoch \
                 state must exist",
-            );
+        );
 
-        self.transition_from_static_validator_sets(epoch_state, mux)
+        self.transition_from_static_validator_sets(tx, epoch_state, mux)
             .await
             .wrap_err("hand-over to post-allegretto dynamic validator set logic failed")
     }
 }
 
-pub(super) struct Metadatas<TContext>
-where
-    TContext: Clock + Metrics + Storage,
-{
-    /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the allegretto hardfork.
-    epoch_metadata: Metadata<TContext, U64, EpochState>,
-}
-
-impl<TContext> Metadatas<TContext>
-where
-    TContext: Clock + Metrics + Storage,
-{
-    pub(super) async fn init(context: &TContext, partition_prefix: &str) -> Self
-    where
-        TContext: Metrics,
-    {
-        let epoch_metadata = Metadata::init(
-            context.with_label("post_allegretto_epoch_metadata"),
-            commonware_storage::metadata::Config {
-                // XXX: the prefix of this partition must stay fixed to be
-                // backward compatible with the pre-allegretto hardfork.
-                partition: format!("{partition_prefix}_current_epoch"),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
-
-        Self { epoch_metadata }
-    }
-
-    pub(super) fn previous_epoch_state(&self) -> Option<&EpochState> {
-        self.epoch_metadata.get(&PREVIOUS_EPOCH_KEY)
-    }
-
-    pub(super) fn current_epoch_state(&self) -> Option<&EpochState> {
-        self.epoch_metadata.get(&CURRENT_EPOCH_KEY)
-    }
-
-    /// Removes all pre-allegretto state from disk.
-    ///
-    /// Returns the current epoch state on the left-hand side, if it exists, and
-    /// the previous epoch state on the right.
-    async fn delete_current_epoch_state(&mut self) -> Option<EpochState> {
-        let current_state = self.epoch_metadata.remove(&CURRENT_EPOCH_KEY);
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to sync state to disk");
-        current_state
-    }
-
-    pub(super) async fn delete_previous_epoch_state(&mut self) -> Option<EpochState> {
-        let previous_state = self.epoch_metadata.remove(&PREVIOUS_EPOCH_KEY);
-        self.epoch_metadata
-            .sync()
-            .await
-            .expect("must always be able to sync state to disk");
-        previous_state
-    }
-}
-
 /// The state with all participants, public and private key share for an epoch.
 #[derive(Clone)]
-pub(super) struct EpochState {
-    epoch: Epoch,
-    participants: Ordered<PublicKey>,
-    public: Public<MinSig>,
-    share: Option<Share>,
+pub(crate) struct EpochState {
+    pub(crate) epoch: Epoch,
+    pub(crate) participants: Ordered<PublicKey>,
+    pub(crate) public: Public<MinSig>,
+    pub(crate) share: Option<Share>,
 }
 
 impl std::fmt::Debug for EpochState {
@@ -529,4 +425,8 @@ impl Read for EpochState {
             share,
         })
     }
+}
+
+impl RegimeEpochState for EpochState {
+    const REGIME: HardforkRegime = HardforkRegime::PreAllegretto;
 }

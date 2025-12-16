@@ -1,5 +1,6 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, task::ready, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, task::ready, time::Duration};
 
+use bytes::Bytes;
 use commonware_codec::{
     Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt,
 };
@@ -20,7 +21,7 @@ use commonware_p2p::{
     utils::{mux, mux::MuxHandle},
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
-use commonware_storage::metadata::Metadata;
+use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::{
     Acknowledgement,
     acknowledgement::Exact,
@@ -30,12 +31,11 @@ use commonware_utils::{
     union,
 };
 
-use eyre::{Context as _, eyre};
+use eyre::{WrapErr as _, eyre};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{mpsc, oneshot},
     future::BoxFuture,
-    lock::Mutex,
     stream::FuturesUnordered,
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
@@ -47,20 +47,21 @@ use tracing::{Span, debug, error, info, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
+    db::MetadataDatabase,
     dkg::{
         ceremony::{self, Ceremony, HasHoles, OUTCOME_NAMESPACE},
         manager::{
-            DecodedValidator,
             ingress::{GetIntermediateDealing, GetOutcome},
-            validators::{self, ValidatorState},
+            read_write_transaction::DkgReadWriteTransaction,
+            validators::{self, DecodedValidator, ValidatorState},
         },
     },
     epoch,
     utils::OptionFuture,
 };
 
-mod post_allegretto;
-mod pre_allegretto;
+pub mod post_allegretto;
+pub mod pre_allegretto;
 
 pub(crate) struct Actor<TContext, TPeerManager>
 where
@@ -76,29 +77,8 @@ where
     /// The channel over which the actor will receive messages.
     mailbox: mpsc::UnboundedReceiver<super::Message>,
 
-    /// Persisted information on the currently running ceremony and its
-    /// predecessor (epochs i and i-1). This ceremony metadata is updated on
-    /// the last height of en epoch (the height on which the ceremony for the
-    /// next epoch will be started).
-    ceremony_metadata: Arc<Mutex<Metadata<ContextCell<TContext>, U64, ceremony::State>>>,
-
-    /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started after the allegretto hardfork.
-    post_allegretto_metadatas: post_allegretto::Metadatas<ContextCell<TContext>>,
-
-    /// Persisted information on the current epoch for DKG ceremonies that were
-    /// started before the allegretto hardfork.
-    pre_allegretto_metadatas: pre_allegretto::Metadatas<ContextCell<TContext>>,
-
-    /// Information on the peers registered on the p2p peer manager for a given
-    /// epoch i and its precursors i-1 and i-2. Peer information is persisted
-    /// on the last height of an epoch.
-    ///
-    /// Note that validators are also persisted in the epoch metadata and are
-    /// the main source of truth. The validators are also tracked here so that
-    /// they can be registered as peers for older epoch states that are no longer
-    /// tracked.
-    validators_metadata: Metadata<ContextCell<TContext>, U64, ValidatorState>,
+    /// The unified database for all DKG-related state.
+    db: MetadataDatabase<ContextCell<TContext>>,
 
     /// Handles to the metrics objects that the actor will update during its
     /// runtime.
@@ -182,7 +162,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     pub(super) async fn new(
         config: super::Config<TPeerManager>,
@@ -191,31 +171,30 @@ where
     ) -> eyre::Result<Self> {
         let context = ContextCell::new(context);
 
-        let ceremony_metadata = Metadata::init(
-            context.with_label("ceremony_metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_ceremony", config.partition_prefix),
-                codec_config: (),
+        // Initialize the unified metadata database
+        let metadata: Metadata<ContextCell<TContext>, U64, Bytes> = Metadata::init(
+            context.with_label("database"),
+            metadata::Config {
+                partition: format!("{}_database", config.partition_prefix),
+                codec_config: RangeCfg::from(0..=usize::MAX),
             },
         )
         .await
         .expect("must be able to initialize metadata on disk to function");
 
-        let post_allegretto_metadatas =
-            post_allegretto::Metadatas::init(&context, &config.partition_prefix).await;
+        let db = MetadataDatabase::new(metadata);
 
-        let pre_allegretto_metadatas =
-            pre_allegretto::Metadatas::init(&context, &config.partition_prefix).await;
-
-        let validators_metadata = Metadata::init(
-            context.with_label("validators__metadata"),
-            commonware_storage::metadata::Config {
-                partition: format!("{}_validators", config.partition_prefix),
-                codec_config: (),
-            },
-        )
-        .await
-        .expect("must be able to initialize metadata on disk to function");
+        // Run migration from old metadata stores if needed
+        {
+            let mut tx = DkgReadWriteTransaction::new(db.read_write());
+            super::migrate::maybe_migrate_to_db(&context, &config.partition_prefix, &mut tx)
+                .await
+                .wrap_err("database migration failed")?;
+            tx.set_node_version(env!("CARGO_PKG_VERSION").to_string());
+            tx.commit()
+                .await
+                .wrap_err("failed to commit init transaction")?;
+        }
 
         let syncing_players = Gauge::default();
 
@@ -269,10 +248,7 @@ where
             config,
             context,
             mailbox,
-            ceremony_metadata: Arc::new(Mutex::new(ceremony_metadata)),
-            post_allegretto_metadatas,
-            pre_allegretto_metadatas,
-            validators_metadata,
+            db,
             metrics,
             finalized_tip: None,
             gaps: vec![],
@@ -293,17 +269,19 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
+        let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
+
         // Emits an error event on return.
-        if self.post_allegretto_init().await.is_err() {
+        if self.post_allegretto_init(&mut tx).await.is_err() {
             return;
         }
         // Emits an error event on return.
-        if self.pre_allegretto_init().await.is_err() {
+        if self.pre_allegretto_init(&mut tx).await.is_err() {
             return;
         }
 
-        self.register_previous_epoch_state().await;
-        self.register_current_epoch_state().await;
+        self.register_previous_epoch_state(&mut tx).await;
+        self.register_current_epoch_state(&mut tx).await;
 
         let (mux, mut ceremony_mux) = mux::Muxer::new(
             self.context.with_label("ceremony_mux"),
@@ -314,8 +292,12 @@ where
         mux.start();
 
         let mut ceremony = self
-            .start_ceremony_for_current_epoch_state(&mut ceremony_mux)
+            .start_ceremony_for_current_epoch_state(&mut tx, &mut ceremony_mux)
             .await;
+
+        tx.commit()
+            .await
+            .expect("must be able to commit initial DB transaction");
 
         'events: loop {
             if self.pending_gap.is_none() {
@@ -358,7 +340,9 @@ where
                 //
                 // Stop? Restart?
                 if let Some(block) = finalized_block {
-                    ceremony.add_finalized_block(block).await;
+                    let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
+                    ceremony.add_finalized_block(&mut tx, block).await;
+                    tx.commit().await.expect("committing state must work");
                 }
             },
 
@@ -425,19 +409,12 @@ where
                     // In other words: no dealing will ever have to be verified if it is
                     // for another epoch than the currently latest one.
                     super::Command::VerifyDealing(verify_dealing) => {
-                        let outcome = if self
-                            .post_allegretto_metadatas
-                            .current_epoch_state()
-                            .is_some()
-                        {
+                        let tx = DkgReadWriteTransaction::new(self.db.read_write());
+                        let outcome = if tx.has_post_allegretto_state().await {
                             verify_dealing
                                 .dealing
                                 .verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
-                        } else if self
-                            .pre_allegretto_metadatas
-                            .current_epoch_state()
-                            .is_some()
-                        {
+                        } else if tx.has_pre_allegretto_state().await {
                             verify_dealing.dealing.verify_pre_allegretto(&union(
                                 &self.config.namespace,
                                 OUTCOME_NAMESPACE,
@@ -478,7 +455,7 @@ where
         &mut self,
         cause: Span,
         GetIntermediateDealing { epoch, response }: GetIntermediateDealing,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
     ) -> eyre::Result<()>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
@@ -510,7 +487,7 @@ where
     async fn handle_get_outcome<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
         GetOutcome {
             parent,
             round,
@@ -528,7 +505,6 @@ where
             ceremony.epoch(),
             round.epoch(),
         );
-
         match ceremony.finalize(parent.1) {
             Ok(Ok(outcome) | Err(outcome)) => response
                 .send(outcome.to_public_outcome())
@@ -603,7 +579,7 @@ where
         cause: Span,
         block: Block,
         acknowledgement: Exact,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
@@ -626,13 +602,41 @@ where
             return;
         }
 
-        if self.is_running_post_allegretto(&block) {
-            self.handle_finalized_post_allegretto(cause, block, ceremony, ceremony_mux)
+        let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
+
+        // Skip if the block was already processed. Can happen if the node was
+        // shutdown after commiting the changes but before the marshal actor
+        // processed the ack.
+        //
+        // TODO(janis): how does this interact with the tree of dealings in
+        // the ceremony? It's probably fine: on restart, if B was already
+        // committed but not acknowledged, then marshal will send B again.
+        // The tree will detect gaps, all of which will be filled up to and
+        // including B-1. B will not be inserted into the tree. On finalizing
+        // B+1, B will be included into the tree.
+        let block_height = block.height();
+        if let Ok(Some(last_height)) = tx.get_last_processed_height().await
+            && block_height == last_height
+        {
+            info!(
+                block_height,
+                last_height, "skipping already-processed block"
+            );
+            acknowledgement.acknowledge();
+            return;
+        }
+
+        if self.is_running_post_allegretto(&block, &tx).await {
+            self.handle_finalized_post_allegretto(cause, block, ceremony, ceremony_mux, &mut tx)
                 .await;
         } else {
-            self.handle_finalized_pre_allegretto(cause, block, ceremony, ceremony_mux)
+            self.handle_finalized_pre_allegretto(cause, block, ceremony, ceremony_mux, &mut tx)
                 .await;
         }
+        tx.set_last_processed_height(block_height);
+        tx.commit()
+            .await
+            .expect("must be able to commit finalize tx");
         acknowledgement.acknowledge();
     }
 
@@ -650,7 +654,7 @@ where
         &mut self,
         digest: Digest,
         res: eyre::Result<Block>,
-        ceremony: &mut Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &mut Ceremony<TReceiver, TSender>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -715,33 +719,33 @@ where
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
-    #[instrument(
-        skip_all,
-        fields(
-            me = %self.config.me.public_key(),
-            current_epoch = self.current_epoch_state().epoch(),
-        )
-    )]
+    #[instrument(skip_all, fields(me = %self.config.me.public_key(), current_epoch = tracing::field::Empty))]
     async fn start_ceremony_for_current_epoch_state<TReceiver, TSender>(
         &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> Ceremony<ContextCell<TContext>, TReceiver, TSender>
+    ) -> Ceremony<TReceiver, TSender>
     where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        if self.post_allegretto_metadatas.exists() {
-            self.start_post_allegretto_ceremony(mux).await
+        Span::current().record("current_epoch", self.current_epoch_state(tx).await.epoch());
+        if tx.has_post_allegretto_state().await {
+            self.start_post_allegretto_ceremony(tx, mux).await
         } else {
-            self.start_pre_allegretto_ceremony(mux).await
+            self.start_pre_allegretto_ceremony(tx, mux).await
         }
     }
 
     /// Registers the new epoch by reporting to the epoch manager that it should
     /// be entered and registering its peers on the peers manager.
-    #[instrument(skip_all, fields(epoch = self.current_epoch_state().epoch()))]
-    async fn register_current_epoch_state(&mut self) {
-        let epoch_state = self.current_epoch_state();
+    #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
+    async fn register_current_epoch_state(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) {
+        let epoch_state = self.current_epoch_state(tx).await;
+        Span::current().record("epoch", epoch_state.epoch());
 
         if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
             && let boundary_height =
@@ -760,10 +764,10 @@ where
         }
 
         let new_validator_state = match &epoch_state {
-            EpochState::PreModerato(epoch_state) => self
-                .validators_metadata
-                .get(&epoch_state.epoch().saturating_sub(1).into())
-                .cloned()
+            EpochState::PreModerato(epoch_state) => tx
+                .get_validators(epoch_state.epoch().saturating_sub(1))
+                .await
+                .expect("must be able to read validators")
                 .expect(
                     "there must always be a validator state for the previous \
                     epoch state written for pre-allegretto logic; this is \
@@ -772,10 +776,7 @@ where
             EpochState::PostModerato(epoch_state) => epoch_state.validator_state.clone(),
         };
 
-        self.validators_metadata
-            .put_sync(epoch_state.epoch().into(), new_validator_state.clone())
-            .await
-            .expect("must always be able to sync state");
+        tx.set_validators(epoch_state.epoch(), new_validator_state.clone());
 
         self.config
             .epoch_manager
@@ -810,11 +811,13 @@ where
     /// # Panics
     ///
     /// Panics if no current epoch state exists on disk.
-    #[instrument(
-        skip_all,
-        fields(previous_epoch = self.previous_epoch_state().map(|s| s.epoch())))]
-    async fn register_previous_epoch_state(&mut self) {
-        if let Some(epoch_state) = self.previous_epoch_state() {
+    #[instrument(skip_all, fields(previous_epoch = tracing::field::Empty))]
+    async fn register_previous_epoch_state(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) {
+        if let Some(epoch_state) = self.previous_epoch_state(tx).await {
+            Span::current().record("previous_epoch", epoch_state.epoch());
             self.config
                 .epoch_manager
                 .report(
@@ -835,13 +838,15 @@ where
             );
         }
 
-        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(2)
-            && let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
+        let current_epoch = self.current_epoch_state(tx).await.epoch();
+
+        if let Some(epoch) = current_epoch.checked_sub(2)
+            && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
         }
-        if let Some(epoch) = self.current_epoch_state().epoch().checked_sub(1)
-            && let Some(validator_state) = self.validators_metadata.get(&epoch.into()).cloned()
+        if let Some(epoch) = current_epoch.checked_sub(1)
+            && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
         }
@@ -873,29 +878,34 @@ where
     /// are running past the hardfork timestamp: we need to run the ceremony to
     /// its conclusion and then start a new post-allegretto ceremony at the epoch
     /// boundary.
-    fn is_running_post_allegretto(&self, block: &Block) -> bool {
+    async fn is_running_post_allegretto(
+        &mut self,
+        block: &Block,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) -> bool {
         self.config
             .execution_node
             .chain_spec()
             .is_allegretto_active_at_timestamp(block.timestamp())
-            && self.post_allegretto_metadatas.exists()
+            && tx.has_post_allegretto_state().await
     }
 
     /// Returns the previous epoch state.
     ///
     /// Always prefers the post allegretto state, if it exists.
-    fn previous_epoch_state(&self) -> Option<EpochState> {
-        if let Some(epoch_state) = self
-            .post_allegretto_metadatas
-            .previous_epoch_state()
-            .cloned()
+    async fn previous_epoch_state(
+        &mut self,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) -> Option<EpochState> {
+        if let Ok(Some(epoch_state)) = tx.get_previous_epoch::<post_allegretto::EpochState>().await
         {
             Some(EpochState::PostModerato(epoch_state))
+        } else if let Ok(Some(epoch_state)) =
+            tx.get_previous_epoch::<pre_allegretto::EpochState>().await
+        {
+            Some(EpochState::PreModerato(epoch_state))
         } else {
-            self.pre_allegretto_metadatas
-                .previous_epoch_state()
-                .cloned()
-                .map(EpochState::PreModerato)
+            None
         }
     }
 
@@ -907,16 +917,13 @@ where
     ///
     /// Panics if no epoch state exists, neither for the pre- nor post-allegretto
     /// regime. There must always be an epoch state.
-    fn current_epoch_state(&self) -> EpochState {
-        if let Some(epoch_state) = self
-            .post_allegretto_metadatas
-            .current_epoch_state()
-            .cloned()
-        {
+    async fn current_epoch_state(
+        &mut self,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
+    ) -> EpochState {
+        if let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await {
             EpochState::PostModerato(epoch_state)
-        } else if let Some(epoch_state) =
-            self.pre_allegretto_metadatas.current_epoch_state().cloned()
-        {
+        } else if let Ok(Some(epoch_state)) = tx.get_epoch::<pre_allegretto::EpochState>().await {
             EpochState::PreModerato(epoch_state)
         } else {
             panic!("either pre- or post-allegretto current-epoch-state should exist")
@@ -926,7 +933,7 @@ where
     fn find_gaps_in_ceremony<TReceiver, TSender>(
         &mut self,
         height: u64,
-        ceremony: &Ceremony<ContextCell<TContext>, TReceiver, TSender>,
+        ceremony: &Ceremony<TReceiver, TSender>,
     ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
@@ -1009,21 +1016,21 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
 }
 
 #[derive(Clone, Debug)]
-struct DkgOutcome {
+pub struct DkgOutcome {
     /// Whether this outcome is due to a successful or a failed DKG ceremony.
-    dkg_successful: bool,
+    pub dkg_successful: bool,
 
     /// The epoch that this DKG outcome is for (not during which it was running!).
-    epoch: Epoch,
+    pub epoch: Epoch,
 
     /// The participants in the next epoch as determined by the DKG.
-    participants: Ordered<PublicKey>,
+    pub participants: Ordered<PublicKey>,
 
     /// The public polynomial in the next epoch as determined by the DKG.
-    public: Public<MinSig>,
+    pub public: Public<MinSig>,
 
     /// The share of this node in the next epoch as determined by the DKG.
-    share: Option<Share>,
+    pub share: Option<Share>,
 }
 
 impl Write for DkgOutcome {
