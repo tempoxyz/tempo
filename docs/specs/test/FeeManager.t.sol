@@ -19,7 +19,6 @@ contract FeeManagerTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        // Create test tokens
         userToken = TIP20(factory.createToken("UserToken", "USR", "USD", pathUSD, admin));
         validatorToken = TIP20(factory.createToken("ValidatorToken", "VAL", "USD", pathUSD, admin));
         altToken = TIP20(factory.createToken("AltToken", "ALT", "USD", pathUSD, admin));
@@ -43,11 +42,11 @@ contract FeeManagerTest is BaseTest {
         validatorToken.mint(validator, 10_000e18);
         userToken.mint(admin, 100_000e18);
         validatorToken.mint(admin, 100_000e18);
+        validatorToken.mint(address(amm), 100_000e18);
 
         userToken.approve(address(amm), type(uint256).max);
         validatorToken.approve(address(amm), type(uint256).max);
 
-        // Create pools with initial liquidity
         amm.mintWithValidatorToken(address(userToken), address(validatorToken), 20_000e18, admin);
         amm.mintWithValidatorToken(address(userToken), address(pathUSD), 20_000e18, admin);
         amm.mintWithValidatorToken(address(validatorToken), address(pathUSD), 20_000e18, admin);
@@ -105,7 +104,6 @@ contract FeeManagerTest is BaseTest {
         vm.prank(validator);
         vm.coinbase(validator);
 
-        // Create a non-USD token
         TIP20 eurToken = TIP20(factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin));
 
         if (!isTempo) {
@@ -172,6 +170,27 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
+    function test_collectFeePreTx_SameToken_AccumulatesFees() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 maxAmount = 100e18;
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            assertEq(amm.collectedFeesByValidator(validator), maxAmount);
+        } catch (bytes memory err) {
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
+        }
+    }
+
     function test_collectFeePreTx_RevertsIf_NotProtocol() public {
         vm.prank(user);
 
@@ -185,6 +204,26 @@ contract FeeManagerTest is BaseTest {
             }
         } catch {
             // Expected to revert
+        }
+    }
+
+    function test_collectFeePreTx_RevertsIf_InsufficientLiquidity() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(altToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), 100e18) {
+            if (!isTempo) {
+                revert CallShouldHaveReverted();
+            }
+        } catch {
+            // Expected to revert - no pool for userToken -> altToken
         }
     }
 
@@ -210,6 +249,35 @@ contract FeeManagerTest is BaseTest {
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
             assertEq(userToken.balanceOf(user), userBalanceAfterPre + (maxAmount - actualUsed));
+
+            uint256 expectedFees = (actualUsed * 9970) / 10000;
+            assertEq(amm.collectedFeesByValidator(validator), expectedFees);
+        } catch (bytes memory err) {
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
+        }
+    }
+
+    function test_collectFeePostTx_SameToken() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        uint256 maxAmount = 100e18;
+        uint256 actualUsed = 80e18;
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            vm.prank(address(0));
+            vm.coinbase(validator);
+            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+
+            assertEq(amm.collectedFeesByValidator(validator), maxAmount + actualUsed);
         } catch (bytes memory err) {
             bytes4 errorSelector = bytes4(err);
             assertTrue(errorSelector == 0xaa4bc69a);
@@ -232,7 +300,7 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_executeBlock() public {
+    function test_distributeFees() public {
         vm.prank(validator, validator);
         amm.setValidatorToken(address(validatorToken));
 
@@ -240,26 +308,30 @@ contract FeeManagerTest is BaseTest {
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();
 
-        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
         uint256 maxAmount = 100e18;
         uint256 actualUsed = 80e18;
-
-        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
-        (uint128 reservesBefore0, uint128 reservesBefore1) = amm.pools(poolId);
 
         vm.startPrank(address(0));
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
-            amm.executeBlock();
             vm.stopPrank();
 
-            assertGt(validatorToken.balanceOf(validator), validatorBalanceBefore);
+            uint256 expectedFees = (actualUsed * 9970) / 10000;
+            assertEq(amm.collectedFeesByValidator(validator), expectedFees);
 
-            (uint128 reservesAfter0, uint128 reservesAfter1) = amm.pools(poolId);
+            uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
 
-            assertTrue(reservesAfter0 != reservesBefore0 || reservesAfter1 != reservesBefore1);
+            if (!isTempo) {
+                vm.expectEmit(true, true, true, true);
+                emit IFeeManager.FeesDistributed(validator, address(validatorToken), expectedFees);
+            }
+
+            amm.distributeFees(validator);
+
+            assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + expectedFees);
+            assertEq(amm.collectedFeesByValidator(validator), 0);
         } catch (bytes memory err) {
             vm.stopPrank();
             bytes4 errorSelector = bytes4(err);
@@ -267,24 +339,42 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_executeBlock_RevertsIf_NotProtocol() public {
-        vm.prank(user);
+    function test_distributeFees_ZeroBalance() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(validatorToken));
 
-        if (!isTempo) {
-            vm.expectRevert("ONLY_PROTOCOL");
-        }
+        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
 
-        try amm.executeBlock() {
-            if (isTempo) {
-                revert CallShouldHaveReverted();
-            }
-        } catch {
-            // Expected to revert
+        amm.distributeFees(validator);
+
+        assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore);
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+    }
+
+    function test_collectedFeesByValidator() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(userToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        assertEq(amm.collectedFeesByValidator(validator), 0);
+
+        uint256 maxAmount = 100e18;
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            assertEq(amm.collectedFeesByValidator(validator), maxAmount);
+        } catch (bytes memory err) {
+            bytes4 errorSelector = bytes4(err);
+            assertTrue(errorSelector == 0xaa4bc69a);
         }
     }
 
     function test_defaultValidatorTokenIsPathUSD() public {
-        // Validator with no preference should use PATH_USD
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();
@@ -297,53 +387,16 @@ contract FeeManagerTest is BaseTest {
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
+            vm.stopPrank();
 
             uint256 pathUSDBalanceBefore = pathUSD.balanceOf(validator);
-            amm.executeBlock();
-            vm.stopPrank();
+            amm.distributeFees(validator);
 
             assertGt(pathUSD.balanceOf(validator), pathUSDBalanceBefore);
         } catch (bytes memory err) {
             vm.stopPrank();
             bytes4 errorSelector = bytes4(err);
             assertTrue(errorSelector == 0xaa4bc69a);
-        }
-    }
-
-    function test_setValidatorToken_RevertsIf_PendingFees() public {
-        vm.prank(validator, validator);
-        amm.setValidatorToken(address(validatorToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
-        vm.prank(address(0));
-        vm.coinbase(validator);
-
-        try amm.collectFeePreTx(user, address(userToken), 100e18) {
-            vm.prank(address(0));
-            vm.coinbase(validator);
-            amm.collectFeePostTx(user, 100e18, 80e18, address(userToken));
-        } catch (bytes memory err) {
-            bytes4 errorSelector = bytes4(err);
-            assertTrue(errorSelector == 0xaa4bc69a);
-            return;
-        }
-
-        vm.prank(validator, validator);
-        vm.coinbase(validator);
-
-        if (!isTempo) {
-            vm.expectRevert("CANNOT_CHANGE_WITH_PENDING_FEES");
-        }
-
-        try amm.setValidatorToken(address(altToken)) {
-            if (isTempo) {
-                revert CallShouldHaveReverted();
-            }
-        } catch {
-            // Expected to revert
         }
     }
 
