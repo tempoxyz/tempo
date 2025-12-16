@@ -16,12 +16,15 @@ workspace = true
 tempo-eyre.workspace = true
 tempo-node = { workspace = true, features = ["default"] }
 tempo-commonware-node.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-chainspec = { workspace = true, features = ["default"] }
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
+commonware-cryptography.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+rand.workspace = true
 futures = { workspace = true, features = ["executor"] }
 reth-cli-commands.workspace = true
 reth-cli-util.workspace = true

@@ -15,6 +15,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod consensus_cmd;
 mod defaults;
 
 use clap::Parser;
@@ -108,6 +109,10 @@ fn main() -> eyre::Result<()> {
 
     tempo_node::init_version_metadata();
     defaults::init_defaults();
+
+    if let Some(result) = consensus_cmd::try_run_consensus_command() {
+        return result;
+    }
 
     let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
