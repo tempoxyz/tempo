@@ -48,8 +48,6 @@ contract FeeManager is IFeeManager, FeeAMM {
 
         if (userToken != validatorToken) {
             checkSufficientLiquidity(userToken, validatorToken, maxAmount);
-        } else {
-            collectedFees[block.coinbase] += maxAmount;
         }
     }
 
