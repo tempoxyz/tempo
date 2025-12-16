@@ -28,6 +28,7 @@ struct ConsensusCommand {
 enum ConsensusSubcommand {
     /// Generates an ed25519 signing key pair to be used in consensus.
     GenerateSigningKey(GenerateSigningKey),
+    /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
 }
 
