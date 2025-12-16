@@ -8,7 +8,7 @@ use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only}
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
-        providers::{BlockchainProvider, StaticFileProvider},
+        providers::{BlockchainProvider, RocksDBProvider, StaticFileProvider},
     },
     storage::BlockNumReader,
 };
@@ -397,6 +397,9 @@ impl TestingNode {
             database,
             Arc::new(execution_runtime::chainspec()),
             static_file_provider,
+            RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
+                .build()
+                .expect("failed to open rocksdb"),
         )
         .expect("failed to create provider factory");
 
