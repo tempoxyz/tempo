@@ -5,7 +5,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::error::Result;
 use alloy::{
-    eips::eip7702::constants::SECP256K1N_HALF,
+    consensus::crypto::SECP256K1N_HALF,
     primitives::{Address, B512, U256},
 };
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
