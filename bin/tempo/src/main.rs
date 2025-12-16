@@ -15,8 +15,8 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-mod consensus_cmd;
 mod defaults;
+mod tempo_cmd;
 
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
@@ -110,7 +110,7 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    if let Some(result) = consensus_cmd::try_run_tempo_subcommand() {
+    if let Some(result) = tempo_cmd::try_run_tempo_subcommand() {
         return result;
     }
 

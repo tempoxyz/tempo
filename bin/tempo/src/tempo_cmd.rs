@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, error::ErrorKind};
 use commonware_cryptography::{PrivateKeyExt as _, Signer, ed25519::PrivateKey};
 use eyre::Context;
-use rand::SeedableRng as _;
 use tempo_commonware_node_config::SigningKey;
 
 #[derive(Debug, Parser)]
