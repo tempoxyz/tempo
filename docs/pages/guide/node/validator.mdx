@@ -48,7 +48,7 @@ tempo node --datadir <datadir> \
     --consensus.fee-recipient <validator_wallet_address> \
 ```
 
-The notable difference between RPC nodes and validator nodes is the emission of the `--follow` argument and the addition of the `--consensus.signing-key` and `--consensus.fee-recipient` arguments.
+The notable difference between RPC nodes and validator nodes is the omission of the `--follow` argument and the addition of the `--consensus.signing-key` and `--consensus.fee-recipient` arguments.
 
 Once your node is up, it may not start syncing immediately. This is because your node might not be part of the active set. In most cases, your validator will enter the active set in 48-72 hours after the on-chain addition of the validator identity.
 
