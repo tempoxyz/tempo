@@ -236,6 +236,7 @@ test-case = "3"
 secp256k1 = "0.30.0"
 pyroscope = "0.5.8"
 pyroscope_pprofrs = "0.2.10"
+rayon = "1.10"
 
 # build deps
 vergen = "9"
