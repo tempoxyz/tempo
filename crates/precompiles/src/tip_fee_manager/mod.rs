@@ -199,9 +199,6 @@ impl TipFeeManager {
                 // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
                 self.reserve_liquidity(user_token, validator_token, max_amount)?;
             }
-        } else if self.storage.spec().is_allegro_moderato() {
-            // Same token, no swap needed - just accumulate fees
-            self.increment_collected_fees(beneficiary, max_amount)?;
         }
 
         // Return the user's token preference
