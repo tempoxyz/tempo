@@ -585,8 +585,8 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        self.find_gaps_in_ceremony(block.height(), ceremony);
-        if !self.gaps.is_empty() {
+        let gaps = ceremony.find_gaps_up_to_height(block.height());
+        if !gaps.is_empty() {
             debug!(
                 n_gaps = self.gaps.len(),
                 "found finalized block gaps in ceremony; deferring \
@@ -599,6 +599,7 @@ where
                 "new finalized blocks must never be processed if a \
                 deferred one exists",
             );
+            self.gaps = gaps;
             return;
         }
 
@@ -615,13 +616,11 @@ where
         // including B-1. B will not be inserted into the tree. On finalizing
         // B+1, B will be included into the tree.
         let block_height = block.height();
-        if let Ok(Some(last_height)) = tx.get_last_processed_height().await
-            && block_height == last_height
+        if let Ok(Some(last_processed_height)) = tx.get_last_processed_height().await
+            && block_height == last_processed_height
         {
-            info!(
-                block_height,
-                last_height, "skipping already-processed block"
-            );
+            info!(last_processed_height, "skipping already-processed block");
+            ceremony.add_finalized_block(&mut tx, block).await;
             acknowledgement.acknowledge();
             return;
         }
@@ -928,17 +927,6 @@ where
         } else {
             panic!("either pre- or post-allegretto current-epoch-state should exist")
         }
-    }
-
-    fn find_gaps_in_ceremony<TReceiver, TSender>(
-        &mut self,
-        height: u64,
-        ceremony: &Ceremony<TReceiver, TSender>,
-    ) where
-        TReceiver: Receiver<PublicKey = PublicKey>,
-        TSender: Sender<PublicKey = PublicKey>,
-    {
-        self.gaps = ceremony.find_gaps_up_to_height(height);
     }
 }
 
