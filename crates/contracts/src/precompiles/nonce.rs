@@ -1,15 +1,13 @@
 pub use INonce::{INonceErrors as NonceError, INonceEvents as NonceEvent};
 
-use alloy_sol_types::sol;
-
-sol! {
+crate::sol! {
     /// Nonce interface for managing 2D nonces as per the Account Abstraction spec.
     ///
     /// This precompile manages user nonce keys (1-N) while protocol nonces (key 0)
     /// are handled directly by account state. Each account can have multiple
     /// independent nonce sequences identified by a nonce key.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface INonce {
         /// Get the current nonce for a specific account and nonce key
         /// @param account The account address

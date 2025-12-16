@@ -1,9 +1,7 @@
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 
-use alloy_sol_types::sol;
-
-sol! {
+crate::sol! {
     /// FeeManager interface for managing gas fee collection and distribution.
     ///
     /// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares the same storage layout.
@@ -17,7 +15,7 @@ sol! {
     /// - Slots 0-3: TIPFeeAMM storage (pools, pool exists, liquidity data)
     /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IFeeManager {
         // Structs
         struct FeeInfo {
@@ -52,7 +50,9 @@ sol! {
         error CannotChangeWithPendingFees();
         error TokenPolicyForbids();
     }
+}
 
+sol! {
     /// TIPFeeAMM interface defining the base AMM functionality for stablecoin pools.
     /// This interface provides core liquidity pool management and swap operations.
     ///
@@ -60,7 +60,6 @@ sol! {
     /// When FeeManager is deployed, it effectively "is" a TIPFeeAMM with additional fee management
     /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
         // Structs

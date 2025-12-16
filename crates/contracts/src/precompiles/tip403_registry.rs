@@ -1,12 +1,10 @@
-use alloy_sol_types::sol;
-
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
 
-sol! {
-   #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+crate::sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {

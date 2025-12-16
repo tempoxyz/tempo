@@ -1,15 +1,13 @@
-use alloy_sol_types::sol;
-
 pub use IValidatorConfig::IValidatorConfigErrors as ValidatorConfigError;
 
-sol! {
+crate::sol! {
     /// Validator config interface for managing consensus validators.
     ///
     /// This precompile manages the set of validators that participate in consensus.
     /// Validators can update their own information, rotate their identity to a new address,
     /// and the owner can manage validator status.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IValidatorConfig {
         /// Validator information
         struct Validator {

@@ -14,41 +14,51 @@ pub const DEFAULT_7702_DELEGATE_ADDRESS: Address =
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
+macro_rules! sol {
+    ($($input:tt)*) => {
+        #[cfg(feature = "rpc")]
+        alloy_sol_types::sol! {
+            #[sol(rpc)]
+            $($input)*
+        }
+        #[cfg(not(feature = "rpc"))]
+        alloy_sol_types::sol! {
+            $($input)*
+        }
+    };
+}
+
+pub(crate) use sol;
+
 pub mod contracts {
     use alloy_primitives::{B256, Bytes, b256, bytes};
-    use alloy_sol_types::sol;
 
     sol!(
         #[allow(missing_docs)]
-        #[sol(rpc)]
         Multicall,
         "abi/Multicall.json",
     );
 
     sol!(
         #[allow(missing_docs)]
-        #[sol(rpc)]
         CreateX,
         "abi/CreateX.json",
     );
 
     sol!(
         #[allow(missing_docs)]
-        #[sol(rpc)]
         Permit2,
         "abi/Permit2.json"
     );
 
     sol!(
         #[allow(missing_docs)]
-        #[sol(rpc)]
         IthacaAccount,
         "abi/IthacaAccount.json",
     );
 
     sol!(
         #[allow(missing_docs)]
-        #[sol(rpc)]
         SafeDeployer,
         "abi/SafeDeployer.json",
     );

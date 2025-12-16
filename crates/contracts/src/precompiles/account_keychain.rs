@@ -2,9 +2,7 @@ pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
 };
 
-use alloy_sol_types::sol;
-
-sol! {
+crate::sol! {
     /// Account Keychain interface for managing authorized keys
     ///
     /// This precompile allows accounts to authorize secondary keys with:
@@ -15,7 +13,7 @@ sol! {
     /// Only the main account key can authorize/revoke keys, while secondary keys
     /// can be used for regular transactions within their spending limits.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IAccountKeychain {
         enum SignatureType {
             Secp256k1,
