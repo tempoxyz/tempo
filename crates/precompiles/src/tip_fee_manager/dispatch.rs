@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_tip_fee_manager_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
@@ -441,7 +441,10 @@ mod tests {
                 IFeeManagerCalls::SELECTORS,
                 "IFeeManager",
                 IFeeManagerCalls::name_by_selector,
-            );
+            )
+            .into_iter()
+            .filter(|(selector, _)| *selector != IFeeManager::executeBlockCall::SELECTOR)
+            .collect();
 
             let amm_unsupported = check_selector_coverage(
                 &mut fee_manager,
@@ -582,6 +585,29 @@ mod tests {
             // Verify the selector matches what we sent
             let error = decoded_error.unwrap();
             assert_eq!(error.selector.as_slice(), &unknown_selector);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_execute_block_deprecated_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+            let call = IFeeManager::executeBlockCall {};
+            let result = fee_manager.call(&call.abi_encode(), sender);
+            assert!(result.is_ok());
+
+            let output = result.unwrap();
+            assert!(output.reverted);
+            let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes).unwrap();
+
+            assert_eq!(
+                decoded_error.selector.as_slice(),
+                &IFeeManager::executeBlockCall::SELECTOR
+            );
 
             Ok(())
         })

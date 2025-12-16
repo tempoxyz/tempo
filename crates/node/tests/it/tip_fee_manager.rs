@@ -81,13 +81,10 @@ async fn test_set_user_token() -> eyre::Result<()> {
         )
         .send()
         .await?;
-    let tx_hash = *pending_tx.tx_hash();
     let receipt = pending_tx.get_receipt().await?;
     assert!(receipt.status());
 
-    let tx = provider.get_transaction_by_hash(tx_hash).await?.unwrap();
-    let gas_limit = tx.inner.gas_limit();
-    let expected_max_fee = calc_gas_balance_spending(gas_limit, receipt.effective_gas_price);
+    let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
     // Post-AllegroModerato: fees accumulate in collected_fees and require distributeFees() call
     let collected_fees_after = fee_manager
@@ -97,7 +94,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let fees_from_this_tx = collected_fees_after - collected_fees_before;
     assert_eq!(
         fees_from_this_tx,
-        expected_max_fee * U256::from(9970) / U256::from(10000)
+        expected_cost * U256::from(9970) / U256::from(10000)
     );
 
     // Distribute fees to validator (this distributes ALL accumulated fees)

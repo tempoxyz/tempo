@@ -33,6 +33,7 @@ sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
+        /// @dev Deprecated Post-AllegroModerato: This function is kept for backwards compatibility pre-AllegroModerato
         function executeBlock() external;
         function distributeFees(address validator) external;
         function collectedFeesByValidator(address validator) external view returns (uint256);
