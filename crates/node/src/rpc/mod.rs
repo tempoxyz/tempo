@@ -15,7 +15,9 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 use futures::{TryFutureExt, future::Either};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
 use reth_errors::RethError;
-use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
+use reth_primitives_traits::{
+    Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef, uint::SaturatingTo,
+};
 use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -44,6 +46,7 @@ use reth_node_builder::{
 };
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
+use reth_rpc_convert::RpcTxReq;
 use reth_rpc_eth_api::{
     EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
@@ -54,8 +57,8 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
@@ -311,6 +314,92 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadTransaction for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         self.inner.signers()
+    }
+
+    fn fill_transaction(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+    ) -> impl Future<Output = Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall + LoadFee,
+    {
+        async move {
+            let from = match request.as_ref().from() {
+                Some(from) => from,
+                None => return Err(SignError::NoAccount.into_eth_err()),
+            };
+
+            if request.as_ref().value().is_none() {
+                request.as_mut().set_value(U256::ZERO);
+            }
+
+            if request.as_ref().nonce().is_none() {
+                let nonce = if let Some(nonce_key) = request.nonce_key
+                    && !nonce_key.is_zero()
+                {
+                    let slot = NonceManager::new().nonces.at(from).at(nonce_key).slot();
+
+                    self.latest_state()?
+                        .storage(NONCE_PRECOMPILE_ADDRESS, slot)
+                        .map_err(Self::Error::from_eth_err)?
+                        .unwrap_or_default()
+                        .saturating_to::<u64>()
+                } else {
+                    self.next_available_nonce(from).await?
+                };
+
+                request.as_mut().set_nonce(nonce);
+            }
+
+            let chain_id = self.chain_id();
+            request.as_mut().set_chain_id(chain_id.to());
+
+            if request.as_ref().has_eip4844_fields()
+                && request.as_ref().max_fee_per_blob_gas().is_none()
+            {
+                let blob_fee = self.blob_base_fee().await?;
+                request.as_mut().set_max_fee_per_blob_gas(blob_fee.to());
+            }
+
+            if request.as_ref().blob_sidecar().is_some()
+                && request.as_ref().blob_versioned_hashes.is_none()
+            {
+                request.as_mut().populate_blob_hashes();
+            }
+
+            if request.as_ref().gas_limit().is_none() {
+                let estimated_gas = self
+                    .estimate_gas_at(request.clone(), BlockId::pending(), None)
+                    .await?;
+                request.as_mut().set_gas_limit(estimated_gas.to());
+            }
+
+            if request.as_ref().gas_price().is_none() {
+                let tip = if let Some(tip) = request.as_ref().max_priority_fee_per_gas() {
+                    tip
+                } else {
+                    let tip = self.suggested_priority_fee().await?.to::<u128>();
+                    request.as_mut().set_max_priority_fee_per_gas(tip);
+                    tip
+                };
+                if request.as_ref().max_fee_per_gas().is_none() {
+                    let header = self
+                        .provider()
+                        .latest_header()
+                        .map_err(Self::Error::from_eth_err)?;
+                    let base_fee = header
+                        .and_then(|h| h.base_fee_per_gas())
+                        .unwrap_or_default();
+                    request.as_mut().set_max_fee_per_gas(base_fee as u128 + tip);
+                }
+            }
+
+            let tx = self.converter().build_simulate_v1_transaction(request)?;
+
+            let raw = tx.encoded_2718().into();
+
+            Ok(FillTransaction { raw, tx })
+        }
     }
 
     fn send_raw_transaction_sync_timeout(&self) -> std::time::Duration {
