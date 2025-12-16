@@ -74,6 +74,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub share: Option<Share>,
+    pub delete_signing_share: bool,
+
     pub mailbox_size: usize,
     pub deque_size: usize,
 
@@ -103,7 +105,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -244,6 +246,7 @@ where
                 epoch_length,
                 execution_node,
                 initial_share: self.share.clone(),
+                delete_signing_share: self.delete_signing_share,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
@@ -335,7 +338,7 @@ where
     TPeerManager: commonware_p2p::Manager<
             PublicKey = PublicKey,
             Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+        > + Sync,
 {
     #[expect(
         clippy::too_many_arguments,

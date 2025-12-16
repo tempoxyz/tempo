@@ -331,9 +331,9 @@ dependencies = [
 
 [[package]]
 name = "alloy-evm"
-version = "0.25.1"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e7b4fb2418490bca9978e74208215ed5fcb21a10aba7eea487abaa60fd588db"
+checksum = "e6ccc4c702c840148af1ce784cc5c6ed9274a020ef32417c5b1dbeab8c317673"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -2079,9 +2079,9 @@ dependencies = [
 
 [[package]]
 name = "camino"
-version = "1.2.1"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276a59bf2b2c967788139340c9f0c5b12d7fd6630315c15c217e559de85d2609"
+checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
 dependencies = [
  "serde_core",
 ]
@@ -11417,7 +11417,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "clap",
  "commonware-runtime",
@@ -11444,7 +11444,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-contract",
@@ -11474,7 +11474,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bench"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11501,7 +11501,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-eips",
  "alloy-genesis",
@@ -11520,13 +11520,15 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
+ "async-lock",
  "axum",
+ "blake3",
  "bytes",
  "clap",
  "commonware-broadcast",
@@ -11569,7 +11571,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node-config"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -11585,7 +11587,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11601,14 +11603,14 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
 ]
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -11621,7 +11623,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -11663,7 +11665,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11694,7 +11696,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "eyre",
  "indenter",
@@ -11702,7 +11704,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "async-trait",
@@ -11715,7 +11717,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -11733,7 +11735,6 @@ dependencies = [
  "jsonrpsee",
  "p256",
  "rand 0.9.2",
- "reth-chainspec",
  "reth-e2e-test-utils",
  "reth-engine-local",
  "reth-errors",
@@ -11775,7 +11776,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11785,6 +11786,7 @@ dependencies = [
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-consensus-common",
+ "reth-engine-tree",
  "reth-errors",
  "reth-evm",
  "reth-metrics",
@@ -11806,7 +11808,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
@@ -11822,7 +11824,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -11848,7 +11850,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -11858,7 +11860,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11890,7 +11892,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11914,7 +11916,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "clap",
@@ -11937,7 +11939,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "eyre",
  "jiff",
@@ -11946,7 +11948,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11978,7 +11980,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "alloy",
  "alloy-primitives",
