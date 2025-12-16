@@ -4584,8 +4584,8 @@ mod tests {
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
 
-            assert_eq!(exchange.pending_order_id()?, 1);
             assert_eq!(exchange.active_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             Ok(())
         })
@@ -4693,8 +4693,8 @@ mod tests {
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
 
-            assert_eq!(exchange.pending_order_id()?, 1);
             assert_eq!(exchange.active_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             Ok(())
         })
