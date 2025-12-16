@@ -56,6 +56,22 @@ pub struct TempoBatchCallEnv {
     pub signature_hash: B256,
 }
 
+/// Storage slots that a transaction may access.
+///
+/// This is populated during transaction-to-environment conversion and used for
+/// optimization in both validation and payload building.
+#[derive(Debug, Clone, Default)]
+pub struct StorageSlots {
+    /// Storage slot of the 2D nonce (None if tx has no nonce key).
+    pub nonce_key: Option<U256>,
+    /// Storage slot for sender's fee token balance (None if tx has no fee token).
+    pub fee_token_balance: Option<U256>,
+    /// Storage slots for TIP-20 transfer senders' balances (empty if no TIP-20 transfers).
+    pub tip20_from_balances: Vec<U256>,
+    /// Storage slots for TIP-20 transfer recipients' balances (empty if no TIP-20 transfers).
+    pub tip20_to_balances: Vec<U256>,
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -342,22 +358,6 @@ impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
             storage_slots: None,
         }
     }
-}
-
-/// Storage slots that a transaction may access.
-///
-/// This is populated during transaction-to-environment conversion and used for
-/// optimization in both validation and payload building.
-#[derive(Debug, Clone, Default)]
-pub struct StorageSlots {
-    /// Storage slot of the 2D nonce (None if tx has no nonce key).
-    pub nonce_key: Option<U256>,
-    /// Storage slot for sender's fee token balance (None if tx has no fee token).
-    pub fee_token_balance: Option<U256>,
-    /// Storage slots for TIP-20 transfer senders' balances (empty if no TIP-20 transfers).
-    pub tip20_from_balances: Vec<U256>,
-    /// Storage slots for TIP-20 transfer recipients' balances (empty if no TIP-20 transfers).
-    pub tip20_to_balances: Vec<U256>,
 }
 
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
