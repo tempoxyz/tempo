@@ -15,7 +15,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     storage::{self, StorableType},
     tip_fee_manager::TipFeeManager,
-    tip20::{self, TIP20Token, is_tip20_prefix},
+    tip20::{self, ITIP20, TIP20Token, is_tip20_prefix},
     tip403_registry::{self, TIP403Registry},
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -23,6 +23,19 @@ use tempo_primitives::TempoTxEnvelope;
 /// Value of [`tip20::slots::CURRENCY`] when configured currency is USD.
 const USD_CURRENCY_SLOT_VALUE: U256 =
     uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+
+/// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
+/// Only `transfer`, `transferWithMemo`, and `startReward` qualify.
+fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
+    input.first_chunk::<4>().is_some_and(|&s| {
+        matches!(
+            s,
+            ITIP20::transferCall::SELECTOR
+                | ITIP20::transferWithMemoCall::SELECTOR
+                | ITIP20::startRewardCall::SELECTOR
+        )
+    })
+}
 
 /// Helper trait to abstract over different representations of Tempo transactions.
 #[auto_impl::auto_impl(&)]
@@ -131,9 +144,13 @@ pub trait TempoStateAccess<T> {
             return Ok(stored_user_token);
         }
 
-        // If tx.to() is a TIP-20 token, use that token as the fee token
+        // If tx.to() is a TIP-20 token AND the call would transfer fees, use that token as the fee token.
+        // For AA transactions, only apply if fee_payer == tx.origin (caller).
         if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
+            && tx
+                .calls()
+                .all(|(kind, input)| kind.to() == Some(&to) && is_tip20_fee_inference_call(input))
+            && (!tx.is_aa() || fee_payer == tx.caller())
             && self.is_valid_fee_token(to, spec)?
         {
             return Ok(to);
