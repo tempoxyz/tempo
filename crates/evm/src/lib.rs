@@ -260,9 +260,8 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let transactions = (0..payload.block.body().transactions.len())
-            .map(move |i| (block.clone(), i))
-            .collect::<Vec<_>>();
+        let transactions =
+            (0..payload.block.body().transactions.len()).map(move |i| (block.clone(), i));
 
         Ok((transactions, RecoveredInBlock::new))
     }
