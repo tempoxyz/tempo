@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, ops::ControlFlow, time::Duration};
 
 use bytes::Bytes;
 use commonware_codec::{
@@ -185,6 +185,14 @@ where
             return;
         }
 
+        // Check if we should exit if we have already processed the target epoch.
+        if let Ok(Some(last_height)) = tx.get_last_processed_height().await
+            && self.maybe_export_and_shutdown(last_height).await.is_break()
+        {
+            info!("DKG actor exiting on startup for coordinated shutdown");
+            return;
+        }
+
         self.register_previous_epoch_state(&mut tx).await;
         self.register_current_epoch_state(&mut tx).await;
 
@@ -207,8 +215,14 @@ where
             let cause = message.cause;
             match message.command {
                 super::Command::Finalize(finalize) => {
-                    self.handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
-                        .await;
+                    if self
+                        .handle_finalized(cause, finalize, &mut ceremony, &mut ceremony_mux)
+                        .await
+                        .is_break()
+                    {
+                        info!("DKG actor exiting for coordinated shutdown");
+                        return;
+                    }
                 }
                 super::Command::GetIntermediateDealing(get_ceremony_deal) => {
                     let _: Result<_, _> = self
@@ -363,6 +377,7 @@ where
             ceremony.epoch = maybe_ceremony.as_ref().map(|c| c.epoch()),
         ),
     )]
+    /// Returns `ControlFlow::Break` if the actor should exit (for coordinated shutdown).
     async fn handle_finalized<TReceiver, TSender>(
         &mut self,
         cause: Span,
@@ -372,7 +387,8 @@ where
         }: Finalize,
         maybe_ceremony: &mut Option<Ceremony<TReceiver, TSender>>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-    ) where
+    ) -> ControlFlow<()>
+    where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
@@ -388,7 +404,7 @@ where
                 last_height, "skipping already-processed block"
             );
             acknowledgment.acknowledge();
-            return;
+            return ControlFlow::Continue(());
         }
 
         if self.is_running_post_allegretto(&block, &tx).await {
@@ -415,7 +431,19 @@ where
         tx.commit()
             .await
             .expect("must be able to commit finalize tx");
+
+        // Check if we should export and shutdown - if so, exit without acknowledging
+        if self
+            .maybe_export_and_shutdown(block_height)
+            .await
+            .is_break()
+        {
+            info!("exiting actor without acknowledging to allow graceful shutdown");
+            return ControlFlow::Break(());
+        }
+
         acknowledgment.acknowledge();
+        ControlFlow::Continue(())
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
@@ -588,6 +616,67 @@ where
             .chain_spec()
             .is_allegretto_active_at_timestamp(block.timestamp())
             && tx.has_post_allegretto_state().await
+    }
+
+    /// Checks if we should export DKG state and signal shutdown.
+    ///
+    /// Called after each finalized block to check if we've reached the target epoch boundary.
+    /// Returns `ControlFlow::Break` if the actor should exit (without acknowledging).
+    async fn maybe_export_and_shutdown(&self, block_height: u64) -> ControlFlow<()> {
+        tracing::debug!(
+            block_height,
+            exit_after_epoch = ?self.config.exit.args.exit_after_epoch,
+            exit_export_file = ?self.config.exit.args.exit_export_file,
+            "checking if should export and shutdown"
+        );
+
+        if let Some(target_epoch) = self.config.exit.args.exit_after_epoch
+            && let Some(block_epoch) =
+                utils::is_last_block_in_epoch(self.config.epoch_length, block_height)
+            && block_epoch == target_epoch
+        {
+            let tx = DkgReadWriteTransaction::new(self.db.read_write());
+            self.export_and_shutdown(&tx, block_height, target_epoch)
+                .await;
+            return ControlFlow::Break(());
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    /// Exports DKG state to file and signals shutdown.
+    async fn export_and_shutdown(
+        &self,
+        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
+        block_height: u64,
+        epoch: u64,
+    ) {
+        info!(
+            block_height,
+            epoch, "at target epoch boundary; exporting state and signaling shutdown"
+        );
+
+        let export_path = self
+            .config
+            .exit
+            .args
+            .exit_export_file
+            .as_ref()
+            .expect("validated at startup: exit_after_epoch requires exit_export_file");
+
+        match super::export::DkgExport::from_db(tx, block_height).await {
+            Ok(export) => {
+                if let Err(e) = export.write_to_file(export_path) {
+                    error!(?e, "failed to write DKG export file");
+                } else {
+                    info!(?export_path, "exported DKG state; signaling shutdown");
+                }
+            }
+            Err(e) => {
+                error!(?e, "failed to create DKG export");
+            }
+        }
+        self.config.exit.shutdown_token.cancel();
     }
 
     /// Returns the previous epoch state.

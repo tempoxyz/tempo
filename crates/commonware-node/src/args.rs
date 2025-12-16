@@ -136,9 +136,43 @@ pub struct Args {
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: jiff::SignedDuration,
 
+    /// Exit configuration for coordinated shutdown at epoch boundaries.
+    #[command(flatten)]
+    pub exit: ExitArgs,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,
+}
+
+/// Configuration for coordinated node exit at epoch boundaries.
+///
+/// Used for breaking storage migrations where nodes need to export their DKG state,
+/// shut down cleanly, and restart with a new binary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct ExitArgs {
+    /// Exit after processing the last block of this epoch. When set, the node
+    /// will automatically export DKG state and exit with code 0 after the
+    /// specified epoch boundary is finalized and acknowledged.
+    ///
+    /// Requires `--consensus.exit-export-file` to be set.
+    #[arg(long = "consensus.exit-after-epoch", requires = "exit_export_file")]
+    pub exit_after_epoch: Option<u64>,
+
+    /// Path to export DKG state before exiting. Required when `--consensus.exit-after-epoch`
+    /// is set. The exported file contains all necessary state to resume the node
+    /// after a breaking storage migration.
+    #[arg(long = "consensus.exit-export-file")]
+    pub exit_export_file: Option<PathBuf>,
+}
+
+/// Runtime configuration for exit behavior (includes shutdown token).
+#[derive(Clone, Debug)]
+pub struct ExitConfig {
+    /// CLI arguments for exit behavior.
+    pub args: ExitArgs,
+    /// Shutdown token to signal graceful shutdown.
+    pub shutdown_token: tokio_util::sync::CancellationToken,
 }
 
 impl Args {

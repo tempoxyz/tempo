@@ -11,7 +11,10 @@ use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
 use tempo_node::TempoFullNode;
 
+use crate::args::ExitConfig;
+
 pub mod actor;
+pub mod export;
 mod ingress;
 mod migrate;
 pub(super) mod read_write_transaction;
@@ -86,4 +89,7 @@ pub(crate) struct Config<TPeerManager> {
     /// The peer manager on which the dkg actor will register new peers for a
     /// given epoch after reading them from the smart contract.
     pub(crate) peer_manager: TPeerManager,
+
+    /// Exit configuration for coordinated shutdown at epoch boundaries.
+    pub(crate) exit: ExitConfig,
 }

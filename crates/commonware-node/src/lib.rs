@@ -30,12 +30,13 @@ use crate::config::{
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
-pub use args::Args;
+pub use args::{Args, ExitArgs, ExitConfig};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: Args,
     execution_node: TempoFullNode,
+    shutdown_token: tokio_util::sync::CancellationToken,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -135,6 +136,10 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+        exit: ExitConfig {
+            args: config.exit,
+            shutdown_token,
+        },
     }
     .try_init()
     .await

@@ -28,6 +28,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
+    args::ExitConfig,
     config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
     consensus::application,
     dkg,
@@ -88,6 +89,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
+
+    pub exit: ExitConfig,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -253,6 +256,7 @@ where
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
                 peer_manager: self.peer_manager.clone(),
+                exit: self.exit,
             },
         )
         .await

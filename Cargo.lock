@@ -11557,6 +11557,8 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "serde",
+ "serde_json",
  "tempo-chainspec",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
@@ -11566,6 +11568,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -11659,6 +11662,7 @@ dependencies = [
  "tempo-node",
  "tempo-precompiles",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber 0.3.22",
 ]
