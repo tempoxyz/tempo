@@ -1120,7 +1120,6 @@ contract StablecoinExchangeTest is BaseTest {
         // Setup: Create liquidity for swapping
         _placeAskOrder(bob, 1000e18, 100);
         vm.prank(address(0));
-        exchange.executeBlock();
 
         // Create a blacklist policy
         uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
