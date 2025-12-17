@@ -21,8 +21,8 @@ use revm::{
         Gas, InitialAndFloorGas,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata,
-            initcode_cost,
+            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost,
+            get_tokens_in_calldata, initcode_cost,
         },
         interpreter::EthInterpreter,
     },
