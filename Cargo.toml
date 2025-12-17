@@ -111,7 +111,7 @@ tempo-payload-builder = { path = "crates/payload/builder", default-features = fa
 tempo-payload-types = { path = "crates/payload/types", default-features = false }
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
-tempo-primitives = { path = "crates/primitives", default-features = false }
+tempo-primitives = { path = "crates/primitives", default-features = false, features = ["reth"] }
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
