@@ -115,7 +115,7 @@ jobs:
           mkdir snap-rexec
           lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
       - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --to 4500000
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc) --to 4500000
 
   test-success:
     name: test success
