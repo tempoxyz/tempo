@@ -128,22 +128,6 @@ await client.fee.setUserTokenSync({
 
 See [`setUserToken`](/sdk/typescript/viem/fee.setUserToken) for full documentation.
 
-## FAQ
-
-### My wallet is displaying a USD token with a large balance of 4242424242...424242. What is this?
-
-This occurs when `eth_getBalance` is called on Tempo. Since there is no native token, the response returns a placeholder value. See [Handle native token balance checks](#handle-native-token-balance-checks) to fix this.
-
-### What's the equivalent of doing a native balance check on Tempo if there's no native token?
-
-Instead of checking native balance, check the user's fee token balance. First retrieve their fee token preference with `getUserToken`, then check the balance with `getBalance`. See [Handle native token balance checks](#handle-native-token-balance-checks) for implementation details.
-
-### Where can I find static assets for Tempo network and token icons?
-
-We provide a public tokenlist service:
-- **GitHub**: [tempoxyz/tempo-apps/apps/tokenlist](https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist)
-- **Tokenlist JSON**: [tempoxyz.github.io/tempo-apps/42429/tokenlist.json](https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json)
-
 ## Learning Resources
 
 <Card.Container>
