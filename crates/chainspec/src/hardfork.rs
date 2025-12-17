@@ -30,9 +30,9 @@
 //!
 //! The `Adagio` variant is a placeholder representing the pre-hardfork baseline.
 
+use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
 use reth_chainspec::{EthereumHardforks, ForkCondition};
-use reth_ethereum::evm::revm::primitives::hardfork::SpecId;
 
 hardfork!(
     /// Tempo-specific hardforks for network upgrades.

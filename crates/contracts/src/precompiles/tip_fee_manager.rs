@@ -1,9 +1,7 @@
 pub use IFeeManager::{IFeeManagerErrors as FeeManagerError, IFeeManagerEvents as FeeManagerEvent};
 pub use ITIPFeeAMM::{ITIPFeeAMMErrors as TIPFeeAMMError, ITIPFeeAMMEvents as TIPFeeAMMEvent};
 
-use alloy::sol;
-
-sol! {
+crate::sol! {
     /// FeeManager interface for managing gas fee collection and distribution.
     ///
     /// IMPORTANT: FeeManager inherits from TIPFeeAMM and shares the same storage layout.
@@ -17,7 +15,7 @@ sol! {
     /// - Slots 0-3: TIPFeeAMM storage (pools, pool exists, liquidity data)
     /// - Slots 4+: FeeManager-specific storage (validator tokens, user tokens, collected fees, etc.)
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IFeeManager {
         // Structs
         struct FeeInfo {
@@ -33,13 +31,17 @@ sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
+        /// @dev Deprecated Post-AllegroModerato: This function is kept for backwards compatibility pre-AllegroModerato
         function executeBlock() external;
-        // NOTE: collectFeePreTx and collectFeePostTx are protocol-internal functions
-        // called directly by the execution handler, not exposed via the dispatch interface.
+        function distributeFees(address validator) external;
+        function collectedFeesByValidator(address validator) external view returns (uint256);
+        // NOTE: collectFeePreTx is a protocol-internal function called directly by the
+        // execution handler, not exposed via the dispatch interface.
 
         // Events
         event UserTokenSet(address indexed user, address indexed token);
         event ValidatorTokenSet(address indexed validator, address indexed token);
+        event FeesDistributed(address indexed validator, address indexed token, uint256 amount);
 
         // Errors
         error OnlyValidator();
@@ -52,7 +54,9 @@ sol! {
         error CannotChangeWithPendingFees();
         error TokenPolicyForbids();
     }
+}
 
+sol! {
     /// TIPFeeAMM interface defining the base AMM functionality for stablecoin pools.
     /// This interface provides core liquidity pool management and swap operations.
     ///
@@ -60,7 +64,6 @@ sol! {
     /// When FeeManager is deployed, it effectively "is" a TIPFeeAMM with additional fee management
     /// capabilities layered on top. Both contracts operate on the same storage slots.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc)]
     #[allow(clippy::too_many_arguments)]
     interface ITIPFeeAMM {
         // Structs

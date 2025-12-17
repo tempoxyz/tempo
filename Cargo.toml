@@ -111,7 +111,7 @@ tempo-payload-builder = { path = "crates/payload/builder", default-features = fa
 tempo-payload-types = { path = "crates/payload/types", default-features = false }
 tempo-precompiles = { path = "crates/precompiles", default-features = false }
 tempo-precompiles-macros = { path = "crates/precompiles-macros" }
-tempo-primitives = { path = "crates/primitives", default-features = false }
+tempo-primitives = { path = "crates/primitives", default-features = false, features = ["reth"] }
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
@@ -167,14 +167,14 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "64909d3", feat
 revm = { version = "33.1.0", features = ["optional_fee_charge"] }
 
 alloy = { version = "1.1.3", default-features = false }
-alloy-consensus = "1.1.3"
-alloy-contract = "1.1.3"
-alloy-eips = "1.1.3"
+alloy-consensus = { version = "1.1.3", default-features = false }
+alloy-contract = { version = "1.1.3", default-features = false }
+alloy-eips = { version = "1.1.3", default-features = false }
 alloy-evm = "0.25.2"
 alloy-genesis = "1.1.3"
 alloy-hardforks = "0.4.5"
-alloy-network = { version = "1.1.3" }
-alloy-primitives = "1.4.1"
+alloy-network = { version = "1.1.3", default-features = false }
+alloy-primitives = { version = "1.4.1", default-features = false }
 alloy-provider = { version = "1.1.3", default-features = false }
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.1.3"

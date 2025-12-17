@@ -4,13 +4,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod assemble;
-use alloy_consensus::{BlockHeader as _, Transaction, crypto::RecoveryError};
+use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+#[cfg(feature = "engine")]
+mod engine;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
@@ -24,12 +26,8 @@ use alloy_evm::{
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{
-    self, ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, ToTxEnv,
-};
-use reth_primitives_traits::{SealedBlock, SealedHeader, SignedTransaction};
-use tempo_payload_types::TempoExecutionData;
+use reth_evm::{self, ConfigureEvm, EvmEnvFor};
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -38,7 +36,7 @@ use tempo_primitives::{
 use crate::{block::TempoBlockExecutor, evm::TempoEvm};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{TempoTxEnv, evm::TempoContext};
+use tempo_revm::evm::TempoContext;
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -229,78 +227,6 @@ impl ConfigureEvm for TempoEvmConfig {
             validator_set: None,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
-    }
-}
-
-impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.block)
-    }
-
-    fn context_for_payload<'a>(
-        &self,
-        payload: &'a TempoExecutionData,
-    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            validator_set,
-        } = payload;
-        let mut context = self.context_for_block(block)?;
-
-        context.validator_set = validator_set.clone();
-
-        Ok(context)
-    }
-
-    fn tx_iterator_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let block = payload.block.clone();
-        let transactions =
-            (0..payload.block.body().transactions.len()).map(move |i| (block.clone(), i));
-
-        Ok((transactions, RecoveredInBlock::new))
-    }
-}
-
-/// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
-/// block and the transaction index, allowing to prepare a [`TempoTxEnv`] without having to
-/// clone block or transaction.
-#[derive(Clone)]
-struct RecoveredInBlock {
-    block: Arc<SealedBlock<Block>>,
-    index: usize,
-    sender: Address,
-}
-
-impl RecoveredInBlock {
-    fn new((block, index): (Arc<SealedBlock<Block>>, usize)) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
-        Ok(Self {
-            block,
-            index,
-            sender,
-        })
-    }
-}
-
-impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
-    fn tx(&self) -> &TempoTxEnvelope {
-        &self.block.body().transactions[self.index]
-    }
-
-    fn signer(&self) -> &alloy_primitives::Address {
-        &self.sender
-    }
-}
-
-impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
-    fn to_tx_env(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.tx(), *self.signer())
     }
 }
 
