@@ -96,7 +96,7 @@ export default defineConfig({
             link: '/quickstart/predeployed-contracts',
           },
           {
-            text: 'Wallet Support for Tempo',
+            text: 'For Wallet Developers',
             link: '/quickstart/wallet-support',
           }
         ],

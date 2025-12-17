@@ -1,57 +1,174 @@
-Recommendation for wallets
-Handle native token balance checks
-On Tempo, there is no native gas token.
-
-Complication
-Many wallets and apps use eth_getBalance as a check before allowing users to progress in their flows
-
-Recommendation
-Remove this balance check and don’t represent any “native balance” in your user’s UI when interacting on Tempo.
-Replace the native balance check and instead check the balance of the user’s fee token[0, 1]
-Specifying a native token currency symbol
-Complication
-Many wallets display a native token symbol in flow, e.g. presenting how much gas a transaction requires.
-
-Recommendation
-Fees on Tempo are denominated in USD, so we recommend using the currency symbol “USD”.
-Gas token selection
-Fees can be paid in any stablecoin on Tempo.
-
-Complication
-Wallets display gas in a network’s native token today. What should they display as the gas token for transactions on Tempo?
-
-Recommendation
-We recommend integrating with Tempo Transactions to have full control over the fee_token field on the transaction being sent.
-
-If you / the wallet is not using Tempo Transactions or is not setting fee_token on the Tempo transaction, there is a cascading fee token selection algorithm that determines the fee token used based on the user’s preference and the contract being called. 
-
-Details here[2] and a high level overview below:
-User default fee token. You can specify a default fee token at the account level and retrieve its value[0].
-If the user is interacting with a TIP-20 token, the default fee token is that token itself. Example: if you call transfer on AlphaUSD, the default fee token would be AlphaUSD
-Default fallback: PathUSD is the fallback
-
-
-[0] TypeScript SDK function to determine a user’s fee token: https://docs.tempo.xyz/sdk/typescript/viem/fee.getUserToken 
-[1] TypeScript SDK function to get balance of a token: https://docs.tempo.xyz/sdk/typescript/viem/token.getBalance 
-[2] https://docs.tempo.xyz/protocol/fees/spec-fee#fee-token-preferences 
-FAQ
-
-**Frequently Asked Questions**
-
+---
+showOutline: 1
 ---
 
-**Q: My wallet is displaying a USD token with a large balance of 4242424242…424242. What is this?**  
-A: See section → _Handle native token balance checks_
+import * as Card from "../../components/Card.tsx"
+import LucideCoins from '~icons/lucide/coins'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideShieldCheck from '~icons/lucide/shield-check'
+import LucideWallet from '~icons/lucide/wallet'
 
----
+# For Wallet Developers
 
-**Q: What’s the equivalent of doing a native balance check on Tempo if there’s no native token?**  
-A: See section → _Handle native token balance checks_
+Follow this guide to support a polished experience for your users on Tempo. Integrate with [Tempo Transactions](/guide/tempo-transaction) to provide enhanced features like gas sponsorship and more with a few lines of code.
 
----
+:::warning
+Because there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks), wallets accustomed to native token logic should adjust accordingly for their users on Tempo.
+:::
 
-**Q: Where can I find static assets for Tempo network and token icons?**  
-A: We have a public tokenlist service that you can pull assets from:
-- **GitHub**: [https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist](https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist)
-- **Tokenlist JSON**: [https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json](https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json)
+## Steps
 
+::::steps
+
+### Handle native token balance checks
+
+If you use `eth_getBalance` to validate a user's balance, you should instead check the user's account fee token balance on Tempo. Additionally, you should not display any "native balance" in your UI for Tempo users.
+
+:::info
+In testnet, `eth_getBalance` [returns a large placeholder value](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) for the native token balance to unblock existing assumptions wallets have about the native token balance.
+:::
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const userFeeToken = await client.fee.getUserToken({ 
+  account: '0x...' 
+})
+
+const balance = await client.token.getBalance({ 
+  account: '0x...',
+  token: userFeeToken.address 
+})
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+:::
+
+### Configure native currency symbol
+
+If you need to display a native token symbol, such as showing how much gas a transaction requires, you should set the currency symbol to `USD` for Tempo as fees are denominated in USD.
+
+### Dealing with fee token selection
+
+On Tempo, users can pay fees in any supported stablecoin. You should quote gas/fee prices in your UI based on a transaction's fee token.
+
+:::info
+As a wallet developer, you can set the fee token for your user at the account level.
+
+If you don't, Tempo uses a cascading fee token selection algorithm to determine the fee token for a transaction – learn more about [Fee Token Preferences](/protocol/fees/spec-fee#fee-token-preferences).
+:::
+
+### Display token and network assets
+
+Tempo provides a public tokenlist service that hosts token and network assets. You can pull these assets from our public tokenlist service to display in your UI.
+
+- **GitHub**: [tempoxyz/tempo-apps/apps/tokenlist](https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist)
+- **Tokenlist JSON**: [tempoxyz.github.io/tempo-apps/42429/tokenlist.json](https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json)
+
+### Integrate Tempo Transactions
+
+We strongly recommend using [Tempo Transactions](/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](/guide/tempo-transaction#integration-guides) available that should get you integrated in less than an hour!
+
+:::tip
+With Tempo Transactions, you can:
+- Set the fee token for a transaction
+- Sponsor user fees to enable feeless transaction experiences
+- Batch multiple transactions together for higher throughput
+- Execute transactions in parallel using independent nonces
+- Schedule transactions to execute within a specific time window
+:::
+::::
+
+## Recipes
+
+### Get user's fee token
+
+Retrieve the user's configured fee token preference:
+
+```ts
+import { getUserToken } from 'tempo.ts/viem'
+
+const feeToken = await client.fee.getUserToken({ 
+  account: userAddress 
+})
+```
+
+See [`getUserToken`](/sdk/typescript/viem/fee.getUserToken) for full documentation.
+
+### Get token balance
+
+Check a user's balance for a specific token:
+
+```ts
+import { getBalance } from 'tempo.ts/viem'
+
+const balance = await client.token.getBalance({ 
+  account: userAddress,
+  token: tokenAddress 
+})
+```
+
+See [`getBalance`](/sdk/typescript/viem/token.getBalance) for full documentation.
+
+### Set user fee token
+
+Set the user's default fee token preference. This will be used for all transactions unless a different fee token is specified at the transaction level. 
+
+```ts
+import { setUserToken } from 'tempo.ts/viem'
+
+await client.fee.setUserTokenSync({ 
+  token: '0x20c0000000000000000000000000000000000001', 
+})
+```
+
+See [`setUserToken`](/sdk/typescript/viem/fee.setUserToken) for full documentation.
+
+## FAQ
+
+### My wallet is displaying a USD token with a large balance of 4242424242...424242. What is this?
+
+This occurs when `eth_getBalance` is called on Tempo. Since there is no native token, the response returns a placeholder value. See [Handle native token balance checks](#handle-native-token-balance-checks) to fix this.
+
+### What's the equivalent of doing a native balance check on Tempo if there's no native token?
+
+Instead of checking native balance, check the user's fee token balance. First retrieve their fee token preference with `getUserToken`, then check the balance with `getBalance`. See [Handle native token balance checks](#handle-native-token-balance-checks) for implementation details.
+
+### Where can I find static assets for Tempo network and token icons?
+
+We provide a public tokenlist service:
+- **GitHub**: [tempoxyz/tempo-apps/apps/tokenlist](https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist)
+- **Tokenlist JSON**: [tempoxyz.github.io/tempo-apps/42429/tokenlist.json](https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json)
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Learn how fee token preferences work in the protocol"
+    href="/protocol/fees/spec-fee#fee-token-preferences"
+    icon={LucideFileText}
+    title="Fee Token Preferences"
+  />
+  <Card.Link
+    description="Integrate Tempo Transactions for full control over transaction parameters"
+    href="/guide/tempo-transaction"
+    icon={LucideCoins}
+    title="Tempo Transactions"
+  />
+  <Card.Link
+    description="Sponsor user fees to enable feeless transaction experiences in your application"
+    href="/guide/payments/sponsor-user-fees"
+    icon={LucideShieldCheck}
+    title="Sponsor User Fees"
+  />
+  <Card.Link
+    description="Pay fees in any supported stablecoin"
+    href="/guide/payments/pay-fees-in-any-stablecoin"
+    icon={LucideWallet}
+    title="Pay Fees in Any Stablecoin"
+  />
+</Card.Container>
