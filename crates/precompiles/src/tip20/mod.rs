@@ -2696,19 +2696,30 @@ pub(crate) mod tests {
     fn test_transfer_invalid_recipient_pre_allegro_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let admin = Address::random();
+        let bob = Address::random();
         let amount = U256::from(1000);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                .with_mint(admin, amount)
+                .with_mint(admin, amount + amount)
+                .with_approval(admin, bob, amount)
                 .apply()?;
 
             token.transfer(
                 admin,
                 ITIP20::transferCall {
                     to: Address::ZERO,
-                    amount,
+                    amount: amount,
+                },
+            )?;
+
+            token.transfer_from(
+                bob,
+                ITIP20::transferFromCall {
+                    from: admin,
+                    to: Address::ZERO,
+                    amount: amount,
                 },
             )?;
 
@@ -2720,12 +2731,14 @@ pub(crate) mod tests {
     fn test_transfer_invalid_recipient_post_allegro_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let admin = Address::random();
+        let bob = Address::random();
         let amount = U256::from(1000);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
                 .with_mint(admin, amount)
+                .with_approval(admin, bob, amount)
                 .apply()?;
 
             let result = token.transfer(
@@ -2735,8 +2748,18 @@ pub(crate) mod tests {
                     amount,
                 },
             );
-
             assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
+
+            let result = token.transfer_from(
+                bob,
+                ITIP20::transferFromCall {
+                    from: admin,
+                    to: Address::ZERO,
+                    amount,
+                },
+            );
+            assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
+
             Ok(())
         })
     }
