@@ -158,7 +158,14 @@ impl StablecoinExchange {
     }
 
     /// Add to user's balance
+    ///
+    /// Post AllegroModerato: checks that the user is authorized per the token's transfer policy
+    /// before crediting their internal balance.
     fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
+        if self.storage.spec().is_allegro_moderato() {
+            TIP20Token::from_address(token)?.ensure_transfer_authorized(user, self.address)?;
+        }
+
         let current = self.balance_of(user, token)?;
         self.set_balance(
             user,
@@ -4699,6 +4706,126 @@ mod tests {
 
             assert_eq!(exchange.active_order_id()?, 1);
             assert_eq!(exchange.next_order_id()?, 2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_blacklisted_maker_cannot_receive_tokens_on_order_fill() -> eyre::Result<()> {
+        use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
+
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random(); // maker who will be blacklisted
+            let bob = Address::random(); // taker
+            let admin = Address::random();
+
+            // Create a blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Setup quote token (PathUSD) with the blacklist policy
+            let mut quote = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_role(bob, *TRANSFER_ROLE)
+                .apply()?;
+
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Setup base token with the blacklist policy
+            let mut base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_address = base.address();
+            let quote_address = quote.address();
+
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base_address)?;
+
+            // Setup tokens for alice (maker) - give her quote tokens to place a bid order
+            let tick = 100i16;
+            let amount = MIN_ORDER_AMOUNT;
+            let price = orderbook::tick_to_price(tick);
+            let quote_needed = (amount * price as u128).div_ceil(orderbook::PRICE_SCALE as u128);
+
+            TIP20Setup::config(quote_address)
+                .with_mint(alice, U256::from(quote_needed))
+                .with_approval(alice, exchange.address, U256::from(quote_needed))
+                .apply()?;
+
+            // Alice places a bid order (wants to buy base with quote)
+            let order_id = exchange.place(alice, base_address, amount, true, tick)?;
+            exchange.execute_block(Address::ZERO)?;
+
+            // Verify order is active
+            let order = exchange.get_order(order_id)?;
+            assert_eq!(order.maker(), alice);
+
+            // Now blacklist alice AFTER she placed the order
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: policy_id,
+                user: alice,
+            })?);
+
+            // Setup bob (taker) with base tokens to fill alice's bid order
+            TIP20Setup::config(base_address)
+                .with_mint(bob, U256::from(amount))
+                .with_approval(bob, exchange.address, U256::from(amount))
+                .apply()?;
+
+            // Bob swaps base for quote - this should FAIL because it would credit
+            // base tokens to alice's internal balance, and alice is blacklisted
+            let result = exchange.swap_exact_amount_in(bob, base_address, quote_address, amount, 0);
+
+            assert!(
+                result.is_err(),
+                "Swap should fail because it would credit tokens to blacklisted maker"
+            );
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                ),
+                "Expected PolicyForbids error, got: {err:?}"
+            );
+
+            // Verify alice did not receive any base tokens in her internal balance
+            assert_eq!(
+                exchange.balance_of(alice, base_address)?,
+                0,
+                "Blacklisted alice should not have received any tokens"
+            );
 
             Ok(())
         })
