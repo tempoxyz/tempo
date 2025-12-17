@@ -403,7 +403,7 @@ Both checks must return `true`, otherwise the call reverts with `PolicyForbids`.
 Reward operations (`startReward`, `setRewardRecipient`, `claimRewards`) also perform the same TIP-403 authorization checks before moving any funds.
 
 ## Invalid Recipient Protection
-TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The implementation uses a `notTokenAddress` guard that rejects recipients whose address has the TIP-20 prefix (`0x20c000000000000000000000`).
+TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The implementation uses a `validRecipient` guard that rejects recipients whose address is zero, or has the TIP-20 prefix (`0x20c000000000000000000000`).
 Any attempt to transfer to a TIP-20 token address must revert with `InvalidRecipient`. This prevents accidental token loss by sending funds to token contracts instead of user accounts.
 
 ## Currencies and Quote Tokens
