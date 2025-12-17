@@ -155,7 +155,7 @@ Transfers `amount` of `token` from the caller’s internal balance to the caller
 function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
 ```
 
-Queues a limit order against the pair of `token` and its quote. Escrows funds: bids escrow quote at tick price; asks escrow base.
+Places a limit order against the pair of `token` and its quote, immediately adding it to the active book. Escrows funds: bids escrow quote at tick price; asks escrow base.
 
 Notes:
 
