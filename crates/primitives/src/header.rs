@@ -138,7 +138,7 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoHeader {
     fn size(&self) -> usize {
         let Self {
@@ -160,10 +160,10 @@ impl Sealable for TempoHeader {
     }
 }
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::header::HeaderMut for TempoHeader {
     fn set_parent_hash(&mut self, hash: B256) {
         self.inner.set_parent_hash(hash);

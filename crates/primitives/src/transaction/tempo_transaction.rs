@@ -755,7 +755,7 @@ impl Decodable for TempoTransaction {
     }
 }
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)

@@ -51,8 +51,8 @@ serde_json.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-default = ["reth-compat", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
-reth-compat = [
+default = ["reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+reth = [
 	"dep:reth-ethereum-primitives",
 	"dep:reth-primitives-traits",
 ]
@@ -70,7 +70,7 @@ serde = [
 	"tracing-subscriber/serde"
 ]
 reth-codec = [
-	"reth-compat",
+	"reth",
 	"serde",
 	"dep:reth-codecs",
 	"dep:reth-db-api",
@@ -101,7 +101,7 @@ arbitrary = [
 	"reth-db-api?/arbitrary",
 ]
 rpc = [
-	"reth-compat",
+	"reth",
 	"reth-ethereum-primitives/rpc",
 	"dep:alloy-rpc-types-eth",
 	"dep:reth-rpc-convert",

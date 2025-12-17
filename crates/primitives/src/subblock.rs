@@ -152,7 +152,7 @@ impl SignedSubBlock {
     /// Attempts to recover the senders and convert the subblock into a [`RecoveredSubBlock`].
     ///
     /// Note that the validator is assumed to be pre-validated to match the submitted signature.
-    #[cfg(feature = "reth-compat")]
+    #[cfg(feature = "reth")]
     pub fn try_into_recovered(
         self,
         validator: B256,

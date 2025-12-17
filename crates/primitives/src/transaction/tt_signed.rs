@@ -302,8 +302,8 @@ impl PartialEq for AASigned {
 
 impl Eq for AASigned {}
 
-#[cfg(feature = "reth-compat")]
-impl InMemorySize for AASigned {
+#[cfg(feature = "reth")]
+impl reth_primitives_traits::InMemorySize for AASigned {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
             + self.tx.size()

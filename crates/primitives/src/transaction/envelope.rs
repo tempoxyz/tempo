@@ -283,7 +283,7 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
     }
 }
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
         match self {
@@ -310,10 +310,10 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
     }
 }
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
-#[cfg(feature = "reth-compat")]
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
@@ -481,7 +481,7 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
     }
 }
 
-#[cfg(all(feature = "serde-bincode-compat", feature = "reth-compat"))]
+#[cfg(all(feature = "serde-bincode-compat", feature = "reth"))]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
 
 #[cfg(feature = "reth-codec")]
