@@ -11504,13 +11504,13 @@ name = "tempo-chainspec"
 version = "0.7.5"
 dependencies = [
  "alloy-eips",
+ "alloy-evm",
  "alloy-genesis",
  "alloy-hardforks",
  "alloy-primitives",
  "eyre",
  "reth-chainspec",
  "reth-cli",
- "reth-ethereum",
  "reth-network-peers",
  "serde",
  "serde_json",
@@ -11607,7 +11607,9 @@ dependencies = [
 name = "tempo-contracts"
 version = "0.7.5"
 dependencies = [
- "alloy",
+ "alloy-contract",
+ "alloy-primitives",
+ "alloy-sol-types",
 ]
 
 [[package]]

@@ -457,6 +457,7 @@ impl Decodable for TxFeeToken {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TxFeeToken {
     fn size(&self) -> usize {
         Self::size(self)
