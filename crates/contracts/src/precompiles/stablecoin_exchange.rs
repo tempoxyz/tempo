@@ -3,9 +3,7 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 
-use alloy::sol;
-
-sol! {
+crate::sol! {
     /// StablecoinExchange interface for managing orderbook based trading of stablecoins.
     ///
     /// The StablecoinExchange provides a limit orderbook system where users can:
@@ -17,7 +15,7 @@ sol! {
     /// The exchange operates on pairs between base tokens and their designated quote tokens,
     /// using a tick-based pricing system for precise order matching.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IStablecoinExchange {
         // Structs
         struct Order {
