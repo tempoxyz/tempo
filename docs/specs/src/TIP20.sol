@@ -207,10 +207,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     modifier validRecipient(address to) {
         // Don't allow sending to the zero address not other precompiled tokens.
-        if (
-            to == address(0)
-                || (uint160(to) >> 64) == 0x20c000000000000000000000
-        ) revert InvalidRecipient();
+        if (to == address(0) || (uint160(to) >> 64) == 0x20c000000000000000000000) {
+            revert InvalidRecipient();
+        }
         _;
     }
 

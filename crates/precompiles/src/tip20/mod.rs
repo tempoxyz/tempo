@@ -2710,7 +2710,7 @@ pub(crate) mod tests {
                 admin,
                 ITIP20::transferCall {
                     to: Address::ZERO,
-                    amount: amount,
+                    amount,
                 },
             )?;
 
@@ -2719,7 +2719,7 @@ pub(crate) mod tests {
                 ITIP20::transferFromCall {
                     from: admin,
                     to: Address::ZERO,
-                    amount: amount,
+                    amount,
                 },
             )?;
 
