@@ -3,7 +3,10 @@ use revm::state::{AccountInfo, Bytecode};
 use std::collections::HashMap;
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    error::TempoPrecompileError,
+    storage::{PrecompileStorageProvider, thread_local::get_tx_origin},
+};
 
 pub struct HashMapStorageProvider {
     internals: HashMap<(Address, U256), U256>,
@@ -141,6 +144,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn is_static(&self) -> bool {
         self.is_static
+    }
+
+    fn tx_origin(&self) -> Address {
+        get_tx_origin()
     }
 }
 

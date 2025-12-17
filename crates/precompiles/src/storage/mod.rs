@@ -2,7 +2,7 @@ pub mod evm;
 pub mod hashmap;
 
 pub mod thread_local;
-pub use thread_local::StorageCtx;
+pub use thread_local::{StorageCtx, set_tx_origin};
 
 mod types;
 pub use types::*;
@@ -80,6 +80,12 @@ pub trait PrecompileStorageProvider {
 
     /// Returns whether the current call context is static.
     fn is_static(&self) -> bool;
+
+    /// Returns the transaction origin (tx.origin) for the current transaction.
+    ///
+    /// This is set by the handler before transaction execution and can be used
+    /// by precompiles to determine the original signer of the transaction.
+    fn tx_origin(&self) -> Address;
 }
 
 /// Storage operations for a given (contract) address.

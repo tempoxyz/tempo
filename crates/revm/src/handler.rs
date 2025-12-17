@@ -36,6 +36,7 @@ use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
     error::TempoPrecompileError,
     nonce::{INonce::getNonceCall, NonceManager},
+    set_tx_origin,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
@@ -519,6 +520,10 @@ where
         evm: &mut Self::Evm,
     ) -> Result<(), Self::Error> {
         let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
+
+        // Set tx.origin for precompiles to access during transaction execution.
+        // This is used by the keychain to enforce spending limits.
+        set_tx_origin(tx.caller());
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;

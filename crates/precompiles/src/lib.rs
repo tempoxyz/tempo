@@ -61,6 +61,9 @@ pub use tempo_contracts::precompiles::{
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
 pub use account_keychain::AuthorizedKey;
 
+// Re-export tx_origin setter for use by the handler
+pub use storage::set_tx_origin;
+
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
 /// Being careful and pricing it twice as COPY_COST to mitigate different abi decodings.
