@@ -21,7 +21,8 @@ use revm::{
         Gas, InitialAndFloorGas,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-            CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
+            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost, get_tokens_in_calldata,
+            initcode_cost,
         },
         interpreter::EthInterpreter,
     },
@@ -59,8 +60,8 @@ const P256_VERIFY_GAS: u64 = 5_000;
 /// Gas cost for ecrecover signature verification (used by KeyAuthorization)
 const ECRECOVER_GAS: u64 = 3_000;
 
-/// Additional gas for Keychain signatures (key validation overhead: 2,100 SLOAD + 900 processing)
-const KEYCHAIN_VALIDATION_GAS: u64 = 3_000;
+/// Additional gas for Keychain signatures (key validation overhead: COLD_SLOAD_COST + 900 processing)
+const KEYCHAIN_VALIDATION_GAS: u64 = COLD_SLOAD_COST + 900;
 
 /// Base gas for KeyAuthorization (22k storage + 5k buffer), signature gas added at runtime
 const KEY_AUTH_BASE_GAS: u64 = 27_000;
