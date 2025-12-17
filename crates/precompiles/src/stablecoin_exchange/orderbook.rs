@@ -225,8 +225,8 @@ impl OrderbookHandler {
 
     /// Find next initialized ask tick higher than current tick.
     ///
-    /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
-    /// bit manipulation to find set bits, minimizing storage reads.
+    /// Post-allegro_moderato: Uses efficient bitmap word traversal with bit manipulation.
+    /// Pre-allegro_moderato: Uses linear search for gas consistency with historical blocks.
     fn next_initialized_ask_tick(&self, tick: i16) -> (i16, bool) {
         if StorageCtx.spec().is_allegretto() && tick >= MAX_TICK {
             return (MAX_TICK, false);
@@ -237,6 +237,18 @@ impl OrderbookHandler {
             return (next_tick, false);
         }
 
+        // Pre-allegro_moderato: use legacy linear search for gas consistency
+        if !StorageCtx.spec().is_allegro_moderato() {
+            while next_tick <= MAX_TICK {
+                if self.is_tick_initialized(next_tick, false).unwrap_or(false) {
+                    return (next_tick, true);
+                }
+                next_tick += 1;
+            }
+            return (next_tick, false);
+        }
+
+        // Post-allegro_moderato: efficient bitmap word traversal
         let max_word_index = MAX_TICK >> 8;
 
         loop {
@@ -281,8 +293,8 @@ impl OrderbookHandler {
 
     /// Find next initialized bid tick lower than current tick.
     ///
-    /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
-    /// bit manipulation to find set bits, minimizing storage reads.
+    /// Post-allegro_moderato: Uses efficient bitmap word traversal with bit manipulation.
+    /// Pre-allegro_moderato: Uses linear search for gas consistency with historical blocks.
     fn next_initialized_bid_tick(&self, tick: i16) -> (i16, bool) {
         if StorageCtx.spec().is_allegretto() && tick <= MIN_TICK {
             return (MIN_TICK, false);
@@ -293,6 +305,18 @@ impl OrderbookHandler {
             return (next_tick, false);
         }
 
+        // Pre-allegro_moderato: use legacy linear search for gas consistency
+        if !StorageCtx.spec().is_allegro_moderato() {
+            while next_tick >= MIN_TICK {
+                if self.is_tick_initialized(next_tick, true).unwrap_or(false) {
+                    return (next_tick, true);
+                }
+                next_tick -= 1;
+            }
+            return (next_tick, false);
+        }
+
+        // Post-allegro_moderato: efficient bitmap word traversal
         let min_word_index = MIN_TICK >> 8;
 
         loop {
