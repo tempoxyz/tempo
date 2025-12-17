@@ -4,9 +4,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg), allow(unexpected_cfgs))]
 
 pub use alloy_consensus::Header;
-use alloy_primitives::Log;
-use reth_ethereum_primitives::EthereumReceipt;
-use reth_primitives_traits::NodePrimitives;
 
 pub mod transaction;
 pub use transaction::{
@@ -24,6 +21,13 @@ pub use subblock::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
 };
 
+#[cfg(feature = "reth")]
+use alloy_primitives::Log;
+#[cfg(feature = "reth")]
+use reth_ethereum_primitives::EthereumReceipt;
+#[cfg(feature = "reth")]
+use reth_primitives_traits::NodePrimitives;
+
 /// Tempo block.
 pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 
@@ -31,6 +35,7 @@ pub type Block = alloy_consensus::Block<TempoTxEnvelope, TempoHeader>;
 pub type BlockBody = alloy_consensus::BlockBody<TempoTxEnvelope, TempoHeader>;
 
 /// Tempo receipt.
+#[cfg(feature = "reth")]
 pub type TempoReceipt<L = Log> = EthereumReceipt<TempoTxType, L>;
 
 /// A [`NodePrimitives`] implementation for Tempo.
@@ -38,6 +43,7 @@ pub type TempoReceipt<L = Log> = EthereumReceipt<TempoTxType, L>;
 #[non_exhaustive]
 pub struct TempoPrimitives;
 
+#[cfg(feature = "reth")]
 impl NodePrimitives for TempoPrimitives {
     type Block = Block;
     type BlockHeader = TempoHeader;

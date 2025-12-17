@@ -2616,6 +2616,10 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+    use tempo_primitives::transaction::tempo_transaction::Call;
+
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2627,35 +2631,43 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 
     let recipient = Address::random();
 
-    // Create a simple AA transaction request for gas estimation (based on issue #516 format)
-    // Note: We provide maxFeePerGas and maxPriorityFeePerGas but NOT gas - gas is what we're estimating!
-    let tx_request = serde_json::json!({
-        "from": signer_addr.to_string(),
-        "calls": [{
-            "to": recipient.to_string(),
-            "value": "0x0",
-            "input": "0x"
+    // Helper to create a base transaction request
+    let base_tx_request = || TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
         }],
-    });
+        ..Default::default()
+    };
 
     // Test 1: Estimate gas WITHOUT keyType (baseline - uses secp256k1)
     println!("Test 1: Estimating gas WITHOUT keyType (baseline)");
     let baseline_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request.clone()])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&base_tx_request())?],
+        )
         .await?;
     let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
     println!("  Baseline gas: {baseline_gas_u64}");
 
     // Test 2: Estimate gas WITH keyType="p256"
     println!("\nTest 2: Estimating gas WITH keyType='p256'");
-    let mut tx_request_p256 = tx_request.clone();
-    tx_request_p256
-        .as_object_mut()
-        .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("p256"));
+    let tx_request_p256 = TempoTransactionRequest {
+        key_type: Some(SignatureType::P256),
+        ..base_tx_request()
+    };
 
     let p256_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request_p256])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_request_p256)?],
+        )
         .await?;
     let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
     println!("  P256 gas: {p256_gas_u64}");
@@ -2673,21 +2685,20 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     // Specify WebAuthn data size (excluding 128 bytes for public keys)
     // Encoded as hex: 116 = 0x74 (1 byte) or 0x0074 (2 bytes)
     let webauthn_size = 116u16;
-    let key_data_hex = format!("0x{webauthn_size:04x}"); // 2-byte encoding: "0x0074"
-    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data_hex})",);
+    let key_data = Bytes::from(webauthn_size.to_be_bytes().to_vec());
+    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data})",);
 
-    let mut tx_request_webauthn = tx_request.clone();
-    tx_request_webauthn
-        .as_object_mut()
-        .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("webAuthn"));
-    tx_request_webauthn
-        .as_object_mut()
-        .unwrap()
-        .insert("keyData".to_string(), serde_json::json!(key_data_hex));
+    let tx_request_webauthn = TempoTransactionRequest {
+        key_type: Some(SignatureType::WebAuthn),
+        key_data: Some(key_data),
+        ..base_tx_request()
+    };
 
     let webauthn_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request_webauthn])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_request_webauthn)?],
+        )
         .await?;
     let webauthn_gas_u64 = u64::from_str_radix(webauthn_gas.trim_start_matches("0x"), 16)?;
     println!("  WebAuthn gas: {webauthn_gas_u64}");
@@ -2703,6 +2714,10 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+    use tempo_primitives::transaction::tempo_transaction::Call;
+
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2714,34 +2729,43 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
 
     let recipient = Address::random();
 
-    // Baseline transaction request (secp256k1, no keychain)
-    let tx_request = serde_json::json!({
-        "from": signer_addr.to_string(),
-        "calls": [{
-            "to": recipient.to_string(),
-            "value": "0x0",
-            "input": "0x"
+    // Helper to create a base transaction request
+    let base_tx_request = || TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
         }],
-    });
+        ..Default::default()
+    };
 
     // Test 1: Baseline gas (secp256k1, primitive signature)
     println!("Test 1: Baseline gas (secp256k1, primitive signature)");
     let baseline_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request.clone()])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&base_tx_request())?],
+        )
         .await?;
     let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
     println!("  Baseline gas: {baseline_gas_u64}");
 
     // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
     println!("\nTest 2: Keychain signature (secp256k1 inner)");
-    let mut tx_keychain = tx_request.clone();
-    tx_keychain
-        .as_object_mut()
-        .unwrap()
-        .insert("isKeychain".to_string(), serde_json::json!(true));
+    let tx_keychain = TempoTransactionRequest {
+        is_keychain: true,
+        ..base_tx_request()
+    };
 
     let keychain_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_keychain])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_keychain)?],
+        )
         .await?;
     let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain gas: {keychain_gas_u64}");
@@ -2755,18 +2779,17 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
 
     // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 = 8,000 gas
     println!("\nTest 3: Keychain signature (P256 inner)");
-    let mut tx_keychain_p256 = tx_request.clone();
-    tx_keychain_p256
-        .as_object_mut()
-        .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("p256"));
-    tx_keychain_p256
-        .as_object_mut()
-        .unwrap()
-        .insert("isKeychain".to_string(), serde_json::json!(true));
+    let tx_keychain_p256 = TempoTransactionRequest {
+        key_type: Some(SignatureType::P256),
+        is_keychain: true,
+        ..base_tx_request()
+    };
 
     let keychain_p256_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_keychain_p256])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_keychain_p256)?],
+        )
         .await?;
     let keychain_p256_gas_u64 =
         u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
@@ -2783,14 +2806,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
     let key_auth_secp = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
-    let mut tx_key_auth = tx_request.clone();
-    tx_key_auth.as_object_mut().unwrap().insert(
-        "keyAuthorization".to_string(),
-        serde_json::to_value(&key_auth_secp)?,
-    );
+    let tx_key_auth = TempoTransactionRequest {
+        key_authorization: Some(key_auth_secp),
+        ..base_tx_request()
+    };
 
     let key_auth_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_key_auth])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth)?],
+        )
         .await?;
     let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth gas: {key_auth_gas_u64}");
@@ -2809,14 +2834,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     // but the gas cost depends on the signature type, not the key being authorized.
     println!("\nTest 5: KeyAuthorization (P256 key type, no limits)");
     let key_auth_p256 = create_signed_key_authorization(&signer, SignatureType::P256, 0);
-    let mut tx_key_auth_p256 = tx_request.clone();
-    tx_key_auth_p256.as_object_mut().unwrap().insert(
-        "keyAuthorization".to_string(),
-        serde_json::to_value(&key_auth_p256)?,
-    );
+    let tx_key_auth_p256 = TempoTransactionRequest {
+        key_authorization: Some(key_auth_p256),
+        ..base_tx_request()
+    };
 
     let key_auth_p256_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_key_auth_p256])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth_p256)?],
+        )
         .await?;
     let key_auth_p256_gas_u64 =
         u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
@@ -2836,14 +2863,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     // Test 6: KeyAuthorization with spending limits
     println!("\nTest 6: KeyAuthorization (secp256k1, 3 spending limits)");
     let key_auth_limits = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 3);
-    let mut tx_key_auth_limits = tx_request.clone();
-    tx_key_auth_limits.as_object_mut().unwrap().insert(
-        "keyAuthorization".to_string(),
-        serde_json::to_value(&key_auth_limits)?,
-    );
+    let tx_key_auth_limits = TempoTransactionRequest {
+        key_authorization: Some(key_auth_limits),
+        ..base_tx_request()
+    };
 
     let key_auth_limits_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_key_auth_limits])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth_limits)?],
+        )
         .await?;
     let key_auth_limits_gas_u64 =
         u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
