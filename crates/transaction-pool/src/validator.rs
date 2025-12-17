@@ -20,7 +20,7 @@ use tempo_precompiles::{
     account_keychain::{AccountKeychain, AuthorizedKey},
 };
 use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
-use tempo_revm::ReadOnlyStorageProvider;
+use tempo_revm::TempoStateAccess;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -263,21 +263,20 @@ where
             .chain_spec()
             .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
-        let mut provider = ReadOnlyStorageProvider::from_state(&mut state_provider, spec);
-
-        let fee_token = match provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer)
-        {
-            Ok(fee_token) => fee_token,
-            Err(err) => {
-                return TransactionValidationOutcome::Error(
-                    *transaction.hash(),
-                    Box::new(ProviderError::other(err)),
-                );
-            }
-        };
+        let fee_token =
+            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
+            {
+                Ok(fee_token) => fee_token,
+                Err(err) => {
+                    return TransactionValidationOutcome::Error(
+                        *transaction.hash(),
+                        Box::new(ProviderError::other(err)),
+                    );
+                }
+            };
 
         // Ensure that fee token is valid.
-        match provider.is_valid_fee_token(fee_token) {
+        match state_provider.is_valid_fee_token(fee_token, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -297,7 +296,7 @@ where
         }
 
         // Ensure that the fee payer is not blacklisted
-        match provider.can_fee_payer_transfer(fee_token, fee_payer) {
+        match state_provider.can_fee_payer_transfer(fee_token, fee_payer, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -319,7 +318,7 @@ where
             }
         }
 
-        let balance = match provider.get_token_balance(fee_token, fee_payer) {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(

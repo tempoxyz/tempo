@@ -23,17 +23,6 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoTxEnvelope;
 
-/// Trait for converting backend errors into TempoPrecompileError.
-trait IntoTempoError {
-    fn into_tempo_error(self) -> TempoPrecompileError;
-}
-
-impl<E: core::fmt::Display> IntoTempoError for E {
-    fn into_tempo_error(self) -> TempoPrecompileError {
-        TempoPrecompileError::BackendError(self.to_string())
-    }
-}
-
 /// Helper trait to abstract over different representations of Tempo transactions.
 #[auto_impl::auto_impl(&)]
 pub trait TempoTx {
@@ -104,12 +93,58 @@ pub trait TempoStateAccess<M = ()> {
 
     /// Returns the storage value for the given address and key.
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
+
+    /// Resolves user-level or transaction-level fee token preference.
+    fn get_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        validator: Address,
+        fee_payer: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<Address>
+    where
+        Self: Sized,
+    {
+        ReadOnlyStorageProvider::new(self, spec).get_fee_token(tx, validator, fee_payer)
+    }
+
+    /// Checks if the given token can be used as a fee token.
+    fn is_valid_fee_token(&mut self, fee_token: Address, spec: TempoHardfork) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        ReadOnlyStorageProvider::new(self, spec).is_valid_fee_token(fee_token)
+    }
+
+    /// Checks if the fee payer can transfer a given token (is not blacklisted).
+    fn can_fee_payer_transfer(
+        &mut self,
+        fee_token: Address,
+        fee_payer: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        ReadOnlyStorageProvider::new(self, spec).can_fee_payer_transfer(fee_token, fee_payer)
+    }
+
+    /// Returns the balance of the given token for the given account.
+    fn get_token_balance(
+        &mut self,
+        token: Address,
+        account: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<U256>
+    where
+        Self: Sized,
+    {
+        ReadOnlyStorageProvider::new(self, spec).get_token_balance(token, account)
+    }
 }
 
-/// Marker for `revm::Database` implementations.
-pub struct DatabaseMarker;
-
-impl<DB: Database> TempoStateAccess<DatabaseMarker> for DB {
+// `Database` uses `()` as its `TempoStateAccess` marker type.
+impl<DB: Database> TempoStateAccess<()> for DB {
     type Error = DB::Error;
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
@@ -121,10 +156,8 @@ impl<DB: Database> TempoStateAccess<DatabaseMarker> for DB {
     }
 }
 
-/// Marker for `revm::context::JournalTr` implementations.
-pub struct JournalMarker;
-
-impl<J: JournalTr> TempoStateAccess<JournalMarker> for J {
+// `JournalTr` uses `((), ())` as its `TempoStateAccess` marker type.
+impl<J: JournalTr> TempoStateAccess<((), ())> for J {
     type Error = <J::Database as Database>::Error;
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
@@ -137,12 +170,9 @@ impl<J: JournalTr> TempoStateAccess<JournalMarker> for J {
     }
 }
 
-/// Marker for `reth_storage_api::StateProvider` implementations.
 #[cfg(feature = "reth")]
-pub struct StateProviderMarker;
-
-#[cfg(feature = "reth")]
-impl<S: reth_storage_api::StateProvider> TempoStateAccess<StateProviderMarker> for S {
+// `StateProvider` uses `((), (), ())` as its `TempoStateAccess` marker type.
+impl<S: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for S {
     type Error = reth_storage_api::errors::ProviderError;
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
@@ -161,7 +191,7 @@ impl<S: reth_storage_api::StateProvider> TempoStateAccess<StateProviderMarker> f
 /// and returning errors for write operations.
 ///
 /// The marker generic `M` selects which `TempoStateAccess<M>` impl to use for the backend.
-pub struct ReadOnlyStorageProvider<'a, S, M = ()> {
+struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     _marker: PhantomData<M>,
@@ -183,7 +213,7 @@ where
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
         self.state
             .sload(address, key)
-            .map_err(IntoTempoError::into_tempo_error)
+            .map_err(|e| TempoPrecompileError::BackendError(e.to_string()))
     }
 
     fn with_account_info(
@@ -194,7 +224,7 @@ where
         let info = self
             .state
             .basic(address)
-            .map_err(IntoTempoError::into_tempo_error)?
+            .map_err(|e| TempoPrecompileError::BackendError(e.to_string()))?
             .unwrap_or_default();
         f(&info);
         Ok(())
@@ -264,15 +294,8 @@ where
         }
     }
 
-    /// Ensures the account is loaded for subsequent storage operations.
-    pub fn load_account(&mut self, address: Address) -> TempoResult<()> {
-        StorageCtx::enter(self, || {
-            StorageCtx.with_account_info(address, &mut |_: &AccountInfo| Ok(()))
-        })
-    }
-
     /// Checks if the given token can be used as a fee token.
-    pub fn is_valid_fee_token(&mut self, fee_token: Address) -> TempoResult<bool> {
+    fn is_valid_fee_token(&mut self, fee_token: Address) -> TempoResult<bool> {
         // Must have TIP20 prefix to be a valid fee token
         if !is_tip20_prefix(fee_token) {
             return Ok(false);
@@ -296,7 +319,7 @@ where
     }
 
     /// Checks if the fee payer can transfer a given token (is not blacklisted).
-    pub fn can_fee_payer_transfer(
+    fn can_fee_payer_transfer(
         &mut self,
         fee_token: Address,
         fee_payer: Address,
@@ -317,7 +340,7 @@ where
     }
 
     /// Returns the balance of the given token for the given account.
-    pub fn get_token_balance(&mut self, token: Address, account: Address) -> TempoResult<U256> {
+    fn get_token_balance(&mut self, token: Address, account: Address) -> TempoResult<U256> {
         StorageCtx::enter(self, || {
             // Load fee token account to ensure that we can load storage for it.
             StorageCtx.with_account_info(token, &mut |_: &AccountInfo| Ok(()))?;
@@ -327,7 +350,7 @@ where
     }
 
     /// Resolves user-level or transaction-level fee token preference.
-    pub fn get_fee_token(
+    fn get_fee_token(
         &mut self,
         tx: impl TempoTx,
         validator: Address,
@@ -410,28 +433,6 @@ where
     }
 }
 
-impl<'a, DB: Database> ReadOnlyStorageProvider<'a, DB, DatabaseMarker> {
-    /// Creates a read-only storage provider from a revm `Database`.
-    pub fn from_db(db: &'a mut DB, spec: TempoHardfork) -> Self {
-        Self::new(db, spec)
-    }
-}
-
-impl<'a, J: JournalTr> ReadOnlyStorageProvider<'a, J, JournalMarker> {
-    /// Creates a read-only storage provider from a revm `JournalTr`.
-    pub fn from_journal(journal: &'a mut J, spec: TempoHardfork) -> Self {
-        Self::new(journal, spec)
-    }
-}
-
-#[cfg(feature = "reth")]
-impl<'a, S: reth_storage_api::StateProvider> ReadOnlyStorageProvider<'a, S, StateProviderMarker> {
-    /// Creates a read-only storage provider from a reth `StateProvider`.
-    pub fn from_state(state: &'a mut S, spec: TempoHardfork) -> Self {
-        Self::new(state, spec)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,8 +456,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::default());
-        let token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -479,8 +479,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::Allegretto);
-        let result_token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -496,8 +496,12 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::default());
-        let result_token = provider.get_fee_token(TempoTxEnv::default(), Address::ZERO, caller)?;
+        let result_token = db.get_fee_token(
+            TempoTxEnv::default(),
+            Address::ZERO,
+            caller,
+            TempoHardfork::default(),
+        )?;
         assert_eq!(result_token, user_token);
         Ok(())
     }
@@ -519,8 +523,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::Allegretto);
-        let result_token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
         Ok(())
     }
@@ -550,14 +554,13 @@ mod tests {
         )
         .unwrap();
 
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::Adagio);
-        let result_token = provider.get_fee_token(tx.clone(), validator, caller)?;
+        let result_token =
+            db.get_fee_token(tx.clone(), validator, caller, TempoHardfork::Adagio)?;
         assert_eq!(result_token, validator_token);
 
         // Validator token is not set
         let mut db2 = EmptyDB::default();
-        let mut provider2 = ReadOnlyStorageProvider::from_db(&mut db2, TempoHardfork::Adagio);
-        let result_token2 = provider2.get_fee_token(tx, Address::ZERO, caller)?;
+        let result_token2 = db2.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Adagio)?;
         assert_eq!(result_token2, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO);
 
         Ok(())
@@ -576,8 +579,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::Allegretto);
-        let result_token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let result_token =
+            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
         Ok(())
@@ -610,9 +613,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let mut provider = ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::Allegretto);
         // Stablecoin exchange fee token inference requires Allegretto hardfork
-        let token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -635,7 +637,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = provider.get_fee_token(tx, Address::ZERO, caller)?;
+        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -655,9 +657,8 @@ mod tests {
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage
-        let mut provider =
-            ReadOnlyStorageProvider::from_db(&mut db, TempoHardfork::AllegroModerato);
-        let balance = provider.get_token_balance(token_address, account)?;
+        let balance =
+            db.get_token_balance(token_address, account, TempoHardfork::AllegroModerato)?;
         assert_eq!(balance, expected_balance);
 
         Ok(())
