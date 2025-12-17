@@ -2,9 +2,9 @@
 
 **Commit Range:** `e310d91517464388a944ae300922e70fe02904c4` → `main`
 
-**Scope:** `crates/` (excluding `crates/commonware`, `**/assets/**`, `**/tests/**`, `**/*test*`)
+**Scope:** `crates/` (excluding `crates/commonware`, `crates/commonware-node`, `crates/commonware-node-config`, `**/assets/**`, `**/tests/**`, `**/*test*`)
 
-**Total:** 194 files, +38,468 / -21,461 lines (net +17,007)
+**Total:** 160 files, +32,715 / -19,276 lines (net +13,439)
 
 ---
 
@@ -122,36 +122,6 @@
 
 ---
 
-## Commonware-node (+3.7k net)
-
-### DKG
-- Ceremony refactor with tree structure ([#1039](https://github.com/tempoxyz/tempo/pull/1039))
-- Pre/post Allegretto actor split ([#1249](https://github.com/tempoxyz/tempo/pull/1249))
-- Validator migration logic ([#1039](https://github.com/tempoxyz/tempo/pull/1039))
-- `read_write_transaction.rs` for DKG state ([#1039](https://github.com/tempoxyz/tempo/pull/1039))
-- Speculative DKG finalization ([#1477](https://github.com/tempoxyz/tempo/pull/1477))
-- DKG metrics for shares, acks, dealings ([#1042](https://github.com/tempoxyz/tempo/pull/1042))
-- Reject proposals/dealings from wrong dealers ([#1134](https://github.com/tempoxyz/tempo/pull/1134))
-
-### Dynamic Validators
-- Dynamic validator sets ([#1039](https://github.com/tempoxyz/tempo/pull/1039))
-- Active dynamic validators at allegretto-time=0 ([#1249](https://github.com/tempoxyz/tempo/pull/1249))
-- Retain old epoch information until full transition ([#1021](https://github.com/tempoxyz/tempo/pull/1021))
-
-### Subblocks
-- Paid subblocks ([#1086](https://github.com/tempoxyz/tempo/pull/1086))
-- `feeRecipient` propagation to EVM ([#1018](https://github.com/tempoxyz/tempo/pull/1018))
-- Re-broadcast built subblocks ([#1126](https://github.com/tempoxyz/tempo/pull/1126))
-- Don't rebroadcast subblocks to ourselves ([#1146](https://github.com/tempoxyz/tempo/pull/1146))
-- Clear subblock txs map on tip change ([#1034](https://github.com/tempoxyz/tempo/pull/1034))
-
-### Consensus
-- Don't eagerly canonicalize just-proposed blocks ([#1279](https://github.com/tempoxyz/tempo/pull/1279))
-- Fill holes when forwarding finalized blocks ([#1173](https://github.com/tempoxyz/tempo/pull/1173))
-- Certificate backfill fix ([#956](https://github.com/tempoxyz/tempo/pull/956))
-
----
-
 ## Chainspec (+700 net)
 
 - AllegroModerato hardfork ([#1193](https://github.com/tempoxyz/tempo/pull/1193))
@@ -231,9 +201,6 @@
 ### consensus (-60 net, 1 file)
 - System tx removal refactoring ([#1509](https://github.com/tempoxyz/tempo/pull/1509), [#1537](https://github.com/tempoxyz/tempo/pull/1537))
 - Validate blocktime is not in the future ([#1001](https://github.com/tempoxyz/tempo/pull/1001))
-
-### commonware-node-config (-60 net, 4 files)
-- Config structure updates for dynamic validators ([#1039](https://github.com/tempoxyz/tempo/pull/1039))
 
 ---
 
