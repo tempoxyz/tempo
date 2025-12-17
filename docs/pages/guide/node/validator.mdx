@@ -91,4 +91,11 @@ curl localhost:8002/metrics | grep consensus_engine_dkg_manager_ceremony_success
 consensus_engine_dkg_manager_ceremony_successes_total 1
 ```
 
-The `consensus_engine_dkg_manager_ceremony_successes_total` metric should be greater than 0.
+The `consensus_engine_dkg_manager_ceremony_successes_total` metric should be greater than 0. If the metric is 0, it doesn't necessarily means that your node has observed a failed DKG ceremony. You can get the total number of DKG ceremony failures by looking at this metric:
+
+```bash
+curl localhost:8002/metrics | grep consensus_engine_dkg_manager_ceremony_failures_total
+consensus_engine_dkg_manager_ceremony_failures_total 0
+```
+
+If the number is greater than 0, it means that your node has observed a failed DKG ceremony.
