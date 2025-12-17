@@ -2698,4 +2698,38 @@ pub(crate) mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_change_transfer_policy_id_invalid_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Initialize the TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Try to change to a non-existent policy ID (should fail with Allegretto hardfork)
+            let invalid_policy_id = 999u64;
+            let result = token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: invalid_policy_id,
+                },
+            );
+
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::InvalidTransferPolicyId(_))
+            ));
+            Ok(())
+        })
+    }
 }
