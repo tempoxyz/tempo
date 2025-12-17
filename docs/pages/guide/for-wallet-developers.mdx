@@ -20,7 +20,7 @@ Because there is [no native token on Tempo](/quickstart/evm-compatibility#handli
 
 ::::steps
 
-### Handle native token balance checks
+### Handle the absence of a native token
 
 If you use `eth_getBalance` to validate a user's balance, you should instead check the user's account fee token balance on Tempo. Additionally, you should not display any "native balance" in your UI for Tempo users.
 
@@ -50,9 +50,9 @@ const balance = await client.token.getBalance({
 
 ### Configure native currency symbol
 
-If you need to display a native token symbol, such as showing how much gas a transaction requires, you should set the currency symbol to `USD` for Tempo as fees are denominated in USD.
+If you need to display a native token symbol, such as showing how much gas a transaction requires, you can set the currency symbol to `USD` for Tempo as fees are denominated in USD.
 
-### Dealing with fee token selection
+### Use fee token preferences to quote gas prices
 
 On Tempo, users can pay fees in any supported stablecoin. You should quote gas/fee prices in your UI based on a transaction's fee token.
 
@@ -71,15 +71,13 @@ Tempo provides a public tokenlist service that hosts token and network assets. Y
 
 ### Integrate Tempo Transactions
 
-We strongly recommend using [Tempo Transactions](/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](/guide/tempo-transaction#integration-guides) available that should get you integrated in less than an hour!
+We strongly recommend using [Tempo Transactions](/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](/guide/tempo-transaction#integration-guides) available to get you integrated in less than an hour!
 
 :::tip
-With Tempo Transactions, you can:
-- Set the fee token for a transaction
-- Sponsor user fees to enable feeless transaction experiences
-- Batch multiple transactions together for higher throughput
-- Execute transactions in parallel using independent nonces
-- Schedule transactions to execute within a specific time window
+Use Tempo Transactions to
+- Set the fee token used for your users' transactions ([guide](/guide/payments/pay-fees-in-any-stablecoin))
+- Sponsor transaction fees for your users ([guide](/guide/payments/sponsor-user-fees))
+- Send concurrent transactions with independent nonces ([guide](/guide/payments/send-parallel-transactions))
 :::
 ::::
 
