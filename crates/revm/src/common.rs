@@ -203,6 +203,8 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(false);
         }
 
+        // Ensure the currency is USD
+        // load fee token account to ensure that we can load storage for it.
         self.with_read_only_storage_ctx(spec, || {
             TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token))
                 .currency
@@ -234,6 +236,8 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Returns the balance of the given token for the given account.
+    ///
+    /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
     fn get_token_balance(
         &mut self,
         token: Address,
