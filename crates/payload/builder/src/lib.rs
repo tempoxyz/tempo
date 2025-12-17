@@ -26,7 +26,11 @@ use reth_evm::{
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::PayloadBuilderAttributes;
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{State, context::Block, database::StateProviderDatabase};
+use reth_revm::{
+    State,
+    context::{Block, BlockEnv},
+    database::StateProviderDatabase,
+};
 use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
@@ -154,13 +158,12 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     /// 3. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
-        evm: &TempoEvm<impl Database>,
+        block_env: &BlockEnv,
         subblocks: &[RecoveredSubBlock],
         timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
-        let block_env = evm.block();
         let mut txs = Vec::with_capacity(3);
 
         // Build fee manager and stablecoin dex system transaction (pre-AllegroModerato only)
@@ -443,7 +446,7 @@ where
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
         let system_txs =
-            self.build_seal_block_txs(builder.evm(), &subblocks, attributes.timestamp());
+            self.build_seal_block_txs(builder.evm().block(), &subblocks, attributes.timestamp());
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
