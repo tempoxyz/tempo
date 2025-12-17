@@ -79,7 +79,7 @@ impl TipFeeManager {
     }
 
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
-        let token = self.validator_tokens.at(beneficiary).read()?;
+        let token = self.validator_tokens[beneficiary].read()?;
 
         if token.is_zero() {
             Ok(self.default_fee_token())
@@ -106,7 +106,7 @@ impl TipFeeManager {
         }
 
         // Prevent changing if validator already has collected fees (post-Allegretto)
-        if self.storage.spec().is_allegretto() && self.validator_in_fees_array.at(sender).read()? {
+        if self.storage.spec().is_allegretto() && self.validator_in_fees_array[sender].read()? {
             return Err(FeeManagerError::cannot_change_with_pending_fees().into());
         }
 
@@ -118,7 +118,7 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token, self.storage)?;
 
-        self.validator_tokens.at(sender).write(call.token)?;
+        self.validator_tokens[sender].write(call.token)?;
 
         // Emit ValidatorTokenSet event
         self.emit_event(FeeManagerEvent::ValidatorTokenSet(
@@ -159,7 +159,7 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token, self.storage)?;
 
-        self.user_tokens.at(sender).write(call.token)?;
+        self.user_tokens[sender].write(call.token)?;
 
         // Emit UserTokenSet event
         self.emit_event(FeeManagerEvent::UserTokenSet(IFeeManager::UserTokenSet {
@@ -225,9 +225,9 @@ impl TipFeeManager {
             if !actual_spending.is_zero() {
                 if !self.storage.spec().is_allegretto() {
                     // Pre-Allegretto: track in buggy token_in_fees_array
-                    if !self.token_in_fees_array.at(fee_token).read()? {
+                    if !self.token_in_fees_array[fee_token].read()? {
                         self.tokens_with_fees.push(fee_token)?;
-                        self.token_in_fees_array.at(fee_token).write(true)?;
+                        self.token_in_fees_array[fee_token].write(true)?;
                     }
                 } else {
                     self.add_pair_to_fees_array(fee_token, validator_token)?;
@@ -288,7 +288,7 @@ impl TipFeeManager {
         }
 
         for validator in self.drain_validators_with_fees()? {
-            let collected_fees = self.collected_fees.at(validator).read()?;
+            let collected_fees = self.collected_fees[validator].read()?;
 
             if collected_fees.is_zero() {
                 continue;
@@ -322,7 +322,7 @@ impl TipFeeManager {
             }
 
             // Clear collected fees for the validator
-            self.collected_fees.at(validator).delete()?;
+            self.collected_fees[validator].delete()?;
         }
 
         Ok(())
@@ -338,8 +338,8 @@ impl TipFeeManager {
             user_token: address_to_token_id_unchecked(user_token),
             validator_token: address_to_token_id_unchecked(validator_token),
         };
-        if !self.pool_in_fees_array.at(pair).read()? {
-            self.pool_in_fees_array.at(pair).write(true)?;
+        if !self.pool_in_fees_array[pair].read()? {
+            self.pool_in_fees_array[pair].write(true)?;
             self.pools_with_fees.push(pair)?;
         }
         Ok(())
@@ -353,7 +353,7 @@ impl TipFeeManager {
         while let Some(token) = self.tokens_with_fees.pop()? {
             tokens.push(token);
             if self.storage.spec().is_moderato() {
-                self.token_in_fees_array.at(token).write(false)?;
+                self.token_in_fees_array[token].write(false)?;
             }
         }
 
@@ -365,7 +365,7 @@ impl TipFeeManager {
         let mut validators = Vec::new();
         while let Some(validator) = self.validators_with_fees.pop()? {
             validators.push(validator);
-            self.validator_in_fees_array.at(validator).write(false)?;
+            self.validator_in_fees_array[validator].write(false)?;
         }
         Ok(validators)
     }
@@ -375,7 +375,7 @@ impl TipFeeManager {
         let mut pools = Vec::new();
         while let Some(pool) = self.pools_with_fees.pop()? {
             pools.push(pool);
-            self.pool_in_fees_array.at(pool).write(false)?;
+            self.pool_in_fees_array[pool].write(false)?;
         }
         Ok(pools)
     }
@@ -386,8 +386,8 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees.at(validator).read()?;
-        self.collected_fees.at(validator).write(
+        let collected_fees = self.collected_fees[validator].read()?;
+        self.collected_fees[validator].write(
             collected_fees
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -395,7 +395,7 @@ impl TipFeeManager {
 
         // If this is the first fee for the validator, record it in validators with fees
         if collected_fees.is_zero() {
-            self.validator_in_fees_array.at(validator).write(true)?;
+            self.validator_in_fees_array[validator].write(true)?;
             self.validators_with_fees.push(validator)?;
         }
 
@@ -403,11 +403,11 @@ impl TipFeeManager {
     }
 
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
-        self.user_tokens.at(call.user).read()
+        self.user_tokens[call.user].read()
     }
 
     pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
-        let token = self.validator_tokens.at(call.validator).read()?;
+        let token = self.validator_tokens[call.validator].read()?;
 
         if token.is_zero() {
             Ok(self.default_fee_token())
@@ -420,10 +420,10 @@ impl TipFeeManager {
         &self,
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> Result<IFeeManager::getFeeTokenBalanceReturn> {
-        let mut token = self.user_tokens.at(call.sender).read()?;
+        let mut token = self.user_tokens[call.sender].read()?;
 
         if token.is_zero() {
-            let validator_token = self.validator_tokens.at(call.validator).read()?;
+            let validator_token = self.validator_tokens[call.validator].read()?;
 
             if validator_token.is_zero() {
                 return Ok(IFeeManager::getFeeTokenBalanceReturn {
@@ -569,10 +569,7 @@ mod tests {
             let mut fee_manager = TipFeeManager::new();
 
             // Simulate validator having pending fees by setting validator_in_fees_array
-            fee_manager
-                .validator_in_fees_array
-                .at(validator)
-                .write(true)?;
+            fee_manager.validator_in_fees_array[validator].write(true)?;
 
             // Try to set validator token when validator has pending fees (but is not the beneficiary)
             let call = IFeeManager::setValidatorTokenCall {
@@ -589,10 +586,7 @@ mod tests {
             );
 
             // Now clear the pending fees flag and try again - should succeed
-            fee_manager
-                .validator_in_fees_array
-                .at(validator)
-                .write(false)?;
+            fee_manager.validator_in_fees_array[validator].write(false)?;
             let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
             assert!(result.is_ok());
 
@@ -700,7 +694,7 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify fees were tracked
-            let tracked_amount = fee_manager.collected_fees.at(validator).read()?;
+            let tracked_amount = fee_manager.collected_fees[validator].read()?;
             assert_eq!(tracked_amount, actual_used);
 
             // Verify user got the refund
@@ -786,7 +780,7 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify collected fees are cleared
-            let remaining_fees = fee_manager.collected_fees.at(validator).read()?;
+            let remaining_fees = fee_manager.collected_fees[validator].read()?;
             assert_eq!(remaining_fees, U256::ZERO);
 
             // Verify validator got only the available balance (not full collected_fees)

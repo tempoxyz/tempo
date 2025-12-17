@@ -471,7 +471,7 @@ impl<'b> BookIterator<'b> {
             order: None,
             starting_order,
             orderbook,
-            handler: StablecoinExchange::new().books.at(book_key),
+            handler: StablecoinExchange::new().books[book_key].clone(),
             storage: StorageCtx::default(),
         }
     }

@@ -192,8 +192,8 @@ proptest! {
             // Verify pushed values
             prop_assert_eq!(layout.vec_two.len()?, two_slots.len() + 1);
             prop_assert_eq!(layout.vec_three.len()?, three_slots.len() + 1);
-            prop_assert_eq!(layout.vec_two.at_unchecked(two_len_pre_push).read()?, extra_two.clone());
-            prop_assert_eq!(layout.vec_three.at_unchecked(three_len_pre_push).read()?, extra_three.clone());
+            prop_assert_eq!(layout.vec_two[two_len_pre_push].read()?, extra_two.clone());
+            prop_assert_eq!(layout.vec_three[three_len_pre_push].read()?, extra_three.clone());
 
             // Round 3: Pop hardcoded values (delete last element, decrement length)
             let pop_two = layout.vec_two.pop()?;

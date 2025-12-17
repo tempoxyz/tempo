@@ -564,13 +564,13 @@ mod tests {
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let exchange = StablecoinExchange::new();
+            let mut exchange = StablecoinExchange::new();
 
             let id = 42;
             let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-            exchange.orders.at(id).write(order)?;
+            exchange.orders[id].write(order)?;
 
-            let loaded_order = exchange.orders.at(id).read()?;
+            let loaded_order = exchange.orders[id].read()?;
             assert_eq!(loaded_order.order_id(), 42);
             assert_eq!(loaded_order.maker(), TEST_MAKER);
             assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
@@ -591,14 +591,14 @@ mod tests {
     fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let exchange = StablecoinExchange::new();
+            let mut exchange = StablecoinExchange::new();
 
             let id = 42;
             let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-            exchange.orders.at(id).write(order)?;
-            exchange.orders.at(id).delete()?;
+            exchange.orders[id].write(order)?;
+            exchange.orders[id].delete()?;
 
-            let deleted_order = exchange.orders.at(id).read()?;
+            let deleted_order = exchange.orders[id].read()?;
             assert_eq!(deleted_order.order_id(), 0);
             assert_eq!(deleted_order.maker(), Address::ZERO);
             assert_eq!(deleted_order.book_key(), B256::ZERO);

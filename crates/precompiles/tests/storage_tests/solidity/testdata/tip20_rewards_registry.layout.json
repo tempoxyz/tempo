@@ -14,7 +14,7 @@
           {
             "astId": 11,
             "contract": "tests/storage_tests/solidity/testdata/tip20_rewards_registry.sol:TIP20RewardsRegistry",
-            "label": "endingStreams",
+            "label": "streamsEndingAt",
             "offset": 0,
             "slot": "1",
             "type": "t_mapping(t_uint128,t_array(t_address)dyn_storage)"
