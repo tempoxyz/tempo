@@ -105,8 +105,11 @@ impl TipFeeManager {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Prevent changing if validator already has collected fees (post-Allegretto)
-        if self.storage.spec().is_allegretto() && self.validator_in_fees_array.at(sender).read()? {
+        // Pre Allego-Moderato but Post-Allegretto, prevent changing if validator already has collected fees
+        if !self.storage.spec().is_allegro_moderato()
+            && self.storage.spec().is_allegretto()
+            && self.validator_in_fees_array.at(sender).read()?
+        {
             return Err(FeeManagerError::cannot_change_with_pending_fees().into());
         }
 
