@@ -180,13 +180,15 @@ where
             let (public, share) = outcome.role.into_key_pair();
 
             let next_epoch = epoch_state.epoch + 1;
-
             let new_epoch_state = EpochState {
                 epoch: next_epoch,
                 participants: outcome.participants,
                 public,
                 share,
             };
+
+            tx.set_previous_epoch(epoch_state);
+            tx.set_epoch(new_epoch_state.clone());
 
             if self
                 .config
@@ -225,8 +227,6 @@ where
             }
 
             *ceremony = self.start_pre_allegretto_ceremony(tx, ceremony_mux).await;
-            tx.set_previous_epoch(epoch_state);
-            tx.set_epoch(new_epoch_state.clone());
             // Prune older ceremony.
             if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
                 tx.remove_ceremony(epoch);
