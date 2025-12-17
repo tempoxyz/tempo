@@ -43,7 +43,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 - Performance and finality
 
-  - Built on the [Reth SDK](https://github.com/paradigmxyz/reth), the most performant and flexible EVM (Ethereum Virtual Machine) execution client.
+  - Built on the [Reth SDK](https://github.com/paradigmxyz/reth) flexible EVM (Ethereum Virtual Machine) execution client.
   - Simplex Consensus (via [Commonware](https://commonware.xyz/)): fast, sub‑second finality in normal conditions; graceful degradation under adverse networks.
 
 - Coming soon
