@@ -439,7 +439,7 @@ where
         .expect("must always be able to initialize ceremony");
 
         info!(
-            us = %self.config.me,
+            us = %self.config.me.public_key(),
             n_dealers = ceremony.dealers().len(),
             dealers = ?ceremony.dealers(),
             n_players = ceremony.players().len(),
