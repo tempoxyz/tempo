@@ -5,7 +5,10 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
-use std::{cell::Cell, cell::RefCell, fmt::Debug};
+use std::{
+    cell::{Cell, RefCell},
+    fmt::Debug,
+};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{

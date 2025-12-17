@@ -759,8 +759,7 @@ mod tests {
     #[test]
     fn test_spending_limits_only_apply_to_tx_origin() -> eyre::Result<()> {
         // Use AllegroModerato hardfork to enable the tx_origin check
-        let mut storage =
-            HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
 
         let eoa_alice = Address::random(); // The EOA that signs the transaction
         let access_key = Address::random(); // Alice's access key with spending limits
