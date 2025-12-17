@@ -37,8 +37,9 @@ serde_json.workspace = true
 tempo-evm.workspace = true
 
 [features]
-default = []
+default = ["rpc"]
 test-utils = ["alloy/getrandom"]
+rpc = ["tempo-contracts/rpc"]
 
 [[test]]
 name = "storage"
