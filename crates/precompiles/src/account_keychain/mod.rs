@@ -433,9 +433,12 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.storage.tx_origin();
-        if account != tx_origin {
-            return Ok(());
+        // Gate behind allegro-moderato to avoid breaking existing behavior.
+        if self.storage.spec().is_allegro_moderato() {
+            let tx_origin = self.storage.tx_origin();
+            if account != tx_origin {
+                return Ok(());
+            }
         }
 
         // Verify and update spending limits for this access key
@@ -473,9 +476,11 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        let tx_origin = self.storage.tx_origin();
-        if account != tx_origin {
-            return Ok(());
+        if self.storage.spec().is_allegro_moderato() {
+            let tx_origin = self.storage.tx_origin();
+            if account != tx_origin {
+                return Ok(());
+            }
         }
 
         // Calculate the increase in approval (only deduct if increasing)
@@ -498,9 +503,10 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider, set_tx_origin},
     };
     use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IAccountKeychain::SignatureType;
 
     // Helper function to assert unauthorized error
@@ -736,6 +742,125 @@ mod tests {
             })?;
             assert_eq!(key_info.expiry, 1000);
             assert!(!key_info.isRevoked);
+
+            Ok(())
+        })
+    }
+
+    /// Test that spending limits are only enforced when msg_sender == tx_origin.
+    ///
+    /// This test verifies the fix for the bug where spending limits were incorrectly
+    /// applied to contract-initiated transfers. The scenario:
+    ///
+    /// 1. EOA Alice uses an access key with spending limits
+    /// 2. Alice calls a contract that transfers tokens
+    /// 3. The contract's transfer should NOT be subject to Alice's spending limits
+    ///    (the contract is transferring its own tokens, not Alice's)
+    #[test]
+    fn test_spending_limits_only_apply_to_tx_origin() -> eyre::Result<()> {
+        // Use AllegroModerato hardfork to enable the tx_origin check
+        let mut storage =
+            HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+
+        let eoa_alice = Address::random(); // The EOA that signs the transaction
+        let access_key = Address::random(); // Alice's access key with spending limits
+        let contract_address = Address::random(); // A contract that Alice calls
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Alice authorizes an access key with a spending limit of 100 tokens
+            keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
+            set_tx_origin(eoa_alice);
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa_alice, auth_call)?;
+
+            // Verify spending limit is set
+            let limit = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit,
+                U256::from(100),
+                "Initial spending limit should be 100"
+            );
+
+            // Now simulate a transaction where Alice uses her access key
+            keychain.set_transaction_key(access_key)?;
+            set_tx_origin(eoa_alice);
+
+            // Test 1: When msg_sender == tx_origin (Alice directly transfers)
+            // Spending limit SHOULD be enforced
+            keychain.authorize_transfer(eoa_alice, token, U256::from(30))?;
+
+            let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_after,
+                U256::from(70),
+                "Spending limit should be reduced to 70 after Alice's direct transfer"
+            );
+
+            // Test 2: When msg_sender != tx_origin (contract transfers its own tokens)
+            // Spending limit should NOT be enforced - the contract isn't spending Alice's tokens
+            keychain.authorize_transfer(contract_address, token, U256::from(1000))?;
+
+            let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_unchanged,
+                U256::from(70),
+                "Spending limit should remain 70 - contract transfer doesn't affect Alice's limit"
+            );
+
+            // Test 3: Alice can still spend her remaining limit
+            keychain.authorize_transfer(eoa_alice, token, U256::from(70))?;
+
+            let limit_depleted = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_depleted,
+                U256::ZERO,
+                "Spending limit should be depleted after Alice spends remaining 70"
+            );
+
+            // Test 4: Alice cannot exceed her spending limit
+            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::from(1));
+            assert!(
+                exceed_result.is_err(),
+                "Should fail when Alice tries to exceed spending limit"
+            );
+
+            // Test 5: But contracts can still transfer (they're not subject to Alice's limits)
+            let contract_result =
+                keychain.authorize_transfer(contract_address, token, U256::from(999999));
+            assert!(
+                contract_result.is_ok(),
+                "Contract should still be able to transfer even though Alice's limit is depleted"
+            );
 
             Ok(())
         })
