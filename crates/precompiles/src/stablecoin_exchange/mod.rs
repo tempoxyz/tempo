@@ -1583,10 +1583,12 @@ impl StablecoinExchange {
         let path_in = self.find_path_to_root(token_in)?;
         let path_out = self.find_path_to_root(token_out)?;
 
-        // Find the lowest common ancestor (LCA)
+        // Find the lowest common ancestor (LCA) using O(n+m) algorithm:
+        // Build a HashSet from path_out for O(1) lookups, then iterate path_in
+        let path_out_set: std::collections::HashSet<Address> = path_out.iter().copied().collect();
         let mut lca = None;
         for token_a in &path_in {
-            if path_out.contains(token_a) {
+            if path_out_set.contains(token_a) {
                 lca = Some(*token_a);
                 break;
             }
