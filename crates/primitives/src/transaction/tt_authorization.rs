@@ -107,7 +107,6 @@ impl TempoSignedAuthorization {
     }
 
     /// Calculates a heuristic for the in-memory size of this authorization
-    #[cfg(feature = "reth-compat")]
     pub fn size(&self) -> usize {
         core::mem::size_of::<Authorization>() + self.signature.size()
     }

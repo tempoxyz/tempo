@@ -1,7 +1,7 @@
 use crate::TempoTxEnvelope;
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, B256, Bytes, U256, keccak256, wrap_fixed_bytes};
 use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
-use reth_primitives_traits::{Recovered, crypto::RecoveryError};
 
 /// Magic byte for the subblock signature hash.
 const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x78;
@@ -152,7 +152,11 @@ impl SignedSubBlock {
     /// Attempts to recover the senders and convert the subblock into a [`RecoveredSubBlock`].
     ///
     /// Note that the validator is assumed to be pre-validated to match the submitted signature.
-    pub fn try_into_recovered(self, validator: B256) -> Result<RecoveredSubBlock, RecoveryError> {
+    #[cfg(feature = "reth-compat")]
+    pub fn try_into_recovered(
+        self,
+        validator: B256,
+    ) -> Result<RecoveredSubBlock, alloy_consensus::crypto::RecoveryError> {
         let senders =
             reth_primitives_traits::transaction::recover::recover_signers(&self.transactions)?;
 

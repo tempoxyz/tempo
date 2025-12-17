@@ -3,12 +3,7 @@ use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
-
-#[cfg(feature = "reth-compat")]
 use core::mem;
-
-#[cfg(feature = "reth-compat")]
-use reth_primitives_traits::InMemorySize;
 
 /// Token spending limit for access keys
 ///
@@ -89,11 +84,9 @@ impl KeyAuthorization {
             signature,
         }
     }
-}
 
-#[cfg(feature = "reth-compat")]
-impl InMemorySize for KeyAuthorization {
-    fn size(&self) -> usize {
+    /// Calculates a heuristic for the in-memory size of the key authorization
+    pub fn size(&self) -> usize {
         mem::size_of::<u64>() + // chain_id
         mem::size_of::<u8>() + // key_type
         mem::size_of::<Address>() + // key_id
@@ -138,6 +131,11 @@ impl SignedKeyAuthorization {
         self.signature
             .recover_signer(&self.authorization.signature_hash())
     }
+
+    /// Calculates a heuristic for the in-memory size of the signed key authorization
+    pub fn size(&self) -> usize {
+        self.authorization.size() + self.signature.size()
+    }
 }
 
 #[cfg(feature = "reth-codec")]
@@ -155,13 +153,6 @@ impl reth_codecs::Compact for SignedKeyAuthorization {
         let item = alloy_rlp::Decodable::decode(&mut buf)
             .expect("Failed to decode KeyAuthorization from compact");
         (item, buf)
-    }
-}
-
-#[cfg(feature = "reth-compat")]
-impl reth_primitives_traits::InMemorySize for SignedKeyAuthorization {
-    fn size(&self) -> usize {
-        self.authorization.size() + self.signature.size()
     }
 }
 

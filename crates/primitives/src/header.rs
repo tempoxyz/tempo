@@ -1,7 +1,6 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use reth_primitives_traits::InMemorySize;
 
 /// Tempo block header.
 ///
@@ -139,7 +138,8 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-impl InMemorySize for TempoHeader {
+#[cfg(feature = "reth-compat")]
+impl reth_primitives_traits::InMemorySize for TempoHeader {
     fn size(&self) -> usize {
         let Self {
             inner,
@@ -160,10 +160,12 @@ impl Sealable for TempoHeader {
     }
 }
 
+#[cfg(feature = "reth-compat")]
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
 
+#[cfg(feature = "reth-compat")]
 impl reth_primitives_traits::header::HeaderMut for TempoHeader {
-    fn set_parent_hash(&mut self, hash: BlockHash) {
+    fn set_parent_hash(&mut self, hash: B256) {
         self.inner.set_parent_hash(hash);
     }
 

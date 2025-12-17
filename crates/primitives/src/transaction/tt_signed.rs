@@ -17,12 +17,6 @@ use core::{
 };
 use std::sync::OnceLock;
 
-#[cfg(feature = "reth-compat")]
-use core::mem;
-
-#[cfg(feature = "reth-compat")]
-use reth_primitives_traits::InMemorySize;
-
 /// A transaction with an AA signature and hash seal.
 ///
 /// This wraps a TempoTransaction transaction with its multi-signature-type signature
@@ -311,10 +305,10 @@ impl Eq for AASigned {}
 #[cfg(feature = "reth-compat")]
 impl InMemorySize for AASigned {
     fn size(&self) -> usize {
-        mem::size_of::<Self>()
+        core::mem::size_of::<Self>()
             + self.tx.size()
             + self.signature.encoded_length()
-            + mem::size_of::<B256>()
+            + core::mem::size_of::<B256>()
     }
 }
 

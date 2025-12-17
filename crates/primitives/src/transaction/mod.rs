@@ -1,4 +1,3 @@
-#[cfg(feature = "reth-compat")]
 pub mod envelope;
 pub mod fee_token;
 pub mod key_authorization;
@@ -14,7 +13,6 @@ pub use tt_signature::{
 };
 
 pub use alloy_eips::eip7702::Authorization;
-#[cfg(feature = "reth-compat")]
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use fee_token::{FEE_TOKEN_TX_TYPE_ID, TxFeeToken};
 pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};

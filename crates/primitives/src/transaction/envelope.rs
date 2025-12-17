@@ -10,9 +10,6 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
 
-#[cfg(feature = "reth-compat")]
-use reth_primitives_traits::InMemorySize;
-
 /// TIP20 payment address prefix (14 bytes for payment classification)
 /// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
 pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
@@ -287,15 +284,15 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
 }
 
 #[cfg(feature = "reth-compat")]
-impl InMemorySize for TempoTxEnvelope {
+impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
         match self {
-            Self::Legacy(tx) => InMemorySize::size(tx),
-            Self::Eip2930(tx) => InMemorySize::size(tx),
-            Self::Eip1559(tx) => InMemorySize::size(tx),
-            Self::Eip7702(tx) => InMemorySize::size(tx),
-            Self::AA(tx) => InMemorySize::size(tx),
-            Self::FeeToken(tx) => InMemorySize::size(tx),
+            Self::Legacy(tx) => tx.size(),
+            Self::Eip2930(tx) => tx.size(),
+            Self::Eip1559(tx) => tx.size(),
+            Self::Eip7702(tx) => tx.size(),
+            Self::AA(tx) => tx.size(),
+            Self::FeeToken(tx) => tx.size(),
         }
     }
 }
@@ -317,7 +314,7 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
 impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
 #[cfg(feature = "reth-compat")]
-impl InMemorySize for TempoTxType {
+impl reth_primitives_traits::InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
     }
