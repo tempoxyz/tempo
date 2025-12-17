@@ -126,7 +126,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
         self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
 
         self.internals.tstore(address, key, value);
@@ -163,7 +162,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
         self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
 
         Ok(self.internals.tload(address, key))
