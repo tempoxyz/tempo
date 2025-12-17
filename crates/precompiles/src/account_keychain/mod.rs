@@ -432,6 +432,12 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.storage.tx_origin();
+        if account != tx_origin {
+            return Ok(());
+        }
+
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, amount)
     }
@@ -463,6 +469,12 @@ impl AccountKeychain {
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.storage.tx_origin();
+        if account != tx_origin {
             return Ok(());
         }
 
