@@ -12,7 +12,7 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 
 pub use account_keychain::*;
-use alloy::primitives::{Address, address};
+use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
 pub use path_usd::*;

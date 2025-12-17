@@ -13,7 +13,8 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic",
-  "rlp"
+  "rlp",
+  "providers",
 ] }
 alloy-evm.workspace = true
 alloy-genesis.workspace = true
@@ -41,7 +42,7 @@ tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
 tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["rpc"] }
 
 futures.workspace = true
 tempfile.workspace = true

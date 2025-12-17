@@ -13,13 +13,13 @@ workspace = true
 [dependencies]
 # Reth
 reth-db-api = { workspace = true, optional = true }
-reth-ethereum-primitives.workspace = true
-reth-primitives-traits.workspace = true
+reth-ethereum-primitives = { workspace = true, optional = true }
+reth-primitives-traits = { workspace = true, optional = true }
 reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
 # Alloy
-alloy-consensus.workspace = true
+alloy-consensus = { workspace = true, features = ["secp256k1"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -51,13 +51,17 @@ serde_json.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
-default = ["serde", "reth-codec", "serde-bincode-compat", "rpc"]
+default = ["reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
+reth = [
+	"dep:reth-ethereum-primitives",
+	"dep:reth-primitives-traits",
+]
 serde = [
 	"dep:serde",
 	"dep:alloy-serde",
 	"alloy-consensus/serde",
-	"reth-primitives-traits/serde",
-	"reth-ethereum-primitives/serde",
+	"reth-primitives-traits?/serde",
+	"reth-ethereum-primitives?/serde",
 	"alloy-eips/serde",
 	"alloy-primitives/serde",
 	"reth-codecs?/serde",
@@ -66,6 +70,7 @@ serde = [
 	"tracing-subscriber/serde"
 ]
 reth-codec = [
+	"reth",
 	"serde",
 	"dep:reth-codecs",
 	"dep:reth-db-api",
@@ -77,8 +82,8 @@ reth-codec = [
 serde-bincode-compat = [
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
-	"reth-primitives-traits/serde-bincode-compat",
-	"reth-ethereum-primitives/serde-bincode-compat",
+	"reth-primitives-traits?/serde-bincode-compat",
+	"reth-ethereum-primitives?/serde-bincode-compat",
 	"alloy-eips/serde-bincode-compat",
 	"alloy-rpc-types-eth?/serde-bincode-compat",
 ]
@@ -90,12 +95,13 @@ arbitrary = [
 	"alloy-eips/arbitrary",
 	"reth-codecs?/arbitrary",
 	"alloy-serde?/arbitrary",
-	"reth-ethereum-primitives/arbitrary",
-	"reth-primitives-traits/arbitrary",
+	"reth-ethereum-primitives?/arbitrary",
+	"reth-primitives-traits?/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
 ]
 rpc = [
+	"reth",
 	"reth-ethereum-primitives/rpc",
 	"dep:alloy-rpc-types-eth",
 	"dep:reth-rpc-convert",
