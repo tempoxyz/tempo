@@ -606,18 +606,10 @@ where
         let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
 
         // Skip if the block was already processed. Can happen if the node was
-        // shutdown after commiting the changes but before the marshal actor
+        // shutdown after committing the changes but before the marshal actor
         // processed the ack.
-        //
-        // TODO(janis): how does this interact with the tree of dealings in
-        // the ceremony? It's probably fine: on restart, if B was already
-        // committed but not acknowledged, then marshal will send B again.
-        // The tree will detect gaps, all of which will be filled up to and
-        // including B-1. B will not be inserted into the tree. On finalizing
-        // B+1, B will be included into the tree.
-        let block_height = block.height();
         if let Ok(Some(last_processed_height)) = tx.get_last_processed_height().await
-            && block_height == last_processed_height
+            && block.height() == last_processed_height
         {
             info!(last_processed_height, "skipping already-processed block");
             ceremony.add_finalized_block(&mut tx, block).await;
@@ -626,12 +618,14 @@ where
         }
 
         if self.is_running_post_allegretto(&block, &tx).await {
-            self.handle_finalized_post_allegretto(cause, block, ceremony, ceremony_mux, &mut tx)
+            self.handle_finalized_post_allegretto(cause, &block, ceremony, ceremony_mux, &mut tx)
                 .await;
         } else {
-            self.handle_finalized_pre_allegretto(cause, block, ceremony, ceremony_mux, &mut tx)
+            self.handle_finalized_pre_allegretto(cause, &block, ceremony, ceremony_mux, &mut tx)
                 .await;
         }
+        let block_height = block.height();
+        ceremony.add_finalized_block(&mut tx, block).await;
         tx.set_last_processed_height(block_height);
         tx.commit()
             .await

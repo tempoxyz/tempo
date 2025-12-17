@@ -179,7 +179,7 @@ where
     pub(super) async fn handle_finalized_post_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        block: Block,
+        block: &Block,
         ceremony: &mut Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
@@ -271,8 +271,6 @@ where
                 // Should we use these extra blocks to process more messages?
             }
         }
-
-        ceremony.add_finalized_block(tx, block).await;
     }
 
     #[instrument(skip_all)]

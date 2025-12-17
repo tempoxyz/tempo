@@ -28,8 +28,7 @@ use tracing::{Level, debug, error, info, instrument, warn};
 use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome, PublicOutcome};
 
 use crate::{
-    consensus::Digest,
-    consensus::block::Block,
+    consensus::{Digest, block::Block},
     dkg::{
         HardforkRegime, ceremony::tree::TreeOfDealings,
         manager::read_write_transaction::DkgReadWriteTransaction,

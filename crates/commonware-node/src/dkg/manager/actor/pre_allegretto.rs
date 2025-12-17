@@ -133,7 +133,7 @@ where
     pub(super) async fn handle_finalized_pre_allegretto<TReceiver, TSender>(
         &mut self,
         cause: Span,
-        block: Block,
+        block: &Block,
         ceremony: &mut Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
@@ -271,8 +271,6 @@ where
                 // blocks are checked for dealings for the entire epoch.
             }
         }
-
-        ceremony.add_finalized_block(tx, block.clone()).await;
     }
 
     #[instrument(skip_all, fields(epoch = tracing::field::Empty))]
