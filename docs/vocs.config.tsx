@@ -219,8 +219,8 @@ export default defineConfig({
             ],
           },
           {
-            text: 'For Wallet Developers',
-            link: '/guide/for-wallet-developers',
+            text: 'Wallet Developers',
+            link: '/guide/wallet-developers',
           }
         ],
       },

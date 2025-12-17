@@ -8,13 +8,11 @@ import LucideFileText from '~icons/lucide/file-text'
 import LucideShieldCheck from '~icons/lucide/shield-check'
 import LucideWallet from '~icons/lucide/wallet'
 
-# For Wallet Developers
+# Wallet Developers
 
-Follow this guide to support a polished experience for your users on Tempo. Integrate with [Tempo Transactions](/guide/tempo-transaction) to provide enhanced features like gas sponsorship and more with a few lines of code.
+Remember that there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks). Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
 
-:::warning
-Because there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks), wallets accustomed to native token logic should adjust accordingly for their users on Tempo.
-:::
+As part of supporting Tempo in your wallet, you can deliver an enhanced experience for your users by integrating [Tempo Transactions](/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
 
 ## Steps
 
