@@ -96,6 +96,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     //////////////////////////////////////////////////////////////*/
 
     function changeTransferPolicyId(uint64 newPolicyId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        // Validate that the policy exists
+        if (!TIP403_REGISTRY.policyExists(newPolicyId)) {
+            revert InvalidTransferPolicyId();
+        }
+
         emit TransferPolicyUpdate(msg.sender, transferPolicyId = newPolicyId);
     }
 

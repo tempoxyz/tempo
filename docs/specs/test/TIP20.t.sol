@@ -599,6 +599,16 @@ contract TIP20Test is BaseTest {
         }
     }
 
+    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyDoesNotExist(uint64 policyId) public {
+        vm.assume(policyId >= registry.policyIdCounter());
+        vm.prank(admin);
+        try token.changeTransferPolicyId(policyId) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidTransferPolicyId.selector));
+        }
+    }
+
     function testSetNextQuoteTokenAndComplete() public {
         vm.startPrank(admin);
 

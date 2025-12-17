@@ -199,8 +199,9 @@ contract TIP403RegistryTest is BaseTest {
     function test_ModifyPolicyWhitelist_RemoveFromWhitelist() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 policyId =
-            registry.createPolicyWithAccounts(bob, ITIP403Registry.PolicyType.WHITELIST, accounts);
+        uint64 policyId = registry.createPolicyWithAccounts(
+            bob, ITIP403Registry.PolicyType.WHITELIST, accounts
+        );
 
         // Initially, alice should be authorized (whitelisted)
         assertTrue(registry.isAuthorized(policyId, alice));
@@ -267,8 +268,9 @@ contract TIP403RegistryTest is BaseTest {
     function test_ModifyPolicyBlacklist_RemoveFromBlacklist() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 policyId =
-            registry.createPolicyWithAccounts(bob, ITIP403Registry.PolicyType.BLACKLIST, accounts);
+        uint64 policyId = registry.createPolicyWithAccounts(
+            bob, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
 
         // Initially, alice should not be authorized (blacklisted)
         assertFalse(registry.isAuthorized(policyId, alice));
@@ -581,8 +583,9 @@ contract TIP403RegistryTest is BaseTest {
     function test_Events_WhitelistUpdate_Remove() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 policyId =
-            registry.createPolicyWithAccounts(bob, ITIP403Registry.PolicyType.WHITELIST, accounts);
+        uint64 policyId = registry.createPolicyWithAccounts(
+            bob, ITIP403Registry.PolicyType.WHITELIST, accounts
+        );
 
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
@@ -608,8 +611,9 @@ contract TIP403RegistryTest is BaseTest {
     function test_Events_BlacklistUpdate_Remove() public {
         address[] memory accounts = new address[](1);
         accounts[0] = alice;
-        uint64 policyId =
-            registry.createPolicyWithAccounts(bob, ITIP403Registry.PolicyType.BLACKLIST, accounts);
+        uint64 policyId = registry.createPolicyWithAccounts(
+            bob, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
 
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
@@ -729,8 +733,9 @@ contract TIP403RegistryTest is BaseTest {
         accounts[0] = alice;
 
         // Should be able to create a blacklist policy with an admin
-        uint64 policyId =
-            registry.createPolicyWithAccounts(bob, ITIP403Registry.PolicyType.BLACKLIST, accounts);
+        uint64 policyId = registry.createPolicyWithAccounts(
+            bob, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
 
         (, address storedAdmin) = registry.policyData(policyId);
         assertEq(storedAdmin, bob);
