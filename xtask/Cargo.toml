@@ -24,6 +24,7 @@ alloy = { workspace = true, features = [
   "signer-local",
   "signer-mnemonic",
   "sol-types",
+  "getrandom",
 ] }
 alloy-primitives.workspace = true
 clap = { version = "4.5.45", features = ["derive"] }
@@ -36,8 +37,8 @@ indicatif = { workspace = true, features = ["rayon"] }
 rand.workspace = true
 rayon = "1.10"
 reth-evm.workspace = true
-reth-network-peers.workspace = true
-secp256k1.workspace = true
+reth-network-peers = { workspace = true, features = ["secp256k1"] }
+secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
