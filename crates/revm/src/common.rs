@@ -207,10 +207,15 @@ pub trait TempoStateAccess<M = ()> {
                 TipFeeManager::new().validator_tokens.at(validator).read()
             })?;
 
-            if validator_fee_token.is_zero() {
-                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
-            } else {
+            // Only use validator's token preference if it's set and is a valid fee token.
+            // This prevents DoS when validators configure PATH_USD (LINKING_USD) which is
+            // invalid for user fee payments pre-Allegretto.
+            if !validator_fee_token.is_zero()
+                && self.is_valid_fee_token(validator_fee_token, spec)?
+            {
                 Ok(validator_fee_token)
+            } else {
+                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
             }
         }
     }
@@ -437,6 +442,7 @@ mod tests {
     use super::*;
     use alloy_primitives::uint;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
+    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_precompiles::tip20;
 
     #[test]
@@ -533,7 +539,8 @@ mod tests {
     fn test_get_fee_token_fallback_pre_allegretto() -> eyre::Result<()> {
         let caller = Address::random();
         let validator = Address::random();
-        let validator_token = Address::random();
+        // Use DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO as a valid fee token (it's a valid TIP20 with USD currency)
+        let validator_token = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
 
         let tx_env = TxEnv {
             caller,
@@ -544,13 +551,20 @@ mod tests {
             ..Default::default()
         };
 
-        // Validator has a token preference set
+        // Validator has a valid token preference set
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
         let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
         db.insert_account_storage(
             TIP_FEE_MANAGER_ADDRESS,
             validator_slot,
             validator_token.into_u256(),
+        )
+        .unwrap();
+        // Set up the token's USD currency slot so is_valid_fee_token passes
+        db.insert_account_storage(
+            validator_token,
+            tempo_precompiles::tip20::slots::CURRENCY,
+            USD_CURRENCY_SLOT_VALUE,
         )
         .unwrap();
 
@@ -562,6 +576,52 @@ mod tests {
         let mut db2 = EmptyDB::default();
         let result_token2 = db2.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Adagio)?;
         assert_eq!(result_token2, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO);
+
+        Ok(())
+    }
+
+    /// Test that when a validator sets PATH_USD (LINKING_USD) as their fee token preference
+    /// pre-Allegretto, the system falls back to DEFAULT_FEE_TOKEN instead of returning
+    /// PATH_USD which would cause user transactions to be rejected.
+    ///
+    /// This prevents a DoS attack where validators configure an invalid fee token
+    /// that causes mempool rejection for users without explicit fee token preferences.
+    #[test]
+    fn test_get_fee_token_ignores_path_usd_validator_token_pre_allegretto() -> eyre::Result<()> {
+        let caller = Address::random();
+        let validator = Address::random();
+
+        let tx_env = TxEnv {
+            caller,
+            ..Default::default()
+        };
+        let tx = TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        };
+
+        // Validator has set PATH_USD (LINKING_USD) as their token preference
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+        db.insert_account_storage(
+            TIP_FEE_MANAGER_ADDRESS,
+            validator_slot,
+            PATH_USD_ADDRESS.into_u256(),
+        )
+        .unwrap();
+
+        // Pre-Allegretto: PATH_USD is invalid for fee payment, so should fall back to default
+        let result_token = db.get_fee_token(tx, validator, caller, TempoHardfork::Adagio)?;
+
+        // Should NOT return PATH_USD (which would cause DoS), should return default instead
+        assert_ne!(
+            result_token, PATH_USD_ADDRESS,
+            "get_fee_token should not return PATH_USD pre-Allegretto as it's invalid for fee payment"
+        );
+        assert_eq!(
+            result_token, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+            "Should fall back to DEFAULT_FEE_TOKEN when validator token is invalid"
+        );
 
         Ok(())
     }
