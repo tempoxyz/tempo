@@ -465,6 +465,21 @@ contract TIP403RegistryTest is BaseTest {
         assertEq(finalCount, 4);
     }
 
+    function test_PolicyExists_Succeeds() public {
+        // Built-in policies always exist
+        assertTrue(registry.policyExists(ALWAYS_REJECT_POLICY));
+        assertTrue(registry.policyExists(ALWAYS_ALLOW_POLICY));
+
+        // Create a custom policy
+        uint64 policyId = registry.createPolicy(alice, ITIP403Registry.PolicyType.WHITELIST);
+        assertTrue(registry.policyExists(policyId));
+    }
+
+    function testFuzz_PolicyExists_ReturnsFalseIf_PolicyDoesNotExist(uint64 policyId) public {
+        vm.assume(policyId >= registry.policyIdCounter());
+        assertFalse(registry.policyExists(policyId));
+    }
+
     /*//////////////////////////////////////////////////////////////
                            EVENT TESTS
     //////////////////////////////////////////////////////////////*/
