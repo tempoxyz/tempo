@@ -95,10 +95,6 @@ export default defineConfig({
             text: 'Predeployed Contracts',
             link: '/quickstart/predeployed-contracts',
           },
-          {
-            text: 'For Wallet Developers',
-            link: '/quickstart/wallet-support',
-          }
         ],
       },
       {
@@ -222,6 +218,10 @@ export default defineConfig({
               },
             ],
           },
+          {
+            text: 'For Wallet Developers',
+            link: '/guide/for-wallet-developers',
+          }
         ],
       },
       {
