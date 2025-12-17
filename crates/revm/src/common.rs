@@ -213,7 +213,7 @@ where
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
         self.state
             .sload(address, key)
-            .map_err(|e| TempoPrecompileError::BackendError(e.to_string()))
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
     }
 
     fn with_account_info(
@@ -224,7 +224,7 @@ where
         let info = self
             .state
             .basic(address)
-            .map_err(|e| TempoPrecompileError::BackendError(e.to_string()))?
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
             .unwrap_or_default();
         f(&info);
         Ok(())

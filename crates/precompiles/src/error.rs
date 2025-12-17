@@ -77,11 +77,6 @@ pub enum TempoPrecompileError {
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
-
-    /// Error from backend storage provider (database, state provider, etc.)
-    #[error("Backend storage error: {0}")]
-    #[from(skip)]
-    BackendError(String),
 }
 
 /// Result type alias for Tempo precompile operations
@@ -212,9 +207,6 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                     TPErr::Fatal(msg) => {
                         return Err(PrecompileError::Fatal(msg));
                     }
-                    TPErr::BackendError(msg) => {
-                        return Err(PrecompileError::Fatal(msg));
-                    }
                 };
                 Ok(PrecompileOutput::new_reverted(gas, bytes))
             }
@@ -256,9 +248,6 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
             .abi_encode()
             .into(),
             Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
-            }
-            Self::BackendError(msg) => {
                 return Err(PrecompileError::Fatal(msg));
             }
         };
