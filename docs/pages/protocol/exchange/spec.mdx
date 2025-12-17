@@ -4,7 +4,7 @@
 
 This specification defines an enshrined decentralized exchange for trading between TIP-20 stablecoins. The exchange currently only supports trading between TIP-20 stablecoins with USD as their currency. By only allowing each stablecoin to be paired against its designated "quote token" the exchange enforces that there is only one route for trading between any two tokens.
 
-The exchange maintains price‑time priority at each discrete price tick, defers order placement to the end of the block, executes swaps immediately against the active book, and supports auto‑replenishing “flip orders” that recreate themselves on the opposite side after being fully filled.
+The exchange maintains price‑time priority at each discrete price tick, executes swaps immediately against the active book, and supports auto‑replenishing “flip orders” that recreate themselves on the opposite side after being fully filled.
 
 Users maintain internal balances per token on the exchange. Order placement escrows funds from these balances (or transfers from the user if necessary), fills credit makers internally, and withdrawals transfer tokens out.
 
