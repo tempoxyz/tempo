@@ -330,7 +330,7 @@ where
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
-            Box::new(InstrumentedStateProvider::from_state_provider(
+            Box::new(InstrumentedStateProvider::new(
                 state_provider,
                 "builder",
             ))
