@@ -67,7 +67,7 @@ Only the whitelisted IP address will be able to connect to other validators, mea
 
 ### What happens if we lose our node's data, e.g. the consensus database?
 
-You will be able to resync from the latest known block height, as long as you have the execution database (e.g. by downloading a snapshots by running `tempo download`).
+You will be able to resync from genesis to the latest block height. We're currently implementing the ability for validators to sync from an execution database snapshot (e.g. by downloading a snapshot by running `tempo download`).
 
 ## Troubleshooting
 
