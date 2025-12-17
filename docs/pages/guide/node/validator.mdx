@@ -57,6 +57,10 @@ Once your node is up, it may not start syncing immediately. This is because your
 
 Your validator won't be able to propose / sign blocks until it receives a new signing share (~48-72 hours, depending on the stage in the current epoch).
 
+### What happens if we lose our validator's signing key?
+
+Your validator will need to rotate its identity by deactivating the current validator identity on-chain and creating a new one. 
+
 ### What happens if we run a validator with the same identity on two different instances?
 
 Only the whitelisted IP address will be able to connect to other validators, meaning that the validator on the second instance will be ignored.
@@ -85,7 +89,7 @@ cast call 0xCccCcCCC00000000000000000000000000000000 "getValidators()((bytes32, 
 
 A successful DKG ceremony is necessary for your validator to receive a signing share. You can check that you've participated in a successful DKG ceremony by looking at 
 
-```
+```bash
 curl localhost:8002/metrics | grep consensus_engine_dkg_manager_ceremony_successes_total
 consensus_engine_dkg_manager_ceremony_successes_total 1
 ```
