@@ -3,14 +3,14 @@ use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
-use reth_primitives_traits::InMemorySize;
+
+use crate::transaction::{
+    AASigned, TempoSignature, TempoSignedAuthorization, key_authorization::SignedKeyAuthorization,
+};
 
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
-    transaction::{
-        AASigned, KeyAuthorization, TempoSignature, TempoSignedAuthorization,
-        key_authorization::SignedKeyAuthorization,
-    },
+    transaction::KeyAuthorization,
 };
 
 /// Tempo transaction type byte (0x76)
@@ -755,6 +755,7 @@ impl Decodable for TempoTransaction {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)
