@@ -2,13 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use alloy_consensus::BlockHeader as _;
 use commonware_codec::{Decode as _, Encode as _};
 use commonware_consensus::{Block as _, types::Epoch};
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
-        dkg::{self, Arbiter, Player, arbiter},
+        dkg::{self, Player, arbiter},
         primitives::{group, poly::Public, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey},
@@ -26,16 +25,22 @@ use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use tracing::{Level, debug, error, info, instrument, warn};
 
-use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome};
+use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome, PublicOutcome};
 
 use crate::{
-    consensus::block::Block,
-    dkg::{HardforkRegime, manager::read_write_transaction::DkgReadWriteTransaction},
+    consensus::{Digest, block::Block},
+    dkg::{
+        HardforkRegime, ceremony::tree::TreeOfDealings,
+        manager::read_write_transaction::DkgReadWriteTransaction,
+    },
 };
 
 mod payload;
 mod persisted;
-pub(crate) use persisted::State;
+mod tree;
+
+pub(super) use persisted::State;
+pub(in crate::dkg) use tree::HasHoles;
 
 use payload::{Message, Payload, Share};
 use persisted::Dealing;
@@ -62,6 +67,12 @@ pub(super) struct Config {
 
     /// The current epoch.
     pub(super) epoch: Epoch,
+
+    /// The epoch length set at genesis.
+    pub(super) epoch_length: u64,
+
+    /// The hardfork regime this ceremony runs under.
+    pub(super) hardfork_regime: HardforkRegime,
 
     /// The dealers in the round.
     pub(super) dealers: Ordered<PublicKey>,
@@ -97,12 +108,11 @@ where
     /// It is an invariant that `players_indexed.get_index_of(players[i]) == i`.
     players_indexed: IndexSet<PublicKey>,
 
-    /// The local [Arbiter] for this round.
-    arbiter: Arbiter<PublicKey, MinSig>,
-
     receiver: SubReceiver<TReceiver>,
     sender: SubSender<TSender>,
     metrics: Metrics,
+
+    tree_of_dealings: TreeOfDealings,
 }
 
 impl<TReceiver, TSender> Ceremony<TReceiver, TSender>
@@ -146,13 +156,6 @@ where
             )
         });
 
-        let mut arbiter = Arbiter::new(
-            Some(config.public.clone()),
-            config.dealers.clone(),
-            config.players.clone(),
-            WEIGHT_RECOVERY_CONCURRENCY,
-        );
-
         let mut dealer_me = None;
 
         debug!("attempting to read ceremony state from disk");
@@ -164,37 +167,9 @@ where
 
         if let Some(recovered) = recovered {
             info!("found a previous ceremony state written to disk; recovering it");
-            for outcome in &recovered.outcomes {
-                let ack_indices = outcome
-                    .acks()
-                    .iter()
-                    .filter_map(|ack| {
-                        let idx = players_indexed.get_index_of(ack.player());
-                        if idx.is_none() {
-                            warn!(
-                                player = %ack.player(),
-                                "ack for player recovered from disk not among players of this ceremony",
-                            );
-                        }
-                        idx.map(|idx| idx as u32)
-                    })
-                    .collect::<Vec<_>>();
 
-                if let Err(error) = arbiter
-                    .commitment(
-                        outcome.dealer().clone(),
-                        outcome.commitment().clone(),
-                        ack_indices,
-                        outcome.reveals().to_vec(),
-                    )
-                    .wrap_err("failed to verify and track commitment")
-                {
-                    warn!(
-                        %error,
-                        "failed to update arbiter with metadata recovered from disk",
-                    );
-                }
-            }
+            // Ignored recovered.outcomes now. On the next finalized block, we
+            // will backfill the holes from the marshal actor.
 
             if let Some(me) = &mut player_me {
                 for (dealer, commitment, share) in recovered.received_shares.clone() {
@@ -203,6 +178,8 @@ where
                 }
             }
 
+            // On recovery, ignore the dealings. We will fetch the missing
+            // blocks from the marshal actor
             if let Some(dealing) = recovered.dealing.clone() {
                 let (mut dkg_dealer, _, _) = dkg::Dealer::<PublicKey, MinSig>::new(
                     context,
@@ -279,17 +256,67 @@ where
                 share,
             },
         );
+        let tree_of_dealings = TreeOfDealings::new(
+            config.epoch,
+            config.epoch_length,
+            config.public.clone(),
+            config.dealers.clone(),
+            config.players.clone(),
+            config.hardfork_regime,
+            config.namespace.clone(),
+        );
         Ok(Self {
             config,
             previous_role: previous,
             dealer_me,
             player_me,
             players_indexed,
-            arbiter,
             receiver,
             sender,
             metrics,
+            tree_of_dealings,
         })
+    }
+
+    #[instrument(
+        skip_all,
+        fields(epoch = self.config.epoch, block.height = block.height()),
+    )]
+    pub(super) async fn add_finalized_block<TContext>(
+        &mut self,
+        tx: &mut DkgReadWriteTransaction<TContext>,
+        block: Block,
+    ) where
+        TContext: Clock + RuntimeMetrics + Storage,
+    {
+        if let Some(dealer) = self.tree_of_dealings.add_finalized(block)
+            && self.config.me.public_key() == dealer
+            && let Some(dealer_me) = &mut self.dealer_me
+        {
+            let _ = dealer_me.outcome.take();
+            tx.update_ceremony(self.epoch(), |info| {
+                let _ = info.dealing_outcome.take();
+            })
+            .await
+            .expect("must persist deal outcome");
+
+            info!(
+                "found own dealing in a block; removed it from ceremony to \
+                not include it again"
+            );
+        }
+    }
+
+    #[instrument(
+        skip_all,
+        fields(epoch = self.config.epoch, block.height = block.height()),
+    )]
+    pub(super) fn add_notarized_block(&mut self, block: Block) {
+        self.tree_of_dealings.add_notarized(block);
+    }
+
+    pub(super) fn find_gaps_up_to_height(&self, height: u64) -> Vec<u64> {
+        self.tree_of_dealings.find_gaps_up_to_height(height)
     }
 
     /// Sends shares to all players for acknowledgements.
@@ -585,145 +612,6 @@ where
         Ok("recorded share and returned signed ack to peer")
     }
 
-    /// Process `block` by reading [`IntermediateOutcome`] from its header.
-    ///
-    /// If the block contains this outcome, the ceremony will verify it and
-    /// track it in its arbiter.
-    #[instrument(skip_all, fields(epoch = self.epoch(), block.height = block.height()), err)]
-    pub(super) async fn process_dealings_in_block<TContext>(
-        &mut self,
-        tx: &mut DkgReadWriteTransaction<TContext>,
-        block: &Block,
-        hardfork_regime: HardforkRegime,
-    ) -> eyre::Result<()>
-    where
-        TContext: Clock + RuntimeMetrics + Storage,
-    {
-        // Track empty vs failed metrics separately
-        if block.header().extra_data().is_empty() {
-            self.metrics.dealings_empty.inc();
-            return Ok(());
-        }
-
-        let block_outcome = match block
-            .try_read_ceremony_deal_outcome()
-            .wrap_err("failed reading intermediate DKG dealings from block")
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.metrics.bad_dealings.inc();
-                return Err(error);
-            }
-        };
-
-        info!(
-            dealer = %block_outcome.dealer(),
-            "found DKG dealing in block",
-        );
-
-        // Ensure the outcome is for the current round.
-        ensure!(
-            block_outcome.epoch() == self.epoch(),
-            "deal outcome in block was for epoch `{}`, but current dkg ceremony is for epoch `{}`",
-            block_outcome.epoch(),
-            self.epoch(),
-        );
-
-        ensure!(
-            self.dealers().position(block_outcome.dealer()).is_some(),
-            "dealer `{}` recorded in dealing outcome is not among the dealers of this ceremony",
-            block_outcome.dealer(),
-        );
-
-        // Verify the dealer's signature before considering processing the outcome.
-        let is_verified = match hardfork_regime {
-            HardforkRegime::PostAllegretto => {
-                block_outcome.verify(&union(&self.config.namespace, OUTCOME_NAMESPACE))
-            }
-            HardforkRegime::PreAllegretto => block_outcome
-                .verify_pre_allegretto(&union(&self.config.namespace, OUTCOME_NAMESPACE)),
-        };
-        if !is_verified {
-            self.metrics.bad_dealings.inc();
-            bail!("intermediate DKG dealing could not be verified");
-        }
-
-        // Verify all ack signatures
-        if !block_outcome.acks().iter().all(|ack| {
-            self.players_indexed.contains(ack.player())
-                && ack.verify(
-                    &union(&self.config.namespace, ACK_NAMESPACE),
-                    ack.player(),
-                    self.epoch(),
-                    block_outcome.dealer(),
-                    block_outcome.commitment(),
-                )
-        }) {
-            self.arbiter.disqualify(block_outcome.dealer().clone());
-            bail!("invalid ack signatures; disqualifying dealer");
-        }
-
-        // Check dealer commitment
-        let ack_indices = block_outcome
-            .acks()
-            .iter()
-            .filter_map(|ack| {
-                let idx = self.players_indexed.get_index_of(ack.player());
-                if idx.is_none() {
-                    warn!(
-                        player = %ack.player(),
-                        "ack for player stored on disk not among players of this ceremony",
-                    );
-                }
-                idx.map(|idx| idx as u32)
-            })
-            .collect::<Vec<_>>();
-
-        self.arbiter
-            .commitment(
-                block_outcome.dealer().clone(),
-                block_outcome.commitment().clone(),
-                ack_indices,
-                block_outcome.reveals().to_vec(),
-            )
-            .wrap_err("failed to track dealer outcome in arbiter")?;
-
-        let block_dealer = block_outcome.dealer().clone();
-        tx.update_ceremony(self.epoch(), |info| {
-            if let Some(pos) = info
-                .outcomes
-                .iter()
-                .position(|outcome| outcome.dealer() == block_outcome.dealer())
-            {
-                info.outcomes[pos] = block_outcome.clone();
-            } else {
-                info.outcomes.push(block_outcome.clone());
-            }
-        })
-        .await
-        .expect("must persist deal outcome");
-
-        if let Some(dealer_me) = &mut self.dealer_me
-            && block_dealer == self.config.me.public_key()
-        {
-            let _ = dealer_me.outcome.take();
-
-            tx.update_ceremony(self.epoch(), |info| {
-                let _ = info.dealing_outcome.take();
-            })
-            .await
-            .expect("must persist deal outcome");
-
-            info!(
-                "found own dealing in a block; removed it from ceremony to \
-                not include it again"
-            );
-        }
-
-        self.metrics.dealings_read.inc();
-        Ok(())
-    }
-
     /// Constructs and stores the intermediate ceremony outcome.
     ///
     /// If the node is not a dealer, then this is a no-op.
@@ -796,19 +684,21 @@ where
         Ok(())
     }
 
-    /// Finalizes the ceremony, returning the participants and key pair for the
-    /// next epoch.
+    /// Returns the outcome of the DKG ceremony given the target digest.
     ///
-    /// If the ceremony was successful, the players of the ceremony and the new
-    /// public key will be returned in Ok-position. If this node was a player,
-    /// it will also contain its private share.
+    /// If the DKG ceremony contained all blocks leading up to the target,
+    /// the DKG outcome will be in Ok-position.
     ///
-    /// If the ceremony failed, the dealers of the ceremony and the old public
-    /// key will be returned in Err-position. If this node was a dealer, this
-    /// will include its old private share.
+    /// If the DKG ceremony did not contain all blocks leading up to the target,
+    /// the missing ... will be in error position.
     #[instrument(skip_all, fields(epoch = self.epoch()))]
-    pub(super) fn finalize(self) -> Result<PrivateOutcome, PrivateOutcome> {
-        let (result, disqualified) = self.arbiter.finalize();
+    pub(super) fn finalize(
+        &self,
+        digest: Digest,
+    ) -> Result<Result<PrivateOutcome, PrivateOutcome>, HasHoles> {
+        let (result, disqualified) = self.tree_of_dealings.finalize_up_to_digest(digest)?;
+
+        let new_epoch = self.epoch() + 1;
 
         let arbiter::Output {
             public,
@@ -823,15 +713,16 @@ where
                     "failed to finalize arbiter; aborting ceremony and \
                     returning previous participants and polynomial",
                 );
-                return Err(PrivateOutcome {
-                    participants: self.config.dealers,
-                    role: self.previous_role,
-                });
+                return Ok(Err(PrivateOutcome {
+                    epoch: new_epoch,
+                    participants: self.config.dealers.clone(),
+                    role: self.previous_role.clone(),
+                }));
             }
         };
 
         let mut my_share = None;
-        if let Some(player_me) = self.player_me {
+        if let Some(player_me) = self.player_me.clone() {
             let my_index = self
                 .players_indexed
                 .get_index_of(&self.config.me.public_key())
@@ -875,10 +766,11 @@ where
             "successfully finalized DKG ceremony; returning new participants polynomial"
         );
 
-        Ok(PrivateOutcome {
-            participants: self.config.players,
+        Ok(Ok(PrivateOutcome {
+            epoch: new_epoch,
+            participants: self.config.players.clone(),
             role: my_role,
-        })
+        }))
     }
 
     pub(super) fn epoch(&self) -> Epoch {
@@ -925,6 +817,9 @@ struct Dealer {
 ///
 /// Called private because it potentially contains the private key share.
 pub(super) struct PrivateOutcome {
+    /// The epoch for which this outcome is constructed. Usually ceremony.epoch + 1.
+    pub(super) epoch: Epoch,
+
     /// The participants of the new epoch. If successful, this will the players
     /// in the ceremony. If not successful, these are the dealers.
     pub(super) participants: Ordered<PublicKey>,
@@ -933,8 +828,19 @@ pub(super) struct PrivateOutcome {
     pub(super) role: Role,
 }
 
+impl PrivateOutcome {
+    pub(super) fn to_public_outcome(&self) -> PublicOutcome {
+        PublicOutcome {
+            epoch: self.epoch,
+            participants: self.participants.clone(),
+            public: self.role.to_public_polynomial(),
+        }
+    }
+}
+
 /// The resulting keys of the round, dictating whether the node will be a
 /// signer or a verifier in the next epoch.
+#[derive(Clone)]
 pub(super) enum Role {
     /// The new group polynomial and the local share, if the node was a player.
     Signer {
@@ -956,6 +862,12 @@ impl Role {
                 share,
             } => (polynomial, Some(share)),
             Self::Verifier { public: polynomial } => (polynomial, None),
+        }
+    }
+
+    pub(super) fn to_public_polynomial(&self) -> Public<MinSig> {
+        match self {
+            Self::Signer { public, .. } | Self::Verifier { public } => public.clone(),
         }
     }
 }

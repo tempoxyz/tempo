@@ -74,12 +74,39 @@ impl Precompile for StablecoinExchange {
                 })
             }
 
+            IStablecoinExchange::nextOrderIdCall::SELECTOR => {
+                if !self.storage.spec().is_allegro_moderato() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+                view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
+            }
+
             IStablecoinExchange::activeOrderIdCall::SELECTOR => {
+                if self.storage.spec().is_allegro_moderato() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
                 view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
                     self.active_order_id()
                 })
             }
+
             IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
+                if self.storage.spec().is_allegro_moderato() {
+                    return unknown_selector(
+                        selector,
+                        self.storage.gas_used(),
+                        self.storage.spec(),
+                    );
+                }
+
                 view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
                     self.pending_order_id()
                 })
@@ -200,14 +227,16 @@ mod tests {
         path_usd::TRANSFER_ROLE,
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{TIP20Setup, check_selector_coverage},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
-        sol_types::{SolCall, SolValue},
+        sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
+    use tempo_contracts::precompiles::{
+        IStablecoinExchange::IStablecoinExchangeCalls, UnknownFunctionSelector,
+    };
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity()
@@ -444,6 +473,29 @@ mod tests {
                 returned_value, 102_000,
                 "Post-moderato MAX_PRICE should be 102_000"
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pending_order_id_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let sender = Address::ZERO;
+            let call = IStablecoinExchange::pendingOrderIdCall {};
+            let calldata = call.abi_encode();
+
+            let result = exchange.call(&calldata, sender);
+
+            assert!(result.is_ok());
+            let output = result?;
+            assert!(output.reverted);
+            assert!(UnknownFunctionSelector::abi_decode(&output.bytes).is_ok());
+
             Ok(())
         })
     }
@@ -702,8 +754,8 @@ mod tests {
     }
 
     #[test]
-    fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+    fn stablecoin_exchange_test_selector_coverage_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
 
@@ -714,7 +766,36 @@ mod tests {
                 IStablecoinExchangeCalls::name_by_selector,
             );
 
-            assert_full_coverage([unsupported]);
+            // In pre-AllegroModerato, nextOrderId should be unsupported
+            let expected_unsupported: Vec<&str> =
+                unsupported.iter().map(|(_, name)| *name).collect();
+            assert_eq!(expected_unsupported, vec!["nextOrderId"]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn stablecoin_exchange_test_selector_coverage_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+
+            let unsupported = check_selector_coverage(
+                &mut exchange,
+                IStablecoinExchangeCalls::SELECTORS,
+                "IStablecoinExchange",
+                IStablecoinExchangeCalls::name_by_selector,
+            );
+
+            // In post-AllegroModerato, activeOrderId and pendingOrderId should be unsupported
+            let mut expected_unsupported: Vec<&str> =
+                unsupported.iter().map(|(_, name)| *name).collect();
+            expected_unsupported.sort();
+            assert_eq!(
+                expected_unsupported,
+                vec!["activeOrderId", "pendingOrderId"]
+            );
 
             Ok(())
         })

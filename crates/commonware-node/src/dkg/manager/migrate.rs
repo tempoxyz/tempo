@@ -8,7 +8,6 @@ use tracing::{info, instrument};
 use crate::dkg::{
     ceremony,
     manager::{
-        DkgOutcome,
         actor::{post_allegretto, pre_allegretto},
         read_write_transaction::DkgReadWriteTransaction,
         validators::ValidatorState,
@@ -17,7 +16,6 @@ use crate::dkg::{
 
 const CURRENT_EPOCH_KEY: U64 = U64::new(0);
 const PREVIOUS_EPOCH_KEY: U64 = U64::new(1);
-const DKG_OUTCOME_KEY: U64 = U64::new(0);
 
 /// Helper to initialize a metadata store for migration.
 async fn init_metadata<TContext, V>(
@@ -80,9 +78,6 @@ where
     migrate_post_allegretto_epoch_metadata(context, partition_prefix, tx)
         .await
         .wrap_err("failed to migrate post-allegretto epoch metadata")?;
-    migrate_dkg_outcome_metadata(context, partition_prefix, tx)
-        .await
-        .wrap_err("failed to migrate DKG outcome metadata")?;
     migrate_validators_metadata(context, partition_prefix, tx, current_epoch)
         .await
         .wrap_err("failed to migrate validators metadata")?;
@@ -220,29 +215,6 @@ where
             "migrating previous epoch state"
         );
         tx.set_previous_epoch(previous_epoch.clone());
-    }
-
-    Ok(())
-}
-
-async fn migrate_dkg_outcome_metadata<TContext>(
-    context: &ContextCell<TContext>,
-    partition_prefix: &str,
-    tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
-) -> Result<()>
-where
-    TContext: Clock + Metrics + Storage,
-{
-    let dkg_outcome_metadata: Metadata<ContextCell<TContext>, U64, DkgOutcome> = init_metadata(
-        context,
-        "dkg_outcome_metadata",
-        format!("{partition_prefix}_next_dkg_outcome"),
-    )
-    .await;
-
-    if let Some(outcome) = dkg_outcome_metadata.get(&DKG_OUTCOME_KEY) {
-        info!(epoch = outcome.epoch, "migrating DKG outcome");
-        tx.set_dkg_outcome(outcome.clone());
     }
 
     Ok(())
