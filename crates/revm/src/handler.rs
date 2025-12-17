@@ -21,8 +21,8 @@ use revm::{
         Gas, InitialAndFloorGas,
         gas::{
             ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, CALLVALUE, COLD_ACCOUNT_ACCESS_COST,
-            COLD_SLOAD_COST, CREATE, STANDARD_TOKEN_COST, calc_tx_floor_cost,
-            get_tokens_in_calldata, initcode_cost,
+            COLD_SLOAD_COST, CREATE, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
+            calc_tx_floor_cost, get_tokens_in_calldata, initcode_cost,
         },
         interpreter::EthInterpreter,
     },
@@ -68,6 +68,12 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
+
+/// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset)
+const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
+
+/// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
+const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
 
 /// Hashed account code of default 7702 delegate deployment
 const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
@@ -139,6 +145,38 @@ fn calculate_key_authorization_gas(
 
     // Total: base (27k) + sig verification + limits
     KEY_AUTH_BASE_GAS + sig_gas + limits_gas
+}
+
+/// Calculates the gas cost for 2D nonce usage.
+///
+/// Gas schedule (post-AllegroModerato):
+/// - Protocol nonce (key 0): 0 gas (no additional cost)
+/// - Existing user key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
+/// - New user key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
+#[inline]
+fn calculate_2d_nonce_gas(
+    nonce_manager: &NonceManager,
+    caller: Address,
+    nonce_key: U256,
+) -> Result<u64, TempoPrecompileError> {
+    // Protocol nonce (key 0) - no additional cost
+    if nonce_key.is_zero() {
+        return Ok(0);
+    }
+
+    // Get current nonce for this key
+    let current_nonce = nonce_manager.get_nonce(getNonceCall {
+        account: caller,
+        nonceKey: nonce_key,
+    })?;
+
+    if current_nonce > 0 {
+        // Existing key - cold SLOAD + warm SSTORE reset
+        Ok(EXISTING_NONCE_KEY_GAS)
+    } else {
+        // New key - cold SLOAD + SSTORE set (0 -> non-zero)
+        Ok(NEW_NONCE_KEY_GAS)
+    }
 }
 
 /// Tempo EVM [`Handler`] implementation with Tempo specific modifications:
@@ -447,14 +485,20 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
+        // Add 2D nonce gas to the initial gas
+        let adjusted_gas = InitialAndFloorGas::new(
+            init_and_floor_gas.initial_gas + evm.nonce_2d_gas,
+            init_and_floor_gas.floor_gas,
+        );
+
         // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, init_and_floor_gas, calls)
+            self.execute_multi_call(evm, &adjusted_gas, calls)
         } else {
             // Standard transaction - use single-call execution
-            self.execute_single_call(evm, init_and_floor_gas)
+            self.execute_single_call(evm, &adjusted_gas)
         }
     }
 
@@ -599,9 +643,25 @@ where
         // modify account nonce and touch the account.
         caller_account.touch();
 
+        let nonce_2d_gas;
+
         if !nonce_key.is_zero() {
-            StorageCtx::enter_evm(journal, block, cfg, || {
+            nonce_2d_gas = StorageCtx::enter_evm(journal, block, cfg, || {
                 let mut nonce_manager = NonceManager::new();
+
+                // Calculate 2D nonce gas (only post-AllegroModerato)
+                let gas = if cfg.spec.is_allegro_moderato() {
+                    calculate_2d_nonce_gas(&nonce_manager, tx.caller(), nonce_key).map_err(
+                        |err| match err {
+                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                            err => {
+                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
+                            }
+                        },
+                    )?
+                } else {
+                    0
+                };
 
                 if !cfg.is_nonce_check_disabled() {
                     let tx_nonce = tx.nonce();
@@ -648,9 +708,10 @@ where
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                Result::<(), EVMError<DB::Error, TempoInvalidTransaction>>::Ok(())
+                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(gas)
             })?;
         } else {
+            nonce_2d_gas = 0;
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
             //
             // Always bump nonce for AA transactions.
@@ -919,6 +980,7 @@ where
         } else {
             journal.checkpoint_commit();
             evm.collected_fee = gas_balance_spending;
+            evm.nonce_2d_gas = nonce_2d_gas;
 
             Ok(())
         }
@@ -1339,14 +1401,20 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
+        // Add 2D nonce gas to the initial gas (calculated in validate_against_state_and_deduct_caller)
+        let adjusted_gas = InitialAndFloorGas::new(
+            init_and_floor_gas.initial_gas + evm.nonce_2d_gas,
+            init_and_floor_gas.floor_gas,
+        );
+
         // Check if this is an AA transaction by checking for tempo_tx_env
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, init_and_floor_gas, calls)
+            self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
         } else {
             // Standard transaction - use single-call execution
-            self.inspect_execute_single_call(evm, init_and_floor_gas)
+            self.inspect_execute_single_call(evm, &adjusted_gas)
         }
     }
 }
@@ -1393,11 +1461,13 @@ mod tests {
     use alloy_primitives::{Address, U256};
     use revm::{
         Context, Journal, MainContext,
+        context::CfgEnv,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
         state::Account,
     };
+    use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
@@ -2119,5 +2189,52 @@ mod tests {
             gas_with_key_auth.initial_gas, expected_with,
             "Gas with key auth should match expected"
         );
+    }
+
+    #[test]
+    fn test_2d_nonce_gas_schedule() {
+        let mut journal = create_test_journal();
+        let block = TempoBlockEnv::default();
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let caller = Address::random();
+
+        // Protocol nonce (key 0): always 0 gas
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&nm, caller, U256::from(0)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, 0);
+
+        // New key (nonce == 0): 22,100 gas (cold SLOAD + SSTORE set)
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&nm, caller, U256::from(1)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, NEW_NONCE_KEY_GAS);
+
+        // Increment the nonce to make it an existing key
+        StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            NonceManager::new()
+                .increment_nonce(caller, U256::from(1))
+                .unwrap();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(())
+        })
+        .unwrap();
+
+        // Existing key (nonce > 0): 5,000 gas (cold SLOAD + warm SSTORE reset)
+        let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+            let nm = NonceManager::new();
+            Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                calculate_2d_nonce_gas(&nm, caller, U256::from(1)).unwrap(),
+            )
+        })
+        .unwrap();
+        assert_eq!(gas, EXISTING_NONCE_KEY_GAS);
     }
 }

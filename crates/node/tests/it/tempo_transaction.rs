@@ -2650,7 +2650,7 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     let baseline_gas: String = provider
         .raw_request(
             "eth_estimateGas".into(),
-            [serde_json::to_value(&base_tx_request())?],
+            [serde_json::to_value(base_tx_request())?],
         )
         .await?;
     let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
@@ -2748,7 +2748,7 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let baseline_gas: String = provider
         .raw_request(
             "eth_estimateGas".into(),
-            [serde_json::to_value(&base_tx_request())?],
+            [serde_json::to_value(base_tx_request())?],
         )
         .await?;
     let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;

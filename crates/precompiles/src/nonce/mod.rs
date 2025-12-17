@@ -17,18 +17,19 @@ use alloy::primitives::{Address, U256};
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     mapping(address => uint256) public activeKeyCount;                  // slot 1
+///     mapping(address => uint256) public activeKeyCount;                  // slot 1 (deprecated post-AllegroModerato)
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
-/// - Slot 1: Active key count - keccak256(abi.encode(account, 1))
+/// - Slot 1: Active key count - keccak256(abi.encode(account, 1)) (deprecated post-AllegroModerato)
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
+    /// Deprecated post-AllegroModerato: tracks number of active nonce keys per account
     active_key_count: Mapping<Address, U256>,
 }
 
@@ -51,6 +52,9 @@ impl NonceManager {
     }
 
     /// Get the number of active user nonce keys for an account
+    ///
+    /// Deprecated: This function is only available pre-AllegroModerato for backwards compatibility.
+    /// Post-AllegroModerato, the dispatch layer returns unknown_selector error.
     pub fn get_active_nonce_key_count(
         &self,
         call: INonce::getActiveNonceKeyCountCall,
@@ -66,8 +70,9 @@ impl NonceManager {
 
         let current = self.nonces.at(account).at(nonce_key).read()?;
 
-        // If transitioning from 0 to 1, increment active key count
-        if current == 0 {
+        // Pre-AllegroModerato: If transitioning from 0 to 1, increment active key count
+        // This is deprecated post-AllegroModerato where we use fixed gas pricing instead
+        if current == 0 && !self.storage.spec().is_allegro_moderato() {
             self.increment_active_key_count(account)?;
         }
 
@@ -88,7 +93,11 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    /// Increment the active key count for an account
+    /// Increment the active key count for an account (deprecated post-AllegroModerato)
+    ///
+    /// This function is only called pre-AllegroModerato to maintain backwards compatibility.
+    /// Post-AllegroModerato, we use fixed gas pricing based on whether the nonce slot is
+    /// zero or non-zero, rather than tracking the total count of active keys.
     fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
         let current = self.active_key_count.at(account).read()?;
 
@@ -98,7 +107,7 @@ impl NonceManager {
 
         self.active_key_count.at(account).write(new_count)?;
 
-        // Emit ActiveKeyCountChanged event (only after Moderato hardfork)
+        // Emit ActiveKeyCountChanged event (only between Moderato and AllegroModerato)
         if self.storage.spec().is_moderato() {
             self.emit_event(NonceEvent::ActiveKeyCountChanged(
                 INonce::ActiveKeyCountChanged {
