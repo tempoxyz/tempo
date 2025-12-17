@@ -7,7 +7,6 @@ Validator nodes are responsible for securing the network by validating blocks an
 ## Cryptographic key hierarchy
 
 All validators have two kinds of keys:
-* validator wallet - the recipient of transaction fees in your validators' proposed blocks
 * signing key - this is an ED25519 keypair used to identify your validator amongst others
 * signing share - this is a share of a BLS12-381 keypair used to sign block notarizations and finalizations
 
@@ -48,7 +47,7 @@ tempo node --datadir <datadir> \
     --consensus.fee-recipient <validator_wallet_address> \
 ```
 
-The notable difference between RPC nodes and validator nodes is the omission of the `--follow` argument and the addition of the `--consensus.signing-key` and `--consensus.fee-recipient` arguments.
+The notable difference between RPC nodes and validator nodes is the omission of the `--follow` argument and the addition of the `--consensus.signing-key` and `--consensus.fee-recipient` arguments. The fee recipient is the address that will receive transaction fees in your validators' proposed blocks.
 
 Once your node is up, it may not start syncing immediately. This is because your node might not be part of the active set. In most cases, your validator will enter the active set in 48-72 hours after the on-chain addition of the validator identity.
 
