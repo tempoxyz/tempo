@@ -1,4 +1,5 @@
 use commonware_codec::EncodeSize;
+use commonware_consensus::types::Epoch;
 use commonware_runtime::{Clock, ContextCell, Metrics, Storage};
 use commonware_storage::metadata::{self, Metadata};
 use commonware_utils::sequence::U64;
@@ -91,7 +92,7 @@ where
 async fn get_current_epoch_for_migration<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
-) -> Option<u64>
+) -> Option<Epoch>
 where
     TContext: Clock + Metrics + Storage,
 {
@@ -122,7 +123,7 @@ async fn migrate_ceremony_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
     tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
-    current_epoch: Option<u64>,
+    current_epoch: Option<Epoch>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -136,9 +137,10 @@ where
 
     // Ceremonies are pruned after ~2 epochs, so only recent ones exist.
     if let Some(current) = current_epoch {
-        for epoch in current.saturating_sub(2)..=current {
-            if let Some(state) = ceremony_metadata.get(&U64::from(epoch)) {
-                info!(epoch, "migrating ceremony state");
+        for epoch_val in current.get().saturating_sub(2)..=current.get() {
+            let epoch = Epoch::new(epoch_val);
+            if let Some(state) = ceremony_metadata.get(&U64::from(epoch_val)) {
+                info!(epoch = epoch_val, "migrating ceremony state");
                 tx.set_ceremony(epoch, state.clone());
             }
         }
@@ -193,7 +195,7 @@ where
 fn migrate_epoch_states<TContext, E>(
     epoch_metadata: &Metadata<ContextCell<TContext>, U64, E>,
     tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
-    get_epoch: impl Fn(&E) -> u64,
+    get_epoch: impl Fn(&E) -> Epoch,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -201,7 +203,7 @@ where
 {
     if let Some(current_epoch) = epoch_metadata.get(&CURRENT_EPOCH_KEY) {
         info!(
-            epoch = get_epoch(current_epoch),
+            epoch = get_epoch(current_epoch).get(),
             regime = ?E::REGIME,
             "migrating current epoch state"
         );
@@ -210,7 +212,7 @@ where
 
     if let Some(previous_epoch) = epoch_metadata.get(&PREVIOUS_EPOCH_KEY) {
         info!(
-            epoch = get_epoch(previous_epoch),
+            epoch = get_epoch(previous_epoch).get(),
             regime = ?E::REGIME,
             "migrating previous epoch state"
         );
@@ -224,7 +226,7 @@ async fn migrate_validators_metadata<TContext>(
     context: &ContextCell<TContext>,
     partition_prefix: &str,
     tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
-    current_epoch: Option<u64>,
+    current_epoch: Option<Epoch>,
 ) -> Result<()>
 where
     TContext: Clock + Metrics + Storage,
@@ -238,9 +240,10 @@ where
 
     // Validators are tracked for current and last 2-3 epochs.
     if let Some(current) = current_epoch {
-        for epoch in current.saturating_sub(3)..=current {
-            if let Some(state) = validators_metadata.get(&U64::from(epoch)) {
-                info!(epoch, "migrating validators state");
+        for epoch_val in current.get().saturating_sub(3)..=current.get() {
+            let epoch = Epoch::new(epoch_val);
+            if let Some(state) = validators_metadata.get(&U64::from(epoch_val)) {
+                info!(epoch = epoch_val, "migrating validators state");
                 tx.set_validators(epoch, state.clone());
             }
         }

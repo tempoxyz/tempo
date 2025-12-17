@@ -2,15 +2,16 @@ use crate::{
     db,
     dkg::{HardforkRegime, RegimeEpochState, ceremony, manager::ValidatorState},
 };
+use commonware_consensus::types::Epoch;
 use commonware_runtime::{Clock, Metrics, Storage};
 
 // Key helpers for typed storage
-fn ceremony_key(epoch: u64) -> String {
-    format!("ceremony_{epoch}")
+fn ceremony_key(epoch: Epoch) -> String {
+    format!("ceremony_{}", epoch.get())
 }
 
-fn validators_key(epoch: u64) -> String {
-    format!("validators_{epoch}")
+fn validators_key(epoch: Epoch) -> String {
+    format!("validators_{}", epoch.get())
 }
 
 const LAST_PROCESSED_HEIGHT_KEY: &str = "last_processed_height";
@@ -75,25 +76,25 @@ where
     /// Get ceremony state for a specific epoch.
     pub(in crate::dkg) async fn get_ceremony(
         &self,
-        epoch: u64,
+        epoch: Epoch,
     ) -> Result<Option<ceremony::State>, eyre::Error> {
         self.0.get(ceremony_key(epoch)).await
     }
 
     /// Set ceremony state for a specific epoch.
-    pub(in crate::dkg) fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) {
+    pub(in crate::dkg) fn set_ceremony(&mut self, epoch: Epoch, state: ceremony::State) {
         self.0.insert(ceremony_key(epoch), state)
     }
 
     /// Remove ceremony state for a specific epoch.
-    pub(super) fn remove_ceremony(&mut self, epoch: u64) {
+    pub(super) fn remove_ceremony(&mut self, epoch: Epoch) {
         self.0.remove(ceremony_key(epoch))
     }
 
     /// Update ceremony state for a specific epoch using a closure.
     pub(in crate::dkg) async fn update_ceremony<F>(
         &mut self,
-        epoch: u64,
+        epoch: Epoch,
         f: F,
     ) -> Result<(), eyre::Error>
     where
@@ -110,18 +111,18 @@ where
     /// Get validators state for a specific epoch.
     pub(super) async fn get_validators(
         &self,
-        epoch: u64,
+        epoch: Epoch,
     ) -> Result<Option<ValidatorState>, eyre::Error> {
         self.0.get(validators_key(epoch)).await
     }
 
     /// Set validators state for a specific epoch.
-    pub(super) fn set_validators(&mut self, epoch: u64, state: ValidatorState) {
+    pub(super) fn set_validators(&mut self, epoch: Epoch, state: ValidatorState) {
         self.0.insert(validators_key(epoch), state)
     }
 
     /// Remove validators state for a specific epoch.
-    pub(super) fn remove_validators(&mut self, epoch: u64) {
+    pub(super) fn remove_validators(&mut self, epoch: Epoch) {
         self.0.remove(validators_key(epoch))
     }
 

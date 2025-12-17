@@ -16,6 +16,7 @@ use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::primitives::{poly::Public, variant::MinSig},
     ed25519::PublicKey,
@@ -168,7 +169,7 @@ impl Builder {
                 .wrap_err("failed to insert allegretto timestamp into genesis")?;
 
             genesis.extra_data = PublicOutcome {
-                epoch: 0,
+                epoch: Epoch::zero(),
                 participants: validators.public_keys().clone(),
                 public: public_polynomial.into_inner(),
             }

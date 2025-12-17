@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use alloy_consensus::BlockHeader as _;
 use commonware_codec::{DecodeExt as _, EncodeSize, Read, Write};
 use commonware_consensus::{
-    Block as _, Reporter as _, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+    Block as _, Reporter as _,
+    simplex::signing_scheme::bls12381_threshold::Scheme,
+    types::{Epoch, EpochDelta},
     utils,
 };
 use commonware_cryptography::{
@@ -64,9 +66,9 @@ where
                 })?;
 
             ensure!(
-                initial_dkg_outcome.epoch == 0,
+                initial_dkg_outcome.epoch == Epoch::zero(),
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
-                initial_dkg_outcome.epoch
+                initial_dkg_outcome.epoch.get()
             );
 
             let our_share = self.config.initial_share.clone();
@@ -92,7 +94,7 @@ where
             let initial_validators = validators::read_from_contract(
                 0,
                 &self.config.execution_node,
-                0,
+                Epoch::zero(),
                 self.config.epoch_length,
             )
             .await
@@ -122,7 +124,7 @@ where
             tx.set_epoch(EpochState {
                 dkg_outcome: DkgOutcome {
                     dkg_successful: true,
-                    epoch: 0,
+                    epoch: Epoch::zero(),
                     participants: initial_dkg_outcome.participants,
                     public: initial_dkg_outcome.public,
                     share: self.config.initial_share.clone(),
@@ -171,9 +173,9 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()).get(),
             block.height = block.height(),
-            ceremony.epoch = %ceremony.epoch(),
+            ceremony.epoch = ceremony.epoch().get(),
         ),
     )]
     pub(super) async fn handle_finalized_post_allegretto<TReceiver, TSender>(
@@ -204,8 +206,8 @@ where
         // state on the last block of the epoch.
         if block_epoch != current_epoch_state.epoch() {
             info!(
-                block_epoch,
-                actor_epoch = current_epoch_state.epoch(),
+                block_epoch = block_epoch.get(),
+                actor_epoch = current_epoch_state.epoch().get(),
                 "block was for an epoch other than what the actor is currently tracking; ignoring",
             );
             return;
@@ -238,13 +240,13 @@ where
                 .await;
 
             // Check if we're shutting down at this epoch boundary
-            if self.config.exit.args.exit_after_epoch == Some(block_epoch) {
+            if self.config.exit.args.exit_after_epoch == Some(block_epoch.get()) {
                 // Stop the consensus engine we just started to prevent it from running
                 self.config
                     .epoch_manager
                     .report(
                         epoch::Exit {
-                            epoch: block_epoch + 1,
+                            epoch: block_epoch.next(),
                         }
                         .into(),
                     )
@@ -265,7 +267,7 @@ where
 
             // Similar for the validators: we only need to track the current
             // and last two epochs.
-            if let Some(epoch) = current_epoch_state.epoch().checked_sub(3) {
+            if let Some(epoch) = current_epoch_state.epoch().checked_sub(EpochDelta::new(3)) {
                 tx.remove_validators(epoch);
             }
         }
@@ -300,7 +302,12 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let pre_allegretto_validator_state = tx
-            .get_validators(pre_allegretto_epoch_state.epoch().saturating_sub(1))
+            .get_validators(
+                pre_allegretto_epoch_state
+                    .epoch()
+                    .previous()
+                    .unwrap_or(Epoch::zero()),
+            )
             .await
             .expect("must be able to read validators")
             .expect("it is enforced at startup that the validator state for epoch-1 is written");
@@ -386,7 +393,7 @@ where
             .expect(
                 "the post-allegretto epoch state must exist in order to start a ceremony for it",
             );
-        Span::current().record("epoch", epoch_state.epoch());
+        Span::current().record("epoch", epoch_state.epoch().get());
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -449,7 +456,7 @@ where
             .map_or_else(|e| e.epoch, |o| o.epoch);
 
         assert_eq!(
-            old_epoch_state.epoch() + 1,
+            old_epoch_state.epoch().next(),
             new_epoch,
             "sanity check: old outcome must be new outcome - 1"
         );
@@ -574,7 +581,9 @@ where
                 .await;
         }
 
-        if let Some(epoch) = epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(2)) {
+        if let Some(epoch) =
+            epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(EpochDelta::new(2)))
+        {
             tx.remove_validators(epoch);
         }
     }

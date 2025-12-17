@@ -5,6 +5,7 @@ use alloy::{
 };
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
@@ -133,7 +134,7 @@ pub(crate) struct ConsensusConfig {
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
         PublicOutcome {
-            epoch: 0,
+            epoch: Epoch::zero(),
             participants: self.peers.public_keys().clone(),
             public: self.public_polynomial.clone().into_inner(),
         }

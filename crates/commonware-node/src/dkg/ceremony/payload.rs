@@ -1,7 +1,7 @@
 //! Objects that are created as part of a ceremony and distributed.
 
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, FixedSize as _, Read, ReadExt as _, Write, varint::UInt};
+use commonware_codec::{EncodeSize, FixedSize as _, Read, ReadExt as _, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::{group, poly::Public, variant::MinSig};
 use commonware_utils::quorum;
@@ -16,7 +16,7 @@ pub(super) struct Message {
 
 impl Write for Message {
     fn write(&self, buf: &mut impl BufMut) {
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.payload.write(buf);
     }
 }
@@ -25,7 +25,7 @@ impl Read for Message {
     type Cfg = u32;
 
     fn read_cfg(buf: &mut impl Buf, num_players: &u32) -> Result<Self, commonware_codec::Error> {
-        let epoch = UInt::read(buf)?.into();
+        let epoch = Epoch::read(buf)?;
         let payload = Payload::read_cfg(buf, num_players)?;
         Ok(Self { epoch, payload })
     }
@@ -33,7 +33,7 @@ impl Read for Message {
 
 impl EncodeSize for Message {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size() + self.payload.encode_size()
+        self.epoch.encode_size() + self.payload.encode_size()
     }
 }
 
@@ -153,6 +153,7 @@ impl Read for Share {
 #[cfg(test)]
 mod tests {
     use commonware_codec::{Encode as _, Read as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer as _,
         bls12381::{dkg, primitives::variant::MinSig},
@@ -187,7 +188,7 @@ mod tests {
             &union(b"test", ACK_NAMESPACE),
             player.clone(),
             player.public_key(),
-            42,
+            Epoch::new(42),
             &dealer,
             &commitment,
         );

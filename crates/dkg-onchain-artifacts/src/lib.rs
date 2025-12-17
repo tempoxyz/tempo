@@ -47,7 +47,7 @@ impl Ack {
         commitment: &Public<MinSig>,
     ) -> Vec<u8> {
         let mut payload =
-            Vec::with_capacity(Epoch::SIZE + PublicKey::SIZE + commitment.encode_size());
+            Vec::with_capacity(epoch.encode_size() + PublicKey::SIZE + commitment.encode_size());
         epoch.write(&mut payload);
         dealer.write(&mut payload);
         commitment.write(&mut payload);
@@ -107,7 +107,7 @@ pub struct PublicOutcome {
 
 impl Write for PublicOutcome {
     fn write(&self, buf: &mut impl BufMut) {
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.participants.write(buf);
         self.public.write(buf);
     }
@@ -117,7 +117,7 @@ impl Read for PublicOutcome {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let epoch = UInt::read(buf)?.into();
+        let epoch = Epoch::read(buf)?;
         let max_participants: usize = u16::MAX.into();
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(1..=max_participants), ()))?;
         let public =
@@ -132,7 +132,7 @@ impl Read for PublicOutcome {
 
 impl EncodeSize for PublicOutcome {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size() + self.participants.encode_size() + self.public.encode_size()
+        self.epoch.encode_size() + self.participants.encode_size() + self.public.encode_size()
     }
 }
 
@@ -280,13 +280,13 @@ impl IntermediateOutcome {
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
             UInt(n_players).encode_size()
-                + UInt(epoch).encode_size()
+                + epoch.encode_size()
                 + commitment.encode_size()
                 + acks.encode_size()
                 + reveals.encode_size(),
         );
         UInt(n_players).write(&mut buf);
-        UInt(epoch).write(&mut buf);
+        epoch.write(&mut buf);
         commitment.write(&mut buf);
         acks.write(&mut buf);
         reveals.write(&mut buf);
@@ -306,12 +306,12 @@ impl IntermediateOutcome {
         reveals: &Vec<group::Share>,
     ) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            UInt(epoch).encode_size()
+            epoch.encode_size()
                 + commitment.encode_size()
                 + acks.encode_size()
                 + reveals.encode_size(),
         );
-        UInt(epoch).write(&mut buf);
+        epoch.write(&mut buf);
         commitment.write(&mut buf);
         acks.write(&mut buf);
         reveals.write(&mut buf);
@@ -348,7 +348,7 @@ impl Write for IntermediateOutcome {
         UInt(self.n_players).write(buf);
         self.dealer.write(buf);
         self.dealer_signature.write(buf);
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.commitment.write(buf);
         self.acks.write(buf);
         self.reveals.write(buf);
@@ -360,7 +360,7 @@ impl EncodeSize for IntermediateOutcome {
         UInt(self.n_players).encode_size()
             + self.dealer.encode_size()
             + self.dealer_signature.encode_size()
-            + UInt(self.epoch).encode_size()
+            + self.epoch.encode_size()
             + self.commitment.encode_size()
             + self.acks.encode_size()
             + self.reveals.encode_size()
@@ -386,7 +386,7 @@ impl Read for IntermediateOutcome {
 
         let dealer = PublicKey::read(buf)?;
         let dealer_signature = Signature::read(buf)?;
-        let epoch = UInt::read(buf)?.into();
+        let epoch = Epoch::read(buf)?;
         let commitment = Public::<MinSig>::read_cfg(buf, &(quorum(n_players as u32) as usize))?;
 
         let acks = Vec::read_cfg(buf, &(RangeCfg::from(0..=n_players as usize), ()))?;
@@ -408,6 +408,7 @@ impl Read for IntermediateOutcome {
 #[cfg(test)]
 mod tests {
     use commonware_codec::{DecodeExt as _, Encode as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer as _,
         bls12381::{dkg, primitives::variant::MinSig},
@@ -456,7 +457,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[0].clone(),
                 four_public_keys()[0].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -464,7 +465,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[1].clone(),
                 four_public_keys()[1].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -472,7 +473,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[2].clone(),
                 four_public_keys()[2].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -482,7 +483,7 @@ mod tests {
             4,
             &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
-            42,
+            Epoch::new(42),
             commitment,
             acks,
             reveals,
@@ -508,7 +509,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[0].clone(),
                 four_public_keys()[0].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -516,7 +517,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[1].clone(),
                 four_public_keys()[1].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -524,7 +525,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[2].clone(),
                 four_public_keys()[2].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -532,7 +533,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[3].clone(),
                 four_public_keys()[3].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[0],
                 &commitment,
             ),
@@ -542,7 +543,7 @@ mod tests {
             4,
             &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
-            42,
+            Epoch::new(42),
             commitment,
             acks,
             reveals,
@@ -563,7 +564,7 @@ mod tests {
             four_public_keys(),
         );
         let public_outcome = PublicOutcome {
-            epoch: 42,
+            epoch: Epoch::new(42),
             participants: four_public_keys(),
             public: commitment,
         };

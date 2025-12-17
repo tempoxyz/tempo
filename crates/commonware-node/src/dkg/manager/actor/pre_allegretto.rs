@@ -1,7 +1,11 @@
 use std::net::SocketAddr;
 
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
-use commonware_consensus::{Block as _, Reporter as _, types::Epoch, utils};
+use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write};
+use commonware_consensus::{
+    Block as _, Reporter as _,
+    types::{Epoch, EpochDelta},
+    utils,
+};
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
@@ -66,7 +70,7 @@ where
 
             if !tx.has_pre_allegretto_state().await {
                 tx.set_epoch(EpochState {
-                    epoch: 0,
+                    epoch: Epoch::zero(),
                     participants: validators.keys().clone(),
                     public: public_polynomial,
                     share: self.config.initial_share.clone(),
@@ -86,7 +90,7 @@ where
             // that after this state is written, self.register_current_epoch_state
             // is called that will set the validators for the *current* epoch.
             tx.set_validators(
-                current_epoch.epoch().saturating_sub(1),
+                current_epoch.epoch().previous().unwrap_or(Epoch::zero()),
                 ValidatorState::with_unknown_contract_state(validators.clone()),
             );
         }
@@ -124,7 +128,7 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()).get(),
             block.height = block.height(),
             block.timestamp = block.timestamp(),
             latest_epoch = tracing::field::Empty,
@@ -146,7 +150,7 @@ where
             .await
             .expect("epoch state must be readable")
             .expect("epoch state must exist");
-        Span::current().record("latest_epoch", epoch_state.epoch());
+        Span::current().record("latest_epoch", epoch_state.epoch().get());
 
         // Special case the last height.
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
@@ -179,7 +183,7 @@ where
 
             let (public, share) = outcome.role.into_key_pair();
 
-            let next_epoch = epoch_state.epoch + 1;
+            let next_epoch = epoch_state.epoch.next();
             let new_epoch_state = EpochState {
                 epoch: next_epoch,
                 participants: outcome.participants,
@@ -228,7 +232,7 @@ where
 
             *ceremony = self.start_pre_allegretto_ceremony(tx, ceremony_mux).await;
             // Prune older ceremony.
-            if let Some(epoch) = new_epoch_state.epoch.checked_sub(2) {
+            if let Some(epoch) = new_epoch_state.epoch.checked_sub(EpochDelta::new(2)) {
                 tx.remove_ceremony(epoch);
             }
             self.register_current_epoch_state(tx).await;
@@ -288,7 +292,7 @@ where
             .await
             .expect("must be able to read epoch")
             .expect("the epoch state must always exist during the lifetime of the actor");
-        Span::current().record("epoch", epoch_state.epoch());
+        Span::current().record("epoch", epoch_state.epoch().get());
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -388,7 +392,7 @@ impl EpochState {
 
 impl Write for EpochState {
     fn write(&self, buf: &mut impl bytes::BufMut) {
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.participants.write(buf);
         self.public.write(buf);
         self.share.write(buf);
@@ -397,7 +401,7 @@ impl Write for EpochState {
 
 impl EncodeSize for EpochState {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size()
+        self.epoch.encode_size()
             + self.participants.encode_size()
             + self.public.encode_size()
             + self.share.encode_size()
@@ -411,7 +415,7 @@ impl Read for EpochState {
         buf: &mut impl bytes::Buf,
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
-        let epoch = UInt::read(buf)?.into();
+        let epoch = Epoch::read(buf)?;
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
