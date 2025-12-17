@@ -3,6 +3,7 @@ use crate::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
+use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
 use alloy_primitives::{Address, B256, U256};
 use reth_chainspec::{
@@ -10,8 +11,6 @@ use reth_chainspec::{
     EthereumHardfork, EthereumHardforks, ForkCondition, ForkFilter, ForkId, Hardfork, Hardforks,
     Head,
 };
-use reth_cli::chainspec::{ChainSpecParser, parse_genesis};
-use reth_ethereum::evm::primitives::eth::spec::EthExecutorSpec;
 use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_commonware_node_config::{Peers, PublicPolynomial};
@@ -86,15 +85,17 @@ pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
 ///
 /// The value parser matches either a known chain, the path
 /// to a json file, or a json formatted string in-memory. The json needs to be a Genesis struct.
+#[cfg(feature = "cli")]
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "testnet" => ANDANTINO.clone(),
         "dev" => DEV.clone(),
-        _ => TempoChainSpec::from_genesis(parse_genesis(s)?).into(),
+        _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
     })
 }
 
-impl ChainSpecParser for TempoChainSpecParser {
+#[cfg(feature = "cli")]
+impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
     type ChainSpec = TempoChainSpec;
 
     const SUPPORTED_CHAINS: &'static [&'static str] = SUPPORTED_CHAINS;

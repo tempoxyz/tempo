@@ -167,14 +167,14 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "64909d3", feat
 revm = { version = "33.1.0", features = ["optional_fee_charge"] }
 
 alloy = { version = "1.1.3", default-features = false }
-alloy-consensus = "1.1.3"
-alloy-contract = "1.1.3"
-alloy-eips = "1.1.3"
+alloy-consensus = { version = "1.1.3", default-features = false }
+alloy-contract = { version = "1.1.3", default-features = false }
+alloy-eips = { version = "1.1.3", default-features = false }
 alloy-evm = "0.25.2"
 alloy-genesis = "1.1.3"
 alloy-hardforks = "0.4.5"
-alloy-network = { version = "1.1.3" }
-alloy-primitives = "1.4.1"
+alloy-network = { version = "1.1.3", default-features = false }
+alloy-primitives = { version = "1.4.1", default-features = false }
 alloy-provider = { version = "1.1.3", default-features = false }
 alloy-rlp = "0.3.12"
 alloy-rpc-types-engine = "1.1.3"
