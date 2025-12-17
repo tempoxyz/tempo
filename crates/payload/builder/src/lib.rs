@@ -39,7 +39,7 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
@@ -104,7 +104,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     }
 }
 
-impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
+impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
     /// Builds system transactions to execute at the start of the block.
     ///
     /// Returns a vector of system transactions that must be executed at the beginning of each block:
@@ -150,23 +150,21 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
     /// 1. Fee manager executeBlock - processes collected fees (pre-AllegroModerato only)
-    /// 2. Stablecoin exchange executeBlock - commits pending orders
+    /// 2. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
     /// 3. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         evm: &TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
+        timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
-        let chain_id = Some(self.provider.chain_spec().chain().id());
+        let chain_spec = self.provider.chain_spec();
+        let chain_id = Some(chain_spec.chain().id());
         let block_env = evm.block();
-        let spec = &evm.ctx().cfg.spec;
-
         let mut txs = Vec::with_capacity(3);
 
-        // Build fee manager system transaction (pre-AllegroModerato only)
-        // Post-AllegroModerato: fees are collected and swapped immediately in collectFeePreTx.
-        // Validators call distributeFees() to claim their accumulated fees.
-        if !spec.is_allegro_moderato() {
+        // Build fee manager and stablecoin dex system transaction (pre-AllegroModerato only)
+        if !chain_spec.is_allegro_moderato_active_at_timestamp(timestamp) {
             let fee_manager_input = IFeeManager::executeBlockCall
                 .abi_encode()
                 .into_iter()
@@ -180,7 +178,6 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                         nonce: 0,
                         gas_price: 0,
                         gas_limit: 0,
-
                         to: TIP_FEE_MANAGER_ADDRESS.into(),
                         value: U256::ZERO,
                         input: fee_manager_input,
@@ -189,34 +186,31 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
                 )),
                 TEMPO_SYSTEM_TX_SENDER,
             );
-
             txs.push(fee_manager_tx);
+
+            let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
+                .abi_encode()
+                .into_iter()
+                .chain(block_env.number.to_be_bytes_vec())
+                .collect();
+
+            let stablecoin_exchange_tx = Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        chain_id,
+                        nonce: 0,
+                        gas_price: 0,
+                        gas_limit: 0,
+                        to: STABLECOIN_EXCHANGE_ADDRESS.into(),
+                        value: U256::ZERO,
+                        input: stablecoin_exchange_input,
+                    },
+                    TEMPO_SYSTEM_TX_SIGNATURE,
+                )),
+                TEMPO_SYSTEM_TX_SENDER,
+            );
+            txs.push(stablecoin_exchange_tx);
         }
-
-        // Build stablecoin exchange system transaction
-        let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
-
-        let stablecoin_exchange_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: stablecoin_exchange_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        txs.push(stablecoin_exchange_tx);
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -448,7 +442,8 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
+        let system_txs =
+            self.build_seal_block_txs(builder.evm(), &subblocks, attributes.timestamp());
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }

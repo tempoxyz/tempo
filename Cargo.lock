@@ -11546,6 +11546,7 @@ dependencies = [
  "indexmap 2.12.1",
  "jiff",
  "parking_lot",
+ "pin-project",
  "prometheus-client",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -11565,6 +11566,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-telemetry-util",
+ "thiserror 2.0.17",
  "tokio",
  "tracing",
 ]
