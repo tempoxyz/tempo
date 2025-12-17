@@ -268,10 +268,7 @@ where
             {
                 Ok(fee_token) => fee_token,
                 Err(err) => {
-                    return TransactionValidationOutcome::Error(
-                        *transaction.hash(),
-                        Box::new(ProviderError::other(err)),
-                    );
+                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
                 }
             };
 
@@ -288,10 +285,7 @@ where
                 }
             }
             Err(err) => {
-                return TransactionValidationOutcome::Error(
-                    *transaction.hash(),
-                    Box::new(ProviderError::other(err)),
-                );
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         }
 
@@ -311,20 +305,14 @@ where
                 }
             }
             Err(err) => {
-                return TransactionValidationOutcome::Error(
-                    *transaction.hash(),
-                    Box::new(ProviderError::other(err)),
-                );
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         }
 
         let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
             Ok(balance) => balance,
             Err(err) => {
-                return TransactionValidationOutcome::Error(
-                    *transaction.hash(),
-                    Box::new(ProviderError::other(err)),
-                );
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
 

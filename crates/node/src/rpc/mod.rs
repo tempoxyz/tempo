@@ -252,19 +252,18 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        _evm_env: &EvmEnvFor<Self::Evm>,
+        evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
             .fee_payer()
             .map_err(EVMError::<ProviderError, _>::from)?;
 
-        let spec = TempoHardfork::default();
         let fee_token = db
-            .get_fee_token(tx_env, Address::ZERO, fee_payer, spec)
+            .get_fee_token(tx_env, Address::ZERO, fee_payer, TempoHardfork::default())
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, spec)
+            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)
             .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance

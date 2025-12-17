@@ -14,7 +14,7 @@ use tempo_contracts::precompiles::{
     IStablecoinExchange, ITIP403Registry, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
@@ -89,10 +89,18 @@ pub trait TempoStateAccess<M = ()> {
     type Error: core::fmt::Display;
 
     /// Returns [`AccountInfo`] for the given address.
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error>;
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error>;
 
     /// Returns the storage value for the given address and key.
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
+
+    /// Returns a read-only storage provider for the given spec.
+    fn with_read_only_storage_ctx<R>(&mut self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R
+    where
+        Self: Sized,
+    {
+        StorageCtx::enter(&mut ReadOnlyStorageProvider::new(self, spec), f)
+    }
 
     /// Resolves user-level or transaction-level fee token preference.
     fn get_fee_token(
@@ -105,7 +113,79 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        ReadOnlyStorageProvider::new(self, spec).get_fee_token(tx, validator, fee_payer)
+        // If there is a fee token explicitly set on the tx type, use that.
+        if let Some(fee_token) = tx.fee_token() {
+            return Ok(fee_token);
+        }
+
+        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
+        // new preference, the newly set preference should be used immediately instead of the
+        // previously stored one
+        if !tx.is_aa()
+            && fee_payer == tx.caller()
+            && let Some((kind, input)) = tx.calls().next()
+            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
+            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+        {
+            return Ok(call.token);
+        }
+
+        // Check stored user token preference
+        let user_token = self.with_read_only_storage_ctx(spec, || {
+            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
+            TipFeeManager::new().user_tokens.at(fee_payer).read()
+        })?;
+
+        if !user_token.is_zero() {
+            return Ok(user_token);
+        }
+
+        // If tx.to() is a TIP-20 token, use that token as the fee token
+        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
+            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
+            && self.is_valid_fee_token(to, spec)?
+        {
+            return Ok(to);
+        }
+
+        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
+        // use the input token as the fee token (the token that will be pulled from the user).
+        // For AA transactions, this only applies if there's exactly one call.
+        if spec.is_allegretto() {
+            let mut calls = tx.calls();
+            if let Some((kind, input)) = calls.next()
+                && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+                && (!tx.is_aa() || calls.next().is_none())
+            {
+                if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
+                {
+                    return Ok(call.tokenIn);
+                } else if let Ok(call) =
+                    IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+                    && self.is_valid_fee_token(call.tokenIn, spec)?
+                {
+                    return Ok(call.tokenIn);
+                }
+            }
+        }
+
+        // Post-allegretto, if no fee token is found, default to the first deployed TIP20
+        if spec.is_allegretto() {
+            Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
+        } else {
+            // Pre-allegretto fall back to the validator fee token preference or the default to the
+            // first TIP20 deployed after PathUSD
+            let validator_fee_token = self.with_read_only_storage_ctx(spec, || {
+                TipFeeManager::new().validator_tokens.at(validator).read()
+            })?;
+
+            if validator_fee_token.is_zero() {
+                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
+            } else {
+                Ok(validator_fee_token)
+            }
+        }
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -113,7 +193,22 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        ReadOnlyStorageProvider::new(self, spec).is_valid_fee_token(fee_token)
+        // Must have TIP20 prefix to be a valid fee token
+        if !is_tip20_prefix(fee_token) {
+            return Ok(false);
+        }
+
+        // Pre-Allegretto: PathUSD cannot be used as fee token
+        if !spec.is_allegretto() && fee_token == PATH_USD_ADDRESS {
+            return Ok(false);
+        }
+
+        self.with_read_only_storage_ctx(spec, || {
+            TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token))
+                .currency
+                .read()
+                .map(|currency| &currency == "USD")
+        })
     }
 
     /// Checks if the fee payer can transfer a given token (is not blacklisted).
@@ -126,7 +221,16 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        ReadOnlyStorageProvider::new(self, spec).can_fee_payer_transfer(fee_token, fee_payer)
+        self.with_read_only_storage_ctx(spec, || {
+            // Ensure the fee payer is not blacklisted
+            let transfer_policy_id = TIP20Token::from_address(fee_token)?
+                .transfer_policy_id
+                .read()?;
+            TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
+                policyId: transfer_policy_id,
+                user: fee_payer,
+            })
+        })
     }
 
     /// Returns the balance of the given token for the given account.
@@ -139,49 +243,50 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        ReadOnlyStorageProvider::new(self, spec).get_token_balance(token, account)
+        self.with_read_only_storage_ctx(spec, || {
+            // Load the token balance for the given account.
+            TIP20Token::from_address(token)?.balances.at(account).read()
+        })
     }
 }
 
-// `Database` uses `()` as its `TempoStateAccess` marker type.
 impl<DB: Database> TempoStateAccess<()> for DB {
     type Error = DB::Error;
 
-    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
-        Database::storage(self, address, key)
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        self.basic(address).map(Option::unwrap_or_default)
     }
 
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        Database::basic(self, address)
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
+        self.storage(address, key)
     }
 }
 
-// `JournalTr` uses `((), ())` as its `TempoStateAccess` marker type.
-impl<J: JournalTr> TempoStateAccess<((), ())> for J {
-    type Error = <J::Database as Database>::Error;
+impl<T: JournalTr> TempoStateAccess<((), ())> for T {
+    type Error = <T::Database as Database>::Error;
+
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        self.load_account(address).map(|s| s.data.info.clone())
+    }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         JournalTr::sload(self, address, key).map(|s| s.data)
     }
-
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.load_account(address)
-            .map(|s| Some(s.data.info.clone()))
-    }
 }
 
 #[cfg(feature = "reth")]
-// `StateProvider` uses `((), (), ())` as its `TempoStateAccess` marker type.
-impl<S: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for S {
-    type Error = reth_storage_api::errors::ProviderError;
+impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
+    type Error = reth_evm::execute::ProviderError;
+
+    fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
+        self.basic_account(&address)
+            .map(Option::unwrap_or_default)
+            .map(Into::into)
+    }
 
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.storage(address, key.into())
             .map(Option::unwrap_or_default)
-    }
-
-    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.basic_account(&address).map(|opt| opt.map(Into::into))
     }
 }
 
@@ -195,6 +300,20 @@ struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
     _marker: PhantomData<M>,
+}
+
+impl<'a, S, M> ReadOnlyStorageProvider<'a, S, M>
+where
+    S: TempoStateAccess<M>,
+{
+    /// Creates a new read-only storage provider.
+    fn new(state: &'a mut S, spec: TempoHardfork) -> Self {
+        Self {
+            state,
+            spec,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, S, M>
@@ -224,8 +343,7 @@ where
         let info = self
             .state
             .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?
-            .unwrap_or_default();
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
         f(&info);
         Ok(())
     }
@@ -278,158 +396,6 @@ where
 
     fn refund_gas(&mut self, _: i64) {
         unreachable!("'refund_gas' not supported in read-only context")
-    }
-}
-
-impl<'a, S, M> ReadOnlyStorageProvider<'a, S, M>
-where
-    S: TempoStateAccess<M>,
-{
-    /// Creates a new read-only storage provider.
-    fn new(state: &'a mut S, spec: TempoHardfork) -> Self {
-        Self {
-            state,
-            spec,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Checks if the given token can be used as a fee token.
-    fn is_valid_fee_token(&mut self, fee_token: Address) -> TempoResult<bool> {
-        // Must have TIP20 prefix to be a valid fee token
-        if !is_tip20_prefix(fee_token) {
-            return Ok(false);
-        }
-
-        // Pre-Allegretto: PathUSD cannot be used as fee token
-        if !self.spec.is_allegretto() && fee_token == PATH_USD_ADDRESS {
-            return Ok(false);
-        }
-
-        StorageCtx::enter(self, || {
-            // Load fee token account to ensure that we can load storage for it.
-            StorageCtx.with_account_info(fee_token, &mut |_: &AccountInfo| Ok(()))?;
-
-            // Ensure its a TIP20 token and currency is USD
-            TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token))
-                .currency
-                .read()
-                .map(|currency| &currency == "USD")
-        })
-    }
-
-    /// Checks if the fee payer can transfer a given token (is not blacklisted).
-    fn can_fee_payer_transfer(
-        &mut self,
-        fee_token: Address,
-        fee_payer: Address,
-    ) -> TempoResult<bool> {
-        StorageCtx::enter(self, || {
-            // Ensure the fee payer is not blacklisted
-            let transfer_policy_id = TIP20Token::from_address(fee_token)?
-                .transfer_policy_id
-                .read()?;
-
-            // Load TIP403_REGISTRY_ADDRESS to ensure we can load storage for it.
-            StorageCtx.with_account_info(TIP403_REGISTRY_ADDRESS, &mut |_: &AccountInfo| Ok(()))?;
-            TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: transfer_policy_id,
-                user: fee_payer,
-            })
-        })
-    }
-
-    /// Returns the balance of the given token for the given account.
-    fn get_token_balance(&mut self, token: Address, account: Address) -> TempoResult<U256> {
-        StorageCtx::enter(self, || {
-            // Load fee token account to ensure that we can load storage for it.
-            StorageCtx.with_account_info(token, &mut |_: &AccountInfo| Ok(()))?;
-            // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances.at(account).read()
-        })
-    }
-
-    /// Resolves user-level or transaction-level fee token preference.
-    fn get_fee_token(
-        &mut self,
-        tx: impl TempoTx,
-        validator: Address,
-        fee_payer: Address,
-    ) -> TempoResult<Address> {
-        // If there is a fee token explicitly set on the tx type, use that.
-        if let Some(fee_token) = tx.fee_token() {
-            return Ok(fee_token);
-        }
-
-        // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
-        // new preference, the newly set preference should be used immediately instead of the
-        // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
-            && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
-        {
-            return Ok(call.token);
-        }
-
-        // Check stored user token preference
-        let user_token = StorageCtx::enter(self, || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            StorageCtx.with_account_info(TIP_FEE_MANAGER_ADDRESS, &mut |_: &AccountInfo| Ok(()))?;
-            TipFeeManager::new().user_tokens.at(fee_payer).read()
-        })?;
-
-        if !user_token.is_zero() {
-            return Ok(user_token);
-        }
-
-        // If tx.to() is a TIP-20 token, use that token as the fee token
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && tx.calls().all(|(kind, _)| kind.to() == Some(&to))
-            && self.is_valid_fee_token(to)?
-        {
-            return Ok(to);
-        }
-
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
-        // use the input token as the fee token (the token that will be pulled from the user).
-        // For AA transactions, this only applies if there's exactly one call.
-        if self.spec.is_allegretto() {
-            let mut calls = tx.calls();
-            if let Some((kind, input)) = calls.next()
-                && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
-                && (!tx.is_aa() || calls.next().is_none())
-            {
-                if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
-                    && self.is_valid_fee_token(call.tokenIn)?
-                {
-                    return Ok(call.tokenIn);
-                } else if let Ok(call) =
-                    IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
-                    && self.is_valid_fee_token(call.tokenIn)?
-                {
-                    return Ok(call.tokenIn);
-                }
-            }
-        }
-
-        // Post-allegretto, if no fee token is found, default to the first deployed TIP20
-        if self.spec.is_allegretto() {
-            Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
-        } else {
-            // Pre-allegretto fall back to the validator fee token preference or the default to the
-            // first TIP20 deployed after PathUSD
-            let validator_fee_token = StorageCtx::enter(self, || {
-                TipFeeManager::new().validator_tokens.at(validator).read()
-            })?;
-
-            if validator_fee_token.is_zero() {
-                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
-            } else {
-                Ok(validator_fee_token)
-            }
-        }
     }
 }
 
