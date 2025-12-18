@@ -521,5 +521,25 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Calculates the pending claimable rewards for an account without modifying state.
+    /// @param account The address to query pending rewards for.
+    /// @return pending The total pending claimable reward amount (stored balance + accrued pending rewards).
+    function getPendingRewards(address account) external view returns (uint256 pending) {
+        UserRewardInfo storage info = userRewardInfo[account];
 
+        // Start with the stored reward balance
+        pending = info.rewardBalance;
+
+        // If this account is self-delegated, calculate pending rewards from their own holdings
+        if (info.rewardRecipient == account) {
+            uint256 holderBalance = balanceOf[account];
+            if (holderBalance > 0) {
+                uint256 rewardPerTokenDelta = globalRewardPerToken - info.rewardPerToken;
+                if (rewardPerTokenDelta > 0) {
+                    uint256 accrued = (holderBalance * rewardPerTokenDelta) / ACC_PRECISION;
+                    pending += accrued;
+                }
+            }
+        }
     }
+}

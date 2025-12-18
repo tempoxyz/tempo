@@ -2120,4 +2120,176 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
+    /*//////////////////////////////////////////////////////////////
+                    SECTION: GET PENDING REWARDS TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_GetPendingRewards_ZeroBeforeRewards() public {
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // Before any rewards, pending should be 0
+        uint256 pending = token.getPendingRewards(alice);
+        assertEq(pending, 0);
+    }
+
+    function test_GetPendingRewards_ImmediateDistribution() public {
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // Admin injects immediate rewards
+        uint256 rewardAmount = 100e18;
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // Alice should have pending rewards (she's the only opted-in holder)
+        uint256 pending = token.getPendingRewards(alice);
+        assertEq(pending, rewardAmount);
+
+        // Bob (not opted in) should have 0 pending
+        uint256 bobPending = token.getPendingRewards(bob);
+        assertEq(bobPending, 0);
+    }
+
+    function test_GetPendingRewards_IncludesStoredBalance() public {
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // First reward distribution
+        uint256 rewardAmount = 50e18;
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // Trigger state update by transferring 0 (or any action that updates rewards)
+        vm.prank(alice);
+        token.transfer(alice, 0);
+
+        // Verify stored balance was updated
+        (,, uint256 storedBalance) = token.userRewardInfo(alice);
+        assertEq(storedBalance, rewardAmount);
+
+        // Second reward distribution
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // getPendingRewards should return stored + new accrued
+        uint256 pending = token.getPendingRewards(alice);
+        assertEq(pending, rewardAmount * 2);
+    }
+
+    function test_GetPendingRewards_DoesNotModifyState() public {
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // Inject rewards
+        uint256 rewardAmount = 100e18;
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // Get pending rewards
+        uint256 pending = token.getPendingRewards(alice);
+        assertEq(pending, rewardAmount);
+
+        // Verify state was not modified (reward balance should still be 0)
+        (,, uint256 storedBalance) = token.userRewardInfo(alice);
+        assertEq(storedBalance, 0, "getPendingRewards should not modify state");
+
+        // Call getPendingRewards again - should return same value
+        uint256 pendingAgain = token.getPendingRewards(alice);
+        assertEq(pendingAgain, pending);
+    }
+
+    function test_GetPendingRewards_NotOptedIn() public {
+        // Alice and Bob have tokens but neither is opted in initially
+        // Inject rewards
+        uint256 rewardAmount = 100e18;
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        vm.stopPrank();
+
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // Distribute rewards
+        vm.prank(admin);
+        token.startReward(rewardAmount, 0);
+
+        // Alice should have pending rewards
+        uint256 alicePending = token.getPendingRewards(alice);
+        assertEq(alicePending, rewardAmount);
+
+        // Bob should have 0 pending (not opted in)
+        uint256 bobPending = token.getPendingRewards(bob);
+        assertEq(bobPending, 0);
+    }
+
+    function test_GetPendingRewards_DelegatedToOther() public {
+        // Alice delegates to bob
+        vm.prank(alice);
+        token.setRewardRecipient(bob);
+
+        // Inject rewards
+        uint256 rewardAmount = 100e18;
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // Alice's pending should be 0 (delegated to bob)
+        uint256 alicePending = token.getPendingRewards(alice);
+        assertEq(alicePending, 0);
+
+        // Bob's pending is 0 until update_rewards is called for alice
+        uint256 bobPendingBefore = token.getPendingRewards(bob);
+        assertEq(bobPendingBefore, 0);
+
+        // Trigger update for alice (e.g., by transfer)
+        vm.prank(alice);
+        token.transfer(alice, 0);
+
+        // Now bob's stored balance should be updated
+        uint256 bobPendingAfter = token.getPendingRewards(bob);
+        assertEq(bobPendingAfter, rewardAmount);
+    }
+
+    function testFuzz_GetPendingRewards(uint256 rewardAmount) public {
+        rewardAmount = bound(rewardAmount, 1e18, 1000e18);
+
+        // Alice opts in
+        vm.prank(alice);
+        token.setRewardRecipient(alice);
+
+        // Inject rewards
+        vm.startPrank(admin);
+        token.mint(admin, rewardAmount);
+        token.startReward(rewardAmount, 0);
+        vm.stopPrank();
+
+        // Pending should approximately equal reward amount (allow for rounding due to integer division)
+        uint256 pending = token.getPendingRewards(alice);
+        assertApproxEqAbs(pending, rewardAmount, 1000);
+
+        // Claim and verify
+        vm.prank(alice);
+        uint256 claimed = token.claimRewards();
+        assertApproxEqAbs(claimed, rewardAmount, 1000);
+
+        // After claim, pending should be 0
+        uint256 pendingAfterClaim = token.getPendingRewards(alice);
+        assertEq(pendingAfterClaim, 0);
+    }
+
 }

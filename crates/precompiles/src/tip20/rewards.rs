@@ -581,6 +581,44 @@ impl TIP20Token {
     pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
         self.user_reward_info.at(account).read()
     }
+
+    /// Calculates the pending claimable rewards for an account without modifying state.
+    ///
+    /// This function returns the total pending claimable reward amount, which includes:
+    /// 1. The stored reward balance from previous updates
+    /// 2. Newly accrued rewards based on the current global reward per token
+    ///
+    /// For accounts that have delegated their rewards to another recipient, this returns 0
+    /// since their rewards accrue to their delegate instead.
+    pub fn get_pending_rewards(&self, account: Address) -> Result<U256> {
+        let info = self.user_reward_info.at(account).read()?;
+
+        // Start with the stored reward balance
+        let mut pending = info.reward_balance;
+
+        // For the account's own accrued rewards (if self-delegated):
+        if info.reward_recipient == account {
+            let holder_balance = self.get_balance(account)?;
+            if holder_balance > U256::ZERO {
+                let global_reward_per_token = self.get_global_reward_per_token()?;
+                let reward_per_token_delta = global_reward_per_token
+                    .checked_sub(info.reward_per_token)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                if reward_per_token_delta > U256::ZERO {
+                    let accrued = holder_balance
+                        .checked_mul(reward_per_token_delta)
+                        .and_then(|v| v.checked_div(ACC_PRECISION))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    pending = pending
+                        .checked_add(accrued)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                }
+            }
+        }
+
+        Ok(pending)
+    }
 }
 
 #[derive(Debug, Clone, Storable)]
@@ -1384,6 +1422,260 @@ mod tests {
             StorageCtx.set_timestamp(current_timestamp + U256::from(STREAM_DURATION - 1));
             let refund = token.cancel_reward(admin, ITIP20::cancelRewardCall { id: stream_id })?;
             assert!(matches!(refund, U256::ZERO), "non-zero refund: {refund}");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_pending_rewards_immediate_distribution() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to alice and have her opt in
+            let alice_balance = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: alice_balance,
+                },
+            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+            // Before any rewards, pending should be 0
+            let pending_before = token.get_pending_rewards(alice)?;
+            assert_eq!(pending_before, U256::ZERO);
+
+            // Fund immediate reward
+            let reward_amount = U256::from(100e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 0,
+                },
+            )?;
+
+            // Now alice should have pending rewards equal to reward_amount (she's the only opted-in holder)
+            let pending_after = token.get_pending_rewards(alice)?;
+            assert_eq!(pending_after, reward_amount);
+
+            // Verify that calling get_pending_rewards did not modify state
+            let user_info = token.get_user_reward_info(alice)?;
+            assert_eq!(
+                user_info.reward_balance,
+                U256::ZERO,
+                "get_pending_rewards should not modify state"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_pending_rewards_includes_stored_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to alice and have her opt in
+            let alice_balance = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: alice_balance,
+                },
+            )?;
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+            // Fund first reward
+            let reward_amount = U256::from(50e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 0,
+                },
+            )?;
+
+            // Trigger an action to update alice's stored reward balance
+            token.update_rewards(alice)?;
+            let user_info = token.get_user_reward_info(alice)?;
+            assert_eq!(user_info.reward_balance, reward_amount);
+
+            // Fund second reward
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 0,
+                },
+            )?;
+
+            // get_pending_rewards should return stored + new accrued
+            let pending = token.get_pending_rewards(alice)?;
+            assert_eq!(pending, reward_amount * U256::from(2));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_pending_rewards_with_delegation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to alice and have her delegate to bob
+            let alice_balance = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: alice_balance,
+                },
+            )?;
+            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+
+            // Fund immediate reward
+            let reward_amount = U256::from(100e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 0,
+                },
+            )?;
+
+            // Alice's pending should be 0 (she delegated to bob)
+            let alice_pending = token.get_pending_rewards(alice)?;
+            assert_eq!(alice_pending, U256::ZERO);
+
+            // Bob's pending should be 0 until update_rewards is called for alice
+            // (We can't iterate all delegators on-chain, so pending calculation is limited
+            // to stored balance + self-delegated accrued rewards)
+            let bob_pending_before_update = token.get_pending_rewards(bob)?;
+            assert_eq!(bob_pending_before_update, U256::ZERO);
+
+            // After calling update_rewards on alice, bob's stored balance is updated
+            token.update_rewards(alice)?;
+            let bob_pending_after_update = token.get_pending_rewards(bob)?;
+            assert_eq!(bob_pending_after_update, reward_amount);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_pending_rewards_not_opted_in() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let admin = Address::random();
+        let alice = Address::random();
+        let bob = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(admin)?;
+            let mut token = TIP20Token::new(1);
+            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+            token.grant_role_internal(admin, *ISSUER_ROLE)?;
+
+            // Mint tokens to alice (opted in) and bob (not opted in)
+            let balance = U256::from(1000e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: alice,
+                    amount: balance,
+                },
+            )?;
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: bob,
+                    amount: balance,
+                },
+            )?;
+
+            // Only alice opts in
+            token
+                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+
+            // Fund reward
+            let reward_amount = U256::from(100e18);
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: reward_amount,
+                },
+            )?;
+            token.start_reward(
+                admin,
+                ITIP20::startRewardCall {
+                    amount: reward_amount,
+                    secs: 0,
+                },
+            )?;
+
+            // Alice should have pending rewards
+            let alice_pending = token.get_pending_rewards(alice)?;
+            assert_eq!(alice_pending, reward_amount);
+
+            // Bob should have 0 pending rewards (not opted in)
+            let bob_pending = token.get_pending_rewards(bob)?;
+            assert_eq!(bob_pending, U256::ZERO);
 
             Ok(())
         })
