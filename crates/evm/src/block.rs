@@ -27,7 +27,7 @@ use revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::CREATEX_ADDRESS;
+use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -529,6 +529,35 @@ where
                 revm_acc.mark_touch();
 
                 db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
+            }
+        }
+
+        // Upgrade Multicall to Multicall3 if AllegroModerato is active and bytecode is outdated
+        if self
+            .inner
+            .spec
+            .is_allegro_moderato_active_at_timestamp(block_timestamp)
+        {
+            let evm = self.evm_mut();
+            let db = evm.ctx_mut().db_mut();
+
+            let acc = db
+                .load_cache_account(MULTICALL_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+
+            let mut acc_info = acc.account_info().unwrap_or_default();
+
+            let correct_code_hash = tempo_contracts::contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
+            if acc_info.code_hash != correct_code_hash {
+                acc_info.code_hash = correct_code_hash;
+                acc_info.code = Some(Bytecode::new_legacy(
+                    tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone(),
+                ));
+
+                let mut revm_acc: Account = acc_info.into();
+                revm_acc.mark_touch();
+
+                db.commit(HashMap::from_iter([(MULTICALL_ADDRESS, revm_acc)]));
             }
         }
 
