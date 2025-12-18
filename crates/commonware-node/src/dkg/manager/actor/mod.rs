@@ -1,13 +1,11 @@
 use std::{collections::HashMap, net::SocketAddr, ops::ControlFlow, task::ready, time::Duration};
 
 use bytes::Bytes;
-use commonware_codec::{
-    Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt,
-};
+use commonware_codec::{Encode as _, EncodeSize, RangeCfg, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Block as _, Reporter as _,
     marshal::Update,
-    types::{Epoch, Round},
+    types::{Epoch, EpochDelta, Round},
     utils,
 };
 use commonware_cryptography::{
@@ -43,7 +41,7 @@ use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, debug, error, info, instrument, warn};
+use tracing::{Span, debug, error, field::display, info, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -457,7 +455,7 @@ where
         parent = &cause,
         skip_all,
         fields(
-            request.epoch = epoch,
+            request.epoch = %epoch,
             ceremony.epoch = %ceremony.epoch(),
         ),
         err,
@@ -580,9 +578,9 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.derived_epoch = %utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
-            ceremony.epoch = ceremony.epoch(),
+            ceremony.epoch = %ceremony.epoch(),
         ),
     )]
     /// Returns `ControlFlow::Break` if the actor should exit (for coordinated shutdown).
@@ -737,7 +735,12 @@ where
     }
 
     /// Starts a new ceremony for the epoch state tracked by the actor.
-    #[instrument(skip_all, fields(me = %self.config.me.public_key(), current_epoch = tracing::field::Empty))]
+    #[instrument(
+        skip_all,
+        fields(
+            me = %self.config.me.public_key(),
+            current_epoch = tracing::field::Empty,
+    ))]
     async fn start_ceremony_for_current_epoch_state<TReceiver, TSender>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
@@ -747,7 +750,10 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        Span::current().record("current_epoch", self.current_epoch_state(tx).await.epoch());
+        Span::current().record(
+            "current_epoch",
+            display(&self.current_epoch_state(tx).await.epoch()),
+        );
         if tx.has_post_allegretto_state().await {
             self.start_post_allegretto_ceremony(tx, mux).await
         } else {
@@ -763,16 +769,16 @@ where
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let epoch_state = self.current_epoch_state(tx).await;
-        Span::current().record("epoch", epoch_state.epoch());
+        Span::current().record("epoch", display(&epoch_state.epoch()));
 
-        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
+        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(EpochDelta::new(1))
             && let boundary_height =
                 utils::last_block_in_epoch(self.config.epoch_length, previous_epoch)
             && let None = self.config.marshal.get_info(boundary_height).await
         {
             info!(
                 boundary_height,
-                previous_epoch,
+                %previous_epoch,
                 "don't have the finalized boundary block of the previous epoch; \
                 this usually happens if the node restarted right after processing \
                 the the pre-to-last block; not starting a consensus engine backing \
@@ -783,7 +789,7 @@ where
 
         let new_validator_state = match &epoch_state {
             EpochState::PreModerato(epoch_state) => tx
-                .get_validators(epoch_state.epoch().saturating_sub(1))
+                .get_validators(epoch_state.epoch().saturating_sub(EpochDelta::new(1)))
                 .await
                 .expect("must be able to read validators")
                 .expect(
@@ -809,7 +815,7 @@ where
             )
             .await;
         info!(
-            epoch = epoch_state.epoch(),
+            epoch = %epoch_state.epoch(),
             participants = ?epoch_state.participants(),
             public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
             "reported epoch state to epoch manager",
@@ -835,7 +841,7 @@ where
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         if let Some(epoch_state) = self.previous_epoch_state(tx).await {
-            Span::current().record("previous_epoch", epoch_state.epoch());
+            Span::current().record("previous_epoch", display(&epoch_state.epoch()));
             self.config
                 .epoch_manager
                 .report(
@@ -849,7 +855,7 @@ where
                 )
                 .await;
             info!(
-                epoch = epoch_state.epoch(),
+                epoch = %epoch_state.epoch(),
                 participants = ?epoch_state.participants(),
                 public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
                 "reported epoch state to epoch manager",
@@ -858,12 +864,12 @@ where
 
         let current_epoch = self.current_epoch_state(tx).await.epoch();
 
-        if let Some(epoch) = current_epoch.checked_sub(2)
+        if let Some(epoch) = current_epoch.checked_sub(EpochDelta::new(2))
             && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
         }
-        if let Some(epoch) = current_epoch.checked_sub(1)
+        if let Some(epoch) = current_epoch.checked_sub(EpochDelta::new(1))
             && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
@@ -877,7 +883,7 @@ where
         self.metrics.peers.set(peers_to_register.len() as i64);
         self.config
             .peer_manager
-            .update(epoch, peers_to_register.clone())
+            .update(epoch.get(), peers_to_register.clone())
             .await;
 
         info!(
@@ -923,7 +929,7 @@ where
         if let Some(target_epoch) = self.config.exit.args.exit_after_epoch
             && let Some(block_epoch) =
                 utils::is_last_block_in_epoch(self.config.epoch_length, block_height)
-            && block_epoch == target_epoch
+            && block_epoch == Epoch::new(target_epoch)
         {
             let tx = DkgReadWriteTransaction::new(self.db.read_write());
             self.export_and_shutdown(&tx, block_height, target_epoch)
@@ -1102,7 +1108,7 @@ pub struct DkgOutcome {
 impl Write for DkgOutcome {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.dkg_successful.write(buf);
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.participants.write(buf);
         self.public.write(buf);
         self.share.write(buf);
@@ -1112,7 +1118,7 @@ impl Write for DkgOutcome {
 impl EncodeSize for DkgOutcome {
     fn encode_size(&self) -> usize {
         self.dkg_successful.encode_size()
-            + UInt(self.epoch).encode_size()
+            + self.epoch.encode_size()
             + self.participants.encode_size()
             + self.public.encode_size()
             + self.share.encode_size()
@@ -1127,7 +1133,7 @@ impl Read for DkgOutcome {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let dkg_successful = bool::read(buf)?;
-        let epoch = UInt::read(buf)?.into();
+        let epoch = Epoch::read(buf)?;
         let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
         let public =
             Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;

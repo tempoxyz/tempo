@@ -425,7 +425,7 @@ impl Read for DecodedValidator {
 
 fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
     epoch
-        .checked_sub(1)
+        .previous()
         .map_or(0, |epoch| utils::last_block_in_epoch(epoch_length, epoch))
 }
 

@@ -126,6 +126,7 @@ mod tests {
 
     use super::{Dealing, State};
     use commonware_codec::{DecodeExt as _, Encode as _, Read as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer,
         bls12381::{dkg, primitives::variant::MinSig},
@@ -170,7 +171,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[0].clone(),
                 four_public_keys()[0].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -181,7 +182,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[1].clone(),
                 four_public_keys()[1].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -192,7 +193,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[2].clone(),
                 four_public_keys()[2].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -203,7 +204,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[3].clone(),
                 four_public_keys()[3].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -222,7 +223,7 @@ mod tests {
             4,
             &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
-            42,
+            Epoch::new(42),
             dealing.commitment,
             dealing.acks.values().cloned().collect(),
             vec![dealing.shares.pop_last().unwrap().1],

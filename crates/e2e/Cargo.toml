@@ -21,6 +21,7 @@ alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
@@ -53,7 +54,6 @@ serde_json.workspace = true
 secp256k1.workspace = true
 
 [dev-dependencies]
-commonware-consensus.workspace = true
 commonware-macros.workspace = true
 tempo-eyre.workspace = true
 tracing-subscriber.workspace = true

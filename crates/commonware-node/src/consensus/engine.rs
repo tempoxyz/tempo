@@ -9,7 +9,7 @@ use std::{
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal};
+use commonware_consensus::{Reporters, marshal, types::ViewDelta};
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::group::Share,
@@ -54,7 +54,7 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 const BUFFER_POOL_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4_096).expect("value is not zero"); // 4KB
 const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
-const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(20).expect("value is not zero");
+const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
 
 /// Settings for [`Engine`].
 ///
@@ -172,9 +172,10 @@ where
                 epoch_length,
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
-                view_retention_timeout: self
-                    .views_to_track
-                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                view_retention_timeout: ViewDelta::new(
+                    self.views_to_track
+                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                ),
                 namespace: crate::config::NAMESPACE.to_vec(),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
                 immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
