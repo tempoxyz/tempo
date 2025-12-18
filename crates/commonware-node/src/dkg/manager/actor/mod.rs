@@ -60,8 +60,8 @@ use crate::{
     utils::OptionFuture,
 };
 
-pub mod post_allegretto;
-pub mod pre_allegretto;
+pub(super) mod post_allegretto;
+pub(super) mod pre_allegretto;
 
 pub(crate) struct Actor<TContext, TPeerManager>
 where
@@ -998,21 +998,21 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
 }
 
 #[derive(Clone, Debug)]
-pub struct DkgOutcome {
+pub(in crate::dkg::manager) struct DkgOutcome {
     /// Whether this outcome is due to a successful or a failed DKG ceremony.
-    pub dkg_successful: bool,
+    pub(in crate::dkg::manager) dkg_successful: bool,
 
     /// The epoch that this DKG outcome is for (not during which it was running!).
-    pub epoch: Epoch,
+    pub(in crate::dkg::manager) epoch: Epoch,
 
     /// The participants in the next epoch as determined by the DKG.
-    pub participants: Ordered<PublicKey>,
+    pub(in crate::dkg::manager) participants: Ordered<PublicKey>,
 
     /// The public polynomial in the next epoch as determined by the DKG.
-    pub public: Public<MinSig>,
+    pub(in crate::dkg::manager) public: Public<MinSig>,
 
     /// The share of this node in the next epoch as determined by the DKG.
-    pub share: Option<Share>,
+    pub(in crate::dkg::manager) share: Option<Share>,
 }
 
 impl Write for DkgOutcome {

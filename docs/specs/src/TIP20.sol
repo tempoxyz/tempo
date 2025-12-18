@@ -205,9 +205,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    modifier notTokenAddress(address to) {
-        // Don't allow sending to other precompiled tokens.
-        if ((uint160(to) >> 64) == 0x20c000000000000000000000) {
+    modifier validRecipient(address to) {
+        // Don't allow sending to the zero address not other precompiled tokens.
+        if (to == address(0) || (uint160(to) >> 64) == 0x20c000000000000000000000) {
             revert InvalidRecipient();
         }
         _;
@@ -225,7 +225,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(msg.sender, to)
         returns (bool)
     {
@@ -242,7 +242,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
@@ -320,7 +320,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(msg.sender, to)
     {
         _transfer(msg.sender, to, amount);
@@ -331,7 +331,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
@@ -356,7 +356,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         external
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
