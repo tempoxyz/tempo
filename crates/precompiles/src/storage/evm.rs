@@ -7,10 +7,7 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-use crate::{
-    error::TempoPrecompileError,
-    storage::{PrecompileStorageProvider, thread_local::get_tx_origin},
-};
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
@@ -202,11 +199,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn is_static(&self) -> bool {
         self.is_static
-    }
-
-    #[inline]
-    fn tx_origin(&self) -> Address {
-        get_tx_origin()
     }
 }
 

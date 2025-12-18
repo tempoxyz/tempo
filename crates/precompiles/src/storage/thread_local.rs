@@ -5,10 +5,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
-use std::{
-    cell::{Cell, RefCell},
-    fmt::Debug,
-};
+use std::{cell::RefCell, fmt::Debug};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -18,24 +15,6 @@ use crate::{
 };
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
-
-// Thread-local for tx.origin - set by the handler before transaction execution
-thread_local!(static TX_ORIGIN: Cell<Address> = const { Cell::new(Address::ZERO) });
-
-/// Sets the transaction origin (tx.origin) for the current thread.
-///
-/// This should be called by the transaction handler before executing a transaction.
-/// Precompiles can then access it via `StorageCtx::tx_origin()`.
-pub fn set_tx_origin(origin: Address) {
-    TX_ORIGIN.set(origin);
-}
-
-/// Gets the transaction origin (tx.origin) for the current thread.
-///
-/// Returns `Address::ZERO` if not set.
-pub fn get_tx_origin() -> Address {
-    TX_ORIGIN.get()
-}
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -190,14 +169,6 @@ impl StorageCtx {
 
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
-    }
-
-    /// Returns the transaction origin (tx.origin) for the current transaction.
-    ///
-    /// This is set by the handler before transaction execution and can be used
-    /// by precompiles to determine the original signer of the transaction.
-    pub fn tx_origin(&self) -> Address {
-        Self::with_storage(|s| s.tx_origin())
     }
 }
 

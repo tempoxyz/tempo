@@ -65,6 +65,9 @@ pub struct AccountKeychain {
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
     transaction_key: Address,
+    // The transaction origin (tx.origin) - the EOA that signed the transaction.
+    // Used to ensure spending limits only apply when msg_sender == tx_origin.
+    tx_origin: Address,
 }
 
 impl AccountKeychain {
@@ -327,6 +330,14 @@ impl AccountKeychain {
         self.transaction_key.t_write(key_id)
     }
 
+    /// Sets the transaction origin (tx.origin) for the current transaction.
+    ///
+    /// Called by the handler before transaction execution.
+    /// Uses transient storage, so it's automatically cleared after the transaction.
+    pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
+        self.tx_origin.t_write(origin)
+    }
+
     /// Load and validate a key exists and is not revoked.
     ///
     /// Returns the key if valid, or an error if:
@@ -435,7 +446,7 @@ impl AccountKeychain {
         // Only apply spending limits if the caller is the tx origin.
         // Gate behind allegro-moderato to avoid breaking existing behavior.
         if self.storage.spec().is_allegro_moderato() {
-            let tx_origin = self.storage.tx_origin();
+            let tx_origin = self.tx_origin.t_read()?;
             if account != tx_origin {
                 return Ok(());
             }
@@ -476,8 +487,9 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
+        // Gate behind allegro-moderato to avoid breaking existing behavior.
         if self.storage.spec().is_allegro_moderato() {
-            let tx_origin = self.storage.tx_origin();
+            let tx_origin = self.tx_origin.t_read()?;
             if account != tx_origin {
                 return Ok(());
             }
@@ -503,7 +515,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
-        storage::{StorageCtx, hashmap::HashMapStorageProvider, set_tx_origin},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -772,7 +784,7 @@ mod tests {
 
             // Setup: Alice authorizes an access key with a spending limit of 100 tokens
             keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
-            set_tx_origin(eoa_alice);
+            keychain.set_tx_origin(eoa_alice)?;
 
             let auth_call = authorizeKeyCall {
                 keyId: access_key,
@@ -800,7 +812,7 @@ mod tests {
 
             // Now simulate a transaction where Alice uses her access key
             keychain.set_transaction_key(access_key)?;
-            set_tx_origin(eoa_alice);
+            keychain.set_tx_origin(eoa_alice)?;
 
             // Test 1: When msg_sender == tx_origin (Alice directly transfers)
             // Spending limit SHOULD be enforced
