@@ -148,6 +148,7 @@ impl ValidatorState {
     /// Returns a validator state with only public key and inbound address set.
     ///
     /// All other values take default values.
+    //// TODO: remove unused on post_allegretto
     pub(super) fn with_unknown_contract_state(validators: Map<PublicKey, SocketAddr>) -> Self {
         let validators = Map::from_iter_dedup(validators.iter_pairs().map(|(key, addr)| {
             let key = key.clone();
