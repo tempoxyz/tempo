@@ -763,7 +763,7 @@ mod tests {
 
         let tx = TempoTxEnv {
             inner: TxEnv {
-                data: grant_role_data.clone(),
+                data: grant_role_data,
                 kind: TxKind::Call(tip20_token),
                 caller,
                 ..Default::default()
@@ -780,7 +780,7 @@ mod tests {
         let aa_call = Call {
             to: TxKind::Call(tip20_token),
             value: U256::ZERO,
-            input: transfer_data.clone(),
+            input: transfer_data,
         };
         let tx = TempoTxEnv {
             inner: TxEnv {
