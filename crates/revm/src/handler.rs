@@ -46,8 +46,7 @@ use tempo_primitives::transaction::{
 };
 
 use crate::{
-    TempoEvm, TempoInvalidTransaction,
-    common::TempoStateAccess,
+    TempoEvm, TempoInvalidTransaction, TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
 };
@@ -125,18 +124,17 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         let ctx = evm.ctx_mut();
 
         self.fee_payer = ctx.tx.fee_payer()?;
-        self.fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            ctx.block.beneficiary,
-            self.fee_payer,
-            ctx.cfg.spec,
-        )?;
+        self.fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer, ctx.cfg.spec)
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
             && !ctx
                 .journaled_state
-                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)?
+                .is_valid_fee_token(self.fee_token, ctx.cfg.spec)
+                .map_err(|err| EVMError::Custom(err.to_string()))?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
@@ -1338,7 +1336,6 @@ mod tests {
         primitives::hardfork::SpecId,
         state::Account,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -1395,13 +1392,12 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
-        assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
+        {
+            let fee_token =
+                ctx.journaled_state
+                    .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
+            assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
+        }
 
         // Set user token
         let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
@@ -1413,22 +1409,18 @@ mod tests {
             )
             .unwrap();
 
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
-        assert_eq!(user_fee_token, fee_token);
+        {
+            let fee_token =
+                ctx.journaled_state
+                    .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
+            assert_eq!(user_fee_token, fee_token);
+        }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx.journaled_state.get_fee_token(
-            &ctx.tx,
-            validator,
-            user,
-            TempoHardfork::default(),
-        )?;
+        let fee_token =
+            ctx.journaled_state
+                .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
