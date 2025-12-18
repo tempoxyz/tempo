@@ -144,6 +144,11 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
 
+## Security Reporting
+
+Please report security issues privately following the instructions in SECURITY.md.
+
+
 ## License
 
 Licensed under either of [Apache License](./LICENSE-APACHE), Version
