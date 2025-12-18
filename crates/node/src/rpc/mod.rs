@@ -64,6 +64,7 @@ use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
     TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
+    subblock::PartialValidatorKey,
 };
 use tokio::sync::{Mutex, broadcast};
 
@@ -71,6 +72,13 @@ use tokio::sync::{Mutex, broadcast};
 /// Tempo.
 pub const NATIVE_BALANCE_PLACEHOLDER: U256 =
     uint!(4242424242424242424242424242424242424242424242424242424242424242424242424242_U256);
+
+/// Capacity of the subblock transactions broadcast channel.
+///
+/// This is set high enough to prevent legitimate transactions from being evicted
+/// during high-load scenarios. Transactions are filtered by validator key before
+/// being added to the channel to prevent DoS attacks.
+pub const SUBBLOCK_TX_CHANNEL_CAPACITY: usize = 10_000;
 
 /// Tempo `Eth` API implementation.
 ///
@@ -89,22 +97,40 @@ pub struct TempoEthApi<N: FullNodeTypes<Types = TempoNode>> {
 
     /// Channel for sending subblock transactions to the subblocks service.
     subblock_transactions_tx: broadcast::Sender<Recovered<TempoTxEnvelope>>,
+
+    /// Validator public key used to filter subblock transactions.
+    ///
+    /// Only subblock transactions targeting this validator will be accepted.
+    /// This prevents DoS attacks via channel flooding with transactions
+    /// targeting other validators.
+    validator_key: Option<B256>,
 }
 
 impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
     /// Creates a new `TempoEthApi`.
     pub fn new(
         eth_api: EthApi<NodeAdapter<N>, DynRpcConverter<TempoEvmConfig, TempoNetwork>>,
+        validator_key: Option<B256>,
     ) -> Self {
         Self {
             inner: eth_api,
-            subblock_transactions_tx: broadcast::channel(100).0,
+            subblock_transactions_tx: broadcast::channel(SUBBLOCK_TX_CHANNEL_CAPACITY).0,
+            validator_key,
         }
     }
 
     /// Returns a [`broadcast::Receiver`] for subblock transactions.
     pub fn subblock_transactions_rx(&self) -> broadcast::Receiver<Recovered<TempoTxEnvelope>> {
         self.subblock_transactions_tx.subscribe()
+    }
+
+    /// Returns `true` if the given partial validator key matches this node's validator key.
+    ///
+    /// Returns `false` if no validator key is configured.
+    fn matches_validator_key(&self, partial_key: &PartialValidatorKey) -> bool {
+        self.validator_key
+            .map(|key| partial_key.matches(key.as_slice()))
+            .unwrap_or(false)
     }
 }
 
@@ -325,22 +351,26 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
         &self,
         tx: WithEncoded<Recovered<PoolPooledTx<Self::Pool>>>,
     ) -> impl Future<Output = Result<B256, Self::Error>> + Send {
-        if tx.value().inner().subblock_proposer().is_some() {
-            // Send subblock transactions to the subblocks service.
-            Either::Left(async move {
-                let tx_hash = *tx.value().tx_hash();
+        match tx.value().inner().subblock_proposer() {
+            Some(proposer) if self.matches_validator_key(&proposer) => {
+                let subblock_tx = self.subblock_transactions_tx.clone();
+                Either::Left(Either::Left(async move {
+                    let tx_hash = *tx.value().tx_hash();
 
-                self.subblock_transactions_tx
-                    .send(tx.into_value())
-                    .map_err(|_| {
+                    subblock_tx.send(tx.into_value()).map_err(|_| {
                         EthApiError::from(RethError::msg("subblocks service channel closed"))
                     })?;
 
-                Ok(tx_hash)
-            })
-        } else {
-            // Send regular transactions to the transaction pool.
-            Either::Right(self.inner.send_transaction(tx).map_err(Into::into))
+                    Ok(tx_hash)
+                }))
+            }
+            Some(_) => Either::Left(Either::Right(async move {
+                Err(EthApiError::from(RethError::msg(
+                    "subblock transaction rejected: target validator mismatch",
+                ))
+                .into())
+            })),
+            None => Either::Right(self.inner.send_transaction(tx).map_err(Into::into)),
         }
     }
 
@@ -433,7 +463,17 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
 }
 
 #[derive(Debug, Default)]
-pub struct TempoEthApiBuilder;
+pub struct TempoEthApiBuilder {
+    /// Validator public key used to filter subblock transactions.
+    pub validator_key: Option<B256>,
+}
+
+impl TempoEthApiBuilder {
+    /// Creates a new builder with the given validator key.
+    pub fn new(validator_key: Option<B256>) -> Self {
+        Self { validator_key }
+    }
+}
 
 impl<N> EthApiBuilder<NodeAdapter<N>> for TempoEthApiBuilder
 where
@@ -449,6 +489,6 @@ where
             .map_converter(|_| RpcConverter::new(TempoReceiptConverter::new(chain_spec)).erased())
             .build();
 
-        Ok(TempoEthApi::new(eth_api))
+        Ok(TempoEthApi::new(eth_api, self.validator_key))
     }
 }
