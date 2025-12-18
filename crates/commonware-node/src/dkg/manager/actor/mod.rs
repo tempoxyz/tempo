@@ -280,12 +280,9 @@ where
             return;
         }
 
-        // Check if we should exit if we have already processed the target epoch.
-        if let Ok(Some(last_height)) = tx.get_last_processed_height().await
-            && self.maybe_export_and_shutdown(last_height).await.is_break()
-        {
-            info!("DKG actor exiting on startup for coordinated shutdown");
-            return;
+        // Handle pause-after-epoch if we've already processed the target epoch boundary.
+        if let Ok(Some(last_height)) = tx.get_last_processed_height().await {
+            self.handle_pause_after_epoch(last_height).await;
         }
 
         self.register_previous_epoch_state(&mut tx).await;
@@ -644,15 +641,8 @@ where
             .await
             .expect("must be able to commit finalize tx");
 
-        // Check if we should export and shutdown - if so, exit without acknowledging
-        if self
-            .maybe_export_and_shutdown(block_height)
-            .await
-            .is_break()
-        {
-            info!("exiting actor without acknowledging to allow graceful shutdown");
-            return ControlFlow::Break(());
-        }
+        // Handle pause-after-epoch if we've reached the target epoch boundary
+        self.handle_pause_after_epoch(block_height).await;
 
         acknowledgement.acknowledge();
         ControlFlow::Continue(())
@@ -918,48 +908,28 @@ where
             && tx.has_post_allegretto_state().await
     }
 
-    /// Checks if we should export signing share and signal shutdown.
+    /// Handles pause-after-epoch logic if configured and we've reached the target
+    /// epoch boundary.
     ///
-    /// Called after each finalized block to check if we've reached the target epoch boundary.
-    /// Returns `ControlFlow::Break` if the actor should exit (without acknowledging).
-    async fn maybe_export_and_shutdown(&mut self, block_height: u64) -> ControlFlow<()> {
-        tracing::debug!(
-            block_height,
-            pause_after_epoch = ?self.config.pause.args.pause_after_epoch,
-            pause_export_share = ?self.config.pause.args.pause_export_share,
-            "checking if should export and shutdown"
-        );
-
-        if let Some(target_epoch) = self.config.pause.args.pause_after_epoch
-            && let Some(block_epoch) =
-                utils::is_last_block_in_epoch(self.config.epoch_length, block_height)
-            && block_epoch == target_epoch
-        {
-            let tx = DkgReadWriteTransaction::new(self.db.read_write());
-            self.export_and_shutdown(&tx, block_height, target_epoch)
-                .await;
-            return ControlFlow::Break(());
+    /// Called after each finalized block. The node will naturally stop making progress
+    /// since we don't enter the next epoch when `pause_after_epoch` is configured.
+    async fn handle_pause_after_epoch(&mut self, block_height: u64) {
+        let Some(target_epoch) = self.config.pause.args.pause_after_epoch else {
+            return;
+        };
+        let Some(block_epoch) =
+            utils::is_last_block_in_epoch(self.config.epoch_length, block_height)
+        else {
+            return;
+        };
+        if block_epoch != target_epoch {
+            return;
         }
 
-        ControlFlow::Continue(())
-    }
-
-    /// Optionally exports signing share to file and signals shutdown.
-    async fn export_and_shutdown(
-        &mut self,
-        tx: &DkgReadWriteTransaction<ContextCell<TContext>>,
-        block_height: u64,
-        epoch: u64,
-    ) {
-        info!(
-            block_height,
-            epoch, "at target epoch boundary; signaling shutdown"
-        );
-
         if let Some(export_path) = &self.config.pause.args.pause_export_share {
+            let tx = DkgReadWriteTransaction::new(self.db.read_write());
             let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await else {
-                error!("failed to read epoch state");
-                self.config.pause.shutdown_token.cancel();
+                error!("failed to read epoch state for share export");
                 return;
             };
 
@@ -972,9 +942,15 @@ where
             } else {
                 info!("node has no signing share to export");
             }
+        } else {
+            info!("no export path configured; skipping share export");
         }
 
-        self.config.pause.shutdown_token.cancel();
+        info!(
+            block_height,
+            epoch = target_epoch,
+            "pause-after-epoch complete; node will no longer progress"
+        );
     }
 
     /// Returns the previous epoch state.
