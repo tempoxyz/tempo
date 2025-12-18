@@ -4898,4 +4898,43 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_cancel_pending_order_uses_checked_arithmetic() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+
+            exchange.cancel(alice, order_id)?;
+
+            let refund = exchange.balance_of(alice, quote_token)?;
+
+            let expected_refund = base_to_quote(min_order_amount, tick, RoundingDirection::Down)
+                .expect("should not overflow for valid order");
+
+            assert_eq!(
+                refund, expected_refund,
+                "Cancel refund should use base_to_quote with RoundingDirection::Down for consistency"
+            );
+
+            Ok(())
+        })
+    }
 }
