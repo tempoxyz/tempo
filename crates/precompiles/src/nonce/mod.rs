@@ -107,8 +107,8 @@ impl NonceManager {
 
         self.active_key_count.at(account).write(new_count)?;
 
-        // Emit ActiveKeyCountChanged event (only between Moderato and AllegroModerato)
-        if self.storage.spec().is_moderato() {
+        // Emit ActiveKeyCountChanged event (only between Moderato and AllegroModerato for backwards compatibility)
+        if self.storage.spec().is_moderato() && !self.storage.spec().is_allegro_moderato() {
             self.emit_event(NonceEvent::ActiveKeyCountChanged(
                 INonce::ActiveKeyCountChanged {
                     account,
