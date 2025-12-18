@@ -2755,9 +2755,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     println!("  Baseline gas: {baseline_gas_u64}");
 
     // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
+    // For keychain signatures, we need to use same-tx auth+use pattern:
+    // provide both key_id AND key_authorization with the same key_id
     println!("\nTest 2: Keychain signature (secp256k1 inner)");
+    let key_auth_secp_for_keychain =
+        create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
+    let key_id_secp = key_auth_secp_for_keychain.key_id;
     let tx_keychain = TempoTransactionRequest {
-        key_id: Some(Address::random()), // Any address indicates keychain signature
+        key_id: Some(key_id_secp), // Use the same key_id as in key_authorization
+        key_authorization: Some(key_auth_secp_for_keychain),
         ..base_tx_request()
     };
 
@@ -2770,18 +2776,26 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain gas: {keychain_gas_u64}");
 
+    // Keychain with same-tx auth adds:
+    // - 3,000 for keychain validation
+    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
+    // Total: ~33,000 gas
     let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (2_985..=3_015).contains(&keychain_diff.unsigned_abs()),
-        "Keychain should add ~3,000 gas: actual diff {keychain_diff} (expected 3,000 ±15)"
+        (32_500..=34_000).contains(&keychain_diff.unsigned_abs()),
+        "Keychain + KeyAuth should add ~33,000 gas: actual diff {keychain_diff} (expected 33,000 ±500)"
     );
-    println!("  ✓ Keychain adds {keychain_diff} gas (expected ~3,000)");
+    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~33,000)");
 
-    // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 = 8,000 gas
+    // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 + ~30,000 = ~38,000 gas
     println!("\nTest 3: Keychain signature (P256 inner)");
+    let key_auth_p256_for_keychain =
+        create_signed_key_authorization(&signer, SignatureType::P256, 0);
+    let key_id_p256 = key_auth_p256_for_keychain.key_id;
     let tx_keychain_p256 = TempoTransactionRequest {
         key_type: Some(SignatureType::P256),
-        key_id: Some(Address::random()), // Any address indicates keychain signature
+        key_id: Some(key_id_p256), // Use the same key_id as in key_authorization
+        key_authorization: Some(key_auth_p256_for_keychain),
         ..base_tx_request()
     };
 
@@ -2796,12 +2810,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
 
     let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
-    // P256 adds 5,000 + Keychain adds 3,000 = 8,000
+    // Keychain P256 with same-tx auth adds:
+    // - 3,000 for keychain validation
+    // - 5,000 for P256 signature verification
+    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
+    // Total: ~38,000 gas
     assert!(
-        (7_985..=8_015).contains(&keychain_p256_diff.unsigned_abs()),
-        "Keychain P256 should add ~8,000 gas: actual diff {keychain_p256_diff} (expected 8,000 ±15)"
+        (37_500..=39_000).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 + KeyAuth should add ~38,000 gas: actual diff {keychain_p256_diff} (expected 38,000 ±500)"
     );
-    println!("  ✓ Keychain P256 adds {keychain_p256_diff} gas (expected ~8,000)");
+    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~38,000)");
 
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");

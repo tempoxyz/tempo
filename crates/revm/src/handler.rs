@@ -742,8 +742,11 @@ where
             // Check if this TX is using a Keychain signature (access key)
             // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
             if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
-                // Get the access key address (recovered during Tx->TxEnv conversion and cached)
-                let access_key_addr =
+                // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                    override_key_id
+                } else {
+                    // Get the access key address (recovered during Tx->TxEnv conversion and cached)
                     keychain_sig
                         .key_id(&tempo_tx_env.signature_hash)
                         .map_err(|_| {
@@ -754,7 +757,8 @@ where
                                         .to_string(),
                             },
                         )
-                        })?;
+                        })?
+                };
 
                 // Only allow if authorizing the same key that's being used (same-tx auth+use)
                 if access_key_addr != key_auth.key_id {
