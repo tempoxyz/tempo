@@ -42,12 +42,11 @@ use tempo_precompiles::{
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, RecoveredTempoAuthorization, SignatureType, TempoSignature,
-    calc_gas_balance_spending,
+    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending,
 };
 
 use crate::{
-    TempoEvm, TempoInvalidTransaction,
+    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -865,26 +864,39 @@ where
         // Skip validation during gas estimation (signature_hash is zero for mock signatures)
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
-            && tempo_tx_env.signature_hash != alloy_primitives::B256::ZERO
         {
-            // The user_address is the root account this transaction is being executed for
-            // This should match tx.caller (which comes from recover_signer on the outer signature)
-            let user_address = &keychain_sig.user_address;
+            // During gas estimation (signature_hash == ZERO), use key_id if provided
+            // During actual execution, recover the key from the signature
+            let is_gas_estimation = tempo_tx_env.signature_hash == alloy_primitives::B256::ZERO;
 
-            // Sanity check: user_address should match tx.caller
-            if *user_address != tx.caller {
-                return Err(EVMError::Transaction(
-                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!(
-                            "Keychain user_address {} does not match transaction caller {}",
-                            user_address, tx.caller
-                        ),
-                    },
-                ));
-            }
+            let access_key_addr = if is_gas_estimation {
+                // For gas estimation, use the key_id provided in the request
+                // This allows proper spending limits simulation
+                tempo_tx_env.key_id.ok_or_else(|| {
+                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        reason:
+                            "key_id must be provided for gas estimation with Keychain signatures"
+                                .to_string(),
+                    })
+                })?
+            } else {
+                // The user_address is the root account this transaction is being executed for
+                // This should match tx.caller (which comes from recover_signer on the outer signature)
+                let user_address = &keychain_sig.user_address;
 
-            // Get the access key address (recovered during pool validation and cached)
-            let access_key_addr =
+                // Sanity check: user_address should match tx.caller
+                if *user_address != tx.caller {
+                    return Err(EVMError::Transaction(
+                        TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                            reason: format!(
+                                "Keychain user_address {} does not match transaction caller {}",
+                                user_address, tx.caller
+                            ),
+                        },
+                    ));
+                }
+
+                // Get the access key address (recovered during pool validation and cached)
                 keychain_sig
                     .key_id(&tempo_tx_env.signature_hash)
                     .map_err(|_| {
@@ -894,10 +906,11 @@ where
                                     .to_string(),
                             },
                         )
-                    })?;
+                    })?
+            };
 
             // Check if this transaction includes a KeyAuthorization for the same key
-            // If so, skip validation here - the key was just validated and authorized
+            // If so, skip keychain validation here - the key was just validated and authorized
             let is_authorizing_this_key = tempo_tx_env
                 .key_authorization
                 .as_ref()
@@ -906,9 +919,11 @@ where
 
             // Always need to set the transaction key for Keychain signatures
             StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
-                if !is_authorizing_this_key {
+                // Skip keychain validation during gas estimation or when authorizing this key
+                if !is_gas_estimation && !is_authorizing_this_key {
                     // Not authorizing this key in the same transaction, so validate it exists now
                     // Validate that user_address has authorized this access key in the keychain
+                    let user_address = &keychain_sig.user_address;
                     keychain
                         .validate_keychain_authorization(
                             *user_address,
@@ -1196,13 +1211,14 @@ where
 /// - Key authorization costs (if present, post-AllegroModerato): 30k/32k base + 22k per spending limit
 /// - Floor gas calculation (EIP-7623, Prague+)
 fn calculate_aa_batch_intrinsic_gas<'a>(
-    calls: &[tempo_primitives::transaction::Call],
-    signature: &TempoSignature,
+    aa_env: &TempoBatchCallEnv,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
-    authorization_list: &[RecoveredTempoAuthorization],
-    key_authorization: Option<&tempo_primitives::transaction::SignedKeyAuthorization>,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
+    let calls = &aa_env.aa_calls;
+    let signature = &aa_env.signature;
+    let authorization_list = &aa_env.tempo_authorization_list;
+    let key_authorization = aa_env.key_authorization.as_ref();
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
@@ -1316,14 +1332,7 @@ where
 
     // Calculate batch intrinsic gas using helper
     let spec = evm.ctx_ref().cfg().spec();
-    let mut batch_gas = calculate_aa_batch_intrinsic_gas(
-        calls,
-        &aa_env.signature,
-        tx.access_list(),
-        &aa_env.tempo_authorization_list,
-        aa_env.key_authorization.as_ref(),
-        spec,
-    )?;
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, tx.access_list(), spec)?;
 
     if evm.ctx.cfg.is_eip7623_disabled() {
         batch_gas.floor_gas = 0u64;
@@ -1604,11 +1613,8 @@ mod tests {
         // Calculate AA gas
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let aa_gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>, // no access list
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             spec,
         )
         .unwrap();
@@ -1670,11 +1676,8 @@ mod tests {
 
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
-            &calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             spec,
         )
         .unwrap();
@@ -1729,11 +1732,8 @@ mod tests {
 
         let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             tempo_spec,
         )
         .unwrap();
@@ -1777,11 +1777,8 @@ mod tests {
 
         let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             tempo_spec,
         )
         .unwrap();
@@ -1823,11 +1820,8 @@ mod tests {
 
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let res = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             spec,
         );
 
@@ -1866,11 +1860,8 @@ mod tests {
         // Test without access list
         let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             tempo_spec,
         )
         .unwrap();
@@ -1974,11 +1965,8 @@ mod tests {
 
         let tempo_spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None, // no key authorization
             tempo_spec,
         )
         .unwrap();
@@ -2132,12 +2120,22 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let aa_env = TempoBatchCallEnv {
+        let aa_env_with_key_auth = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![call.clone()],
+            key_authorization: Some(key_auth),
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let aa_env_without_key_auth = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
             aa_calls: vec![call],
-            key_authorization: Some(key_auth),
+            key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
         };
@@ -2147,22 +2145,16 @@ mod tests {
 
         // Calculate gas WITH key authorization
         let gas_with_key_auth = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env_with_key_auth,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            aa_env.key_authorization.as_ref(),
             spec,
         )
         .unwrap();
 
         // Calculate gas WITHOUT key authorization
         let gas_without_key_auth = calculate_aa_batch_intrinsic_gas(
-            &aa_env.aa_calls,
-            &aa_env.signature,
+            &aa_env_without_key_auth,
             None::<std::iter::Empty<&AccessListItem>>,
-            &aa_env.tempo_authorization_list,
-            None,
             spec,
         )
         .unwrap();
