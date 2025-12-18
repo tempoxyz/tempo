@@ -13,17 +13,8 @@ use tracing::info;
 /// Write the signing share to a file in hex format.
 ///
 /// The exported file can be used directly as `--consensus.signing-share` for a new node.
-/// If the file already exists, this is a no-op to prevent accidental overwrites.
+/// If the file already exists, it will be overwritten.
 pub fn write_share_to_file(share: &Share, path: &Path) -> Result<()> {
-    // Check if file exists to avoid overwriting
-    if path.exists() {
-        info!(
-            path = %path.display(),
-            "signing share export file already exists; skipping write"
-        );
-        return Ok(());
-    }
-
     // Create parent directories if they don't exist
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).wrap_err("failed to create parent directories")?;
