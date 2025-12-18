@@ -103,17 +103,22 @@ mod tests {
     //!
     //! Run with:
     //! ```sh
-    //! ETH_RPC_URL=https://eth.llamarpc.com cargo test -p tempo-contracts
+    //! cargo test -p tempo-contracts
     //! ```
+    //!
+    //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
     use super::*;
     use alloy_primitives::{B256, keccak256};
     use std::{process::Command, str::FromStr};
 
-    /// Returns the Ethereum mainnet RPC URL from the `ETH_RPC_URL` environment variable.
+    /// Default public RPC URL for Ethereum mainnet.
+    const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
+
+    /// Returns the Ethereum mainnet RPC URL from the `ETH_RPC_URL` environment variable,
+    /// or falls back to a default public RPC.
     fn get_rpc_url() -> String {
-        std::env::var("ETH_RPC_URL")
-            .expect("ETH_RPC_URL environment variable must be set to run these tests")
+        std::env::var("ETH_RPC_URL").unwrap_or_else(|_| DEFAULT_ETH_RPC_URL.to_string())
     }
 
     /// Fetches the code hash for an address from Ethereum mainnet using `cast codehash`.
