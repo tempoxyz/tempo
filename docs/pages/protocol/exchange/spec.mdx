@@ -4,15 +4,15 @@
 
 This specification defines an enshrined decentralized exchange for trading between TIP-20 stablecoins. The exchange currently only supports trading between TIP-20 stablecoins with USD as their currency. By only allowing each stablecoin to be paired against its designated "quote token" the exchange enforces that there is only one route for trading between any two tokens.
 
-The exchange maintains price‑time priority at each discrete price tick, defers order placement to the end of the block, executes swaps immediately against the active book, and supports auto‑replenishing “flip orders” that recreate themselves on the opposite side after being fully filled. 
+The exchange maintains price‑time priority at each discrete price tick, executes swaps immediately against the active book, and supports auto‑replenishing “flip orders” that recreate themselves on the opposite side after being fully filled.
 
 Users maintain internal balances per token on the exchange. Order placement escrows funds from these balances (or transfers from the user if necessary), fills credit makers internally, and withdrawals transfer tokens out.
 
 ## Motivation
 
-Tempo aims to provide high‑quality execution for cross‑stablecoin payments while avoiding unnecessary chain load and minimizing mid‑block MEV surfaces. 
+Tempo aims to provide high‑quality execution for cross‑stablecoin payments while avoiding unnecessary chain load and minimizing mid‑block MEV surfaces.
 
-A simple, on‑chain, price‑time‑priority orderbook tailored to stable pairs encourages passive liquidity to rest on chain and allows takers to execute deterministically at the best available ticks. Deferring new order placement to the end of the block reduces backrunning and JIT strategies. 
+A simple, on‑chain, price‑time‑priority orderbook tailored to stable pairs encourages passive liquidity to rest on chain and allows takers to execute deterministically at the best available ticks.
 
 Another design goal is to avoid fragmentation of liquidity across many different pairs. By enforcing that each stablecoin only trades against a single quote token, the system guarantees that there is only one path between any two tokens.
 
@@ -22,21 +22,15 @@ Another design goal is to avoid fragmentation of liquidity across many different
 
 The exchange is a singleton contract deployed at `0xdec0000000000000000000000000000000000000`. It exposes functions to create trading pairs, place and cancel orders (including flip orders), execute swaps, produce quotes, manage internal balances, and process end‑of‑block placement.
 
-Places are delayed until the end of each block, and are processed in an `executeBlock()` function. This function can only be called by a system transaction.
-
 ### Key concepts
 
 #### Internal balances
 
 The contract maintains per‑user, per‑token internal balances. Order placement escrows funds from these balances (or transfers any shortfall from the user). When an order fills, the maker is credited internally with the counter‑asset at the order’s tick price. Users can withdraw available balances at any time.
 
-#### Delayed order placement
-
-Orders placed during a block are recorded as pending and are not visible on the active book until the block ends. A system transaction calls `executeBlock()` to insert all pending orders into their ticks in creation order within the block. This reduces mid‑block MEV surfaces and JIT strategies.
-
 #### Flip orders
 
-A flip order behaves like a normal resting order until it is fully filled. When filled, the exchange schedules a new pending order for the same maker on the opposite side at a configured `flipTick` (which must be greater than `tick` for bids and less for asks). This enables passive liquidity with flexible strategies.
+A flip order behaves like a normal resting order until it is fully filled. When filled, the exchange places a new order for the same maker on the opposite side at a configured `flipTick` (which must be greater than `tick` for bids and less for asks). This enables passive liquidity with flexible strategies.
 
 #### Pairs, ticks, and prices
 
@@ -50,13 +44,13 @@ This design reduces liquidity fragmentation by giving every token exactly one pa
 
 It also simplifies routing. We require that:
 
- 1. each token picks a single other stablecoin as its quote token, and, 
- 2. quote token relationships cannot have circular dependencies. 
+ 1. each token picks a single other stablecoin as its quote token, and,
+ 2. quote token relationships cannot have circular dependencies.
 
 This forces liquidity into a tree structure, which in turn implies that there is only one path between any two stablecoins
 
 USD tokens can only choose USD tokens as their quote token. Non-USD TIP-20 tokens can pick any token as their quote token, but currently there is no support for cross-currency trading, or same-currency trading of non-USD tokens, on the DEX.
- 
+
 The platform offers a neutral USD stablecoin, [`pathUSD`](/protocol/exchange/pathUSD), as an option for quote token. PathUSD is the first stablecoin deployed on the chain, which means it has no quote token. Use of pathUSD is optional.
 
 #### Swaps
@@ -74,7 +68,6 @@ Crossed books are permitted; the implementation does not enforce that best bid �
 - Only USD‑denominated tokens are supported, and their quotes must also be USD
 - Orders must specify ticks within the configured bounds (±2000)
 - Tick spacing is 10: `tick % 10 == 0` for orders and flip orders
-- `executeBlock()` is system‑only (called in a system transaction at end of block)
 - Withdrawals require sufficient internal balance
 
 ### Interface
@@ -162,38 +155,33 @@ Transfers `amount` of `token` from the caller’s internal balance to the caller
 function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
 ```
 
-Queues a limit order against the pair of `token` and its quote. Escrows funds: bids escrow quote at tick price; asks escrow base.
+Places a limit order against the pair of `token` and its quote, immediately adding it to the active book. Escrows funds: bids escrow quote at tick price; asks escrow base.
 
 Notes:
+
 - `tick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
 
 ```solidity
 function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
 ```
 
-Like `place`, but marks the order as a flip order. When fully filled, a new pending order for the same maker is scheduled on the opposite side at `flipTick` (which must be greater than `tick` for bids and less for asks).
+Like `place`, but marks the order as a flip order. When fully filled, a new order for the same maker is scheduled on the opposite side at `flipTick` (which must be greater than `tick` for bids and less for asks).
 
 Notes:
+
 - Both `tick` and `flipTick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
 
 ```solidity
 function cancel(uint128 orderId) external;
 ```
 
-Cancels a pending or active order owned by the caller. Pending orders refund escrow to internal balance. Active orders are removed from the tick queue, liquidity is decremented, and remaining escrow is refunded.
+Cancels an order owned by the caller. When canceled, the order is removed from the tick queue, liquidity is decremented, and remaining escrow is refunded to the order owner's exchange balance which can then be withdrawn.
 
 ```solidity
-function executeBlock() external;
+function nextOrderId() external view returns (uint128);
 ```
 
-Processes all orders that were pending at call time and inserts them into the active book in creation order within the block. Only callable by the protocol, and is called in a system transaction at the end of each block.
-
-```solidity
-function activeOrderId() external view returns (uint128);
-function pendingOrderId() external view returns (uint128);
-```
-
-Monotonic counters for last processed active order and latest pending order.
+Monotonic counter for next orderId.
 
 #### Swaps and quoting
 
@@ -234,12 +222,12 @@ event OrderFilled(uint128 indexed orderId, address indexed maker, address indexe
 #### Errors
 
 ```solidity
-error Unauthorized(); // Non‑system caller attempted to call executeBlock
+error Unauthorized();
 ```
-
-Other notable revert reasons (string reverts in the reference implementation):
 - Pair creation or usage: `PAIR_EXISTS`, `PAIR_NOT_EXISTS`, `ONLY_USD_PAIRS`
 - Bounds: `TICK_OUT_OF_BOUNDS`, `FLIP_TICK_OUT_OF_BOUNDS`, `FLIP_TICK_MUST_BE_GREATER_FOR_BID`, `FLIP_TICK_MUST_BE_LESS_FOR_ASK`, "Price out of bounds"
 - Tick spacing: `TICK_NOT_MULTIPLE_OF_SPACING`, `FLIP_TICK_NOT_MULTIPLE_OF_SPACING`
 - Liquidity and limits: `INSUFFICIENT_LIQUIDITY`, `MAX_IN_EXCEEDED`, `INSUFFICIENT_OUTPUT`
-- Authorization: `UNAUTHORIZED` (cancel not by maker), `INSUFFICIENT_BALANCE` (withdraw)
+- Authorization: `UNAUTHORIZED` (cancel not by maker) 
+- Balance: `INSUFFICIENT_BALANCE` (withdraw)
+

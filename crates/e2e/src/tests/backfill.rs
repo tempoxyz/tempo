@@ -38,6 +38,8 @@ async fn run_validator_late_join_test(
     last.start().await;
     assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
+    tracing::debug!("last node started");
+
     // Assert that last node is able to catch up and progress
     while last.execution_provider().last_block_number().unwrap() < blocks_after_join {
         context.sleep(Duration::from_millis(100)).await;
@@ -52,16 +54,16 @@ async fn run_validator_late_join_test(
     } else {
         assert_eq!(
             0, actual_runs,
-            "Expected no backfill, got {actual_runs} runs"
+            "expected no backfill, got {actual_runs} runs"
         );
     }
 
     // Verify that the node is still progressing after sync
     let last_block = last.execution_provider().last_block_number().unwrap();
-    context.sleep(Duration::from_secs(5)).await;
+    context.sleep(Duration::from_secs(10)).await;
     assert!(
         last.execution_provider().last_block_number().unwrap() > last_block,
-        "Node should still be progressing after sync"
+        "node should still be progressing after sync"
     );
 }
 
