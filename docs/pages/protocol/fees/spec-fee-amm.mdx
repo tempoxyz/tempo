@@ -184,7 +184,7 @@ function collectFeePostTx(
 ) external
 ```
 
-Called by the protocol after transaction execution. The validator token and fee recipient are inferred from `block.coinbase`. Calculates refund amount: `refundAmount = maxAmount - actualUsed`. Refunds unused tokens to user. Releases reserved liquidity for refunded amount. Tracks collected fees for block-end settlement. Access: Protocol only (`msg.sender == address(0)`).
+Called by the protocol after transaction execution. The validator token and fee recipient are inferred from `block.coinbase`. Calculates refund amount: `refundAmount = maxAmount - actualUsed`. Refunds unused tokens to the user. Releases reserved liquidity for the refunded amount. Tracks collected fees for block-end settlement. Access: Protocol only (`msg.sender == address(0)`).
 
 ```solidity
 function executeBlock() external
