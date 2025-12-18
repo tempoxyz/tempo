@@ -150,7 +150,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     valid_before: None,
                     valid_after: None,
                     subblock_transaction: false,
-                    key_id,
+                    override_key_id: key_id,
                 }))
             } else {
                 None

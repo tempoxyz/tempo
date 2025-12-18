@@ -860,24 +860,12 @@ where
 
         // For Keychain signatures, validate that the keychain is authorized in the precompile
         // UNLESS this transaction also includes a KeyAuthorization (same-tx auth+use case)
-        // Skip validation during gas estimation (signature_hash is zero for mock signatures)
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
         {
-            // During gas estimation (signature_hash == ZERO), use key_id if provided
-            // During actual execution, recover the key from the signature
-            let is_gas_estimation = tempo_tx_env.signature_hash == alloy_primitives::B256::ZERO;
-
-            let access_key_addr = if is_gas_estimation {
-                // For gas estimation, use the key_id provided in the request
-                // This allows proper spending limits simulation
-                tempo_tx_env.key_id.ok_or_else(|| {
-                    EVMError::Transaction(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason:
-                            "key_id must be provided for gas estimation with Keychain signatures"
-                                .to_string(),
-                    })
-                })?
+            // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                override_key_id
             } else {
                 // The user_address is the root account this transaction is being executed for
                 // This should match tx.caller (which comes from recover_signer on the outer signature)
@@ -918,9 +906,8 @@ where
 
             // Always need to set the transaction key for Keychain signatures
             StorageCtx::enter_precompile(journal, block, cfg, |mut keychain: AccountKeychain| {
-                // Skip keychain validation during gas estimation or when authorizing this key
-                if !is_gas_estimation && !is_authorizing_this_key {
-                    // Not authorizing this key in the same transaction, so validate it exists now
+                // Skip keychain validation when authorizing this key in the same tx
+                if !is_authorizing_this_key {
                     // Validate that user_address has authorized this access key in the keychain
                     let user_address = &keychain_sig.user_address;
                     keychain
