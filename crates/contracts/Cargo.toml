@@ -17,7 +17,7 @@ alloy-primitives.workspace = true
 alloy-sol-types = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
-alloy-provider = { workspace = true, features = ["reqwest", "reqwest-default-tls"] }
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
