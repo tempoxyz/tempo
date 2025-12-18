@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["rpc"] }
 reth-rpc-server-types.workspace = true
 tempo-alloy.workspace = true
 alloy = { workspace = true, features = [
@@ -20,6 +20,7 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic-all-languages",
+  "providers",
   "reqwest-rustls-tls", # TODO(mattsse): set this to just reqwest after https://github.com/alloy-rs/alloy/pull/2865
 ] }
 async-trait.workspace = true

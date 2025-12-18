@@ -1,6 +1,6 @@
 use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
-    consensus::SignableTransaction,
+    consensus::{SignableTransaction, Transaction},
     network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
@@ -66,7 +66,13 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-    let receipt = fee_amm
+    // Track collected fees before this transaction
+    let collected_fees_before = fee_manager
+        .collectedFeesByValidator(validator)
+        .call()
+        .await?;
+
+    let pending_tx = fee_amm
         .mintWithValidatorToken(
             *user_token.address(),
             *validator_token.address(),
@@ -74,18 +80,34 @@ async fn test_set_user_token() -> eyre::Result<()> {
             user_address,
         )
         .send()
-        .await?
-        .get_receipt()
         .await?;
+    let receipt = pending_tx.get_receipt().await?;
     assert!(receipt.status());
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
-    let validator_balance_after = validator_token.balanceOf(validator).call().await?;
+    // Post-AllegroModerato: fees accumulate in collected_fees and require distributeFees() call
+    let collected_fees_after = fee_manager
+        .collectedFeesByValidator(validator)
+        .call()
+        .await?;
+    let fees_from_this_tx = collected_fees_after - collected_fees_before;
     assert_eq!(
-        validator_balance_after,
-        validator_balance_before + expected_cost * U256::from(9970) / U256::from(10000)
+        fees_from_this_tx,
+        expected_cost * U256::from(9970) / U256::from(10000)
     );
+
+    // Distribute fees to validator (this distributes ALL accumulated fees)
+    fee_manager
+        .distributeFees(validator)
+        .send()
+        .await?
+        .watch()
+        .await?;
+
+    let validator_balance_after = validator_token.balanceOf(validator).call().await?;
+    // Validator receives all accumulated fees, not just from this tx
+    assert!(validator_balance_after > validator_balance_before);
 
     let set_receipt = fee_manager
         .setUserToken(*user_token.address())
@@ -98,23 +120,53 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, *user_token.address());
 
+    // Post-AllegroModerato: fees from setUserToken tx also accumulated
+    fee_manager
+        .distributeFees(validator)
+        .send()
+        .await?
+        .watch()
+        .await?;
     assert!(validator_token.balanceOf(validator).call().await? > validator_balance_after);
 
-    // send a dummy transaction
-    let receipt = provider
-        .send_transaction(TransactionRequest::default().to(Address::random()))
-        .await?
-        .get_receipt()
+    // Send a dummy transaction and verify fee was paid in the newly configured user_token
+    let user_balance_before = user_token.balanceOf(user_address).call().await?;
+    let collected_fees_before = fee_manager
+        .collectedFeesByValidator(validator)
+        .call()
         .await?;
 
-    // Assert transaction fee was paid in the newly configured token.
-    assert!(receipt.logs().last().unwrap().address() == *user_token.address());
+    let pending_tx = provider
+        .send_transaction(TransactionRequest::default().to(Address::random()))
+        .await?;
+    let tx_hash = *pending_tx.tx_hash();
+    let receipt = pending_tx.get_receipt().await?;
+    assert!(receipt.status());
 
-    // Ensure the validator was paid for it (or wasn't due to pre-moderato bug)
-    let validator_balance_before = validator_token
-        .balanceOf(validator)
-        .block((receipt.block_number.unwrap() - 1).into())
+    // Post-AllegroModerato: verify fee was paid in user_token (max_fee deducted from user)
+    let user_balance_after = user_token.balanceOf(user_address).call().await?;
+    let tx = provider.get_transaction_by_hash(tx_hash).await?.unwrap();
+    let expected_max_fee =
+        calc_gas_balance_spending(tx.inner.gas_limit(), receipt.effective_gas_price);
+    assert_eq!(user_balance_before - user_balance_after, expected_max_fee);
+
+    // Verify collected fees increased (after swap at 0.9970 rate)
+    let collected_fees_after = fee_manager
+        .collectedFeesByValidator(validator)
         .call()
+        .await?;
+    assert_eq!(
+        collected_fees_after - collected_fees_before,
+        expected_max_fee * U256::from(9970) / U256::from(10000)
+    );
+
+    // Post-AllegroModerato: distribute fees before checking validator balance
+    let validator_balance_before = validator_token.balanceOf(validator).call().await?;
+    fee_manager
+        .distributeFees(validator)
+        .send()
+        .await?
+        .watch()
         .await?;
     let validator_balance_after = validator_token.balanceOf(validator).call().await?;
 

@@ -1,9 +1,8 @@
 pub use ITipAccountRegistrar::ITipAccountRegistrarErrors as TIPAccountRegistrarError;
-use alloy::sol;
 
-sol! {
+crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface ITipAccountRegistrar {
         /// Pre-Moderato: accepts arbitrary hash (vulnerable to signature forgery)
         /// Only works pre-Moderato. Returns UnknownSelector post-Moderato.

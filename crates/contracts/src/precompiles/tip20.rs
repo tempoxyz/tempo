@@ -1,13 +1,10 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
+use alloy_primitives::{Address, U256};
 
-sol! {
+crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);
@@ -21,7 +18,9 @@ sol! {
 
         error Unauthorized();
     }
+}
 
+crate::sol! {
     /// TIP20 token interface providing standard ERC20 functionality with Tempo-specific extensions.
     ///
     /// TIP20 tokens extend the ERC20 standard with:
@@ -33,7 +32,7 @@ sol! {
     /// The interface supports both standard token operations and administrative functions
     /// for managing token behavior and compliance requirements.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
