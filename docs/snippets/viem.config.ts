@@ -1,4 +1,5 @@
 // [!region setup]
+// @noErrors
 import { tempoTestnet } from 'viem/chains'
 import { tempoActions } from 'viem/tempo'
 import { createClient, http, publicActions, walletActions } from 'viem'
