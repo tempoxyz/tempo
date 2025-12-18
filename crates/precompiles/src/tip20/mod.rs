@@ -208,7 +208,7 @@ impl TIP20Token {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Validate that the policy exists (only after Allegretto hardfork)
-        if self.storage.spec().is_allegretto() {
+        if self.storage.spec().is_allegro_moderato() {
             let registry = TIP403Registry::new();
             if !registry.policy_exists(ITIP403Registry::policyExistsCall {
                 policyId: call.newPolicyId,
