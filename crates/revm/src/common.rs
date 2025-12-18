@@ -152,18 +152,27 @@ pub trait TempoStateAccess<M = ()> {
         if !user_token.is_zero() {
             return Ok(user_token);
         }
-        // If tx.to() is a TIP-20 token, use that token as the fee token.
-        // Post-AllegroModerato: restricted to transfer/transferWithMemo/startReward,
-        // and for AA txs only when fee_payer == tx.origin.
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied())
-            && !(spec.is_allegro_moderato() && tx.is_aa() && fee_payer != tx.caller())
-            && tx.calls().all(|(kind, input)| {
-                kind.to() == Some(&to)
-                    && (!spec.is_allegro_moderato() || is_tip20_fee_inference_call(input))
-            })
-            && self.is_valid_fee_token(to, spec)?
-        {
-            return Ok(to);
+
+        // Check if the fee can be inferred from the TIP20 token being called
+        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+            let can_infer_tip20 = if spec.is_allegro_moderato() {
+                // Post-AllegroModerato: restricted to transfer/transferWithMemo/startReward,
+                // and for AA txs only when fee_payer == tx.origin.
+                if tx.is_aa() && fee_payer != tx.caller() {
+                    false
+                } else {
+                    tx.calls().all(|(kind, input)| {
+                        kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
+                    })
+                }
+            } else {
+                // Pre-AllegroModerato: all calls must target the same address
+                tx.calls().all(|(kind, _)| kind.to() == Some(&to))
+            };
+
+            if can_infer_tip20 && self.is_valid_fee_token(to, spec)? {
+                return Ok(to);
+            }
         }
 
         // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
