@@ -4,7 +4,7 @@ optimizer = true
 optimizer_runs = 200
 
 # TODO(rusowsky): remove once solc patch is released
-solc_version = "0.8.31"
+solc_version = "0.8.30"
 
 [rpc_endpoints]
 # The RPC URLs are modified versions of the default for testing initialization.
