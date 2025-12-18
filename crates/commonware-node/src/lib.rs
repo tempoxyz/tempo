@@ -7,10 +7,11 @@ pub(crate) mod alias;
 mod args;
 pub(crate) mod config;
 pub mod consensus;
-pub mod db;
-pub mod dkg;
+pub(crate) mod db;
+pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub mod metrics;
+pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 

@@ -15,7 +15,7 @@ workspace = true
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 tempo-precompiles-macros.workspace = true
-alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
+alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm.workspace = true
 revm.workspace = true
 
@@ -37,8 +37,9 @@ serde_json.workspace = true
 tempo-evm.workspace = true
 
 [features]
-default = []
+default = ["rpc"]
 test-utils = ["alloy/getrandom"]
+rpc = ["tempo-contracts/rpc"]
 
 [[test]]
 name = "storage"

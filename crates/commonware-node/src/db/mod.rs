@@ -28,7 +28,7 @@ where
 /// The underlying [`Metadata`] storage always keeps all data in memory and persists
 /// it to disk during commit/sync operations.
 #[derive(Clone)]
-pub struct MetadataDatabase<TContext>(Arc<RwLock<MetadataDatabaseInner<TContext>>>)
+pub(crate) struct MetadataDatabase<TContext>(Arc<RwLock<MetadataDatabaseInner<TContext>>>)
 where
     TContext: Clock + Metrics + Storage;
 
@@ -37,7 +37,7 @@ where
     TContext: Clock + Metrics + Storage,
 {
     /// Create a new database wrapping the given metadata store.
-    pub fn new(store: Metadata<TContext, U64, Bytes>) -> Self {
+    pub(crate) fn new(store: Metadata<TContext, U64, Bytes>) -> Self {
         Self(Arc::new(RwLock::new(MetadataDatabaseInner {
             store,
             cache: HashMap::new(),
@@ -95,7 +95,7 @@ where
     }
 
     /// Begin a new read-write transaction.
-    pub fn read_write(&self) -> ReadWriteTransaction<TContext> {
+    pub(crate) fn read_write(&self) -> ReadWriteTransaction<TContext> {
         ReadWriteTransaction::new(self.clone())
     }
 }
@@ -119,7 +119,7 @@ where
 /// tx.remove("old_data");
 /// tx.commit().await?;  // All changes serialized and applied atomically
 /// ```
-pub struct ReadWriteTransaction<TContext>
+pub(crate) struct ReadWriteTransaction<TContext>
 where
     TContext: Clock + Metrics + Storage,
 {
@@ -156,7 +156,7 @@ where
     /// # Type Safety
     /// The caller must ensure `V` matches the type that was inserted for this key.
     /// If the types don't match, this will return an error.
-    pub async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
+    pub(crate) async fn get<K, V>(&self, key: K) -> Result<Option<V>, eyre::Error>
     where
         K: AsRef<[u8]>,
         V: Read<Cfg = ()> + Write + EncodeSize + Clone + Send + Sync + 'static,
@@ -183,7 +183,7 @@ where
     ///
     /// The value is stored in its typed form and only serialized at commit time.
     /// This does not immediately write to the store - call `commit()` to persist.
-    pub fn insert<K, V>(&mut self, key: K, value: V)
+    pub(crate) fn insert<K, V>(&mut self, key: K, value: V)
     where
         K: AsRef<[u8]>,
         V: Write + EncodeSize + Send + Sync + 'static,
@@ -196,7 +196,7 @@ where
     /// Remove a key from the store.
     ///
     /// This marks the key for deletion. The actual removal happens when `commit()` is called.
-    pub fn remove<K>(&mut self, key: K)
+    pub(crate) fn remove<K>(&mut self, key: K)
     where
         K: AsRef<[u8]>,
     {
@@ -207,7 +207,7 @@ where
     /// Check if a key exists in the store.
     ///
     /// This checks pending writes first, then falls back to the database.
-    pub async fn contains_key<K>(&self, key: K) -> bool
+    pub(crate) async fn contains_key<K>(&self, key: K) -> bool
     where
         K: AsRef<[u8]>,
     {
@@ -223,7 +223,7 @@ where
     /// Get the node version that last wrote to this database.
     ///
     /// Returns None if no version has been written yet (new database).
-    pub async fn get_node_version(&self) -> Result<Option<String>, eyre::Error> {
+    pub(crate) async fn get_node_version(&self) -> Result<Option<String>, eyre::Error> {
         let key_hash = key_to_u64(NODE_VERSION_KEY.as_bytes());
 
         // Check pending writes first
@@ -249,7 +249,7 @@ where
     ///
     /// This should be called when the database schema is initialized or migrated
     /// to track which node version last modified the database.
-    pub fn set_node_version(&mut self, version: String) {
+    pub(crate) fn set_node_version(&mut self, version: String) {
         self.insert(NODE_VERSION_KEY, version.into_bytes())
     }
 
@@ -257,7 +257,7 @@ where
     ///
     /// This serializes all pending writes, persists them to storage,
     /// and updates the shared cache with the new values.
-    pub async fn commit(self) -> Result<(), eyre::Error> {
+    pub(crate) async fn commit(self) -> Result<(), eyre::Error> {
         if self.writes.is_empty() {
             return Ok(());
         }

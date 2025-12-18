@@ -1,15 +1,8 @@
 use crate::{
     db,
-    dkg::{
-        HardforkRegime, RegimeEpochState, ceremony,
-        manager::{
-            DkgOutcome, ValidatorState,
-            actor::{post_allegretto, pre_allegretto},
-        },
-    },
+    dkg::{HardforkRegime, RegimeEpochState, ceremony, manager::ValidatorState},
 };
 use commonware_runtime::{Clock, Metrics, Storage};
-use tempo_dkg_onchain_artifacts::PublicOutcome;
 
 // Key helpers for typed storage
 fn ceremony_key(epoch: u64) -> String {
@@ -20,7 +13,6 @@ fn validators_key(epoch: u64) -> String {
     format!("validators_{epoch}")
 }
 
-const DKG_OUTCOME_KEY: &str = "dkg_outcome";
 const LAST_PROCESSED_HEIGHT_KEY: &str = "last_processed_height";
 
 fn current_epoch_key(regime: HardforkRegime) -> &'static str {
@@ -131,49 +123,6 @@ where
     /// Remove validators state for a specific epoch.
     pub(super) fn remove_validators(&mut self, epoch: u64) {
         self.0.remove(validators_key(epoch))
-    }
-
-    // ── DKG Outcome Store ───────────────────────────────────────────────────
-
-    /// Get the current DKG outcome.
-    pub(super) async fn get_dkg_outcome(&self) -> Result<Option<DkgOutcome>, eyre::Error> {
-        self.0.get(DKG_OUTCOME_KEY).await
-    }
-
-    /// Set the current DKG outcome.
-    pub(super) fn set_dkg_outcome(&mut self, outcome: DkgOutcome) {
-        self.0.insert(DKG_OUTCOME_KEY, outcome)
-    }
-
-    /// Get the public outcome, checking post-allegretto first, then pre-allegretto.
-    pub(super) async fn get_public_outcome(
-        &mut self,
-    ) -> Result<Option<PublicOutcome>, eyre::Error> {
-        if let Some(dkg_outcome) = self.get_dkg_outcome().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: dkg_outcome.epoch,
-                participants: dkg_outcome.participants,
-                public: dkg_outcome.public,
-            }));
-        }
-
-        if let Some(epoch_state) = self.get_epoch::<post_allegretto::EpochState>().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: epoch_state.dkg_outcome.epoch,
-                participants: epoch_state.dkg_outcome.participants,
-                public: epoch_state.dkg_outcome.public,
-            }));
-        }
-
-        if let Some(epoch_state) = self.get_epoch::<pre_allegretto::EpochState>().await? {
-            return Ok(Some(PublicOutcome {
-                epoch: epoch_state.epoch,
-                participants: epoch_state.participants,
-                public: epoch_state.public,
-            }));
-        }
-
-        Ok(None)
     }
 
     // ── DKG Epoch Store ─────────────────────────────────────────────────────
