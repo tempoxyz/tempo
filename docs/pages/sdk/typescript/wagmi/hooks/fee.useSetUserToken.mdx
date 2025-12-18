@@ -15,17 +15,7 @@ declare module 'wagmi' {
   }
 }
 // ---cut---
-import { Hooks } from 'tempo.ts/wagmi'
-
-const { data: result, mutate } = Hooks.fee.useSetUserTokenSync()
-
-// Call `mutate` in response to user action (e.g. button click, form submission)
-mutate({
-  token: '0x20c0000000000000000000000000000000000001',
-})
-
-console.log('Transaction hash:', result.receipt.transactionHash)
-// @log: Transaction hash: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:wagmi-hooks]
 ```
 
 ```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"

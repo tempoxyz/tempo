@@ -16,7 +16,8 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_errors::ConsensusError;
+use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
+use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockValidationError},
@@ -30,7 +31,7 @@ use reth_revm::{
     context::{Block, BlockEnv},
     database::StateProviderDatabase,
 };
-use reth_storage_api::StateProviderFactory;
+use reth_storage_api::{StateProvider, StateProviderFactory};
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -42,7 +43,7 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
@@ -81,6 +82,10 @@ pub struct TempoPayloadBuilder<Provider> {
     /// last height at which we've seen an invalid subblock, and not including any subblocks
     /// at this height for any payloads.
     highest_invalid_subblock: Arc<AtomicU64>,
+    /// Whether to enable state provider metrics.
+    state_provider_metrics: bool,
+    /// Whether to disable state cache.
+    disable_state_cache: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -88,6 +93,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         evm_config: TempoEvmConfig,
+        state_provider_metrics: bool,
+        disable_state_cache: bool,
     ) -> Self {
         Self {
             pool,
@@ -95,11 +102,13 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
+            state_provider_metrics,
+            disable_state_cache,
         }
     }
 }
 
-impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
+impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
     /// Builds system transactions to execute at the start of the block.
     ///
     /// Returns a vector of system transactions that must be executed at the beginning of each block:
@@ -144,61 +153,67 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// 1. Fee manager executeBlock - processes collected fees
-    /// 2. Stablecoin exchange executeBlock - commits pending orders
+    /// 1. Fee manager executeBlock - processes collected fees (pre-AllegroModerato only)
+    /// 2. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
     /// 3. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
         subblocks: &[RecoveredSubBlock],
+        timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
-        let chain_id = Some(self.provider.chain_spec().chain().id());
+        let chain_spec = self.provider.chain_spec();
+        let chain_id = Some(chain_spec.chain().id());
+        let mut txs = Vec::with_capacity(3);
 
-        // Build fee manager system transaction
-        let fee_manager_input = IFeeManager::executeBlockCall
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
+        // Build fee manager and stablecoin dex system transaction (pre-AllegroModerato only)
+        if !chain_spec.is_allegro_moderato_active_at_timestamp(timestamp) {
+            let fee_manager_input = IFeeManager::executeBlockCall
+                .abi_encode()
+                .into_iter()
+                .chain(block_env.number.to_be_bytes_vec())
+                .collect();
 
-        let fee_manager_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: TIP_FEE_MANAGER_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: fee_manager_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
+            let fee_manager_tx = Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        chain_id,
+                        nonce: 0,
+                        gas_price: 0,
+                        gas_limit: 0,
+                        to: TIP_FEE_MANAGER_ADDRESS.into(),
+                        value: U256::ZERO,
+                        input: fee_manager_input,
+                    },
+                    TEMPO_SYSTEM_TX_SIGNATURE,
+                )),
+                TEMPO_SYSTEM_TX_SENDER,
+            );
+            txs.push(fee_manager_tx);
 
-        // Build stablecoin exchange system transaction
-        let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(block_env.number.to_be_bytes_vec())
-            .collect();
+            let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
+                .abi_encode()
+                .into_iter()
+                .chain(block_env.number.to_be_bytes_vec())
+                .collect();
 
-        let stablecoin_exchange_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: stablecoin_exchange_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
+            let stablecoin_exchange_tx = Recovered::new_unchecked(
+                TempoTxEnvelope::Legacy(Signed::new_unhashed(
+                    TxLegacy {
+                        chain_id,
+                        nonce: 0,
+                        gas_price: 0,
+                        gas_limit: 0,
+                        to: STABLECOIN_EXCHANGE_ADDRESS.into(),
+                        value: U256::ZERO,
+                        input: stablecoin_exchange_input,
+                    },
+                    TEMPO_SYSTEM_TX_SIGNATURE,
+                )),
+                TEMPO_SYSTEM_TX_SENDER,
+            );
+            txs.push(stablecoin_exchange_tx);
+        }
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -225,12 +240,9 @@ impl<Provider: ChainSpecProvider> TempoPayloadBuilder<Provider> {
             )),
             TEMPO_SYSTEM_TX_SENDER,
         );
+        txs.push(subblocks_signatures_tx);
 
-        vec![
-            fee_manager_tx,
-            stablecoin_exchange_tx,
-            subblocks_signatures_tx,
-        ]
+        txs
     }
 }
 
@@ -320,9 +332,21 @@ where
         self.metrics.block_time_millis_last.set(block_time_millis);
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
+            Box::new(InstrumentedStateProvider::from_state_provider(
+                state_provider,
+                "builder",
+            ))
+        } else {
+            state_provider
+        };
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(cached_reads.as_db_mut(state))
+            .with_database(if self.disable_state_cache {
+                Box::new(state) as Box<dyn Database<Error = ProviderError>>
+            } else {
+                Box::new(cached_reads.as_db_mut(state))
+            })
             .with_bundle_update()
             .build();
 
@@ -421,7 +445,8 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        let system_txs =
+            self.build_seal_block_txs(builder.evm().block(), &subblocks, attributes.timestamp());
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -577,6 +602,7 @@ where
         {
             // Release db
             drop(builder);
+            drop(db);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
@@ -706,6 +732,7 @@ where
         let payload =
             EthBuiltPayload::new(attributes.payload_id(), sealed_block, total_fees, requests);
 
+        drop(db);
         Ok(BuildOutcome::Better {
             payload,
             cached_reads,

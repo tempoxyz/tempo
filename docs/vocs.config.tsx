@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Instance } from 'tempo.ts/prool'
+import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
 import iconsResolver from 'unplugin-icons/resolver'
@@ -21,14 +21,27 @@ export default defineConfig({
           content="width=device-width, initial-scale=1, maximum-scale=1"
           name="viewport"
         />
-        <meta content="/social.jpg" property="og:image" />
+        <meta content="Documentation ⋅ Tempo" property="og:title" />
+        <meta content="/og-docs.png" property="og:image" />
         <meta content="image/png" property="og:image:type" />
         <meta content="1200" property="og:image:width" />
         <meta content="630" property="og:image:height" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Documentation ⋅ Tempo" />
+        <meta name="twitter:image" content="/og-docs.png" />
+        <link rel="icon" href="/favicon.ico" sizes="32x32" />
+        <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
+        <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-light.png" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-dark.png" media="(prefers-color-scheme: light)" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-light.png" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-dark.png" media="(prefers-color-scheme: light)" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-light.png" media="(prefers-color-scheme: light)" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
       </>
     )
   },
-  title: 'Tempo',
+  title: 'Documentation ⋅ Tempo',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
@@ -132,6 +145,10 @@ export default defineConfig({
               {
                 text: 'Sponsor user fees',
                 link: '/guide/payments/sponsor-user-fees',
+              },
+              {
+                text: 'Send parallel transactions',
+                link: '/guide/payments/send-parallel-transactions',
               },
               // {
               //   text: 'Start a subscription 🚧',

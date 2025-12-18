@@ -1,16 +1,16 @@
-use alloy_consensus::{SignableTransaction, Transaction};
+use alloy_consensus::{SignableTransaction, Transaction, crypto::RecoveryError};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
 use core::mem;
-use reth_primitives_traits::InMemorySize;
+
+use crate::transaction::{
+    AASigned, TempoSignature, TempoSignedAuthorization, key_authorization::SignedKeyAuthorization,
+};
 
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
-    transaction::{
-        AASigned, KeyAuthorization, TempoSignature, TempoSignedAuthorization,
-        key_authorization::SignedKeyAuthorization,
-    },
+    transaction::KeyAuthorization,
 };
 
 /// Tempo transaction type byte (0x76)
@@ -294,7 +294,8 @@ impl TempoTransaction {
         keccak256(&buf)
     }
 
-    /// Calculate the fee payer signature hash
+    /// Calculate the fee payer signature hash.
+    ///
     /// This hash is signed by the fee payer to sponsor the transaction
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
         // Use helper functions for consistent encoding
@@ -319,6 +320,20 @@ impl TempoTransaction {
         );
 
         keccak256(&buf)
+    }
+
+    /// Recovers the fee payer for this transaction.
+    ///
+    /// This returns the given sender if the transaction doesn't include a fee payer signature
+    pub fn recover_fee_payer(&self, sender: Address) -> Result<Address, RecoveryError> {
+        if let Some(fee_payer_signature) = &self.fee_payer_signature {
+            alloy_consensus::crypto::secp256k1::recover_signer(
+                fee_payer_signature,
+                self.fee_payer_signature_hash(sender),
+            )
+        } else {
+            Ok(sender)
+        }
     }
 
     /// Outputs the length of the transaction's fields, without a RLP header.
@@ -740,6 +755,7 @@ impl Decodable for TempoTransaction {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTransaction {
     fn size(&self) -> usize {
         Self::size(self)

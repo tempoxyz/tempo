@@ -1,5 +1,6 @@
 use alloy_consensus::{
     SignableTransaction, Signed, Transaction,
+    crypto::RecoveryError,
     transaction::{RlpEcdsaDecodableTx, RlpEcdsaEncodableTx},
 };
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
@@ -180,6 +181,9 @@ impl TxFeeToken {
         encode_signature(&self.fee_payer_signature, out);
     }
 
+    /// Calculate the fee payer signature hash.
+    ///
+    /// This hash is signed by the fee payer to sponsor the transaction.
     pub fn fee_payer_signature_hash(&self, sender: Address) -> B256 {
         let rlp_header = alloy_rlp::Header {
             list: true,
@@ -197,6 +201,20 @@ impl TxFeeToken {
         );
 
         keccak256(&buf)
+    }
+
+    /// Recovers the fee payer for this transaction.
+    ///
+    /// This returns the given sender if the transaction doesn't include a fee payer signature
+    pub fn recover_fee_payer(&self, sender: Address) -> Result<Address, RecoveryError> {
+        if let Some(fee_payer_signature) = &self.fee_payer_signature {
+            alloy_consensus::crypto::secp256k1::recover_signer(
+                fee_payer_signature,
+                self.fee_payer_signature_hash(sender),
+            )
+        } else {
+            Ok(sender)
+        }
     }
 }
 
@@ -439,6 +457,7 @@ impl Decodable for TxFeeToken {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TxFeeToken {
     fn size(&self) -> usize {
         Self::size(self)

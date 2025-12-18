@@ -221,6 +221,15 @@ where
 
             seen_fee_manager = true;
         } else if to == STABLECOIN_EXCHANGE_ADDRESS {
+            // The stablecoin dex system tx is disabled post allegro moderato hardfork
+            if self
+                .inner
+                .spec
+                .is_allegro_moderato_active_at_timestamp(block_timestamp.saturating_to::<u64>())
+            {
+                return Err(BlockValidationError::msg("invalid system transaction"));
+            }
+
             if seen_stablecoin_dex {
                 return Err(BlockValidationError::msg(
                     "duplicate stablecoin DEX system transaction",
@@ -613,10 +622,19 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
+        let is_allegro_moderato = self
+            .inner
+            .spec
+            .is_allegro_moderato_active_at_timestamp(block_timestamp);
+
+        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
+        let expected_seen_system_tx = !is_allegro_moderato;
+
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: true,
-                seen_stablecoin_dex: true,
+                seen_fee_manager: expected_seen_system_tx,
+                seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })
         {

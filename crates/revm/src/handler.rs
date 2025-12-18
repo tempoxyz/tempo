@@ -936,8 +936,11 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // All fee handling (refunds and queuing) is done in reimburse_caller via collectFeePostTx
-        // The actual swap and transfer to validator happens in executeBlock at the end of block processing
+        // Pre-AllegroModerato: fee handling (refunds and queuing) done in reimburse_caller via collectFeePostTx.
+        // The actual swap and transfer to validator happens in executeBlock at the end of block processing.
+        //
+        // Post-AllegroModerato: fees are collected and swapped immediately in collectFeePreTx.
+        // Validators call distributeFees() to claim their accumulated fees.
         Ok(())
     }
 

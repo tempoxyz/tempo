@@ -21,6 +21,15 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
+    /// Deletes the initial. This is useful if the node came to an incorrect DKG
+    /// decision and needs to disable its current signing share so that its
+    /// peers don't blacklist it. This is a workaround until the locally stored
+    /// shares can be directly manipulated and deleted.
+    ///
+    /// CAREFUL: this operation is destructive and cannot be reversed.
+    #[arg(long = "consensus.delete-signing-share")]
+    pub delete_signing_share: bool,
+
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
     #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]
