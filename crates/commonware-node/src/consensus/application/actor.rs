@@ -253,10 +253,6 @@ impl Inner<Init> {
         err(level = Level::ERROR)
     )]
     async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
-        #[expect(
-            clippy::option_if_let_else,
-            reason = "if-let-else would put the 0-case at the bottom"
-        )]
         let source = match genesis.epoch.previous() {
             // epoch 0 has no previous epoch
             None => self.genesis_block.digest(),
