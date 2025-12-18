@@ -8,11 +8,11 @@ import LucideFileText from '~icons/lucide/file-text'
 import LucideShieldCheck from '~icons/lucide/shield-check'
 import LucideWallet from '~icons/lucide/wallet'
 
-# Wallet Developers
+# Wallet Integration Guide
 
-Remember that there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks). Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
+Because there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) and transaction fees are paid directly in stablecoins, wallets need specific UI and logic adjustments to support the network. Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
 
-As part of supporting Tempo in your wallet, you can deliver an enhanced experience for your users by integrating [Tempo Transactions](/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
+As part of supporting Tempo in your wallet, you can also deliver an enhanced experience for your users by integrating [Tempo Transactions](/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
 
 ## Steps
 
@@ -123,6 +123,17 @@ await client.fee.setUserTokenSync({
 ```
 
 See [`setUserToken`](/sdk/typescript/viem/fee.setUserToken) for full documentation.
+
+## Checklist
+
+Before launching Tempo support, ensure your wallet:
+
+- [ ] Checks fee token balance instead of native balance
+- [ ] Hides or removes native balance display for Tempo
+- [ ] Displays `USD` as the currency symbol for gas
+- [ ] Quotes gas prices in the user's fee token
+- [ ] Pulls token/network assets from Tempo's tokenlist
+- [ ] (Recommended) Integrates Tempo Transactions for enhanced UX
 
 ## Learning Resources
 
