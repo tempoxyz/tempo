@@ -108,8 +108,7 @@ mod tests {
 
     use super::*;
     use alloy_primitives::{B256, keccak256};
-    use std::process::Command;
-    use std::str::FromStr;
+    use std::{process::Command, str::FromStr};
 
     /// Returns the Ethereum mainnet RPC URL from the `ETH_RPC_URL` environment variable.
     fn get_rpc_url() -> String {
