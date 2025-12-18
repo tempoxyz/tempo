@@ -518,6 +518,14 @@ where
     ) -> Result<(), Self::Error> {
         let (block, tx, cfg, journal, _, _) = evm.ctx().all_mut();
 
+        // Set tx.origin in the keychain's transient storage for spending limit checks.
+        // This must be done for ALL transactions so precompiles can access it.
+        StorageCtx::enter_evm(journal, block, cfg, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.set_tx_origin(tx.caller())
+        })
+        .map_err(|e| EVMError::Custom(e.to_string()))?;
+
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 

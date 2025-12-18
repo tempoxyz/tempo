@@ -24,11 +24,13 @@ impl TIP20Token {
     ) -> Result<u64> {
         self.check_not_paused()?;
         let token_address = self.address;
-        self.ensure_transfer_authorized(msg_sender, token_address)?;
 
         if call.amount == U256::ZERO {
             return Err(TIP20Error::invalid_amount().into());
         }
+
+        self.ensure_transfer_authorized(msg_sender, token_address)?;
+        self.check_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, token_address, call.amount)?;
 
