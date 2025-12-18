@@ -2757,7 +2757,7 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
     println!("\nTest 2: Keychain signature (secp256k1 inner)");
     let tx_keychain = TempoTransactionRequest {
-        is_keychain: true,
+        key_id: Some(Address::random()), // Any address indicates keychain signature
         ..base_tx_request()
     };
 
@@ -2781,7 +2781,7 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     println!("\nTest 3: Keychain signature (P256 inner)");
     let tx_keychain_p256 = TempoTransactionRequest {
         key_type: Some(SignatureType::P256),
-        is_keychain: true,
+        key_id: Some(Address::random()), // Any address indicates keychain signature
         ..base_tx_request()
     };
 
