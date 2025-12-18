@@ -52,9 +52,13 @@ pub struct TempoTransactionRequest {
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
 
-    /// Whether the signature is a Keychain wrapper (adds 3,000 gas overhead for key validation).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub is_keychain: bool,
+    /// Optional access key ID for gas estimation.
+    /// When provided, indicates the transaction uses a Keychain (access key) signature.
+    /// This enables accurate gas estimation for:
+    /// - Keychain signature validation overhead (+3,000 gas)
+    /// - Spending limits enforcement during execution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<Address>,
 
     /// Optional authorization list for Tempo transactions (supports multiple signature types)
     #[serde(
@@ -316,7 +320,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             tempo_authorization_list: tx.tempo_authorization_list,
             key_type: None,
             key_data: None,
-            is_keychain: false,
+            key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
         }

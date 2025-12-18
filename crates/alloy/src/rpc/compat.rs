@@ -1,7 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
 use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{TransactionBuilder, TxSigner};
-use alloy_primitives::{B256, Bytes, Signature};
+use alloy_primitives::{Address, B256, Bytes, Signature};
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
 use reth_rpc_convert::{
@@ -46,7 +46,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     calls,
                     key_type,
                     key_data,
-                    is_keychain,
+                    key_id,
                     tempo_authorization_list,
                     key_authorization,
                 } = self;
@@ -62,7 +62,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             calls,
                             key_type,
                             key_data,
-                            is_keychain,
+                            key_id,
                             tempo_authorization_list,
                             key_authorization,
                         }));
@@ -78,7 +78,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             calls,
                             key_type,
                             key_data,
-                            is_keychain,
+                            key_id,
                             tempo_authorization_list,
                             key_authorization,
                         })
@@ -102,7 +102,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             calls,
             key_type,
             key_data,
-            is_keychain,
+            key_id,
             tempo_authorization_list,
             nonce_key,
             key_authorization,
@@ -115,24 +115,15 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
                 || key_authorization.is_some()
+                || key_id.is_some()
             {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
                 let caller_addr = inner.from.unwrap_or_default();
-                let mock_signature = key_type
-                    .as_ref()
-                    .map(|kt| {
-                        create_mock_tempo_signature(kt, key_data.as_ref(), is_keychain, caller_addr)
-                    })
-                    .unwrap_or_else(|| {
-                        create_mock_tempo_signature(
-                            &SignatureType::Secp256k1,
-                            None,
-                            is_keychain,
-                            caller_addr,
-                        )
-                    });
+                let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
+                let mock_signature =
+                    create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
 
                 let calls = if !calls.is_empty() {
                     calls
@@ -159,6 +150,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     valid_before: None,
                     valid_after: None,
                     subblock_transaction: false,
+                    key_id,
                 }))
             } else {
                 None
@@ -172,19 +164,20 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
 ///
 /// - `key_type`: The primitive signature type (secp256k1, P256, WebAuthn)
 /// - `key_data`: Type-specific data (e.g., WebAuthn size)
-/// - `is_keychain`: If true, wraps the signature in a Keychain wrapper (+3,000 gas)
+/// - `key_id`: If Some, wraps the signature in a Keychain wrapper (+3,000 gas for key validation)
 /// - `caller_addr`: The transaction caller address (used as root key address for Keychain)
 fn create_mock_tempo_signature(
     key_type: &SignatureType,
     key_data: Option<&Bytes>,
-    is_keychain: bool,
+    key_id: Option<Address>,
     caller_addr: alloy_primitives::Address,
 ) -> TempoSignature {
     use tempo_primitives::transaction::tt_signature::{KeychainSignature, TempoSignature};
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
-    if is_keychain {
+    if let Some(_key_id) = key_id {
+        // For Keychain signatures, the root_key_address is the caller (account owner)
         TempoSignature::Keychain(KeychainSignature::new(caller_addr, inner_sig))
     } else {
         TempoSignature::Primitive(inner_sig)
