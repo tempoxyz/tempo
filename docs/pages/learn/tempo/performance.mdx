@@ -29,7 +29,7 @@ On the one hand, the blockchain needs fast finality: a payment made on the block
 
 On the other hand, the blockchain also needs to degrade gracefully under suboptimal network conditions. Tempo uses Simplex Consensus (via [Commonware](https://www.commonware.xyz/)), which provides fast, sub-second finality in normal conditions while maintaining graceful degradation under adverse networks.
 
-Tempo uses Byzantine-fault tolerant consensus with four validators on testnet. Blocks are finalized every ~0.5 seconds, and once a block is marked as final, transactions in that block are guaranteed to be included in the chain. This cutting-edge consensus algorithm optimally balances speed with resilience.
+Tempo uses Byzantine-fault-tolerant consensus with four validators on testnet. Blocks are finalized every ~0.5 seconds, and once a block is marked as final, transactions in that block are guaranteed to be included in the chain. This cutting-edge consensus algorithm optimally balances speed with resilience.
 
 For payment applications, this gives payment operators the same settlement certainty they expect from existing financial systems, with speed that matches best-in-class blockchains. This is critical for use cases like point-of-sale systems, instant settlements, and cross-border transfers where users expect immediate, irreversible confirmation.
 
