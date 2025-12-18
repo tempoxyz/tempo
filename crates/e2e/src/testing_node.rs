@@ -402,6 +402,29 @@ impl TestingNode {
 
         BlockchainProvider::new(provider_factory).expect("failed to create blockchain provider")
     }
+
+    /// Simulate fresh consensus storage by changing the partition prefix.
+    ///
+    /// This simulates deleting the consensus datadir for a breaking storage migration.
+    /// The old partitions remain in memory but won't be accessed with the new prefix.
+    /// Must be called when consensus is stopped.
+    ///
+    /// # Panics
+    /// Panics if consensus is running.
+    pub fn clear_consensus_storage(&mut self) {
+        assert!(
+            !self.is_consensus_running(),
+            "consensus must be stopped before clearing storage for {}",
+            self.uid
+        );
+
+        // Change partition_prefix to simulate fresh consensus storage
+        let old_prefix = &self.consensus_config.partition_prefix;
+        let new_prefix = format!("{old_prefix}_fresh");
+        self.consensus_config.partition_prefix = new_prefix.clone();
+
+        debug!(%self.uid, %new_prefix, "changed partition prefix to simulate fresh storage");
+    }
 }
 
 #[cfg(test)]

@@ -91,6 +91,7 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub subblock_broadcast_interval: Duration,
 
     pub exit: ExitConfig,
+    pub sync_floor: bool,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -258,6 +259,7 @@ where
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
                 peer_manager: self.peer_manager.clone(),
                 exit: self.exit,
+                sync_floor: self.sync_floor,
             },
         )
         .await

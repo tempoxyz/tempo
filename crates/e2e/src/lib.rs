@@ -313,6 +313,7 @@ pub async fn setup_validators(
                 args: exit_args.clone(),
                 shutdown_token: tokio_util::sync::CancellationToken::new(),
             },
+            sync_floor: false,
         };
 
         nodes.push(TestingNode::new(

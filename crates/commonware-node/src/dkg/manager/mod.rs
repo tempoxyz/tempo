@@ -92,4 +92,7 @@ pub(crate) struct Config<TPeerManager> {
 
     /// Exit configuration for coordinated shutdown at epoch boundaries.
     pub(crate) exit: ExitConfig,
+
+    /// Whether to enable sync floor mode (start from highest execution block instead of genesis).
+    pub(crate) sync_floor: bool,
 }

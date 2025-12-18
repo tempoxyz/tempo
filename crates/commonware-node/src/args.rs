@@ -140,6 +140,25 @@ pub struct Args {
     #[command(flatten)]
     pub exit: ExitArgs,
 
+    /// Enable sync floor mode for starting from the highest execution block instead of genesis.
+    ///
+    /// When enabled on a fresh datadir (no existing consensus state), the node will:
+    /// 1. Auto-detect the highest block from the execution layer
+    /// 2. Set the marshal floor to ignore blocks below that height
+    /// 3. Initialize epoch state from the PublicOutcome in that block's extra_data
+    ///
+    /// The highest block must be an epoch boundary block (last block of an epoch),
+    /// since only boundary blocks contain the PublicOutcome in their extra_data.
+    /// This is guaranteed when using `--consensus.exit-after-epoch` which exits
+    /// exactly at the epoch boundary.
+    ///
+    /// This is ignored if consensus state already exists (a warning is logged).
+    ///
+    /// Use this after a breaking storage migration where consensus data was deleted
+    /// but execution data was preserved.
+    #[arg(long = "consensus.sync-floor", requires = "signing_share")]
+    pub sync_floor: bool,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,

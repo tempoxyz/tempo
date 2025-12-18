@@ -11552,6 +11552,7 @@ dependencies = [
  "rand_core 0.6.4",
  "reth-consensus-common",
  "reth-ethereum",
+ "reth-ethereum-primitives",
  "reth-evm",
  "reth-node-builder",
  "reth-node-core",

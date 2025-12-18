@@ -65,3 +65,7 @@ tokio = { workspace = true, features = ["macros", "sync"] }
 tokio-util.workspace = true
 tracing.workspace = true
 pin-project = "1.1.10"
+
+[dev-dependencies]
+reth-ethereum-primitives.workspace = true
+reth-provider = { workspace = true, features = ["test-utils"] }

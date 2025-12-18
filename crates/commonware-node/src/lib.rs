@@ -141,6 +141,7 @@ pub async fn run_consensus_stack(
             args: config.exit,
             shutdown_token,
         },
+        sync_floor: config.sync_floor,
     }
     .try_init()
     .await

@@ -15,10 +15,10 @@ use commonware_cryptography::{
 use commonware_p2p::{Receiver, Sender, utils::mux::MuxHandle};
 use commonware_runtime::{Clock, ContextCell, Spawner, Storage};
 use commonware_utils::set::{Ordered, OrderedAssociated};
-use eyre::{WrapErr as _, ensure};
+use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_core::CryptoRngCore;
 use reth_ethereum::chainspec::EthChainSpec as _;
-use tempo_chainspec::hardfork::TempoHardforks as _;
+use reth_primitives_traits::Block as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tracing::{Span, field::display, info, instrument, warn};
 
@@ -50,11 +50,17 @@ where
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) -> eyre::Result<()> {
         let spec = self.config.execution_node.chain_spec();
-        if !tx.has_post_allegretto_state().await && spec.is_allegretto_active_at_timestamp(0) {
-            info!(
-                "allegretto hardfork is active at timestamp 0, reading initial validators and public polynomial from genesis block"
-            );
-
+        let init_source: Option<PublicOutcome> = if tx.has_post_allegretto_state().await {
+            if self.config.sync_floor {
+                warn!("sync_floor passed but ignored; only takes effect on fresh datadirs");
+            }
+            None
+        } else if self.config.sync_floor {
+            let outcome = read_sync_floor_block(&self.config.execution_node.provider)?;
+            info!("initializing from sync floor block");
+            Some(outcome)
+        } else {
+            info!("initializing from genesis block");
             let initial_dkg_outcome = PublicOutcome::decode(spec.genesis().extra_data.as_ref())
                 .wrap_err_with(|| {
                     format!(
@@ -70,6 +76,11 @@ where
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
                 initial_dkg_outcome.epoch,
             );
+            Some(initial_dkg_outcome)
+        };
+
+        if let Some(initial_dkg_outcome) = init_source {
+            let expected_epoch = initial_dkg_outcome.epoch;
 
             let our_share = self.config.initial_share.clone();
             if let Some(our_share) = our_share.clone() {
@@ -94,7 +105,7 @@ where
             let initial_validators = validators::read_from_contract(
                 0,
                 &self.config.execution_node,
-                Epoch::zero(),
+                expected_epoch,
                 self.config.epoch_length,
             )
             .await
@@ -124,7 +135,7 @@ where
             tx.set_epoch(EpochState {
                 dkg_outcome: DkgOutcome {
                     dkg_successful: true,
-                    epoch: Epoch::zero(),
+                    epoch: expected_epoch,
                     participants: initial_dkg_outcome.participants,
                     public: initial_dkg_outcome.public,
                     share: self.config.initial_share.clone(),
@@ -658,4 +669,83 @@ impl Read for EpochState {
 
 impl RegimeEpochState for EpochState {
     const REGIME: HardforkRegime = HardforkRegime::PostAllegretto;
+}
+
+/// Reads the sync floor block from the execution provider and decodes its PublicOutcome.
+fn read_sync_floor_block<P>(provider: &P) -> eyre::Result<PublicOutcome>
+where
+    P: reth_provider::BlockNumReader + reth_provider::BlockReader,
+{
+    let h = provider
+        .best_block_number()
+        .wrap_err("sync_floor: failed to get best block number")?;
+
+    let block = provider
+        .block_by_number(h)
+        .wrap_err_with(|| format!("sync_floor: failed to fetch block {h}"))?
+        .ok_or_eyre(format!("sync_floor: block {h} not found"))?;
+
+    let extra_data = block.header().extra_data();
+
+    PublicOutcome::decode(extra_data.as_ref()).wrap_err_with(|| {
+        format!(
+            "sync_floor: failed decoding extra_data as PublicOutcome at height {h}; bytes = {}",
+            extra_data.len()
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::bytes;
+    use commonware_cryptography::{
+        bls12381::primitives::{group::G2, poly::Poly},
+        ed25519::PublicKey,
+    };
+    use reth_ethereum_primitives::Block;
+    use reth_provider::test_utils::MockEthProvider;
+
+    #[test]
+    fn read_sync_floor_block_backwards_compatibility() {
+        // Hardcoded PublicOutcome - if encoding format changes, this test fails
+        // Generated with: epoch=1, 1 participant (seed=42), threshold=1 polynomial
+        let extra_data = bytes!(
+            "0101" // epoch=1, participants_len=1
+            "78eda21ba04a15e2000fe8810fe3e56741d23bb9ae44aa9d5bb21b76675ff34b" // ed25519 pubkey
+            "8fbe20bb785531d9fb0f680dd96ecfb3eabccc4c7e672c4caf4a72e7207467081f743b469dbf18ef426770c94d7c63cc0014344e918045ac36b96b7983a69bf968bee7941d6bb895f206117b17e128dc82fa1b1e28db416c6d48b0bf977e9ae8" // bls poly
+        );
+
+        let provider = MockEthProvider::default();
+
+        let mut block = Block::default();
+        block.header.extra_data = extra_data;
+        provider.add_block(block.hash_slow(), block);
+
+        let result = read_sync_floor_block(&provider);
+        assert!(
+            result.is_ok(),
+            "should decode valid PublicOutcome: {:?}",
+            result.err()
+        );
+
+        let outcome = result.unwrap();
+        assert_eq!(outcome.epoch, Epoch::new(1));
+        assert_eq!(outcome.participants.len(), 1);
+
+        // Assert ed25519 pubkey
+        let expected_pubkey = PublicKey::decode(
+            &bytes!("78eda21ba04a15e2000fe8810fe3e56741d23bb9ae44aa9d5bb21b76675ff34b")[..],
+        )
+        .unwrap();
+        assert_eq!(outcome.participants[0], expected_pubkey);
+
+        // Assert BLS polynomial (threshold=1, so 1 G2 coefficient)
+        let g2 = G2::decode(
+            &bytes!("8fbe20bb785531d9fb0f680dd96ecfb3eabccc4c7e672c4caf4a72e7207467081f743b469dbf18ef426770c94d7c63cc0014344e918045ac36b96b7983a69bf968bee7941d6bb895f206117b17e128dc82fa1b1e28db416c6d48b0bf977e9ae8")[..],
+        )
+        .unwrap();
+        let expected_poly: Poly<G2> = Poly::from(vec![g2]);
+        assert_eq!(outcome.public, expected_poly);
+    }
 }

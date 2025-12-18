@@ -38,6 +38,7 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
+use reth_provider::BlockNumReader as _;
 use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
@@ -268,6 +269,21 @@ where
         ),
     ) {
         let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
+
+        // Set the sync floor if configured and no state exists. This tells marshal to ignore blocks below this height.
+        if self.config.sync_floor && !tx.has_post_allegretto_state().await {
+            let Ok(floor_height) = self.config.execution_node.provider.best_block_number() else {
+                error!(
+                    "sync_floor enabled but failed to get highest block from execution provider"
+                );
+                return;
+            };
+            info!(
+                floor_height,
+                "sync_floor enabled; setting marshal floor to highest execution block"
+            );
+            self.config.marshal.clone().set_floor(floor_height).await;
+        }
 
         // Emits an error event on return.
         if self.post_allegretto_init(&mut tx).await.is_err() {
