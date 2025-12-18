@@ -22,7 +22,7 @@ use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_contracts::precompiles::{
     IRolesAuth,
@@ -330,6 +330,7 @@ impl TestNodeBuilder {
                     .with_http_api(RpcModuleSelection::All),
             );
         node_config.txpool.max_account_slots = usize::MAX;
+        node_config.dev.block_time = Some(Duration::from_millis(100));
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(tasks.executor())
