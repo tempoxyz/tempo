@@ -3,10 +3,10 @@ pub mod dispatch;
 pub use tempo_contracts::precompiles::ITipAccountRegistrar;
 use tempo_precompiles_macros::contract;
 
-use crate::{error::Result, storage::PrecompileStorageProvider};
+use crate::error::Result;
 use alloy::{
-    eips::eip7702::constants::SECP256K1N_HALF,
-    primitives::{Address, B512, Bytes, U256},
+    consensus::crypto::SECP256K1N_HALF,
+    primitives::{Address, B512, U256},
 };
 use revm::{precompile::secp256k1::ecrecover, state::Bytecode};
 use tempo_contracts::{
@@ -14,25 +14,15 @@ use tempo_contracts::{
     precompiles::{TIP_ACCOUNT_REGISTRAR, TIPAccountRegistrarError},
 };
 
-#[contract]
+#[contract(addr = TIP_ACCOUNT_REGISTRAR)]
 pub struct TipAccountRegistrar {}
 
-impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
-    /// Creates an instance of the precompile.
-    ///
-    /// Caution: This does not initialize the account, see [`Self::initialize`].
-    pub fn new(storage: &'a mut S) -> Self {
-        Self::_new(TIP_ACCOUNT_REGISTRAR, storage)
-    }
-
+impl TipAccountRegistrar {
     /// Initializes the TIP Account Registrar contract
     ///
     /// Ensures the [`TipAccountRegistrar`] account isn't empty and prevents state clear.
     pub fn initialize(&mut self) -> Result<()> {
-        self.storage.set_code(
-            TIP_ACCOUNT_REGISTRAR,
-            Bytecode::new_legacy(Bytes::from_static(&[0xef])),
-        )
+        self.__initialize()
     }
 
     /// Pre-Moderato: Validates an ECDSA signature against a provided hash.
@@ -56,23 +46,19 @@ impl<'a, S: PrecompileStorageProvider> TipAccountRegistrar<'a, S> {
             }
         };
 
-        let account_info = self.storage.get_account_info(signer)?;
-
-        if account_info.nonce != 0 {
-            return Err(TIPAccountRegistrarError::nonce_not_zero().into());
-        }
-
-        if !account_info.is_empty_code_hash() {
-            return Err(TIPAccountRegistrarError::code_not_empty().into());
-        }
-
         // EIP-7702 gas cost
         // can be discussed to lower this down as this cost i think encompasses the bytes of authorization in EIP-7702 tx.
-        let cost = if account_info.is_empty() {
-            revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST
-        } else {
-            revm::primitives::eip7702::PER_AUTH_BASE_COST
-        };
+        let cost = self.storage.with_account_info(signer, |info| {
+            if info.nonce != 0 {
+                Err(TIPAccountRegistrarError::nonce_not_zero().into())
+            } else if !info.is_empty_code_hash() {
+                Err(TIPAccountRegistrarError::code_not_empty().into())
+            } else if info.is_empty() {
+                Ok(revm::primitives::eip7702::PER_EMPTY_ACCOUNT_COST)
+            } else {
+                Ok(revm::primitives::eip7702::PER_AUTH_BASE_COST)
+            }
+        })?;
         self.storage.deduct_gas(cost)?;
 
         // Delegate the account to the default 7702 implementation
@@ -139,270 +125,302 @@ fn validate_signature(signature: &[u8]) -> Result<(B512, u8)> {
 mod tests {
     use super::*;
     use crate::{
-        TempoHardfork, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
+        Precompile,
+        error::TempoPrecompileError,
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::sol_types::{SolCall, SolError};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{TIPAccountRegistrarError, UnknownFunctionSelector};
 
     #[test]
-    fn test_delegate_to_default_v1_pre_moderato() {
-        // Pre-Moderato: delegateToDefault(bytes32,bytes) should work
+    fn test_delegate_to_default_v1_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            // Pre-Moderato: delegateToDefault(bytes32,bytes) should work
+            let signer = PrivateKeySigner::random();
+            let expected_address = signer.address();
+            let hash = alloy::primitives::keccak256(b"test");
 
-        let signer = PrivateKeySigner::random();
-        let expected_address = signer.address();
+            let mut registrar = TipAccountRegistrar::new();
 
-        let hash = alloy::primitives::keccak256(b"test");
-        let signature = signer.sign_hash_sync(&hash).unwrap();
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: signature.as_bytes().into(),
-        };
+            let signature = signer.sign_hash_sync(&hash).unwrap();
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: signature.as_bytes().into(),
+            };
 
-        let result = registrar.delegate_to_default_v1(call);
-        assert!(result.is_ok());
+            let result = registrar.delegate_to_default_v1(call);
+            assert!(result.is_ok());
 
-        let recovered_address = result.unwrap();
-        assert_eq!(recovered_address, expected_address);
+            let recovered_address = result.unwrap();
+            assert_eq!(recovered_address, expected_address);
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
-        assert_eq!(
-            account_info_after.code,
-            Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
-        );
+            let account_info_after = registrar
+                .storage
+                .get_account_info(expected_address)
+                .expect("Failed to get account info");
+            assert_eq!(
+                account_info_after.code,
+                Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_delegate_to_default_v1_rejected_post_moderato() {
-        // Post-Moderato: delegateToDefault(bytes32,bytes) should be rejected
-        use crate::Precompile;
-
+    fn test_delegate_to_default_v1_rejected_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            // Post-Moderato: delegateToDefault(bytes32,bytes) should be rejected
+            let hash = alloy::primitives::keccak256(b"test");
+            let mut registrar = TipAccountRegistrar::new();
 
-        let signer = PrivateKeySigner::random();
-        let hash = alloy::primitives::keccak256(b"test");
-        let signature = signer.sign_hash_sync(&hash).unwrap();
+            let signer = PrivateKeySigner::random();
+            let signature = signer.sign_hash_sync(&hash).unwrap();
 
-        // Encode the call using the old signature
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: signature.as_bytes().into(),
-        };
-        let calldata = call.abi_encode();
+            // Encode the call using the old signature
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: signature.as_bytes().into(),
+            };
+            let calldata = call.abi_encode();
 
-        // Should fail with UnknownFunctionSelector after Moderato (ABI-encoded error)
-        let result = registrar.call(&calldata, signer.address());
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.reverted);
+            // Should fail with UnknownFunctionSelector after Moderato (ABI-encoded error)
+            let result = registrar.call(&calldata, signer.address());
+            assert!(result.is_ok());
+            let output = result.unwrap();
+            assert!(output.reverted);
 
-        // Verify the error can be decoded as UnknownFunctionSelector
-        let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
-        assert!(
-            decoded_error.is_ok(),
-            "Should decode as UnknownFunctionSelector"
-        );
+            // Verify the error can be decoded as UnknownFunctionSelector
+            let decoded_error = UnknownFunctionSelector::abi_decode(&output.bytes);
+            assert!(
+                decoded_error.is_ok(),
+                "Should decode as UnknownFunctionSelector"
+            );
 
-        // Verify it contains the expected selector
-        let error = decoded_error.unwrap();
-        assert_eq!(
-            error.selector.as_slice(),
-            &ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR
-        );
+            // Verify it contains the expected selector
+            let error = decoded_error.unwrap();
+            assert_eq!(
+                error.selector.as_slice(),
+                &ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_delegate_to_default_v2_post_moderato() {
-        // Post-Moderato: delegateToDefault(bytes,bytes) should work
+    fn test_delegate_to_default_v2_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            // Post-Moderato: delegateToDefault(bytes,bytes) should work
+            let signer = PrivateKeySigner::random();
+            let expected_address = signer.address();
 
-        let signer = PrivateKeySigner::random();
-        let expected_address = signer.address();
+            let mut registrar = TipAccountRegistrar::new();
 
-        let message = b"Hello, Tempo! I want to delegate my account.";
-        let message_hash = alloy::primitives::keccak256(message);
-        let signature = signer.sign_hash_sync(&message_hash).unwrap();
+            let message = b"Hello, Tempo! I want to delegate my account.";
+            let message_hash = alloy::primitives::keccak256(message);
+            let signature = signer.sign_hash_sync(&message_hash).unwrap();
 
-        let call = ITipAccountRegistrar::delegateToDefault_1Call {
-            message: message.to_vec().into(),
-            signature: signature.as_bytes().into(),
-        };
+            let call = ITipAccountRegistrar::delegateToDefault_1Call {
+                message: message.to_vec().into(),
+                signature: signature.as_bytes().into(),
+            };
 
-        let result = registrar.delegate_to_default_v2(call);
-        assert!(result.is_ok());
+            let result = registrar.delegate_to_default_v2(call);
+            assert!(result.is_ok());
 
-        let recovered_address = result.unwrap();
-        assert_eq!(recovered_address, expected_address);
+            let recovered_address = result.unwrap();
+            assert_eq!(recovered_address, expected_address);
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
-        assert_eq!(
-            account_info_after.code,
-            Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
-        );
+            let account_info_after = registrar
+                .storage
+                .get_account_info(expected_address)
+                .expect("Failed to get account info");
+            assert_eq!(
+                account_info_after.code,
+                Some(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS)),
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_delegate_to_default_v2_rejected_pre_moderato() {
-        // Pre-Moderato: delegateToDefault(bytes,bytes) should be rejected
-        use crate::Precompile;
-
+    fn test_delegate_to_default_v2_rejected_pre_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            // Pre-Moderato: delegateToDefault(bytes,bytes) should be rejected
+            let mut registrar = TipAccountRegistrar::new();
 
-        let signer = PrivateKeySigner::random();
-        let message = b"Hello, Tempo!";
-        let message_hash = alloy::primitives::keccak256(message);
-        let signature = signer.sign_hash_sync(&message_hash).unwrap();
+            let signer = PrivateKeySigner::random();
+            let message = b"Hello, Tempo!";
+            let message_hash = alloy::primitives::keccak256(message);
+            let signature = signer.sign_hash_sync(&message_hash).unwrap();
 
-        // Encode the call using the new signature
-        let call = ITipAccountRegistrar::delegateToDefault_1Call {
-            message: message.to_vec().into(),
-            signature: signature.as_bytes().into(),
-        };
-        let calldata = call.abi_encode();
+            // Encode the call using the new signature
+            let call = ITipAccountRegistrar::delegateToDefault_1Call {
+                message: message.to_vec().into(),
+                signature: signature.as_bytes().into(),
+            };
+            let calldata = call.abi_encode();
 
-        // Should fail with UnknownFunctionSelector pre-Moderato
-        let result = registrar.call(&calldata, signer.address());
-        assert!(matches!(
-            result,
-            Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
-        ));
+            // Should fail with UnknownFunctionSelector pre-Moderato
+            let result = registrar.call(&calldata, signer.address());
+            assert!(matches!(
+                result,
+                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
+            ));
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_malformed_signature_v1() {
+    fn test_malformed_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let hash = alloy::primitives::keccak256(b"test");
+            let mut registrar = TipAccountRegistrar::new();
 
-        let hash = alloy::primitives::keccak256(b"test");
+            // Signature too short
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: vec![0u8; 64].into(),
+            };
 
-        // Signature too short
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: vec![0u8; 64].into(),
-        };
+            let result = registrar.delegate_to_default_v1(call);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIPAccountRegistrarError(
+                    TIPAccountRegistrarError::InvalidSignature(_)
+                )
+            ));
 
-        let result = registrar.delegate_to_default_v1(call);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIPAccountRegistrarError(
-                TIPAccountRegistrarError::InvalidSignature(_)
-            )
-        ));
+            // Signature too long
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: vec![0u8; 66].into(),
+            };
 
-        // Signature too long
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: vec![0u8; 66].into(),
-        };
+            let result = registrar.delegate_to_default_v1(call);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIPAccountRegistrarError(
+                    TIPAccountRegistrarError::InvalidSignature(_)
+                )
+            ));
 
-        let result = registrar.delegate_to_default_v1(call);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIPAccountRegistrarError(
-                TIPAccountRegistrarError::InvalidSignature(_)
-            )
-        ));
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_invalid_signature_v1() {
+    fn test_invalid_signature_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let hash = alloy::primitives::keccak256(b"test");
+            let mut registrar = TipAccountRegistrar::new();
 
-        let hash = alloy::primitives::keccak256(b"test");
+            // Create a signature with an invalid recovery value
+            let mut invalid_signature = vec![0u8; 65];
+            invalid_signature[64] = 30;
 
-        // Create a signature with an invalid recovery value
-        let mut invalid_signature = vec![0u8; 65];
-        invalid_signature[64] = 30;
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: invalid_signature.into(),
+            };
 
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: invalid_signature.into(),
-        };
+            let result = registrar.delegate_to_default_v1(call);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIPAccountRegistrarError(
+                    TIPAccountRegistrarError::InvalidSignature(_)
+                )
+            ));
 
-        let result = registrar.delegate_to_default_v1(call);
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIPAccountRegistrarError(
-                TIPAccountRegistrarError::InvalidSignature(_)
-            )
-        ));
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_nonce_gt_zero_v1() {
+    fn test_nonce_gt_zero_v1() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let signer = PrivateKeySigner::random();
-        let expected_address = signer.address();
-        storage.set_nonce(expected_address, 1);
+        StorageCtx::enter(&mut storage, || {
+            let signer = PrivateKeySigner::random();
+            let expected_address = signer.address();
+            let hash = alloy::primitives::keccak256(b"test");
 
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+            let mut registrar = TipAccountRegistrar::new();
 
-        let hash = alloy::primitives::keccak256(b"test");
-        let signature = signer.sign_hash_sync(&hash).unwrap();
-        let call = ITipAccountRegistrar::delegateToDefault_0Call {
-            hash,
-            signature: signature.as_bytes().into(),
-        };
+            registrar.storage.set_nonce(expected_address, 1);
+            let signature = signer.sign_hash_sync(&hash).unwrap();
+            let call = ITipAccountRegistrar::delegateToDefault_0Call {
+                hash,
+                signature: signature.as_bytes().into(),
+            };
 
-        let result = registrar.delegate_to_default_v1(call);
-        assert!(matches!(
-            result.unwrap_err(),
-            TempoPrecompileError::TIPAccountRegistrarError(TIPAccountRegistrarError::NonceNotZero(
-                _
-            ))
-        ));
+            let result = registrar.delegate_to_default_v1(call);
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIPAccountRegistrarError(
+                    TIPAccountRegistrarError::NonceNotZero(_)
+                )
+            ));
 
-        let account_info_after = storage
-            .get_account_info(expected_address)
-            .expect("Failed to get account info");
-        assert!(account_info_after.is_empty_code_hash());
+            let account_info_after = registrar
+                .storage
+                .get_account_info(expected_address)
+                .expect("Failed to get account info");
+            assert!(account_info_after.is_empty_code_hash());
+
+            Ok(())
+        })
     }
 
     #[test]
-    fn test_delegate_to_default_v2_different_messages_different_signers() {
+    fn test_delegate_to_default_v2_different_messages_different_signers() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut registrar = TipAccountRegistrar::new(&mut storage);
+        StorageCtx::enter(&mut storage, || {
+            let signer = PrivateKeySigner::random();
+            let expected_address = signer.address();
 
-        let signer = PrivateKeySigner::random();
-        let expected_address = signer.address();
+            let mut registrar = TipAccountRegistrar::new();
 
-        // Sign one message
-        let message1 = b"Message 1";
-        let hash1 = alloy::primitives::keccak256(message1);
-        let signature1 = signer.sign_hash_sync(&hash1).unwrap();
+            // Sign one message
+            let message1 = b"Message 1";
+            let hash1 = alloy::primitives::keccak256(message1);
+            let signature1 = signer.sign_hash_sync(&hash1).unwrap();
 
-        // Try to reuse the signature for a different message
-        let message2 = b"Message 2";
+            // Try to reuse the signature for a different message
+            let message2 = b"Message 2";
 
-        let call = ITipAccountRegistrar::delegateToDefault_1Call {
-            message: message2.to_vec().into(),
-            signature: signature1.as_bytes().into(),
-        };
+            let call = ITipAccountRegistrar::delegateToDefault_1Call {
+                message: message2.to_vec().into(),
+                signature: signature1.as_bytes().into(),
+            };
 
-        // The signature was for message1, not message2
-        // ecrecover will succeed but recover a different (random) address
-        let result = registrar.delegate_to_default_v2(call);
+            // The signature was for message1, not message2
+            // ecrecover will succeed but recover a different (random) address
+            let result = registrar.delegate_to_default_v2(call);
 
-        // Should succeed and recover a different address than the actual signer
-        // This demonstrates the signature is valid but for a different message
-        let recovered_addr = result.expect("ecrecover should succeed with valid signature");
-        assert_ne!(
-            recovered_addr, expected_address,
-            "Should recover a different address when signature is for different message"
-        );
+            // Should succeed and recover a different address than the actual signer
+            // This demonstrates the signature is valid but for a different message
+            let recovered_addr = result.expect("ecrecover should succeed with valid signature");
+            assert_ne!(
+                recovered_addr, expected_address,
+                "Should recover a different address when signature is for different message"
+            );
+
+            Ok(())
+        })
     }
 }

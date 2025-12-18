@@ -16,7 +16,8 @@ use reth_transaction_pool::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, compute_keys_slot,
+    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    account_keychain::{AccountKeychain, AuthorizedKey},
 };
 use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
 use tempo_revm::TempoStateAccess;
@@ -137,7 +138,11 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = compute_keys_slot(transaction.sender(), key_id);
+        let storage_slot = AccountKeychain::new()
+            .keys
+            .at(transaction.sender())
+            .at(key_id)
+            .base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider
@@ -257,6 +262,7 @@ where
             .inner
             .chain_spec()
             .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         let fee_token =
             match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
             {
@@ -284,7 +290,7 @@ where
         }
 
         // Ensure that the fee payer is not blacklisted
-        match state_provider.can_fee_payer_transfer(fee_token, fee_payer) {
+        match state_provider.can_fee_payer_transfer(fee_token, fee_payer, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -303,7 +309,7 @@ where
             }
         }
 
-        let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -344,7 +350,10 @@ where
             }
         }
 
-        match self.inner.validate_one(origin, transaction) {
+        match self
+            .inner
+            .validate_one_with_state_provider(origin, transaction, &state_provider)
+        {
             TransactionValidationOutcome::Valid {
                 balance,
                 mut state_nonce,
@@ -393,6 +402,9 @@ where
                         );
                     }
                 }
+
+                // Pre-compute TempoTxEnv to avoid the cost during payload building.
+                transaction.transaction().prepare_tx_env();
 
                 TransactionValidationOutcome::Valid {
                     balance,
@@ -495,6 +507,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::spec::ANDANTINO;
+    use tempo_precompiles::tip403_registry::TIP403Registry;
     use tempo_primitives::TempoTxEnvelope;
 
     /// Helper to create a mock sealed block with the given timestamp.
@@ -732,9 +745,8 @@ mod tests {
         use alloy_primitives::{Signature, TxKind, address, uint};
         use tempo_precompiles::{
             TIP403_REGISTRY_ADDRESS,
-            storage::{Storable, double_mapping_slot, mapping_slot},
             tip20::slots as tip20_slots,
-            tip403_registry::{ITIP403Registry, PolicyData, slots as tip403_slots},
+            tip403_registry::{ITIP403Registry, PolicyData},
         };
         use tempo_primitives::transaction::{
             TempoTransaction,
@@ -809,17 +821,17 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = mapping_slot(policy_id.to_be_bytes(), tip403_slots::POLICY_DATA);
-        let policy_set_slot =
-            double_mapping_slot(policy_id.to_be_bytes(), fee_payer, tip403_slots::POLICY_SET);
+        let policy_data_slot = TIP403Registry::new().policy_data.at(policy_id).base_slot();
+        let policy_set_slot = TIP403Registry::new()
+            .policy_set
+            .at(policy_id)
+            .at(fee_payer)
+            .slot();
 
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,
             ExtendedAccount::new(0, U256::ZERO).extend_storage([
-                (
-                    policy_data_slot.into(),
-                    policy_data.to_evm_words().unwrap()[0],
-                ),
+                (policy_data_slot.into(), policy_data.encode_to_slot()),
                 (policy_set_slot.into(), U256::from(1)), // in blacklist = true
             ]),
         );

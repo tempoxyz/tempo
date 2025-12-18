@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Instance } from 'tempo.ts/prool'
+import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
 import iconsResolver from 'unplugin-icons/resolver'
@@ -21,14 +21,27 @@ export default defineConfig({
           content="width=device-width, initial-scale=1, maximum-scale=1"
           name="viewport"
         />
-        <meta content="/social.jpg" property="og:image" />
+        <meta content="Documentation ⋅ Tempo" property="og:title" />
+        <meta content="/og-docs.png" property="og:image" />
         <meta content="image/png" property="og:image:type" />
         <meta content="1200" property="og:image:width" />
         <meta content="630" property="og:image:height" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Documentation ⋅ Tempo" />
+        <meta name="twitter:image" content="/og-docs.png" />
+        <link rel="icon" href="/favicon.ico" sizes="32x32" />
+        <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
+        <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-light.png" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-dark.png" media="(prefers-color-scheme: light)" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-light.png" media="(prefers-color-scheme: dark)" />
+        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-dark.png" media="(prefers-color-scheme: light)" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-light.png" media="(prefers-color-scheme: light)" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
       </>
     )
   },
-  title: 'Tempo',
+  title: 'Documentation ⋅ Tempo',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
@@ -71,6 +84,10 @@ export default defineConfig({
             link: '/quickstart/faucet',
           },
           {
+            text: 'Developer Tools',
+            link: '/quickstart/developer-tools',
+          },
+          {
             text: 'EVM Differences',
             link: '/quickstart/evm-compatibility',
           },
@@ -106,10 +123,6 @@ export default defineConfig({
             ],
           },
           {
-            text: 'Use Tempo Transactions',
-            link: '/guide/tempo-transaction',
-          },
-          {
             text: 'Make Payments',
             collapsed: true,
             items: [
@@ -132,6 +145,10 @@ export default defineConfig({
               {
                 text: 'Sponsor user fees',
                 link: '/guide/payments/sponsor-user-fees',
+              },
+              {
+                text: 'Send parallel transactions',
+                link: '/guide/payments/send-parallel-transactions',
               },
               // {
               //   text: 'Start a subscription 🚧',
@@ -224,7 +241,7 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/TIP20.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/TIP20.sol',
               },
               {
                 text: 'Rust Implementation',
@@ -260,7 +277,7 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/TIP403Registry.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/TIP403Registry.sol',
               },
               {
                 text: 'Rust Implementation',
@@ -294,7 +311,7 @@ export default defineConfig({
                   },
                   {
                     text: 'Reference Implementation',
-                    link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/FeeManager.sol',
+                    link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/FeeManager.sol',
                   },
                   {
                     text: 'Rust Implementation',
@@ -317,8 +334,12 @@ export default defineConfig({
                 link: '/protocol/transactions/spec-tempo-transaction',
               },
               {
-                text: 'Default Account Abstraction Specification',
-                link: '/protocol/transactions/spec-default-aa',
+                text: 'Account Keychain Precompile Specification',
+                link: '/protocol/transactions/AccountKeychain',
+              },
+              {
+                text: 'Default Delegation Specification',
+                link: '/protocol/transactions/spec-default-delegation',
               },
               {
                 text: 'Rust Implementation',
@@ -345,7 +366,7 @@ export default defineConfig({
             ],
           },
           {
-            text: 'Stablecoin Exchange',
+            text: 'Stablecoin DEX',
             collapsed: true,
             items: [
               {
@@ -369,12 +390,12 @@ export default defineConfig({
                 link: '/protocol/exchange/providing-liquidity',
               },
               {
-                text: 'Exchange Balance',
+                text: 'DEX Balance',
                 link: '/protocol/exchange/exchange-balance',
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/docs/blob/main/specs/src/StablecoinExchange.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol',
               },
               {
                 text: 'Rust Implementation',
@@ -460,53 +481,72 @@ export default defineConfig({
         link: '/learn',
       },
       {
-        text: 'Get Started',
+        text: 'Partners',
+        link: '/learn/partners',
+      },
+      {
+        text: 'Blog',
+        link: 'https://tempo.xyz/blog',
+      },
+      {
+        text: 'Stablecoins',
         items: [
           {
-            text: 'About Stablecoins',
+            text: 'Overview',
             link: '/learn/stablecoins',
           },
           {
-            text: 'Stablecoins on Tempo',
-            link: '/learn/stablecoins-on-tempo',
-          },
-        ],
-      },
-      {
-        text: 'Stablecoin Use Cases',
-        items: [
-          {
             text: 'Remittances',
-            link: '/learn/remittances',
+            link: '/learn/use-cases/remittances',
           },
           {
             text: 'Global Payouts',
-            link: '/learn/global-payouts',
+            link: '/learn/use-cases/global-payouts',
           },
           {
             text: 'Embedded Finance',
-            link: '/learn/embedded-finance',
+            link: '/learn/use-cases/embedded-finance',
           },
           {
             text: 'Tokenized Deposits',
-            link: '/learn/tokenized-deposits',
+            link: '/learn/use-cases/tokenized-deposits',
           },
           {
             text: 'Microtransactions',
-            link: '/learn/microtransactions',
+            link: '/learn/use-cases/microtransactions',
           },
           {
             text: 'Agentic Commerce',
-            link: '/learn/agentic-commerce',
+            link: '/learn/use-cases/agentic-commerce',
           },
         ],
       },
       {
-        text: 'More About Tempo',
+        text: 'Tempo',
         items: [
           {
-            text: 'Tempo Overview',
-            link: '/learn/tempo-overview',
+            text: 'Overview',
+            link: '/learn/tempo',
+          },
+          {
+            text: 'Native Stablecoins',
+            link: '/learn/tempo/native-stablecoins',
+          },
+          {
+            text: 'Modern Transactions',
+            link: '/learn/tempo/modern-transactions',
+          },
+          {
+            text: 'Performance',
+            link: '/learn/tempo/performance',
+          },
+          {
+            text: 'Onchain FX',
+            link: '/learn/tempo/fx',
+          },
+          {
+            text: 'Privacy',
+            link: '/learn/tempo/privacy',
           },
         ],
       },
@@ -524,6 +564,32 @@ export default defineConfig({
             {
               text: 'Setup',
               link: '/sdk/typescript/viem/setup',
+            },
+            {
+              text: 'Accounts',
+              collapsed: true,
+              items: [
+                {
+                  text: 'Overview',
+                  link: '/sdk/typescript/viem/accounts',
+                },
+                {
+                  text: 'fromWebAuthnP256',
+                  link: '/sdk/typescript/viem/account.fromWebAuthnP256',
+                },
+                {
+                  text: 'fromWebCryptoP256',
+                  link: '/sdk/typescript/viem/account.fromWebCryptoP256',
+                },
+                {
+                  text: 'fromSecp256k1',
+                  link: '/sdk/typescript/viem/account.fromSecp256k1',
+                },
+                {
+                  text: 'fromP256',
+                  link: '/sdk/typescript/viem/account.fromP256',
+                },
+              ],
             },
             {
               text: 'Actions',
@@ -588,6 +654,27 @@ export default defineConfig({
                     {
                       text: 'watchSetUserToken',
                       link: '/sdk/typescript/viem/fee.watchSetUserToken',
+                    },
+                  ],
+                },
+                {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/viem/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/viem/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/viem/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/viem/nonce.watchNonceIncremented',
                     },
                   ],
                 },
@@ -864,7 +951,7 @@ export default defineConfig({
                 },
                 {
                   text: 'withFeePayer',
-                  link: '/sdk/typescript/viem/withFeePayer',
+                  link: '/sdk/typescript/viem/transport.withFeePayer',
                 },
               ],
             },
@@ -958,6 +1045,27 @@ export default defineConfig({
                     {
                       text: 'watchSetUserToken',
                       link: '/sdk/typescript/wagmi/actions/fee.watchSetUserToken',
+                    },
+                  ],
+                },
+                {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'getNonce',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonce',
+                    },
+                    {
+                      text: 'getNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/actions/nonce.getNonceKeyCount',
+                    },
+                    {
+                      text: 'watchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'watchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/actions/nonce.watchNonceIncremented',
                     },
                   ],
                 },
@@ -1305,6 +1413,27 @@ export default defineConfig({
                     {
                       text: 'useWatchSetUserToken',
                       link: '/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken',
+                    },
+                  ],
+                },
+                {
+                  text: 'Nonce',
+                  items: [
+                    {
+                      text: 'useNonce',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonce',
+                    },
+                    {
+                      text: 'useNonceKeyCount',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount',
+                    },
+                    {
+                      text: 'useWatchActiveKeyCountChanged',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged',
+                    },
+                    {
+                      text: 'useWatchNonceIncremented',
+                      link: '/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented',
                     },
                   ],
                 },

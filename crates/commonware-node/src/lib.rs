@@ -7,9 +7,11 @@ pub(crate) mod alias;
 mod args;
 pub(crate) mod config;
 pub mod consensus;
-pub(crate) mod dkg;
+pub mod db;
+pub mod dkg;
 pub(crate) mod epoch;
 pub mod metrics;
+pub(crate) mod utils;
 
 pub(crate) mod subblocks;
 
@@ -99,6 +101,8 @@ pub async fn run_consensus_stack(
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
+        delete_signing_share: config.delete_signing_share,
+
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
 

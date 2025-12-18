@@ -3,12 +3,10 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 
-use alloy::sol;
-
-sol! {
-    /// StablecoinExchange interface for managing order book based trading of stablecoins.
+crate::sol! {
+    /// StablecoinExchange interface for managing orderbook based trading of stablecoins.
     ///
-    /// The StablecoinExchange provides a limit order book system where users can:
+    /// The StablecoinExchange provides a limit orderbook system where users can:
     /// - Place limit orders (buy/sell) with specific price ticks
     /// - Place flip orders that automatically create opposite-side orders when filled
     /// - Execute swaps against existing liquidity
@@ -17,7 +15,7 @@ sol! {
     /// The exchange operates on pairs between base tokens and their designated quote tokens,
     /// using a tick-based pricing system for precise order matching.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IStablecoinExchange {
         // Structs
         struct Order {
@@ -70,6 +68,7 @@ sol! {
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
         function activeOrderId() external view returns (uint128);
+        function nextOrderId() external view returns (uint128);
         function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
 

@@ -1,4 +1,4 @@
-import ReadParameters from '../../../../../snippets/read-parameters.mdx'
+import ReadAccountParameters from '../../../../../snippets/read-account-parameters.mdx'
 
 # `token.getAllowance`
 
@@ -12,8 +12,8 @@ Gets the amount of tokens that a spender is approved to transfer on behalf of an
 import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
-const allowance = await Actions.token.getAllowanceSync(config, {
-  owner: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+const allowance = await Actions.token.getAllowance(config, {
+  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   spender: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
   token: '0x20c0000000000000000000000000000000000000',
 })
@@ -37,11 +37,11 @@ type ReturnType = bigint // Allowance amount
 
 ## Parameters
 
-### owner
+### account
 
 - **Type:** `Address`
 
-Address of the token owner.
+Account address.
 
 ### spender
 
@@ -49,12 +49,11 @@ Address of the token owner.
 
 Address of the spender.
 
-### token (optional)
+### token
 
 - **Type:** `Address | bigint`
-- **Default:** `Addresses.pathUsd` (Token ID 0)
 
-Address or ID of the TIP-20 token.
+Address or ID of the TIP20 token.
 
-<ReadParameters wagmi />
+<ReadAccountParameters wagmi />
 

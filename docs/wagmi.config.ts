@@ -7,7 +7,6 @@ import {
   createConfig,
   createStorage,
   http,
-  noopStorage,
   webSocket,
 } from 'wagmi'
 
@@ -32,12 +31,12 @@ export function getConfig(options: getConfig.Options = {}) {
     ],
     multiInjectedProviderDiscovery,
     storage: createStorage({
-      storage:
-        typeof window !== 'undefined' ? window.localStorage : noopStorage,
+      storage: typeof window !== 'undefined' ? localStorage : undefined,
+      key: 'tempo-docs',
     }),
     transports: {
       [tempoTestnet.id]: withFeePayer(
-        webSocket('wss://rpc-orchestra.testnet.tempo.xyz/zealous-mayer', {
+        webSocket('wss://rpc.testnet.tempo.xyz', {
           keepAlive: { interval: 1_000 },
         }),
         http('https://sponsor.testnet.tempo.xyz'),

@@ -1,8 +1,8 @@
 //! Shared test utilities for storage testing.
 
 use crate::storage::{
-    ContractStorage, LayoutCtx, PrecompileStorageProvider, Storable, StorableType,
-    hashmap::HashMapStorageProvider, packing::extract_field,
+    Handler, LayoutCtx, Slot, Storable, StorageCtx, hashmap::HashMapStorageProvider,
+    packing::extract_packed_value,
 };
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;
@@ -20,28 +20,8 @@ mod structs;
 
 // -- TEST HELPERS ---------------------------------------------------------------------------------
 
-/// Test wrapper that combines address + storage provider to implement ContractStorage
-pub(crate) struct TestStorage<S> {
-    pub(crate) address: Address,
-    pub(crate) storage: S,
-}
-
-impl<S: PrecompileStorageProvider> ContractStorage for TestStorage<S> {
-    type Storage = S;
-    fn address(&self) -> Address {
-        self.address
-    }
-    fn storage(&mut self) -> &mut Self::Storage {
-        &mut self.storage
-    }
-}
-
-/// Helper to create a test storage instance
-pub(crate) fn setup_storage() -> TestStorage<HashMapStorageProvider> {
-    TestStorage {
-        address: Address::ZERO,
-        storage: HashMapStorageProvider::new(1),
-    }
+fn setup_storage() -> (HashMapStorageProvider, Address) {
+    (HashMapStorageProvider::new(1), Address::random())
 }
 
 /// Test struct with 3 slots: U256, U256, u64
@@ -60,6 +40,29 @@ pub(crate) struct UserProfile {
     pub(crate) balance: U256,
 }
 
+/// Test struct for multi-slot array tests (2 slots with inner packing)
+/// Layout: slot 0 = [U256], slot 1 = [u64, u32, address]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+pub(crate) struct PackedTwoSlot {
+    pub(crate) value: U256,
+    pub(crate) timestamp: u64,
+    pub(crate) nonce: u32,
+    pub(crate) owner: Address,
+}
+
+/// Test struct for multi-slot array tests (3 slots with inner packing)
+/// Layout: slot 0 = [U256], slot 1 = [u64, u64, u64, u64], slot 2 = [address, bool]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
+pub(crate) struct PackedThreeSlot {
+    pub(crate) value: U256,
+    pub(crate) timestamp: u64,
+    pub(crate) start_time: u64,
+    pub(crate) end_time: u64,
+    pub(crate) nonce: u64,
+    pub(crate) owner: Address,
+    pub(crate) active: bool,
+}
+
 /// Helper to generate test addresses
 pub(crate) fn test_address(byte: u8) -> Address {
     let mut bytes = [0u8; 20];
@@ -68,58 +71,65 @@ pub(crate) fn test_address(byte: u8) -> Address {
 }
 
 /// Helper to test store + load roundtrip
-pub(crate) fn test_store_load<T, S, const N: usize>(
-    storage: &mut S,
+pub(crate) fn test_store_load<T>(
+    address: &Address,
     base_slot: U256,
     original: &T,
 ) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug,
-    S: ContractStorage,
+    T: Storable + Clone + PartialEq + std::fmt::Debug,
 {
-    original.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, *address);
+
+    // Write and read using the new API
+    slot.write(original.clone())?;
+    let loaded = slot.read()?;
     assert_eq!(&loaded, original, "Store/load roundtrip failed");
     Ok(())
 }
 
 /// Helper to test update operation
-pub(crate) fn test_update<T, S, const N: usize>(
-    storage: &mut S,
+pub(crate) fn test_update<T>(
+    address: &Address,
     base_slot: U256,
     initial: &T,
     updated: &T,
 ) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug,
-    S: ContractStorage,
+    T: Storable + Clone + PartialEq + std::fmt::Debug,
 {
-    initial.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded1 = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, *address);
+
+    // Test initial write and read
+    slot.write(initial.clone())?;
+    let loaded1 = slot.read()?;
     assert_eq!(&loaded1, initial, "Initial store/load failed");
 
-    updated.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded2 = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Test update
+    slot.write(updated.clone())?;
+    let loaded2 = slot.read()?;
     assert_eq!(&loaded2, updated, "Update failed");
     Ok(())
 }
 
 /// Helper to test delete operation
-pub(crate) fn test_delete<T, S, const N: usize>(
-    storage: &mut S,
-    base_slot: U256,
-    data: &T,
-) -> error::Result<()>
+pub(crate) fn test_delete<T>(address: &Address, base_slot: U256, data: &T) -> error::Result<()>
 where
-    T: Storable<N> + PartialEq + std::fmt::Debug + Default,
-    S: ContractStorage,
+    T: Storable + Clone + PartialEq + Default + std::fmt::Debug,
 {
-    data.store(storage, base_slot, LayoutCtx::FULL)?;
-    let loaded = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Create a slot and use it for storage operations
+    let mut slot = Slot::<T>::new(base_slot, *address);
+
+    // Write and verify
+    slot.write(data.clone())?;
+    let loaded = slot.read()?;
     assert_eq!(&loaded, data, "Initial store/load failed");
 
-    T::delete(storage, base_slot, LayoutCtx::FULL)?;
-    let after_delete = T::load(storage, base_slot, LayoutCtx::FULL)?;
+    // Delete and verify it's zeroed
+    slot.delete()?;
+    let after_delete = slot.read()?;
     let expected_zero = T::default();
     assert_eq!(&after_delete, &expected_zero, "Delete did not zero values");
     Ok(())
@@ -181,4 +191,40 @@ pub(crate) fn arb_test_block() -> impl Strategy<Value = TestBlock> {
         field2,
         field3,
     })
+}
+
+/// Generate arbitrary PackedTwoSlot structs
+pub(crate) fn arb_packed_two_slot() -> impl Strategy<Value = PackedTwoSlot> {
+    (arb_u256(), any::<u64>(), any::<u32>(), arb_address()).prop_map(
+        |(value, timestamp, nonce, owner)| PackedTwoSlot {
+            value,
+            timestamp,
+            nonce,
+            owner,
+        },
+    )
+}
+
+/// Generate arbitrary PackedThreeSlot structs
+pub(crate) fn arb_packed_three_slot() -> impl Strategy<Value = PackedThreeSlot> {
+    (
+        arb_u256(),
+        any::<u64>(),
+        any::<u64>(),
+        any::<u64>(),
+        any::<u64>(),
+        arb_address(),
+        any::<bool>(),
+    )
+        .prop_map(
+            |(value, timestamp, start_time, end_time, nonce, owner, active)| PackedThreeSlot {
+                value,
+                timestamp,
+                start_time,
+                end_time,
+                nonce,
+                owner,
+                active,
+            },
+        )
 }

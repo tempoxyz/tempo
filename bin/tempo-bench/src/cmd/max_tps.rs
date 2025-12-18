@@ -1,4 +1,5 @@
 mod dex;
+mod erc20;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
@@ -97,8 +98,8 @@ pub struct MaxTpsArgs {
     #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
     fee_token: Address,
 
-    /// Target URLs for network connections
-    #[arg(long, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
+    /// Target URLs for network connections (comma-separated or multiple --target-urls)
+    #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
     target_urls: Vec<Url>,
 
     /// A limit of the maximum number of concurrent requests, prevents issues with too many
@@ -130,16 +131,20 @@ pub struct MaxTpsArgs {
     benchmark_mode: Option<String>,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(long, default_value_t = 1.0)]
     tip20_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
-    #[arg(long, default_value_t = 0.01)]
+    #[arg(long, default_value_t = 0.0)]
     place_order_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
-    #[arg(long, default_value_t = 0.19)]
+    #[arg(long, default_value_t = 0.0)]
     swap_weight: f64,
+
+    /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.
+    #[arg(long, default_value_t = 0.0)]
+    erc20_weight: f64,
 
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value_t = 100)]
@@ -156,6 +161,10 @@ pub struct MaxTpsArgs {
     /// Calls admin_clearTxpool.
     #[arg(long)]
     clear_txpool: bool,
+
+    /// Disable 2D nonces
+    #[arg(long)]
+    disable_2d_nonces: bool,
 }
 
 impl MaxTpsArgs {
@@ -171,27 +180,62 @@ impl MaxTpsArgs {
             increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
         }
 
-        info!(accounts = self.accounts, "Creating signers");
-        let signer_provider_manager = SignerProviderManager::new(
-            self.mnemonic.resolve(),
-            self.from_mnemonic_index,
-            accounts,
-            self.target_urls.clone(),
-            Box::new(|target_url, _cached_nonce_manager| {
-                ProviderBuilder::new_with_network::<TempoNetwork>()
-                    .with_random_2d_nonces()
-                    .connect_http(target_url)
-            }),
-            Box::new(|signer, target_url, cached_nonce_manager| {
-                ProviderBuilder::default()
-                    .fetch_chain_id()
-                    .with_gas_estimation()
-                    .with_nonce_management(cached_nonce_manager)
-                    .wallet(signer)
-                    .connect_http(target_url)
-                    .erased()
-            }),
-        );
+        let signer_provider_factory = Box::new(|signer, target_url, cached_nonce_manager| {
+            ProviderBuilder::default()
+                .fetch_chain_id()
+                .with_gas_estimation()
+                .with_nonce_management(cached_nonce_manager)
+                .wallet(signer)
+                .connect_http(target_url)
+                .erased()
+        });
+
+        if self.disable_2d_nonces {
+            info!(
+                accounts = self.accounts,
+                "Creating signers (with standard nonces)"
+            );
+            let signer_provider_manager = SignerProviderManager::new(
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                accounts,
+                self.target_urls.clone(),
+                Box::new(|target_url, cached_nonce_manager| {
+                    ProviderBuilder::default()
+                        .fetch_chain_id()
+                        .with_gas_estimation()
+                        .with_nonce_management(cached_nonce_manager)
+                        .connect_http(target_url)
+                }),
+                signer_provider_factory,
+            );
+            self.run_with_manager(signer_provider_manager).await
+        } else {
+            info!(
+                accounts = self.accounts,
+                "Creating signers (with 2D nonces)"
+            );
+            let signer_provider_manager = SignerProviderManager::new(
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                accounts,
+                self.target_urls.clone(),
+                Box::new(|target_url, _cached_nonce_manager| {
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .with_random_2d_nonces()
+                        .connect_http(target_url)
+                }),
+                signer_provider_factory,
+            );
+            self.run_with_manager(signer_provider_manager).await
+        }
+    }
+
+    async fn run_with_manager<F: TxFiller<TempoNetwork> + 'static>(
+        self,
+        signer_provider_manager: SignerProviderManager<F>,
+    ) -> eyre::Result<()> {
+        let accounts = self.accounts.get();
         let signer_providers = signer_provider_manager.signer_providers();
 
         if self.clear_txpool {
@@ -252,11 +296,26 @@ impl MaxTpsArgs {
         )
         .await?;
 
+        let erc20_tokens = if self.erc20_weight > 0.0 {
+            let num_erc20_tokens = 1;
+            info!(num_erc20_tokens, "Setting up ERC-20 tokens");
+            erc20::setup(
+                signer_providers,
+                num_erc20_tokens,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -265,8 +324,10 @@ impl MaxTpsArgs {
             tip20_weight,
             place_order_weight,
             swap_weight,
+            erc20_weight,
             quote_token,
             user_tokens,
+            erc20_tokens,
         })
         .await
         .context("Failed to generate transactions")?;
@@ -461,8 +522,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         tip20_weight,
         place_order_weight,
         swap_weight,
+        erc20_weight,
         quote_token,
         user_tokens,
+        erc20_tokens,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -473,16 +536,17 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
     info!(transactions = total_txs, "Generating transactions");
 
-    const TX_TYPES: usize = 3;
+    const TX_TYPES: usize = 4;
     // Weights for random sampling for each transaction type
-    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight];
+    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight, erc20_weight];
     // Cached gas estimates for each transaction type
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
 
     // Counters for number of transactions of each type
-    let transfers = Arc::new(AtomicUsize::new(0));
+    let tip20_transfers = Arc::new(AtomicUsize::new(0));
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
+    let erc20_transfers = Arc::new(AtomicUsize::new(0));
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -502,7 +566,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
             let mut tx = match tx_index {
                 0 => {
-                    transfers.fetch_add(1, Ordering::Relaxed);
+                    tip20_transfers.fetch_add(1, Ordering::Relaxed);
                     let token = ITIP20Instance::new(token, provider.clone());
 
                     // Transfer minimum possible amount
@@ -535,6 +599,16 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                             * TICK_SPACING;
                     exchange
                         .place(token, MIN_ORDER_AMOUNT, true, tick)
+                        .into_transaction_request()
+                }
+                3 => {
+                    erc20_transfers.fetch_add(1, Ordering::Relaxed);
+                    let token_address = erc20_tokens.choose(&mut rand::rng()).copied().unwrap();
+                    let token = erc20::MockERC20::new(token_address, provider.clone());
+
+                    // Transfer minimum possible amount
+                    token
+                        .transfer(Address::random(), U256::ONE)
                         .into_transaction_request()
                 }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
@@ -591,9 +665,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         .await?;
     info!(
         transactions = builders.len(),
-        transfers = transfers.load(Ordering::Relaxed),
+        tip20_transfers = tip20_transfers.load(Ordering::Relaxed),
         swaps = swaps.load(Ordering::Relaxed),
         orders = orders.load(Ordering::Relaxed),
+        erc20_transfers = erc20_transfers.load(Ordering::Relaxed),
         "Generated transactions",
     );
 
@@ -701,6 +776,7 @@ struct BenchmarkMetadata {
     tip20_weight: f64,
     place_order_weight: f64,
     swap_weight: f64,
+    erc20_weight: f64,
 }
 
 #[derive(Serialize)]
@@ -771,6 +847,7 @@ pub async fn generate_report(
         tip20_weight: args.tip20_weight,
         place_order_weight: args.place_order_weight,
         swap_weight: args.swap_weight,
+        erc20_weight: args.erc20_weight,
     };
 
     let report = BenchmarkReport {
@@ -869,6 +946,8 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     tip20_weight: u64,
     place_order_weight: u64,
     swap_weight: u64,
+    erc20_weight: u64,
     quote_token: Address,
     user_tokens: Vec<Address>,
+    erc20_tokens: Vec<Address>,
 }

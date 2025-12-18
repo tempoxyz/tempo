@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - "v*.*.*"
+  merge_group:
   workflow_dispatch:
     inputs:
       nightly:

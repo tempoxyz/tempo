@@ -27,6 +27,8 @@ use revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_contracts::CREATEX_ADDRESS;
+
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
@@ -219,6 +221,15 @@ where
 
             seen_fee_manager = true;
         } else if to == STABLECOIN_EXCHANGE_ADDRESS {
+            // The stablecoin dex system tx is disabled post allegro moderato hardfork
+            if self
+                .inner
+                .spec
+                .is_allegro_moderato_active_at_timestamp(block_timestamp.saturating_to::<u64>())
+            {
+                return Err(BlockValidationError::msg("invalid system transaction"));
+            }
+
             if seen_stablecoin_dex {
                 return Err(BlockValidationError::msg(
                     "duplicate stablecoin DEX system transaction",
@@ -491,6 +502,36 @@ where
             }
         }
 
+        // Modify CreateX bytecode if AllegroModerato is active and bytecode is outdated
+        if self
+            .inner
+            .spec
+            .is_allegro_moderato_active_at_timestamp(block_timestamp)
+        {
+            let evm = self.evm_mut();
+            let db = evm.ctx_mut().db_mut();
+
+            let acc = db
+                .load_cache_account(CREATEX_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+
+            let mut acc_info = acc.account_info().unwrap_or_default();
+
+            let correct_code_hash =
+                tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
+            if acc_info.code_hash != correct_code_hash {
+                acc_info.code_hash = correct_code_hash;
+                acc_info.code = Some(Bytecode::new_legacy(
+                    tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE,
+                ));
+
+                let mut revm_acc: Account = acc_info.into();
+                revm_acc.mark_touch();
+
+                db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
+            }
+        }
+
         Ok(())
     }
 
@@ -581,10 +622,19 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
+        let block_timestamp = self.evm().block().timestamp.to::<u64>();
+        let is_allegro_moderato = self
+            .inner
+            .spec
+            .is_allegro_moderato_active_at_timestamp(block_timestamp);
+
+        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
+        let expected_seen_system_tx = !is_allegro_moderato;
+
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: true,
-                seen_stablecoin_dex: true,
+                seen_fee_manager: expected_seen_system_tx,
+                seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })
         {

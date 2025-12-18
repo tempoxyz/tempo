@@ -25,7 +25,7 @@ You can get started today by integrating with the [Tempo testnet](https://docs.t
 
 - [TIP‑20 token standard](https://docs.tempo.xyz/protocol/tip20/overview) (enshrined ERC‑20 extensions)
 
-  - Predictable payment throughput via dedicated payment lanes reserved for TIP‑20 transfers—eliminates noisy‑neighbor contention.
+  - Predictable payment throughput via dedicated payment lanes reserved for TIP‑20 transfers (eliminates noisy‑neighbor contention).
   - Native reconciliation with on‑transfer memos and commitment patterns (hash/locator) for off‑chain PII and large data.
   - Built‑in compliance through [TIP‑403 Policy Registry](https://docs.tempo.xyz/protocol/tip403/overview): single policy shared across multiple tokens, updated once and enforced everywhere.
 

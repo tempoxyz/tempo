@@ -33,7 +33,7 @@
     },
     {
       "source": "/errors/tx/Keychain",
-      "destination": "/protocol/transactions/spec-default-aa",
+      "destination": "/protocol/transactions/spec-default-delegation",
       "permanent": false
     },
     {

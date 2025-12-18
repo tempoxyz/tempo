@@ -9,14 +9,7 @@ Sets the user's default fee token preference. [Learn more about fees](/protocol/
 :::code-group
 
 ```ts twoslash [example.ts]
-import { client } from './viem.config'
-
-const { receipt } = await client.fee.setUserTokenSync({
-  token: '0x20c0000000000000000000000000000000000001',
-})
-
-console.log('Transaction hash:', receipt.transactionHash)
-// @log: Transaction hash: 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:viem]
 ```
 
 ```ts twoslash [viem.config.ts] filename="viem.config.ts"
@@ -48,12 +41,12 @@ const { args }
 
 ```ts
 type ReturnType = {
-  /** Transaction receipt */
-  receipt: TransactionReceipt
-  /** Address of the token set */
-  token: Address
   /** Address of the user */
   user: Address
+  /** Address of the token set */
+  token: Address
+  /** Transaction receipt */
+  receipt: TransactionReceipt
 }
 ```
 

@@ -1,0 +1,217 @@
+# Accounts [Default Delegation (Experimental)]
+
+:::warning
+**Note: This feature will likely be deprecated before mainnet launch.** We recommend using the standard [Tempo Transaction](/protocol/transactions/spec-tempo-transaction) type instead if you need smart contract functionality.
+:::
+
+Tempo uses a "Default Delegation" (DD) model for accounts on the Tempo blockchain. DD extends the Ethereum account model by allowing any externally owned account (EOA) to be seamlessly upgraded into a smart contract wallet, without requiring user intervention or setup.
+
+The core mechanism is that, on first use (when an EOA sends its first transaction and has never been used before), the protocol automatically delegates the account to a canonical smart contract implementation by setting its code to a special format. This enables all EOAs to immediately benefit from smart wallet features, while preserving full backward compatibility with legacy ECDSA transactions and not affecting contract accounts.
+
+Additionally, a registrar precompile is introduced to allow anyone to permissionlessly delegate an EOA to the default implementation by proving control of the address via a signature. The default implementation contract is treated as always warm for gas purposes.
+
+Tempo's DD model is fully compatible with EIP-7702. For a detailed understanding of the underlying delegation format and semantics, see the [EIP-7702 specification](https://eips.ethereum.org/EIPS/eip-7702).
+
+## Features
+
+Default Delegation (DD) allows any EOA to be used as a smart contract wallet.
+
+It does so through two new behaviors in-protocol:
+
+1) **Auto-delegation on first use.** When a top-level transaction originates from an address `A`, `nonce(A) == 0`, and `code(A)` is empty, the protocol **sets `code(A) = 0xEF0100 || DEFAULT_7702_IMPL`** during execution, thereby delegating `A` to the default implementation per 7702 semantics. Legacy ECDSA tx validation is unchanged.
+
+2) **Registrar precompile.** A new precompile, **DefaultAccountRegistrar**, takes `(hash, v, r, s)`, derives an `authority` address via `ecrecover(hash, v, r, s)`, and **delegates `authority` to DEFAULT_7702_IMPL**. It reverts if that address is already delegated or is a contract.
+
+Additionally, **DEFAULT_7702_IMPL** is treated as **always warm** for gas, like a precompile.
+
+## Motivation
+- Make EOAs immediately usable with a canonical smart-wallet implementation without user setup.
+- Preserve full backward compatibility with legacy ECDSA transactions.
+- Avoid changing any behavior of non-EOA addresses.
+- Provide a permissionless path to prove that an address is an EOA (via any prior ECDSA signature) and delegate an address to DEFAULT.
+
+## Specification
+
+### Notation & constants
+- `EMPTY` — empty byte array
+- `EF_PREFIX` — `0xEF0100` (EIP-7702 delegation prefix)
+- `DEFAULT_7702_IMPL` — **`0x7702c00000000000…`** (20-byte, fixed in genesis)
+- `DEFAULT_ACCOUNT_REGISTRAR` — **`0x7702ac00000000000…`** (20-byte precompile address)
+- “Delegated to X” ⇔ `code(account) == EF_PREFIX || X` (exact 7702 format)
+- “Plain EOA” ⇔ `code(account) == EMPTY`
+
+> **Out of scope:** The runtime behavior/ABI of `DEFAULT_7702_IMPL` itself (separate spec). DD only defines delegation mechanics.
+
+### 1) Auto-delegation on first use
+
+**Trigger:** When executing a **top-level** transaction with `tx.from = A`.
+
+**Preconditions (checked at transaction start, during execution):**
+- `code(A) == EMPTY`
+- `nonce_pre(A) == 0`  _(the nonce value read before nonce increment)_
+
+**State transition:**
+- Set `code(A) := EF_PREFIX || DEFAULT_7702_IMPL`.
+
+**Ordering / validation:**
+- Legacy ECDSA tx admission and verification are unchanged.
+- The auto-delegation check uses **`nonce_pre(A)`** (the state prior to the normal nonce increment). This makes behavior deterministic across implementations.
+
+**Scope exclusions:**
+- If `code(A) != EMPTY` (e.g., a contract), do **nothing**.
+- If `nonce_pre(A) != 0`, do **nothing**.
+- This rule **does not** prohibit later re-delegation or undelegation; those are governed by standard 7702 semantics (see _Redelegation & undelegation_ below).
+
+**Gas:**
+- The gas accounting for installing `EF_PREFIX || DEFAULT_7702_IMPL` matches the cost model for 7702 delegation on Tempo (same schedule as 7702 delegation).
+
+### 2) DefaultAccountRegistrar precompile
+
+**Address:** `DEFAULT_ACCOUNT_REGISTRAR = 0x7702ac00000000000…`
+
+**ABI (EVM call interface):**
+```
+delegateToDefault(bytes32 hash, uint8 v, bytes32 r, bytes32 s)
+```
+- **Inputs**:
+  - `hash`: any 32-byte string, typically a hash of a message
+  - `(v, r, s)`: ECDSA signature parameters
+- **Internal derivation**:
+  - `pubkey = ecrecover(hash, v, r, s)` with standard Ethereum constraints:
+    - Accept `v ∈ {27,28}` or `{0,1}` (treated as 27/28, respectively)
+    - Enforce EIP-2 style “low-s” (reject high-`s`)
+    - Reject invalid points or failed recovery
+  - `authority = address(pubkey)`
+
+**Effects (on success):**
+- **Require** `code(authority) == EMPTY`. If not, **revert**.
+- **Require** `nonce(authority) == 0`. If not, **revert**.
+- **Set** `code(authority) := EF_PREFIX || DEFAULT_7702_IMPL`.
+
+**Outputs / logs:**
+- Returns **authority** on success.
+- **No event** is emitted.
+
+**Gas:**
+- Charge identical total gas as a 7702 delegation on Tempo (i.e., `ecrecover` cost + code-installation cost consistent with 7702). Exact numeric schedule is inherited from 7702 on Tempo.
+
+### Always-warm rule
+- **`DEFAULT_7702_IMPL` is always warm** (like a precompile). For gas, treat it as if it appears in the access list at the start of every transaction. This applies chain-wide and unconditionally.
+
+### Redelegation & undelegation
+- After auto-delegation or registrar delegation, an account **may**:
+  - Re-delegate to another 7702 target, or
+  - Delegate to **nothing** (undelegate),
+- …using the **exact same mechanisms and semantics as EIP-7702**.
+
+## Rationale
+
+- **First-use default:** Ensures EOAs are smart-wallet capable immediately without wallet migration UX, while preserving legacy tx signing.
+- **Registrar “any message”:** The design intentionally accepts **any** valid ECDSA signature to “prove EOA control,” enabling use of existing public signatures (tweets, GitHub sigs, old onchain proofs). Replay across chains or contexts is **explicitly allowed** by design (no domain binding).
+- **Revert if nonce is not 0:** Allows addresses to opt out (by delegating to some other 7702 contract or to empty code) and not be forcibly redelegated.
+- **Revert if code is not empty:** Prevents edge cases (including repeated auto-delegation of the same account).
+- **Always-warm DEFAULT_7702_IMPL:** Smooths gas, based on the assumption that many transactions will use the default contract.
+
+## Backwards Compatibility
+
+- **Legacy ECDSA transactions:** Unchanged validation. The only new effect is auto-delegation on the **first** tx for plain EOAs with `nonce == 0`.
+- **Contracts / codeful accounts:** Never auto-delegated; registrar reverts.
+- **7702 tooling:** Fully compatible; DD uses the **exact** 7702 delegation bytecode format and override semantics.
+
+## Security Considerations
+
+- **Forced delegation by third parties:** Anyone can delegate an EOA via the registrar if they can produce **any** valid signature by that key (by design). This does **not** grant fund control if `DEFAULT_7702_IMPL` respects the original key, but it does change account semantics and may surprise tooling. Accepted as a trade-off.
+- **Signature replay & no domain binding:** Signatures from other chains or contexts can be reused. This is deliberate; downstream apps MUST NOT treat registrar delegation as consent for anything beyond delegation.
+- **Malleability constraints:** Enforce low-`s` and canonical `v` mapping to avoid malleability and recovery edge cases.
+- **CREATE/CREATE2 & contracts at EOA addresses:** DD never writes code to an account that already has code; changing a contract account’s code via registrar is disallowed (revert). Accounts created as contracts at genesis are unaffected.
+
+## Test Cases (illustrative)
+
+1) **First legacy tx auto-delegates**
+   - Pre: `code(A)=EMPTY`, `nonce(A)=0`
+   - Execute: valid legacy ECDSA tx `from=A`
+   - Post: `code(A)=EF_PREFIX||DEFAULT_7702_IMPL`; tx body executes normally.
+
+2) **First tx when `nonce(A)=1` (e.g., state pre-set)**
+   - Pre: `code(A)=EMPTY`, `nonce(A)=1`
+   - Execute: tx `from=A`
+   - Post: No delegation performed.
+
+3) **Address has code (contract)**
+   - Pre: `code(A)=<non-empty>`, `nonce(A)=0`
+   - Execute: tx `from=A`
+   - Post: No delegation performed.
+
+4) **Registrar happy path**
+   - Input: `(hash, v, r, s)` where `ecrecover(hash, v,r,s)=A`
+   - Pre: `code(A)=EMPTY`
+   - Call: `DEFAULT_ACCOUNT_REGISTRAR.delegateToDefault(...)`
+   - Post: `code(A)=EF_PREFIX||DEFAULT_7702_IMPL`; success (empty returndata).
+
+5) **Registrar with reused public signature**
+   - As (4), but `hash` is a keccak hash of a known public message (e.g., a tweet contents). Same success outcome.
+
+6) **Registrar when already delegated (to default or another impl)**
+   - Pre: `code(A)=EF_PREFIX||X` for any `X`
+   - Call: registrar
+   - Post: **Revert**.
+
+7) **Registrar for contract address**
+   - Pre: `code(A) != EMPTY`
+   - Call: registrar with signature yielding `A`
+   - Post: **Revert**.
+
+8) **Invalid signature**
+   - `ecrecover` fails or `s` is high
+   - Post: **Revert**.
+
+9) **Re-delegation via 7702**
+   - Pre: `code(A)=EF_PREFIX||DEFAULT_7702_IMPL`
+   - Action: perform a standard 7702 redelegation of `A` to `I2` (or to none)
+   - Post: `code(A)=EF_PREFIX||I2` (or `EMPTY` if undelegated)
+
+10) **Gas warmness**
+    - Any tx executing a `CALL`/`DELEGATECALL` to `DEFAULT_7702_IMPL` treats it as warm without prior access-list touch.
+
+## Reference Pseudocode (consensus-level)
+
+**Auto-delegation on tx start**
+```
+/// Executed at the beginning of a top-level tx, during execution:
+fn maybe_auto_delegate_on_first_use(sender: Address):
+    let code = state.get_code(sender)
+    let nonce_pre = state.get_nonce(sender)  // value before nonce increment
+    if code.length == 0 && nonce_pre == 0:
+        state.set_code(sender, EF_PREFIX ++ DEFAULT_7702_IMPL)
+```
+
+**DefaultAccountRegistrar precompile**
+```
+/// At address DEFAULT_ACCOUNT_REGISTRAR
+/// abi: delegateToDefault(bytes hash, uint8 v, bytes32 r, bytes32 s)
+fn delegateToDefault(message: bytes, v: u8, r: bytes32, s: bytes32):
+    let v_norm = if v in {27,28} then v else if v in {0,1} then (v + 27) else revert()
+    require(is_low_s(s)) // EIP-2 style
+    let authority = ecrecover(hash, v_norm, r, s) or revert()
+    require(state.get_code(authority).length == 0) // must be plain EOA
+    require(!is_7702_delegated(state.get_code(authority))) // no EF_PREFIX
+    state.set_code(authority, EF_PREFIX ++ DEFAULT_7702_IMPL)
+    return authority
+```
+
+**Helpers**
+```
+const EF_PREFIX = 0xEF0100
+const DEFAULT_7702_IMPL = 0x7702c00000000000... // 20 bytes
+
+fn is_7702_delegated(code: bytes) -> bool:
+    return code.length == 1+1+1+20  // 0xEF 0x01 0x00 || 20 bytes
+        && code[0..3] == EF_PREFIX
+```
+
+## Deployment / Activation
+- **Genesis:** Insert `DEFAULT_7702_IMPL` as an immutable, predeployed contract at `0x7702c00000000000…` with its code defined by the separate implementation spec.
+- **Fork rules:** DD is active from genesis on Tempo. Clients must include:
+  - the auto-delegation state transition hook,
+  - the DefaultAccountRegistrar precompile at `0x7702ac00000000000…`,
+  - the always-warm treatment for `DEFAULT_7702_IMPL`.

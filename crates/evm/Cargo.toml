@@ -14,7 +14,8 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
-tempo-payload-types.workspace = true
+tempo-contracts.workspace = true
+tempo-payload-types = { workspace = true, optional = true }
 tempo-primitives.workspace = true
 tempo-precompiles.workspace = true
 tempo-revm.workspace = true
@@ -45,4 +46,6 @@ tracing.workspace = true
 revm.workspace = true
 
 [features]
+default = ["rpc", "engine"]
 rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc"]
+engine = ["dep:tempo-payload-types"]

@@ -20,7 +20,7 @@ use reth_transaction_pool::{
     TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
     TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
     ValidPoolTransaction,
-    blobstore::DiskFileBlobStore,
+    blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
@@ -34,7 +34,7 @@ pub struct TempoTransactionPool<Client> {
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
         CoinbaseTipOrdering<TempoPooledTransaction>,
-        DiskFileBlobStore,
+        InMemoryBlobStore,
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
@@ -45,7 +45,7 @@ impl<Client> TempoTransactionPool<Client> {
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
             CoinbaseTipOrdering<TempoPooledTransaction>,
-            DiskFileBlobStore,
+            InMemoryBlobStore,
         >,
         aa_2d_pool: AA2dPool,
     ) -> Self {
@@ -360,8 +360,7 @@ where
             .get_all_iter(&tx_hashes)
             .filter_map(|tx| {
                 tx.transaction
-                    .clone()
-                    .try_into_pooled()
+                    .clone_into_pooled()
                     .ok()
                     .map(|tx| tx.into_inner())
             })
@@ -385,7 +384,7 @@ where
                 self.aa_2d_pool
                     .read()
                     .get(&tx_hash)
-                    .and_then(|tx| tx.transaction.clone().try_into_pooled().ok())
+                    .and_then(|tx| tx.transaction.clone_into_pooled().ok())
             })
     }
 

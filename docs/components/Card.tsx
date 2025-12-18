@@ -40,10 +40,10 @@ export function Link(props: {
       )}
       <Icon className="text-accent size-4.5" />
       <div className="flex flex-col gap-1">
-        <div className="leading-normal text-gray12 font-[510] text-[14px]">
+        <div className="leading-normal text-gray12 font-[510] text-[15px]">
           {title}
         </div>
-        <div className="leading-normal text-gray11 text-[14px]">
+        <div className="leading-normal text-gray11 text-[15px]">
           {description}
         </div>
       </div>
@@ -77,13 +77,13 @@ export function Notice(
         <div className="flex items-center gap-3">
           {Icon && <Icon className="text-accent size-4.5" />}
           {title && (
-            <div className="leading-normal text-gray12 font-[510] text-[14px]">
+            <div className="leading-normal text-gray12 font-[510] text-[15px]">
               {title}
             </div>
           )}
         </div>
       )}
-      <div className="leading-normal text-gray11 text-[14px] [&_a]:underline [&_a]:text-accent hover:[&_a]:text-accentHover">
+      <div className="leading-normal text-gray11 text-[15px] [&_a]:underline [&_a]:text-accent hover:[&_a]:text-accentHover">
         {children}
       </div>
     </div>

@@ -11,6 +11,8 @@ pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+#[cfg(feature = "engine")]
+mod engine;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
@@ -24,11 +26,8 @@ use alloy_evm::{
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{
-    self, ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-};
-use reth_primitives_traits::{SealedBlock, SealedHeader, SignerRecoverable};
-use tempo_payload_types::TempoExecutionData;
+use reth_evm::{self, ConfigureEvm, EvmEnvFor};
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -197,9 +196,9 @@ impl ConfigureEvm for TempoEvmConfig {
                 // no ommers in tempo
                 ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                extra_data: block.extra_data().clone(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            extra_data: block.header().extra_data().clone(),
             shared_gas_limit: block.header().gas_limit()
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
@@ -219,49 +218,15 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                extra_data: attributes.inner.extra_data,
             },
             general_gas_limit: attributes.general_gas_limit,
-            extra_data: attributes.extra_data,
             shared_gas_limit: attributes.inner.gas_limit
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
             validator_set: None,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
-    }
-}
-
-impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.block)
-    }
-
-    fn context_for_payload<'a>(
-        &self,
-        payload: &'a TempoExecutionData,
-    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            validator_set,
-        } = payload;
-        let mut context = self.context_for_block(block)?;
-
-        context.validator_set = validator_set.clone();
-
-        Ok(context)
-    }
-
-    fn tx_iterator_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let transactions = payload.block.body().transactions.clone().into_iter();
-        let convert = |tx: TempoTxEnvelope| tx.try_into_recovered();
-
-        Ok((transactions, convert))
     }
 }
 

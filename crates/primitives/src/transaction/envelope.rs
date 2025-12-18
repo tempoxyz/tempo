@@ -3,12 +3,12 @@ use crate::{TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
+    crypto::RecoveryError,
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, SignatureError, TxKind, U256, hex};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
-use reth_primitives_traits::InMemorySize;
 
 /// TIP20 payment address prefix (14 bytes for payment classification)
 /// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
@@ -107,24 +107,10 @@ impl TempoTxEnvelope {
     }
 
     /// Resolves fee payer for the transaction.
-    pub fn fee_payer(&self, sender: Address) -> Result<Address, SignatureError> {
+    pub fn fee_payer(&self, sender: Address) -> Result<Address, RecoveryError> {
         match self {
-            Self::FeeToken(tx) => {
-                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
-                    fee_payer_signature
-                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
-                } else {
-                    Ok(sender)
-                }
-            }
-            Self::AA(tx) => {
-                if let Some(fee_payer_signature) = tx.tx().fee_payer_signature {
-                    fee_payer_signature
-                        .recover_address_from_prehash(&tx.tx().fee_payer_signature_hash(sender))
-                } else {
-                    Ok(sender)
-                }
-            }
+            Self::FeeToken(tx) => tx.tx().recover_fee_payer(sender),
+            Self::AA(tx) => tx.tx().recover_fee_payer(sender),
             _ => Ok(sender),
         }
     }
@@ -297,15 +283,16 @@ impl alloy_consensus::transaction::SignerRecoverable for TempoTxEnvelope {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTxEnvelope {
     fn size(&self) -> usize {
         match self {
-            Self::Legacy(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip2930(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip1559(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::Eip7702(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::AA(tx) => reth_primitives_traits::InMemorySize::size(tx),
-            Self::FeeToken(tx) => reth_primitives_traits::InMemorySize::size(tx),
+            Self::Legacy(tx) => tx.size(),
+            Self::Eip2930(tx) => tx.size(),
+            Self::Eip1559(tx) => tx.size(),
+            Self::Eip7702(tx) => tx.size(),
+            Self::AA(tx) => tx.size(),
+            Self::FeeToken(tx) => tx.size(),
         }
     }
 }
@@ -323,9 +310,11 @@ impl alloy_consensus::transaction::TxHashRef for TempoTxEnvelope {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 
-impl InMemorySize for TempoTxType {
+#[cfg(feature = "reth")]
+impl reth_primitives_traits::InMemorySize for TempoTxType {
     fn size(&self) -> usize {
         core::mem::size_of::<Self>()
     }
@@ -492,7 +481,7 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
     }
 }
 
-#[cfg(feature = "serde-bincode-compat")]
+#[cfg(all(feature = "serde-bincode-compat", feature = "reth"))]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTxEnvelope {}
 
 #[cfg(feature = "reth-codec")]

@@ -10,12 +10,29 @@ For general information about Foundry, see the [Foundry documentation](https://g
 
 ### Install using `foundryup`
 
-This will install the latest `nightly` release of the Tempo fork.
+Tempo's Foundry fork is installed through the standard upstream `foundryup` using the `-n tempo` flag, no separate installer is required.
+
+Getting started is very easy:
+
+Install regular `foundryup`:
 
 ```bash
-curl -L https://tempo.xyz/foundry | bash
+curl -L https://foundry.paradigm.xyz | bash
+```
+
+Or if you already have `foundryup` installed:
+
+```bash
+foundryup --update
+```
+
+Next, run:
+
+```bash
 foundryup -n tempo
 ```
+
+It will automatically install the latest `nightly` release of the precompiled binaries: [`forge`](https://getfoundry.sh/forge/overview#forge) and [`cast`](https://getfoundry.sh/cast/overview#cast).
 
 To install a specific version, replace `<TAG_NAME>` with the desired release tag:
 
@@ -86,7 +103,7 @@ forge create src/Mail.sol:Mail \
 
 # Deploy a simple contract with custom fee token
 forge create src/Mail.sol:Mail \
-  --fee-token <FEE_TOKEN_ADDRESS>
+  --fee-token <FEE_TOKEN_ADDRESS> \
   --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --broadcast \
@@ -95,6 +112,7 @@ forge create src/Mail.sol:Mail \
 
 # Run a deployment script and verify on Tempo's explorer
 forge script script/Mail.s.sol \
+  --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
   --broadcast \
@@ -102,7 +120,8 @@ forge script script/Mail.s.sol \
 
 # Run a deployment script with custom fee token and verify on Tempo's explorer
 forge script script/Mail.s.sol \
-  --fee-token <FEE_TOKEN_ADDRESS>
+  --fee-token <FEE_TOKEN_ADDRESS> \
+  --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
   --broadcast \
@@ -149,3 +168,7 @@ cast send <CONTRACT_ADDRESS> <FUNCTION_SIGNATURE> \
 cast run <TX_HASH> \
   --rpc-url $TEMPO_RPC_URL
 ```
+
+### Limitations
+
+Ledger and Trezor wallets are not yet compatible with the `--fee-token` option.

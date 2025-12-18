@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This spec introduces native protocol support for the following account abstraction features, using a new Tempo transaction type -
+This spec introduces native protocol support for the following features, using a new Tempo transaction type:
 
 * WebAuthn/P256 signature validation - enables passkey accounts
 * Parallelizable nonces - allows higher tx throughput for each account
@@ -31,7 +31,7 @@ pub struct TempoTransaction {
     calls: Vec<Call>,                           // Batch of calls to execute atomically
     access_list: AccessList,                    // EIP-2930 access list
 
-    // AA-specific fields
+    // nonce-related fields
     nonce_key: U256,                            // 2D nonce key (0 = protocol nonce, >0 = user nonces)
     nonce: u64,                                 // Current nonce value for the nonce key
 
@@ -175,6 +175,7 @@ Each authorization in the list:
 
 - **Protocol nonce (key 0)**: Existing account nonce, incremented for regular txs, 7702 authorization, or `CREATE`
 - **User nonces (keys 1-N)**: Enable parallel execution with special gas schedule
+- **Reserved sequence keys**: Nonce sequence keys with the most significant byte `0x5b` are reserved for [sub-block transactions](/protocol/blockspace/sub-block-specification#11-sub-block-transactions).
 
 #### Account State Changes
 - `nonces: mapping(uint256 => uint64)` - 2D nonce tracking
@@ -553,7 +554,7 @@ A sender can choose to authorize an Access Key to sign transactions on the sende
 flows where a root key (e.g. a passkey) would provision a short-lived (scoped) Access Key to
 be able to sign transactions on the sender's behalf without inducing another passkey prompt.
 
-More information about Access Keys can be found in the [Account Keychain Specification](../../../specs/AccountKeychain.md).
+More information about Access Keys can be found in the [Account Keychain Specification](./AccountKeychain).
 
 A sender can authorize a key by signing over a "key authorization" item that contains the following information:
 - **Chain ID** for replay protection (0 = valid on any chain)
@@ -597,7 +598,7 @@ Note: `expiry` and `limits` use RLP trailing field semantics - they can be omitt
 
 The Account Keychain precompile (deployed at address `0xAAAAAAAA00000000000000000000000000000000`) manages authorized access keys for accounts. It enables root keys to provision scoped access keys with expiry timestamps and per-TIP20 token spending limits.
 
-**See the [Account Keychain Specification](../../../specs/AccountKeychain.md) for complete interface details, storage layout, and implementation.**
+**See the [Account Keychain Specification](./AccountKeychain) for complete interface details, storage layout, and implementation.**
 
 #### Protocol Behavior
 
@@ -656,18 +657,20 @@ When an Access Key attempts to call `authorizeKey()`, `revokeKey()`, or `updateS
 
 The protocol tracks and enforces spending limits for TIP20 token transfers:
 
-**Scope:** Only TIP20 `transfer()` and `transferFrom()` calls are tracked
+**Scope:** Only TIP20 `transfer()` and `approve()` calls are tracked
 - Native value transfers are NOT limited
 - NFT transfers are NOT limited
 - Other asset types are NOT limited
 
 **Tracking:** During transaction execution, when an Access Key's transaction calls TIP20 methods:
-1. Protocol intercepts `transfer(to, amount)` and `transferFrom(from, to, amount)` calls
-2. Queries: `getRemainingLimit(account, keyId, token)`
-3. Checks: `amount <= remaining_limit`
-4. If check fails: reverts with `SpendingLimitExceeded`
-5. If check passes: decrements the limit by `amount`
-6. Updates are stored in precompile state
+1. Protocol intercepts `transfer(to, amount)` and `approve(spender, amount)` calls
+2. For `transfer`, the full `amount` is checked against the remaining limit
+3. For `approve`, only **increases** in approval (new approval minus previous allowance) are checked and counted against the limit
+4. Queries: `getRemainingLimit(account, keyId, token)`
+5. Checks: relevant amount (transfer amount or approval increase) `<= remaining_limit`
+6. If check fails: reverts with `SpendingLimitExceeded`
+7. If check passes: decrements the limit by the relevant amount
+8. Updates are stored in precompile state
 
 **Root Key Behavior:** Spending limit checks are skipped entirely (no limits apply)
 

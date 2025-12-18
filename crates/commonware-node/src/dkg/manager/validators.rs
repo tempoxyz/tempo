@@ -1,6 +1,5 @@
 use std::{collections::HashMap, net::SocketAddr};
 
-use alloy_evm::EvmInternals;
 use alloy_primitives::Address;
 use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint::UInt};
 use commonware_consensus::{types::Epoch, utils};
@@ -9,10 +8,12 @@ use commonware_utils::set::{Ordered, OrderedAssociated};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
-use reth_provider::{BlockReader as _, StateProviderFactory as _};
+use reth_provider::{
+    BlockHashReader, BlockIdReader as _, BlockReader as _, BlockSource, StateProviderFactory as _,
+};
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
-    storage::evm::EvmPrecompileStorageProvider,
+    storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
@@ -38,19 +39,42 @@ pub(super) async fn read_from_contract(
     epoch_length: u64,
 ) -> eyre::Result<OrderedAssociated<PublicKey, DecodedValidator>> {
     let last_height = last_height_before_epoch(for_epoch, epoch_length);
+
+    // Try mapping the block height to a hash tracked by reth.
+    //
+    // First check the canonical chain, then fallback to pending block state.
+    //
+    // Necessary because the DKG and application actors process finalized block concurrently.
+    let block_hash = if let Some(hash) = node
+        .provider
+        .block_hash(last_height)
+        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+    {
+        hash
+    } else if let Some(pending) = node
+        .provider
+        .pending_block_num_hash()
+        .wrap_err("failed reading pending block state")?
+        && pending.number == last_height
+    {
+        pending.hash
+    } else {
+        return Err(eyre::eyre!("block not found at height `{last_height}`"));
+    };
+
     let block = node
         .provider
-        .block_by_number(last_height)
+        .find_block_by_hash(block_hash, BlockSource::Any)
         .map_err(Into::<eyre::Report>::into)
         .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty block"))
-        .wrap_err_with(|| format!("failed reading block at height `{last_height}`"))?;
+        .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
             node.provider
-                .state_by_block_id(last_height.into())
+                .state_by_block_hash(block_hash)
                 .wrap_err_with(|| {
-                    format!("failed to get state from node provider for height `{last_height}`")
+                    format!("failed to get state from node provider for hash `{block_hash}`")
                 })?,
         ))
         .build();
@@ -64,14 +88,13 @@ pub(super) async fn read_from_contract(
             .wrap_err("failed instantiating evm for genesis block")?;
 
         let ctx = evm.ctx_mut();
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
-
-        let mut validator_config = ValidatorConfig::new(&mut provider);
-        validator_config
-            .get_validators(IValidatorConfig::getValidatorsCall {})
-            .wrap_err("failed to query contract for validator config")?
-    };
+        StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+            let validator_config = ValidatorConfig::new();
+            validator_config
+                .get_validators()
+                .wrap_err("failed to query contract for validator config")
+        })
+    }?;
 
     info!(?raw_validators, "read validators from contract",);
 
@@ -107,7 +130,7 @@ async fn decode_from_contract(
 /// 2. the player, that will become dealers in the next ceremony
 /// 3. the syncing players, that will become players in the next ceremony
 #[derive(Clone, Debug)]
-pub(super) struct ValidatorState {
+pub(crate) struct ValidatorState {
     dealers: OrderedAssociated<PublicKey, DecodedValidator>,
     players: OrderedAssociated<PublicKey, DecodedValidator>,
     syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
@@ -408,10 +431,9 @@ fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::dkg::manager::validators::DecodedValidator;
     use commonware_codec::{DecodeExt as _, Encode as _};
     use commonware_cryptography::{PrivateKeyExt, Signer, ed25519::PrivateKey};
-
-    use crate::dkg::manager::DecodedValidator;
 
     #[test]
     fn roundtrip_decoded_validator() {

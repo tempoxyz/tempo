@@ -314,7 +314,12 @@ impl Inner<Init> {
                 ))
            },
 
-            res = self.clone().propose(context.clone(), parent_view, parent_digest, round) => {
+            res = self.clone().propose(
+                context.clone(),
+                parent_view,
+                parent_digest,
+                round
+            ) => {
                 res.wrap_err("failed creating a proposal")
             }
         )?;
@@ -330,7 +335,8 @@ impl Inner<Init> {
 
         response.send(proposal_digest).map_err(|_| {
             eyre!(
-                "failed returning proposal to consensus engine: response channel was already closed"
+                "failed returning proposal to consensus engine: response \
+                channel was already closed"
             )
         })?;
 
@@ -345,7 +351,8 @@ impl Inner<Init> {
             *lock = Some(proposal.clone());
         }
 
-        // Make sure reth sees the new payload so that in the next round we can verify blocks on top of it.
+        // Make sure reth sees the new payload so that in the next round we can
+        // verify blocks on top of it.
         let is_good = verify_block(
             context,
             round.epoch(),
@@ -365,17 +372,6 @@ impl Inner<Init> {
             eyre::bail!("validation reported that that just-proposed block is invalid");
         }
 
-        if let Err(error) = self
-            .state
-            .executor_mailbox
-            .canonicalize_head(proposal_height, proposal_digest)
-        {
-            warn!(
-                %error,
-                %proposal_digest,
-                "failed making the proposal the head of the canonical chain",
-            );
-        }
         Ok(())
     }
 
@@ -479,6 +475,26 @@ impl Inner<Init> {
             return Ok(parent);
         }
 
+        // Send the proposal parent to reth to cover edge cases when we were not asked to verify it directly.
+        if !verify_block(
+            context.clone(),
+            utils::epoch(self.epoch_length, parent.height()),
+            self.epoch_length,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            &parent,
+            // It is safe to not verify the parent of the parent because this block is already notarized.
+            parent.parent_digest(),
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?
+        {
+            eyre::bail!("the proposal parent block is not valid");
+        }
+
         ready(
             self.state
                 .executor_mailbox
@@ -497,7 +513,7 @@ impl Inner<Init> {
             let outcome = self
                 .state
                 .dkg_manager
-                .get_public_ceremony_outcome()
+                .get_public_ceremony_outcome((parent_view, parent_digest), round)
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -640,6 +656,8 @@ impl Inner<Init> {
 
         if let Err(reason) = verify_header_extra_data(
             &block,
+            (parent_view, parent_digest),
+            round,
             &self.state.dkg_manager,
             self.epoch_length,
             &proposer,
@@ -795,7 +813,7 @@ async fn verify_block<TContext: Pacer>(
         .ok_or_eyre("cannot determine participants in the current epoch")?;
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
-        block,
+        block: Arc::new(block),
         validator_set: Some(
             scheme
                 .participants()
@@ -832,6 +850,8 @@ async fn verify_block<TContext: Pacer>(
 #[instrument(skip_all, err(Display))]
 async fn verify_header_extra_data(
     block: &Block,
+    parent: (View, Digest),
+    round: Round,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_length: u64,
     proposer: &PublicKey,
@@ -841,10 +861,13 @@ async fn verify_header_extra_data(
             "on last block of epoch; verifying that the boundary block \
             contains the correct DKG outcome",
         );
-        let our_outcome = dkg_manager.get_public_ceremony_outcome().await.wrap_err(
-            "failed getting public dkg ceremony outcome; cannot verify end \
+        let our_outcome = dkg_manager
+            .get_public_ceremony_outcome(parent, round)
+            .await
+            .wrap_err(
+                "failed getting public dkg ceremony outcome; cannot verify end \
                 of epoch block",
-        )?;
+            )?;
         let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
             "failed decoding extra data header as DKG ceremony \
                 outcome; cannot verify end of epoch block",

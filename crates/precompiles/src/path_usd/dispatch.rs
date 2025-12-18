@@ -1,7 +1,7 @@
 use crate::{
     Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     path_usd::PathUSD,
-    storage::{ContractStorage, PrecompileStorageProvider},
+    storage::ContractStorage,
     tip20::{IRolesAuth, ITIP20},
     view,
 };
@@ -10,7 +10,7 @@ use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IPathUSD, TIP20Error};
 
-impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
+impl Precompile for PathUSD {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         let selector: [u8; 4] = if let Some(bytes) = calldata.get(..4) {
             bytes.try_into().unwrap()
@@ -226,8 +226,8 @@ impl<S: PrecompileStorageProvider> Precompile for PathUSD<'_, S> {
 mod tests {
     use super::*;
     use crate::{
-        storage::hashmap::HashMapStorageProvider,
-        test_util::{assert_full_coverage, check_selector_coverage},
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage, setup_storage},
         tip20::tests::initialize_path_usd,
     };
     use alloy::{
@@ -242,174 +242,181 @@ mod tests {
     #[test]
     fn path_usd_test_selector_coverage_pre_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        initialize_path_usd(&mut storage, Address::random())?;
 
-        let mut path_usd = PathUSD::new(&mut storage);
-        let itip20_unsupported =
-            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
-                ITIP20Calls::name_by_selector(s)
-            });
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(Address::random())?;
 
-        let roles_unsupported = check_selector_coverage(
-            &mut path_usd,
-            IRolesAuthCalls::SELECTORS,
-            "IRolesAuth",
-            IRolesAuthCalls::name_by_selector,
-        );
+            let mut path_usd = PathUSD::new();
+            let itip20_unsupported =
+                check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                    ITIP20Calls::name_by_selector(s)
+                });
 
-        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            let roles_unsupported = check_selector_coverage(
+                &mut path_usd,
+                IRolesAuthCalls::SELECTORS,
+                "IRolesAuth",
+                IRolesAuthCalls::name_by_selector,
+            );
 
-        Ok(())
+            assert_full_coverage([itip20_unsupported, roles_unsupported]);
+
+            Ok(())
+        })
     }
 
     #[test]
     fn path_usd_test_selector_coverage_post_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        initialize_path_usd(&mut storage, Address::random())?;
 
-        let mut path_usd = PathUSD::new(&mut storage);
-        let itip20_unsupported =
-            check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
-                ITIP20Calls::name_by_selector(s)
-            });
+        StorageCtx::enter(&mut storage, || {
+            initialize_path_usd(Address::random())?;
 
-        let roles_unsupported = check_selector_coverage(
-            &mut path_usd,
-            IRolesAuthCalls::SELECTORS,
-            "IRolesAuth",
-            IRolesAuthCalls::name_by_selector,
-        );
+            let mut path_usd = PathUSD::new();
+            let itip20_unsupported =
+                check_selector_coverage(&mut path_usd, ITIP20Calls::SELECTORS, "ITIP20", |s| {
+                    ITIP20Calls::name_by_selector(s)
+                });
 
-        assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            let roles_unsupported = check_selector_coverage(
+                &mut path_usd,
+                IRolesAuthCalls::SELECTORS,
+                "IRolesAuth",
+                IRolesAuthCalls::name_by_selector,
+            );
 
-        Ok(())
+            assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            Ok(())
+        })
     }
 
     #[test]
     fn test_start_reward_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let sender = Address::random();
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let calldata = ITIP20::startRewardCall {
-            amount: U256::from(1000),
-            secs: 100,
-        }
-        .abi_encode();
+            let calldata = ITIP20::startRewardCall {
+                amount: U256::from(1000),
+                secs: 100,
+            }
+            .abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
-        assert!(output.reverted);
-        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
-        assert_eq!(output.bytes, expected);
+            let output = token.call(&calldata, sender)?;
+            assert!(output.reverted);
+            let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+            assert_eq!(output.bytes, expected);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_set_reward_recipient_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
-        let recipient = Address::from([2u8; 20]);
+        let sender = Address::random();
+        let recipient = Address::random();
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
+            let calldata = ITIP20::setRewardRecipientCall { recipient }.abi_encode();
+            let output = token.call(&calldata, sender)?;
+            assert!(output.reverted);
+            let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+            assert_eq!(output.bytes, expected);
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
-        assert!(output.reverted);
-        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
-        assert_eq!(output.bytes, expected);
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_cancel_reward_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let sender = Address::random();
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
+            let calldata = ITIP20::cancelRewardCall { id: 1 }.abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
-        assert!(output.reverted);
-        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
-        assert_eq!(output.bytes, expected);
+            let output = token.call(&calldata, sender)?;
+            assert!(output.reverted);
+            let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+            assert_eq!(output.bytes, expected);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_claim_rewards_disabled_post_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let sender = Address::random();
 
-        token
-            .initialize(sender)
-            .expect("Failed to initialize token");
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let calldata = ITIP20::claimRewardsCall {}.abi_encode();
+            let calldata = ITIP20::claimRewardsCall {}.abi_encode();
 
-        let output = token.call(&Bytes::from(calldata), sender)?;
-        assert!(output.reverted);
-        let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
-        assert_eq!(output.bytes, expected);
+            let output = token.call(&calldata, sender)?;
+            assert!(output.reverted);
+            let expected: Bytes = TIP20Error::rewards_disabled().selector().into();
+            assert_eq!(output.bytes, expected);
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_pre_allegretto_name_symbol() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let (mut storage, sender) = setup_storage();
+        storage.set_spec(TempoHardfork::Moderato);
 
-        token.initialize(sender)?;
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let name_calldata = ITIP20::nameCall {}.abi_encode();
-        let name_output = token.call(&Bytes::from(name_calldata), sender)?;
-        let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
-        assert_eq!(name, "linkingUSD");
+            let name_calldata = ITIP20::nameCall {}.abi_encode();
+            let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+            let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
+            assert_eq!(name, "linkingUSD");
 
-        let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
-        let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
-        let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
-        assert_eq!(symbol, "linkingUSD");
+            let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
+            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+            let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
+            assert_eq!(symbol, "linkingUSD");
 
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]
     fn test_post_allegretto_name_symbol() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Allegretto);
-        let mut token = PathUSD::new(&mut storage);
-        let sender = Address::from([1u8; 20]);
+        let (mut storage, sender) = setup_storage();
+        storage.set_spec(TempoHardfork::Allegretto);
 
-        token.initialize(sender)?;
+        StorageCtx::enter(&mut storage, || {
+            let mut token = PathUSD::new();
+            token.initialize(sender)?;
 
-        let name_calldata = ITIP20::nameCall {}.abi_encode();
-        let name_output = token.call(&Bytes::from(name_calldata), sender)?;
-        let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
-        assert_eq!(name, "pathUSD");
+            let name_calldata = ITIP20::nameCall {}.abi_encode();
+            let name_output = token.call(&Bytes::from(name_calldata), sender)?;
+            let name = ITIP20::nameCall::abi_decode_returns(&name_output.bytes)?;
+            assert_eq!(name, "pathUSD");
 
-        // Test symbol() call
-        let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
-        let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
-        let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
-        assert_eq!(symbol, "pathUSD");
+            let symbol_calldata = ITIP20::symbolCall {}.abi_encode();
+            let symbol_output = token.call(&Bytes::from(symbol_calldata), sender)?;
+            let symbol = ITIP20::symbolCall::abi_decode_returns(&symbol_output.bytes)?;
+            assert_eq!(symbol, "pathUSD");
 
-        Ok(())
+            Ok(())
+        })
     }
 }
