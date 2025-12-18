@@ -165,9 +165,17 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                     }
                     // If a new base is adopted, start from the base slot and offset 0
                     else {
+                        let ty = field.ty;
                         let limbs = *base_slot.as_limbs();
+                        let slots = quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) };
                         (
-                            quote! { ::alloy::primitives::U256::from_limbs([#(#limbs),*]) },
+                            // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+                            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - CURR_LEN)`
+                            quote! {
+                                ::alloy::primitives::U256::from_limbs([#(#limbs),*])
+                                    .checked_add(#slots).expect("slot overflow")
+                                    .checked_sub(#slots).unwrap()
+                            },
                             quote! { 0 },
                         )
                     }
@@ -276,6 +284,9 @@ pub(crate) fn gen_slot_packing_logic(
     let prev_layout_slots = quote! {
         ::alloy::primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
     };
+    let curr_layout_slots = quote! {
+        ::alloy::primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+    };
 
     // Compute packing decision at compile-time
     let can_pack_expr = quote! {
@@ -285,7 +296,16 @@ pub(crate) fn gen_slot_packing_logic(
     };
 
     let slot_expr = quote! {{
-        if #can_pack_expr { #prev_slot_expr } else { #prev_slot_expr.checked_add(#prev_layout_slots).expect("slot overflow") }
+        if #can_pack_expr {
+            #prev_slot_expr
+        } else {
+            // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - CURR_LEN)`
+            #prev_slot_expr
+                .checked_add(#prev_layout_slots).expect("slot overflow")
+                .checked_add(#curr_layout_slots).expect("slot overflow")
+                .checked_sub(#curr_layout_slots).unwrap()
+        }
     }};
 
     let offset_expr = quote! {{
