@@ -426,6 +426,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_primitives::uint;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
     use tempo_precompiles::tip20;
 
@@ -650,6 +651,179 @@ mod tests {
         let balance =
             db.get_token_balance(token_address, account, TempoHardfork::AllegroModerato)?;
         assert_eq!(balance, expected_balance);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_tip20_fee_inference_call() {
+        use tempo_precompiles::tip20::{IRolesAuth::*, ITIP20::*};
+
+        // Allowed selectors
+        assert!(is_tip20_fee_inference_call(&transferCall::SELECTOR));
+        assert!(is_tip20_fee_inference_call(&transferWithMemoCall::SELECTOR));
+        assert!(is_tip20_fee_inference_call(&startRewardCall::SELECTOR));
+
+        // Disallowed selectors
+        assert!(!is_tip20_fee_inference_call(&grantRoleCall::SELECTOR));
+        assert!(!is_tip20_fee_inference_call(&mintCall::SELECTOR));
+        assert!(!is_tip20_fee_inference_call(&approveCall::SELECTOR));
+
+        // Edge cases
+        assert!(!is_tip20_fee_inference_call(&[]));
+        assert!(!is_tip20_fee_inference_call(&[0x00, 0x01, 0x02]));
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20_pre_allegro_moderato() -> eyre::Result<()> {
+        use tempo_precompiles::tip20::IRolesAuth;
+
+        let caller = Address::random();
+        let token_id = 1;
+        let tip20_token = tip20::token_id_to_address(token_id);
+
+        // Set up CacheDB with USD currency
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        // "USD" (3 bytes) short string encoding:  0x55='U', 0x53='S', 0x44='D', length=3, so LSB=6
+        let usd_storage =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        db.insert_account_storage(tip20_token, tip20::slots::CURRENCY, usd_storage)?;
+
+        // Pre-AllegroModerato (Allegretto): any selector should work
+        let grant_role_data: Bytes = IRolesAuth::grantRoleCall {
+            role: alloy_primitives::B256::ZERO,
+            account: Address::random(),
+        }
+        .abi_encode()
+        .into();
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: grant_role_data,
+                kind: TxKind::Call(tip20_token),
+                caller,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(
+            result, tip20_token,
+            "pre-AllegroModerato: any function should infer fee token"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_fee_token_tip20_post_allegro_moderato() -> eyre::Result<()> {
+        use crate::TempoBatchCallEnv;
+        use tempo_precompiles::tip20::IRolesAuth;
+        use tempo_primitives::transaction::Call;
+
+        let caller = Address::random();
+        let token_id = 1;
+        let tip20_token = tip20::token_id_to_address(token_id);
+
+        // Set up CacheDB with USD currency for the token
+        // TIP20Token layout: slot 0=roles, 1=role_admins, 2=name, 3=symbol, 4=currency
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        // "USD" (3 bytes) short string encoding:  0x55='U', 0x53='S', 0x44='D', length=3, so LSB=6
+        let usd_storage =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        db.insert_account_storage(tip20_token, tip20::slots::CURRENCY, usd_storage)?;
+
+        // Valid selector (transfer) → fee token inferred
+        let transfer_data: Bytes = ITIP20::transferCall {
+            to: Address::random(),
+            amount: U256::from(100),
+        }
+        .abi_encode()
+        .into();
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: transfer_data.clone(),
+                kind: TxKind::Call(tip20_token),
+                caller,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        assert_eq!(result, tip20_token, "transfer should infer fee token");
+
+        // Invalid selector (grantRole) → fallback to default
+        let grant_role_data: Bytes = IRolesAuth::grantRoleCall {
+            role: alloy_primitives::B256::ZERO,
+            account: Address::random(),
+        }
+        .abi_encode()
+        .into();
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                data: grant_role_data.clone(),
+                kind: TxKind::Call(tip20_token),
+                caller,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        assert_eq!(
+            result, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            "grantRole should NOT infer fee token"
+        );
+
+        // AA tx with fee_payer == caller + valid selector → fee token inferred
+        let aa_call = Call {
+            to: TxKind::Call(tip20_token),
+            value: U256::ZERO,
+            input: transfer_data.clone(),
+        };
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                aa_calls: vec![aa_call.clone()],
+                ..Default::default()
+            })),
+            fee_payer: Some(Some(caller)), // fee_payer == caller
+            ..Default::default()
+        };
+        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        assert_eq!(
+            result, tip20_token,
+            "AA with fee_payer == caller should infer fee token"
+        );
+
+        // AA tx with fee_payer != caller + valid selector → fallback
+        let other_payer = Address::random();
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller,
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                aa_calls: vec![aa_call],
+                ..Default::default()
+            })),
+            fee_payer: Some(Some(other_payer)), // fee_payer != caller
+            ..Default::default()
+        };
+        let result = db.get_fee_token(
+            tx,
+            Address::ZERO,
+            other_payer,
+            TempoHardfork::AllegroModerato,
+        )?;
+        assert_eq!(
+            result, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            "AA with fee_payer != caller should NOT infer fee token"
+        );
 
         Ok(())
     }
