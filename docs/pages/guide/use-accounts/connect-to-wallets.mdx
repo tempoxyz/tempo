@@ -16,7 +16,7 @@ You can use these wallets when building your application on Tempo.
 This guide will walk you through how to set up your application to connect to wallets.
 
 <Demo.Container 
-  name="Connect to Wallets" 
+  name="Connect to Wallet" 
   footerVariant="source" 
   src="tempoxyz/tempo-ts/tree/main/examples/accounts"
 >
@@ -37,7 +37,7 @@ Next, let's ensure Wagmi is configured correctly to connect to wallets.
 
 Ensure we have [`multiInjectedProviderDiscovery`](https://wagmi.sh/react/api/createConfig#multiinjectedproviderdiscovery) set to `true` to display injected browser wallets.
 
-We can also utilize [wallet connectors](https://wagmi.sh/react/api/connectors) from Wagmi like `metaMask` to support mobile devices.
+We can also utilize [wallet connectors](https://wagmi.sh/react/api/connectors) from Wagmi like `MetaMask` to support mobile devices.
 
 ```tsx twoslash [config.ts]
 // @noErrors
