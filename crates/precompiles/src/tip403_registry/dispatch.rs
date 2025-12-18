@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
