@@ -7,7 +7,7 @@ pub use mapping::*;
 pub mod array;
 pub mod vec;
 
-mod bytes_like;
+pub mod bytes_like;
 mod primitives;
 
 use crate::{
