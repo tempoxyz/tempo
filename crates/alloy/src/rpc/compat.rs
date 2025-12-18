@@ -176,7 +176,7 @@ fn create_mock_tempo_signature(
 
     let inner_sig = create_mock_primitive_signature(key_type, key_data.cloned());
 
-    if let Some(_key_id) = key_id {
+    if key_id.is_some() {
         // For Keychain signatures, the root_key_address is the caller (account owner)
         TempoSignature::Keychain(KeychainSignature::new(caller_addr, inner_sig))
     } else {
