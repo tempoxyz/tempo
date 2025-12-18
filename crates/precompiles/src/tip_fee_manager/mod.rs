@@ -105,8 +105,11 @@ impl TipFeeManager {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Prevent changing if validator already has collected fees (post-Allegretto)
-        if self.storage.spec().is_allegretto() && self.validator_in_fees_array.at(sender).read()? {
+        // Pre Allego-Moderato but Post-Allegretto, prevent changing if validator already has collected fees
+        if !self.storage.spec().is_allegro_moderato()
+            && self.storage.spec().is_allegretto()
+            && self.validator_in_fees_array.at(sender).read()?
+        {
             return Err(FeeManagerError::cannot_change_with_pending_fees().into());
         }
 
@@ -170,9 +173,11 @@ impl TipFeeManager {
 
     /// Collects fees from user before transaction execution.
     ///
-    /// Determines fee token, verifies pool liquidity for swaps if needed, reserves liquidity
-    /// for the max fee amount and transfers it to the fee manager.
-    /// Unused gas is later returned via collect_fee_post_tx
+    /// Pre-AllegroModerato: Reserves liquidity for swaps if needed, transfers max fee to fee manager.
+    /// Unused gas is later returned via collect_fee_post_tx.
+    ///
+    /// Post-AllegroModerato: Executes fee swap immediately and accumulates fees in collected_fees.
+    /// No refund mechanism - validators call distribute_fees() to collect accumulated fees.
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -183,16 +188,21 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        // Verify pool liquidity if user token differs from validator token
-        if user_token != validator_token {
-            self.reserve_liquidity(user_token, validator_token, max_amount)?;
-        }
-
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+
+        if user_token != validator_token {
+            if self.storage.spec().is_allegro_moderato() {
+                // Post-AllegroModerato: ensure there is enough liquidity to swap `max_amount`
+                self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
+            } else {
+                // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
+                self.reserve_liquidity(user_token, validator_token, max_amount)?;
+            }
+        }
 
         // Return the user's token preference
         Ok(user_token)
@@ -218,12 +228,18 @@ impl TipFeeManager {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         if fee_token != validator_token {
-            // Release Fee AMM liquidity
-            self.release_liquidity(fee_token, validator_token, refund_amount)?;
+            // Pre-AllegroModerato: release reserved liquidity
+            // Post-AllegroModerato: no liquidity was reserved, skip release
+            if !self.storage.spec().is_allegro_moderato() {
+                self.release_liquidity(fee_token, validator_token, refund_amount)?;
+            }
 
             // Record the pool if there was a non-zero swap
             if !actual_spending.is_zero() {
-                if !self.storage.spec().is_allegretto() {
+                if self.storage.spec().is_allegro_moderato() {
+                    // Execute fee swap immediately and accumulate fees
+                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                } else if !self.storage.spec().is_allegretto() {
                     // Pre-Allegretto: track in buggy token_in_fees_array
                     if !self.token_in_fees_array.at(fee_token).read()? {
                         self.tokens_with_fees.push(fee_token)?;
@@ -237,11 +253,12 @@ impl TipFeeManager {
 
         if !self.storage.spec().is_allegretto() {
             // Pre-Allegretto: increment collected fees if no AMM swap
+            // Post-AllegroModerato: pending fees are removed, increment collected fees without
             if fee_token == validator_token {
                 self.increment_collected_fees(beneficiary, actual_spending)?;
             }
         } else {
-            // Post-Allegretto: calculate the actual fee amount and save it in per-validator collected fees
+            // Post allegreto: calculate the actual fee amount and save it in per-validator collected fees
             let amount = if fee_token == validator_token {
                 actual_spending
             } else {
@@ -393,11 +410,45 @@ impl TipFeeManager {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // If this is the first fee for the validator, record it in validators with fees
-        if collected_fees.is_zero() {
-            self.validator_in_fees_array.at(validator).write(true)?;
-            self.validators_with_fees.push(validator)?;
+        // Pre Allegro Moderato, add fees to be processed end of block
+        if !self.storage.spec().is_allegro_moderato() {
+            // If this is the first fee for the validator, record it in validators with fees
+            if collected_fees.is_zero() {
+                self.validator_in_fees_array.at(validator).write(true)?;
+                self.validators_with_fees.push(validator)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Transfers the validator's fee balance to their address.
+    pub fn distribute_fees(&mut self, validator: Address) -> Result<()> {
+        let amount = self.collected_fees.at(validator).read()?;
+        if amount.is_zero() {
+            return Ok(());
+        }
+        self.collected_fees.at(validator).write(U256::ZERO)?;
+
+        // Transfer fees to validator
+        let validator_token = self.get_validator_token(validator)?;
+
+        let mut token = TIP20Token::from_address(validator_token)?;
+        token.transfer(
+            self.address,
+            ITIP20::transferCall {
+                to: validator,
+                amount,
+            },
+        )?;
+
+        // Emit FeesDistributed event
+        self.emit_event(FeeManagerEvent::FeesDistributed(
+            IFeeManager::FeesDistributed {
+                validator,
+                token: validator_token,
+                amount,
+            },
+        ))?;
 
         Ok(())
     }
@@ -458,7 +509,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::ITIP20,
+        tip20::{ITIP20, TIP20Token},
     };
 
     #[test]
@@ -799,6 +850,375 @@ mod tests {
                 account: TIP_FEE_MANAGER_ADDRESS,
             })?;
             assert_eq!(fee_manager_balance, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    /// Test collect_fee_pre_tx pre-AllegroModerato: reserves liquidity but doesn't swap
+    #[test]
+    fn test_collect_fee_pre_tx_reserves_liquidity_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager
+                .pools
+                .at(pool_id)
+                .write(crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            let max_amount = U256::from(1000);
+
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Pre-AllegroModerato: liquidity should be reserved, not swapped
+            // collected_fees should be zero (no immediate swap)
+            let collected = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(
+                collected,
+                U256::ZERO,
+                "Pre-AllegroModerato: no immediate swap"
+            );
+
+            // Pending fee swap should be recorded
+            let pending = fee_manager.get_pending_fee_swap_in(pool_id)?;
+            assert_eq!(pending, 1000, "Liquidity should be reserved");
+
+            // Pool reserves should NOT be updated yet
+            let pool = fee_manager.pools.at(pool_id).read()?;
+            assert_eq!(
+                pool.reserve_user_token, 10000,
+                "Reserves unchanged pre-swap"
+            );
+            assert_eq!(
+                pool.reserve_validator_token, 10000,
+                "Reserves unchanged pre-swap"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test collect_fee_pre_tx post-AllegroModerato with different tokens
+    /// Verifies that liquidity is checked (not reserved) and no swap happens yet
+    #[test]
+    fn test_collect_fee_pre_tx_different_tokens_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Create two different tokens
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            // Setup pool with liquidity
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager
+                .pools
+                .at(pool_id)
+                .write(crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                })?;
+
+            // Set validator's preferred token
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            let max_amount = U256::from(1000);
+
+            // Call collect_fee_pre_tx
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Post-AllegroModerato with different tokens:
+            // - Liquidity is checked (not reserved)
+            // - No swap happens yet (swap happens in collect_fee_post_tx)
+            // - collected_fees should be zero
+            let collected = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(
+                collected,
+                U256::ZERO,
+                "Different tokens: no fees accumulated in pre_tx (swap happens in post_tx)"
+            );
+
+            // Pending fee swap should NOT be recorded (post-AllegroModerato doesn't reserve)
+            let pending = fee_manager.get_pending_fee_swap_in(pool_id)?;
+            assert_eq!(pending, 0, "Post-AllegroModerato: no liquidity reservation");
+
+            // Pool reserves should NOT be updated yet
+            let pool = fee_manager.pools.at(pool_id).read()?;
+            assert_eq!(
+                pool.reserve_user_token, 10000,
+                "Reserves unchanged in pre_tx"
+            );
+            assert_eq!(
+                pool.reserve_validator_token, 10000,
+                "Reserves unchanged in pre_tx"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx_immediate_swap_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            fee_manager
+                .pools
+                .at(pool_id)
+                .write(crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 10000,
+                })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            let max_amount = U256::from(1000);
+            let actual_spending = U256::from(800);
+            let refund_amount = U256::from(200);
+
+            // First call collect_fee_pre_tx (checks liquidity post-AllegroModerato)
+            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+
+            // Then call collect_fee_post_tx (executes swap post-AllegroModerato)
+            fee_manager.collect_fee_post_tx(
+                user,
+                actual_spending,
+                refund_amount,
+                user_token.address(),
+                validator,
+            )?;
+
+            // Expected output: 800 * 9970 / 10000 = 797
+            let expected_fee_amount = (actual_spending * U256::from(9970)) / U256::from(10000);
+            let collected = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(collected, expected_fee_amount);
+
+            // Pool reserves should be updated
+            let pool = fee_manager.pools.at(pool_id).read()?;
+            assert_eq!(pool.reserve_user_token, 10000 + 800);
+            assert_eq!(pool.reserve_validator_token, 10000 - 797);
+
+            // User balance: started with 10000, paid 1000 in pre_tx, got 200 refund = 9200
+            let tip20_token = TIP20Token::from_address(user_token.address())?;
+            let user_balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: user })?;
+            assert_eq!(user_balance, U256::from(10000) - max_amount + refund_amount);
+
+            Ok(())
+        })
+    }
+
+    /// Test collect_fee_pre_tx post-AllegroModerato: fails with insufficient liquidity
+    #[test]
+    fn test_collect_fee_pre_tx_insufficient_liquidity_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            let pool_id = fee_manager.pool_id(user_token.address(), validator_token.address());
+            // Pool with very little validator token liquidity
+            fee_manager
+                .pools
+                .at(pool_id)
+                .write(crate::tip_fee_manager::amm::Pool {
+                    reserve_user_token: 10000,
+                    reserve_validator_token: 100,
+                })?;
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // Try to collect fee that would require more liquidity than available
+            // 1000 * 0.997 = 997 output needed, but only 100 available
+            let max_amount = U256::from(1000);
+
+            let result =
+                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator);
+
+            assert!(result.is_err(), "Should fail with insufficient liquidity");
+
+            Ok(())
+        })
+    }
+
+    /// Test distribute_fees with zero balance is a no-op
+    #[test]
+    fn test_distribute_fees_zero_balance() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // collected_fees is zero by default
+            let collected = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(collected, U256::ZERO);
+
+            // distribute_fees should be a no-op
+            let result = fee_manager.distribute_fees(validator);
+            assert!(result.is_ok(), "Should succeed even with zero balance");
+
+            // Validator balance should still be zero
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance = tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    /// Test distribute_fees transfers accumulated fees to validator
+    #[test]
+    fn test_distribute_fees() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Initialize token and give fee manager some tokens
+            let token = TIP20Setup::create("TestToken", "TEST", admin)
+                .with_issuer(admin)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(1000))
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+
+            // Set validator's preferred token
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: token.address(),
+                },
+                Address::random(), // beneficiary != validator
+            )?;
+
+            // Simulate accumulated fees
+            let fee_amount = U256::from(500);
+            fee_manager.collected_fees.at(validator).write(fee_amount)?;
+
+            // Check validator balance before
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance_before =
+                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance_before, U256::ZERO);
+
+            // Distribute fees
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.distribute_fees(validator)?;
+
+            // Verify validator received the fees
+            let tip20_token = TIP20Token::from_address(token.address())?;
+            let balance_after =
+                tip20_token.balance_of(ITIP20::balanceOfCall { account: validator })?;
+            assert_eq!(balance_after, fee_amount);
+
+            // Verify collected fees cleared
+            let fee_manager = TipFeeManager::new();
+            let remaining = fee_manager.collected_fees.at(validator).read()?;
+            assert_eq!(remaining, U256::ZERO);
 
             Ok(())
         })

@@ -64,7 +64,7 @@ contract BaseTest is Test {
         // Deploy contracts if not tempo
         if (!isTempo) {
             deployCodeTo("TIP403Registry", _TIP403REGISTRY);
-            vm.etch(_STABLECOIN_DEX, type(StablecoinExchange).runtimeCode);
+            deployCodeTo("StablecoinExchange", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
             // Deploy PathUSD as a TIP20 at the special address

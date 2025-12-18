@@ -11,14 +11,13 @@ use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
 use tempo_node::TempoFullNode;
 
-pub mod actor;
+mod actor;
 mod ingress;
 mod migrate;
 pub(super) mod read_write_transaction;
-pub mod validators;
+mod validators;
 
 pub(crate) use actor::Actor;
-pub use actor::DkgOutcome;
 pub(crate) use ingress::Mailbox;
 pub(crate) use validators::ValidatorState;
 
@@ -42,7 +41,7 @@ where
     let actor = Actor::new(config, context, rx)
         .await
         .wrap_err("failed initializing actor")?;
-    let mailbox = Mailbox { inner: tx };
+    let mailbox = Mailbox::new(tx);
     Ok((actor, mailbox))
 }
 

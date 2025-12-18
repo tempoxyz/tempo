@@ -513,7 +513,7 @@ impl Inner<Init> {
             let outcome = self
                 .state
                 .dkg_manager
-                .get_public_ceremony_outcome()
+                .get_public_ceremony_outcome((parent_view, parent_digest), round)
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -656,6 +656,8 @@ impl Inner<Init> {
 
         if let Err(reason) = verify_header_extra_data(
             &block,
+            (parent_view, parent_digest),
+            round,
             &self.state.dkg_manager,
             self.epoch_length,
             &proposer,
@@ -848,6 +850,8 @@ async fn verify_block<TContext: Pacer>(
 #[instrument(skip_all, err(Display))]
 async fn verify_header_extra_data(
     block: &Block,
+    parent: (View, Digest),
+    round: Round,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_length: u64,
     proposer: &PublicKey,
@@ -857,10 +861,13 @@ async fn verify_header_extra_data(
             "on last block of epoch; verifying that the boundary block \
             contains the correct DKG outcome",
         );
-        let our_outcome = dkg_manager.get_public_ceremony_outcome().await.wrap_err(
-            "failed getting public dkg ceremony outcome; cannot verify end \
+        let our_outcome = dkg_manager
+            .get_public_ceremony_outcome(parent, round)
+            .await
+            .wrap_err(
+                "failed getting public dkg ceremony outcome; cannot verify end \
                 of epoch block",
-        )?;
+            )?;
         let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
             "failed decoding extra data header as DKG ceremony \
                 outcome; cannot verify end of epoch block",
