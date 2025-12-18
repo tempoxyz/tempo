@@ -20,7 +20,7 @@ use rand_core::CryptoRngCore;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_primitives_traits::Block as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, field::display, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
@@ -74,7 +74,7 @@ where
             ensure!(
                 initial_dkg_outcome.epoch == Epoch::zero(),
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
-                initial_dkg_outcome.epoch.get()
+                initial_dkg_outcome.epoch,
             );
             Some(initial_dkg_outcome)
         };
@@ -184,9 +184,9 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()).get(),
+            block.derived_epoch = %utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
-            ceremony.epoch = ceremony.epoch().get(),
+            ceremony.epoch = %ceremony.epoch(),
         ),
     )]
     pub(super) async fn handle_finalized_post_allegretto<TReceiver, TSender>(
@@ -217,8 +217,8 @@ where
         // state on the last block of the epoch.
         if block_epoch != current_epoch_state.epoch() {
             info!(
-                block_epoch = block_epoch.get(),
-                actor_epoch = current_epoch_state.epoch().get(),
+                block_epoch = %block_epoch,
+                actor_epoch = %current_epoch_state.epoch(),
                 "block was for an epoch other than what the actor is currently tracking; ignoring",
             );
             return;
@@ -251,7 +251,7 @@ where
                 .await;
 
             // Check if we're shutting down at this epoch boundary
-            if self.config.exit.args.exit_after_epoch == Some(block_epoch.get()) {
+            if self.config.exit.args.exit_after_epoch.map(Epoch::new) == Some(block_epoch) {
                 // Stop the consensus engine we just started to prevent it from running
                 self.config
                     .epoch_manager
@@ -316,8 +316,7 @@ where
             .get_validators(
                 pre_allegretto_epoch_state
                     .epoch()
-                    .previous()
-                    .unwrap_or(Epoch::zero()),
+                    .saturating_sub(EpochDelta::new(1)),
             )
             .await
             .expect("must be able to read validators")
@@ -404,7 +403,7 @@ where
             .expect(
                 "the post-allegretto epoch state must exist in order to start a ceremony for it",
             );
-        Span::current().record("epoch", epoch_state.epoch().get());
+        Span::current().record("epoch", display(&epoch_state.epoch()));
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),

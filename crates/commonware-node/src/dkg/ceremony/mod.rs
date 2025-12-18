@@ -121,7 +121,7 @@ where
     TSender: Sender<PublicKey = PublicKey>,
 {
     /// Initialize a DKG ceremony.
-    #[instrument(skip_all, fields(for_epoch = config.epoch.get()), err)]
+    #[instrument(skip_all, fields(for_epoch = %config.epoch), err)]
     pub(super) async fn init<TContext>(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
@@ -280,7 +280,7 @@ where
 
     #[instrument(
         skip_all,
-        fields(epoch = self.config.epoch.get(), block.height = block.height()),
+        fields(epoch = %self.config.epoch, block.height = block.height()),
     )]
     pub(super) async fn add_finalized_block<TContext>(
         &mut self,
@@ -309,7 +309,7 @@ where
 
     #[instrument(
         skip_all,
-        fields(epoch = self.config.epoch.get(), block.height = block.height()),
+        fields(epoch = %self.config.epoch, block.height = block.height()),
     )]
     pub(super) fn add_notarized_block(&mut self, block: Block) {
         self.tree_of_dealings.add_notarized(block);
@@ -325,7 +325,7 @@ where
     ///
     /// If we are both a dealer and a player, then we acknowledge our shares
     /// immediately without going over the p2p network.
-    #[instrument(skip_all, fields(epoch = self.config.epoch.get()), err)]
+    #[instrument(skip_all, fields(epoch = %self.config.epoch), err)]
     pub(super) async fn distribute_shares<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
@@ -444,7 +444,7 @@ where
     /// to the sender.
     ///
     /// If we receive an ack and are a dealer: track the ack.
-    #[instrument(skip_all, fields(epoch = self.epoch().get()), err)]
+    #[instrument(skip_all, fields(epoch = %self.epoch()), err)]
     pub(super) async fn process_messages<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
@@ -460,8 +460,8 @@ where
                 .wrap_err("unable to decode message")?;
             if msg.epoch != self.epoch() {
                 warn!(
-                    ceremony.epoch = self.epoch().get(),
-                    msg.epoch = msg.epoch.get(),
+                    ceremony.epoch = %self.epoch(),
+                    %msg.epoch,
                     "ignoring message for different round"
                 );
                 continue;
@@ -615,7 +615,7 @@ where
     /// Constructs and stores the intermediate ceremony outcome.
     ///
     /// If the node is not a dealer, then this is a no-op.
-    #[instrument(skip_all, fields(epoch = self.epoch().get()), err)]
+    #[instrument(skip_all, fields(epoch = %self.epoch()), err)]
     pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
@@ -691,7 +691,7 @@ where
     ///
     /// If the DKG ceremony did not contain all blocks leading up to the target,
     /// the missing ... will be in error position.
-    #[instrument(skip_all, fields(epoch = self.epoch().get()))]
+    #[instrument(skip_all, fields(epoch = %self.epoch()))]
     pub(super) fn finalize(
         &self,
         digest: Digest,

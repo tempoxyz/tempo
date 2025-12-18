@@ -246,42 +246,42 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            epoch = genesis.epoch.get(),
+            epoch = %genesis.epoch,
         ),
         ret(Display),
         err(level = Level::ERROR)
     )]
     async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
-        let source = if genesis.epoch == Epoch::zero() {
-            self.genesis_block.digest()
-        } else {
-            // The last block of the *previous* epoch provides the "genesis"
-            // of the *current* epoch. Only epoch 0 is special cased above.
-            let height = utils::last_block_in_epoch(
-                self.epoch_length,
-                genesis
-                    .epoch
-                    .previous()
-                    .expect("non-zero epoch has previous"),
-            );
+        #[expect(
+            clippy::option_if_let_else,
+            reason = "if-let-else would put the 0-case at the bottom"
+        )]
+        let source = match genesis.epoch.previous() {
+            // epoch 0 has no previous epoch
+            None => self.genesis_block.digest(),
+            Some(previous_epoch) => {
+                // The last block of the *previous* epoch provides the "genesis"
+                // of the *current* epoch. Only epoch 0 is special cased above.
+                let height = utils::last_block_in_epoch(self.epoch_length, previous_epoch);
 
-            let Some((_, digest)) = self.marshal.get_info(height).await else {
-                // XXX: the None case here should not be hit:
-                // 1. an epoch transition is triggered by the application
-                // finalizing the last block of the outgoing epoch.
-                // 2. the finalized block is received from the marshal actor,
-                // so we know it must be available and indexed
-                // by the marshaller.
-                // 3. this means this call should always succeed.
-                //
-                // TODO(janis): should we panic instead?
-                bail!(
-                    "no information on the source block at height `{height}` \
+                let Some((_, digest)) = self.marshal.get_info(height).await else {
+                    // XXX: the None case here should not be hit:
+                    // 1. an epoch transition is triggered by the application
+                    // finalizing the last block of the outgoing epoch.
+                    // 2. the finalized block is received from the marshal actor,
+                    // so we know it must be available and indexed
+                    // by the marshaller.
+                    // 3. this means this call should always succeed.
+                    //
+                    // TODO(janis): should we panic instead?
+                    bail!(
+                        "no information on the source block at height `{height}` \
                     exists yet; this is a problem and will likely cause the \
                     consensus engine to not start"
-                );
-            };
-            digest
+                    );
+                };
+                digest
+            }
         };
         genesis.response.send(source).map_err(|_| {
             eyre!("failed returning parent digest for epoch: return channel was already closed")
@@ -293,9 +293,9 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            epoch = request.round.epoch().get(),
-            view = request.round.view().get(),
-            parent.view = request.parent.0.get(),
+            epoch = %request.round.epoch(),
+            view = %request.round.view(),
+            parent.view = %request.parent.0,
             parent.digest = %request.parent.1,
         ),
         err(level = Level::WARN),
@@ -393,10 +393,10 @@ impl Inner<Init> {
     #[instrument(
         skip_all,
         fields(
-            epoch = verify.round.epoch().get(),
-            view = verify.round.view().get(),
+            epoch = %verify.round.epoch(),
+            view = %verify.round.view(),
             digest = %verify.payload,
-            parent.view = verify.parent.0.get(),
+            parent.view = %verify.parent.0,
             parent.digest = %verify.parent.1,
             proposer = %verify.proposer,
         ),
@@ -525,11 +525,11 @@ impl Inner<Init> {
                 round.epoch().next() == outcome.epoch,
                 "outcome is for epoch `{}`, but we are trying to include the \
                 outcome for epoch `{}`",
-                outcome.epoch.get(),
-                round.epoch().next().get(),
+                outcome.epoch,
+                round.epoch().next(),
             );
             info!(
-                outcome.epoch = outcome.epoch.get(),
+                %outcome.epoch,
                 "received DKG outcome; will include in payload builder attributes",
             );
             outcome.encode().freeze().into()
@@ -880,10 +880,10 @@ async fn verify_header_extra_data(
         if our_outcome != block_outcome {
             // Emit the log here so that it's structured. The error would be annoying to read.
             warn!(
-                our.epoch = our_outcome.epoch.get(),
+                our.epoch = %our_outcome.epoch,
                 our.participants = ?our_outcome.participants,
                 our.public = ?our_outcome.public,
-                block.epoch = block_outcome.epoch.get(),
+                block.epoch = %block_outcome.epoch,
                 block.participants = ?block_outcome.participants,
                 block.public = ?block_outcome.public,
                 "our public dkg ceremony outcome does not match what's stored \

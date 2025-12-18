@@ -19,7 +19,7 @@ use commonware_utils::{
 use eyre::{OptionExt as _, WrapErr as _};
 use rand_core::CryptoRngCore;
 use tempo_chainspec::hardfork::TempoHardforks;
-use tracing::{Span, info, instrument, warn};
+use tracing::{Span, field::display, info, instrument, warn};
 
 use crate::{
     consensus::block::Block,
@@ -90,7 +90,7 @@ where
             // that after this state is written, self.register_current_epoch_state
             // is called that will set the validators for the *current* epoch.
             tx.set_validators(
-                current_epoch.epoch().previous().unwrap_or(Epoch::zero()),
+                current_epoch.epoch().saturating_sub(EpochDelta::new(1)),
                 ValidatorState::with_unknown_contract_state(validators.clone()),
             );
         }
@@ -128,7 +128,7 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()).get(),
+            block.derived_epoch = %utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
             block.timestamp = block.timestamp(),
             latest_epoch = tracing::field::Empty,
@@ -150,7 +150,7 @@ where
             .await
             .expect("epoch state must be readable")
             .expect("epoch state must exist");
-        Span::current().record("latest_epoch", epoch_state.epoch().get());
+        Span::current().record("latest_epoch", display(&epoch_state.epoch()));
 
         // Special case the last height.
         if utils::is_last_block_in_epoch(self.config.epoch_length, block.height()).is_some() {
@@ -292,7 +292,7 @@ where
             .await
             .expect("must be able to read epoch")
             .expect("the epoch state must always exist during the lifetime of the actor");
-        Span::current().record("epoch", epoch_state.epoch().get());
+        Span::current().record("epoch", display(&epoch_state.epoch()));
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
