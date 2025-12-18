@@ -216,11 +216,62 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    function testTransferWithMemoToTokenAddress() public {
+    function testTransferToInvalidRecipient() public {
+        vm.startPrank(alice);
+
+        // Try to transfer to the zero address
+        try token.transfer(address(0), 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
+
+        // Try to transfer to a token precompile address
+        address tokenAddress = address(0x20C0000000000000000000000000000000000001);
+        try token.transfer(tokenAddress, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testTransferFromToInvalidRecipient() public {
+        // Alice approves bob
+        vm.prank(alice);
+        token.approve(bob, 200e18);
+
+        // Try to transfer to the zero address
+        try token.transferFrom(alice, address(0), 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
+
         // Try to transfer to a token precompile address
         address tokenAddress = address(0x20C0000000000000000000000000000000000001);
 
+        vm.startPrank(bob);
+        try token.transferFrom(alice, tokenAddress, 100e18) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
+        vm.stopPrank();
+    }
+
+    function testTransferWithMemoToInvalidRecipient() public {
         vm.startPrank(alice);
+
+        // Try to transfer to the zero address
+        try token.transferWithMemo(address(0), 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
+
+        // Try to transfer to a token precompile address
+        address tokenAddress = address(0x20C0000000000000000000000000000000000001);
         try token.transferWithMemo(tokenAddress, 100e18, TEST_MEMO) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -229,10 +280,17 @@ contract TIP20Test is BaseTest {
         vm.stopPrank();
     }
 
-    function testTransferFromWithMemoToTokenAddress() public {
+    function testTransferFromWithMemoToInvalidRecipient() public {
         // Alice approves bob
         vm.prank(alice);
         token.approve(bob, 200e18);
+
+        // Try to transfer to the zero address
+        try token.transferFromWithMemo(alice, address(0), 100e18, TEST_MEMO) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidRecipient.selector));
+        }
 
         // Try to transfer to a token precompile address
         address tokenAddress = address(0x20C0000000000000000000000000000000000001);
