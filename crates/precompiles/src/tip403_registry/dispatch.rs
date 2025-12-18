@@ -27,7 +27,7 @@ impl Precompile for TIP403Registry {
                 })
             }
             ITIP403Registry::policyExistsCall::SELECTOR => {
-                if self.storage.spec().is_allegretto() {
+                if self.storage.spec().is_allegro_moderato() {
                     view::<ITIP403Registry::policyExistsCall>(calldata, |call| {
                         self.policy_exists(call)
                     })
