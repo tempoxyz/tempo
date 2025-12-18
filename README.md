@@ -21,6 +21,12 @@ The blockchain for payments at scale.
 
 You can get started today by integrating with the [Tempo testnet](https://docs.tempo.xyz/quickstart/integrate-tempo), [building on Tempo](https://docs.tempo.xyz/guide/use-accounts), [running a Tempo node](https://docs.tempo.xyz/guide/node), reading the [Tempo protocol specs](https://docs.tempo.xyz/protocol) or by [building with Tempo SDKs](https://docs.tempo.xyz/sdk).
 
+## Project Scope
+
+Tempo focuses on core protocol logic and tooling.
+User-facing applications and integrations are maintained in separate repositories.
+
+
 ## What makes Tempo different
 
 - [TIP‑20 token standard](https://docs.tempo.xyz/protocol/tip20/overview) (enshrined ERC‑20 extensions)
