@@ -11609,7 +11609,9 @@ version = "0.7.5"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
+ "alloy-provider",
  "alloy-sol-types",
+ "tokio",
 ]
 
 [[package]]

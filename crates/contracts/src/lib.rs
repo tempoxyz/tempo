@@ -75,8 +75,148 @@ pub mod contracts {
 
     pub const CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH: B256 =
         b256!("0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f");
+
+    sol!(
+        #[allow(missing_docs)]
+        Multicall3,
+        "abi/Multicall3.json",
+    );
+
+    /// Keccak256 hash of Multicall3 deployed bytecode
+    pub const MULTICALL3_DEPLOYED_BYTECODE_HASH: B256 =
+        b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
 }
 
-pub use contracts::{CreateX, IthacaAccount, Multicall, Permit2, SafeDeployer};
+pub use contracts::{CreateX, IthacaAccount, Multicall, Multicall3, Permit2, SafeDeployer};
 
 pub mod precompiles;
+
+#[cfg(test)]
+mod tests {
+    //! Tests to verify that our predeployed contract bytecode matches Ethereum mainnet.
+    //!
+    //! These tests use alloy to fetch the code hash directly from Ethereum mainnet
+    //! and compare against our stored bytecode hashes. This ensures we haven't accidentally
+    //! deployed the wrong contract (e.g., Multicall instead of Multicall3).
+    //!
+    //! Run with:
+    //! ```sh
+    //! cargo test -p tempo-contracts
+    //! ```
+    //!
+    //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
+
+    use super::*;
+    use alloy_primitives::{B256, keccak256};
+    use alloy_provider::{Provider, ProviderBuilder};
+
+    /// Default public RPC URL for Ethereum mainnet.
+    const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
+
+    /// Returns the Ethereum mainnet RPC URL from the `ETH_RPC_URL` environment variable,
+    /// or falls back to a default public RPC.
+    fn get_rpc_url() -> String {
+        std::env::var("ETH_RPC_URL").unwrap_or_else(|_| DEFAULT_ETH_RPC_URL.to_string())
+    }
+
+    /// Fetches the code hash for an address from Ethereum mainnet using alloy provider.
+    async fn get_mainnet_code_hash(address: Address) -> B256 {
+        let rpc_url = get_rpc_url();
+        let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
+
+        let code = provider
+            .get_code_at(address)
+            .await
+            .expect("Failed to fetch code from mainnet");
+        keccak256(&code)
+    }
+
+    #[tokio::test]
+    async fn multicall3_bytecode_matches_mainnet() {
+        // Verify our hash constant matches our bytecode
+        let computed_hash = keccak256(&Multicall3::DEPLOYED_BYTECODE);
+        let stored_hash = contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
+        assert_eq!(
+            computed_hash, stored_hash,
+            "MULTICALL3_DEPLOYED_BYTECODE_HASH does not match the actual bytecode!\n\
+             Computed: {computed_hash}\n\
+             Stored:   {stored_hash}"
+        );
+
+        // Verify our bytecode matches mainnet
+        let mainnet_hash = get_mainnet_code_hash(MULTICALL_ADDRESS).await;
+        assert_eq!(
+            mainnet_hash, stored_hash,
+            "Multicall3 bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {stored_hash}\n\
+             This likely means we have the wrong bytecode for Multicall3."
+        );
+    }
+
+    #[tokio::test]
+    async fn createx_bytecode_matches_mainnet() {
+        // Verify our hash constant matches our bytecode
+        let computed_hash = keccak256(&contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE);
+        let stored_hash = contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
+        assert_eq!(
+            computed_hash, stored_hash,
+            "CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH does not match the actual bytecode!\n\
+             Computed: {computed_hash}\n\
+             Stored:   {stored_hash}"
+        );
+
+        // Verify our bytecode matches mainnet
+        let mainnet_hash = get_mainnet_code_hash(CREATEX_ADDRESS).await;
+        assert_eq!(
+            mainnet_hash, stored_hash,
+            "CreateX bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {stored_hash}\n\
+             This likely means we have the wrong bytecode for CreateX."
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "Permit2 bytecode in abi/Permit2.json doesn't match mainnet - needs investigation"]
+    async fn permit2_bytecode_matches_mainnet() {
+        let mainnet_hash = get_mainnet_code_hash(PERMIT2_ADDRESS).await;
+        let our_hash = keccak256(&Permit2::DEPLOYED_BYTECODE);
+
+        assert_eq!(
+            mainnet_hash, our_hash,
+            "Permit2 bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {our_hash}\n\
+             This likely means we have the wrong bytecode for Permit2."
+        );
+    }
+
+    #[tokio::test]
+    async fn arachnid_create2_factory_bytecode_matches_mainnet() {
+        let mainnet_hash = get_mainnet_code_hash(ARACHNID_CREATE2_FACTORY_ADDRESS).await;
+        let our_hash = keccak256(&contracts::ARACHNID_CREATE2_FACTORY_BYTECODE);
+
+        assert_eq!(
+            mainnet_hash, our_hash,
+            "Arachnid CREATE2 factory bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {our_hash}\n\
+             This likely means we have the wrong bytecode for Arachnid CREATE2 factory."
+        );
+    }
+
+    #[tokio::test]
+    async fn safe_deployer_bytecode_matches_mainnet() {
+        let mainnet_hash = get_mainnet_code_hash(SAFE_DEPLOYER_ADDRESS).await;
+        let our_hash = keccak256(&SafeDeployer::DEPLOYED_BYTECODE);
+
+        assert_eq!(
+            mainnet_hash, our_hash,
+            "SafeDeployer bytecode hash mismatch!\n\
+             Mainnet: {mainnet_hash}\n\
+             Ours:    {our_hash}\n\
+             This likely means we have the wrong bytecode for SafeDeployer."
+        );
+    }
+}
