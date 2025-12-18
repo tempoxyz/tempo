@@ -1652,7 +1652,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: calls.clone(),
+            aa_calls: calls,
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
