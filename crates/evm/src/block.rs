@@ -502,7 +502,7 @@ where
             }
         }
 
-        // Modify CreateX bytecode if AllegroModerato is active and bytecode is outdated
+        // Modify CreateX bytecode and upgrade Multicall to Multicall3 if AllegroModerato is active
         if self
             .inner
             .spec
@@ -511,6 +511,7 @@ where
             let evm = self.evm_mut();
             let db = evm.ctx_mut().db_mut();
 
+            // Update CreateX bytecode if outdated
             let acc = db
                 .load_cache_account(CREATEX_ADDRESS)
                 .map_err(BlockExecutionError::other)?;
@@ -530,17 +531,8 @@ where
 
                 db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
             }
-        }
 
-        // Upgrade Multicall to Multicall3 if AllegroModerato is active and bytecode is outdated
-        if self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp)
-        {
-            let evm = self.evm_mut();
-            let db = evm.ctx_mut().db_mut();
-
+            // Update Multicall to Multicall3 if outdated
             let acc = db
                 .load_cache_account(MULTICALL_ADDRESS)
                 .map_err(BlockExecutionError::other)?;
