@@ -640,13 +640,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_not_token_address(to)?;
         self.ensure_transfer_authorized(from, to)?;
-
-        // Only check access keys after Allegro Moderato hardfork
-        if self.storage.spec().is_allegro_moderato() {
-            // Check and update spending limits for access keys
-            let mut keychain = AccountKeychain::new();
-            keychain.authorize_transfer(from, self.address, amount)?;
-        }
+        self.check_spending_limit(from, amount)?;
 
         self._transfer(from, to, amount)?;
 
@@ -690,13 +684,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_not_token_address(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
-
-        // Only check access keys after Allegro Moderato hardfork
-        if self.storage.spec().is_allegro_moderato() {
-            // Check and update spending limits for access keys
-            let mut keychain = AccountKeychain::new();
-            keychain.authorize_transfer(msg_sender, self.address, call.amount)?;
-        }
+        self.check_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, call.to, call.amount)?;
 
@@ -843,6 +831,16 @@ impl TIP20Token {
         Ok(())
     }
 
+    /// Checks and updates spending limits for access keys.
+    /// Only active after Allegro Moderato hardfork.
+    pub fn check_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
+        if self.storage.spec().is_allegro_moderato() {
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(from, self.address, amount)?;
+        }
+        Ok(())
+    }
+
     fn _transfer(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
@@ -886,12 +884,7 @@ impl TIP20Token {
             );
         }
 
-        // Only check access keys after Allegro Moderato hardfork
-        if self.storage.spec().is_allegro_moderato() {
-            // Check and update spending limits for access keys
-            let mut keychain = AccountKeychain::new();
-            keychain.authorize_transfer(from, self.address, amount)?;
-        }
+        self.check_spending_limit(from, amount)?;
 
         // Handle rewards (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
