@@ -47,7 +47,6 @@ tempo-precompiles = { workspace = true, features = ["rpc"] }
 futures.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 serde_json.workspace = true
 secp256k1.workspace = true

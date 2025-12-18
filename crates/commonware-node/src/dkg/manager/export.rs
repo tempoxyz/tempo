@@ -8,7 +8,6 @@ use std::path::Path;
 use commonware_cryptography::bls12381::primitives::group::Share;
 use eyre::{Result, WrapErr as _};
 use tempo_commonware_node_config::SigningShare;
-use tracing::info;
 
 /// Write the signing share to a file in hex format.
 ///
@@ -25,11 +24,6 @@ pub(crate) fn write_share_to_file(share: &Share, path: &Path) -> Result<()> {
     signing_share
         .write_to_file(path)
         .wrap_err("failed to write signing share")?;
-
-    info!(
-        path = %path.display(),
-        "wrote signing share to file"
-    );
 
     Ok(())
 }

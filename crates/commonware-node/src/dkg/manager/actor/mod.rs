@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, ops::ControlFlow, task::ready, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, task::ready, time::Duration};
 
 use bytes::Bytes;
 use commonware_codec::{
@@ -319,14 +319,8 @@ where
                         height = block.height(),
                         "gaps filled; processing deferred finalized block now",
                     );
-                    if self
-                        .handle_finalized_block(cause, block, ack, &mut ceremony, &mut ceremony_mux)
-                        .await
-                        .is_break()
-                    {
-                        info!("DKG actor exiting for coordinated shutdown");
-                        return;
-                    };
+                    self.handle_finalized_block(cause, block, ack, &mut ceremony, &mut ceremony_mux)
+                        .await;
                 }
             }
 
@@ -374,17 +368,14 @@ where
                     super::Command::Finalized(update) => match *update {
                         Update::Tip(height, digest) => self.finalized_tip = Some((height, digest)),
                         Update::Block(block, ack) => {
-                            if self.handle_finalized_block(
+                            self.handle_finalized_block(
                                 cause,
                                 block,
                                 ack,
                                 &mut ceremony,
                                 &mut ceremony_mux,
-                            ).await.is_break()
-                            {
-                                info!("DKG actor exiting for coordinated shutdown");
-                                return;
-                            };
+                            )
+                            .await;
                         }
                     },
 
@@ -582,7 +573,6 @@ where
             ceremony.epoch = ceremony.epoch(),
         ),
     )]
-    /// Returns `ControlFlow::Break` if the actor should exit (for coordinated shutdown).
     async fn handle_finalized_block<TReceiver, TSender>(
         &mut self,
         cause: Span,
@@ -590,8 +580,7 @@ where
         acknowledgement: Exact,
         ceremony: &mut Ceremony<TReceiver, TSender>,
         ceremony_mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> ControlFlow<()>
-    where
+    ) where
         TReceiver: Receiver<PublicKey = PublicKey>,
         TSender: Sender<PublicKey = PublicKey>,
     {
@@ -610,7 +599,7 @@ where
                 deferred one exists",
             );
             self.gaps = gaps;
-            return ControlFlow::Continue(());
+            return;
         }
 
         let mut tx = DkgReadWriteTransaction::new(self.db.read_write());
@@ -624,7 +613,7 @@ where
             info!(last_processed_height, "skipping already-processed block");
             ceremony.add_finalized_block(&mut tx, block).await;
             acknowledgement.acknowledge();
-            return ControlFlow::Continue(());
+            return;
         }
 
         if self.is_running_post_allegretto(&block, &tx).await {
@@ -645,7 +634,6 @@ where
         self.handle_pause_after_epoch(block_height).await;
 
         acknowledgement.acknowledge();
-        ControlFlow::Continue(())
     }
 
     /// Handles a notarization by registering it in the currently running ceremony.

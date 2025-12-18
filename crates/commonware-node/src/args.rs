@@ -147,8 +147,8 @@ pub struct Args {
 
 /// Configuration for coordinated node pause at epoch boundaries.
 ///
-/// Used for breaking storage migrations where nodes need to export their DKG state,
-/// shut down cleanly, and restart with a new binary.
+/// Used for breaking storage migrations where nodes need to export their DKG state
+/// and stop progressing so operators can restart with a new binary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
 pub struct PauseArgs {
     /// Pause after processing the last finalized block of this epoch.

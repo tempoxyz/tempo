@@ -40,7 +40,7 @@ fn single_validator_pauses_after_epoch_and_exports_share() {
         validators[0].start().await;
 
         // Wait for the export file to be created (indicates successful pause-after-epoch)
-        // The node should process epoch 1 (blocks 10-19) and then export + shutdown
+        // The node should process epoch 1 (blocks 10-19) and then export the share
         for i in 0..120 {
             context.sleep(Duration::from_secs(1)).await;
 
