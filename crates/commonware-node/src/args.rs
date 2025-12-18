@@ -151,14 +151,15 @@ pub struct Args {
 /// shut down cleanly, and restart with a new binary.
 #[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
 pub struct PauseArgs {
-    /// Pause after processing the last block of this epoch. When set, the node
-    /// will exit with code 0 after the specified epoch boundary is finalized.
+    /// Pause after processing the last finalized block of this epoch.
     #[arg(long = "consensus.pause-after-epoch")]
     pub pause_after_epoch: Option<u64>,
 
     /// Path to export the BLS12-381 signing share before pausing. Requires
     /// `--consensus.pause-after-epoch`. The exported file can be used as
     /// `--consensus.signing-share` for a new node after a breaking storage migration.
+    ///
+    /// If the file already exists, it will be overwritten.
     #[arg(long = "consensus.pause-export-share", requires = "pause_after_epoch")]
     pub pause_export_share: Option<PathBuf>,
 }
