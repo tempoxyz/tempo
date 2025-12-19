@@ -2848,6 +2848,9 @@ pub(crate) mod tests {
 
             assert!(result.is_ok());
 
+            // Verify the policy ID was actually stored
+            assert_eq!(token.transfer_policy_id()?, arbitrary_policy_id);
+
             Ok(())
         })
     }
@@ -2874,11 +2877,13 @@ pub(crate) mod tests {
                 admin,
                 ITIP20::changeTransferPolicyIdCall { newPolicyId: 0 },
             )?;
+            assert_eq!(token.transfer_policy_id()?, 0);
 
             token.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
             )?;
+            assert_eq!(token.transfer_policy_id()?, 1);
 
             // Test random invalid policy IDs should fail
             let mut rng = rand::thread_rng();
@@ -2890,7 +2895,10 @@ pub(crate) mod tests {
                         newPolicyId: invalid_policy_id,
                     },
                 );
-                assert!(result.is_err());
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP20(TIP20Error::InvalidTransferPolicyId(_))
+                ));
             }
 
             // Create some valid policies
@@ -2919,6 +2927,7 @@ pub(crate) mod tests {
                     },
                 );
                 assert!(result.is_ok());
+                assert_eq!(token.transfer_policy_id()?, policy_id);
             }
 
             Ok(())
