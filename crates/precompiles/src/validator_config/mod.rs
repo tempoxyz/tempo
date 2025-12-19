@@ -36,6 +36,8 @@ pub struct ValidatorConfig {
     validator_count: u64,
     validators_array: Vec<Address>,
     validators: Mapping<Address, Validator>,
+    /// The epoch at which a fresh DKG ceremony will be triggered
+    next_dkg_ceremony: u64,
 }
 
 impl ValidatorConfig {
@@ -245,6 +247,25 @@ impl ValidatorConfig {
         let mut validator = self.validators.at(call.validator).read()?;
         validator.active = call.active;
         self.validators.at(call.validator).write(validator)
+    }
+
+    /// Get the epoch at which a fresh DKG ceremony will be triggered.
+    ///
+    /// The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+    pub fn get_next_dkg_ceremony(&self) -> Result<u64> {
+        self.next_dkg_ceremony.read()
+    }
+
+    /// Set the epoch at which a fresh DKG ceremony will be triggered (owner only).
+    ///
+    /// Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    pub fn set_next_dkg_ceremony(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::setNextDkgCeremonyCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
+        self.next_dkg_ceremony.write(call.epoch)
     }
 }
 
@@ -709,6 +730,39 @@ mod tests {
                 String::default(),
                 "Old validator outbound address should be cleared"
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_next_dkg_ceremony() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let non_owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Default value is 0
+            assert_eq!(validator_config.get_next_dkg_ceremony()?, 0);
+
+            // Owner can set the value
+            validator_config.set_next_dkg_ceremony(
+                owner,
+                IValidatorConfig::setNextDkgCeremonyCall { epoch: 42 },
+            )?;
+            assert_eq!(validator_config.get_next_dkg_ceremony()?, 42);
+
+            // Non-owner cannot set the value
+            let result = validator_config.set_next_dkg_ceremony(
+                non_owner,
+                IValidatorConfig::setNextDkgCeremonyCall { epoch: 100 },
+            );
+            assert_eq!(result, Err(ValidatorConfigError::unauthorized().into()));
+
+            // Value unchanged after failed attempt
+            assert_eq!(validator_config.get_next_dkg_ceremony()?, 42);
 
             Ok(())
         })
