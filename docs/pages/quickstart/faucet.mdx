@@ -13,14 +13,14 @@ import { Tabs } from '../../components/Tabs.tsx'
 Get test stablecoins on Tempo testnet.
 
 <Tabs>
-  <Tabs.Tab value="Connect and fund your wallet">
+  <Tabs.Tab value="Fund your wallet">
 
 <div className="h-4" />
 
 Connect your wallet to receive test stablecoins directly.
 
 <div className="h-6"/>
-<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
+<Demo.Container name="Connect and fund your wallet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
   <Step.AddFundsToWallet stepNumber={2} />
   <Step.AddTokensToWallet stepNumber={3} />
@@ -34,7 +34,7 @@ Connect your wallet to receive test stablecoins directly.
 Send test stablecoins to any address.
 
 <div className="h-6"/>
-<Demo.Container name="Send Faucet Funds to Others">
+<Demo.Container name="Fund an address">
   <Step.AddFundsToOthers stepNumber={1} last />
 </Demo.Container>
 
