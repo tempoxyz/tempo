@@ -11530,7 +11530,6 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
- "tempo-commonware-node-config",
  "tempo-primitives",
 ]
 
@@ -11574,7 +11573,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
- "tempo-chainspec",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-node",

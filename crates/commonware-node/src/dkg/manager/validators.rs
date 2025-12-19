@@ -145,29 +145,6 @@ impl ValidatorState {
         }
     }
 
-    /// Returns a validator state with only public key and inbound address set.
-    ///
-    /// All other values take default values.
-    pub(super) fn with_unknown_contract_state(
-        validators: OrderedAssociated<PublicKey, SocketAddr>,
-    ) -> Self {
-        let validators = validators
-            .iter_pairs()
-            .map(|(key, addr)| {
-                let key = key.clone();
-                let validator = DecodedValidator {
-                    public_key: key.clone(),
-                    inbound: *addr,
-                    outbound: SocketAddr::from(([0, 0, 0, 0], 0)),
-                    index: 0,
-                    address: Address::ZERO,
-                };
-                (key, validator)
-            })
-            .collect();
-        Self::new(validators)
-    }
-
     pub(super) fn dealers(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
         &self.dealers
     }

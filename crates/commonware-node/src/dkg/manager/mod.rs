@@ -13,7 +13,6 @@ use tempo_node::TempoFullNode;
 
 mod actor;
 mod ingress;
-mod migrate;
 pub(super) mod read_write_transaction;
 mod validators;
 
@@ -68,9 +67,7 @@ pub(crate) struct Config<TPeerManager> {
     pub(crate) partition_prefix: String,
 
     /// The full execution layer node. On init, used to read the initial set
-    /// of peers and public polynomial (either from chainspec if running
-    /// pre-allegretto or from the genesis extra_data header and block state if
-    /// post-allegretto).
+    /// of peers and public polynomial.
     ///
     /// During normal operation, used to read the validator config at the end
     /// of each epoch.

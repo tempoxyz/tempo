@@ -10,16 +10,7 @@ use futures::future::join_all;
 use crate::{Setup, setup_validators};
 
 #[test_traced]
-fn pre_hardfork_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(false)
-}
-
-#[test_traced]
-fn allegretto_at_genesis_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(true)
-}
-
-fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: bool) {
+fn validator_lost_key_but_gets_key_in_next_epoch() {
     let _ = tempo_eyre::install();
 
     let seed = 0;
@@ -30,11 +21,6 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
     executor.start(|context| async move {
         let epoch_length = 30;
         let setup = Setup::new().seed(seed).epoch_length(epoch_length);
-        let setup = if allegretto_at_genesis {
-            setup.allegretto_time(0)
-        } else {
-            setup
-        };
 
         let (mut validators, _execution_runtime) =
             setup_validators(context.clone(), setup.clone()).await;

@@ -30,8 +30,7 @@ use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome, PublicOutcome};
 use crate::{
     consensus::{Digest, block::Block},
     dkg::{
-        HardforkRegime, ceremony::tree::TreeOfDealings,
-        manager::read_write_transaction::DkgReadWriteTransaction,
+        ceremony::tree::TreeOfDealings, manager::read_write_transaction::DkgReadWriteTransaction,
     },
 };
 
@@ -70,9 +69,6 @@ pub(super) struct Config {
 
     /// The epoch length set at genesis.
     pub(super) epoch_length: u64,
-
-    /// The hardfork regime this ceremony runs under.
-    pub(super) hardfork_regime: HardforkRegime,
 
     /// The dealers in the round.
     pub(super) dealers: Ordered<PublicKey>,
@@ -262,7 +258,6 @@ where
             config.public.clone(),
             config.dealers.clone(),
             config.players.clone(),
-            config.hardfork_regime,
             config.namespace.clone(),
         );
         Ok(Self {
@@ -619,7 +614,6 @@ where
     pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
-        hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -644,42 +638,27 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = match hardfork_regime {
-            HardforkRegime::PostAllegretto => Some(IntermediateOutcome::new(
-                self.config
-                    .players
-                    .len()
-                    .try_into()
-                    .expect("we should never have more than u16::MAX validators/players"),
-                &self.config.me,
-                &union(&self.config.namespace, OUTCOME_NAMESPACE),
-                self.config.epoch,
-                dealer_me.commitment.clone(),
-                dealer_me.acks.values().cloned().collect(),
-                reveals,
-            )),
-            HardforkRegime::PreAllegretto => Some(IntermediateOutcome::new_pre_allegretto(
-                self.config
-                    .players
-                    .len()
-                    .try_into()
-                    .expect("we should never have more than u16::MAX validators/players"),
-                &self.config.me,
-                &union(&self.config.namespace, OUTCOME_NAMESPACE),
-                self.config.epoch,
-                dealer_me.commitment.clone(),
-                dealer_me.acks.values().cloned().collect(),
-                reveals,
-            )),
-        };
+        let dealing_outcome = IntermediateOutcome::new(
+            self.config
+                .players
+                .len()
+                .try_into()
+                .expect("we should never have more than u16::MAX validators/players"),
+            &self.config.me,
+            &union(&self.config.namespace, OUTCOME_NAMESPACE),
+            self.config.epoch,
+            dealer_me.commitment.clone(),
+            dealer_me.acks.values().cloned().collect(),
+            reveals,
+        );
 
         tx.update_ceremony(self.config.epoch, |info| {
-            info.dealing_outcome = dealing_outcome.clone();
+            info.dealing_outcome.replace(dealing_outcome.clone());
         })
         .await
         .expect("must persist local outcome");
 
-        dealer_me.outcome = dealing_outcome;
+        dealer_me.outcome.replace(dealing_outcome);
 
         Ok(())
     }
