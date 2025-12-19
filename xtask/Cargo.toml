@@ -35,7 +35,7 @@ const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
 rand.workspace = true
-rayon = "1.10"
+rayon.workspace = true
 reth-evm.workspace = true
 reth-network-peers = { workspace = true, features = ["secp256k1"] }
 secp256k1 = { workspace = true, features = ["rand"] }

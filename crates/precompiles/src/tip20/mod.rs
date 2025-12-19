@@ -206,6 +206,17 @@ impl TIP20Token {
         call: ITIP20::changeTransferPolicyIdCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+
+        // Validate that the policy exists (only after AllegroModerato hardfork)
+        if self.storage.spec().is_allegro_moderato() {
+            let registry = TIP403Registry::new();
+            if !registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.newPolicyId,
+            })? {
+                return Err(TIP20Error::invalid_transfer_policy_id().into());
+            }
+        }
+
         self.transfer_policy_id.write(call.newPolicyId)?;
 
         self.emit_event(TIP20Event::TransferPolicyUpdate(
@@ -582,7 +593,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         self.check_not_paused()?;
-        self.check_not_token_address(call.to)?;
+        self.check_recipient(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
 
         // Only check access keys after Allegretto hardfork
@@ -638,8 +649,9 @@ impl TIP20Token {
         amount: U256,
     ) -> Result<bool> {
         self.check_not_paused()?;
-        self.check_not_token_address(to)?;
+        self.check_recipient(to)?;
         self.ensure_transfer_authorized(from, to)?;
+        self.check_spending_limit(from, amount)?;
 
         self._transfer(from, to, amount)?;
 
@@ -654,7 +666,7 @@ impl TIP20Token {
         amount: U256,
     ) -> Result<bool> {
         self.check_not_paused()?;
-        self.check_not_token_address(to)?;
+        self.check_recipient(to)?;
         self.ensure_transfer_authorized(from, to)?;
 
         let allowed = self.get_allowance(from, msg_sender)?;
@@ -681,8 +693,9 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         self.check_not_paused()?;
-        self.check_not_token_address(call.to)?;
+        self.check_recipient(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
+        self.check_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, call.to, call.amount)?;
 
@@ -792,9 +805,11 @@ impl TIP20Token {
         Ok(())
     }
 
-    fn check_not_token_address(&self, to: Address) -> Result<()> {
-        // Don't allow sending to other precompiled tokens
-        if is_tip20_prefix(to) {
+    /// Validates that the recipient is not:
+    /// - the zero address (preventing accidental burns)
+    /// - another TIP20 token
+    fn check_recipient(&self, to: Address) -> Result<()> {
+        if (self.storage.spec().is_allegro_moderato() && to.is_zero()) || is_tip20_prefix(to) {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
@@ -826,6 +841,16 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
+        Ok(())
+    }
+
+    /// Checks and updates spending limits for access keys.
+    /// Only active after Allegro Moderato hardfork.
+    pub fn check_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
+        if self.storage.spec().is_allegro_moderato() {
+            let mut keychain = AccountKeychain::new();
+            keychain.authorize_transfer(from, self.address, amount)?;
+        }
         Ok(())
     }
 
@@ -871,6 +896,8 @@ impl TIP20Token {
                 TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
             );
         }
+
+        self.check_spending_limit(from, amount)?;
 
         // Handle rewards (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
@@ -985,8 +1012,10 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS, error::TempoPrecompileError, storage::hashmap::HashMapStorageProvider,
-        test_util::setup_storage,
+        PATH_USD_ADDRESS,
+        error::TempoPrecompileError,
+        storage::hashmap::HashMapStorageProvider,
+        test_util::{TIP20Setup, setup_storage},
     };
     use rand::{Rng, distributions::Alphanumeric, random, thread_rng};
 
@@ -2684,6 +2713,113 @@ pub(crate) mod tests {
                 result.is_err(),
                 "deploy_path_usd should fail if a token has already been deployed"
             );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id_invalid_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Initialize the TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Try to change to a non-existent policy ID (should fail with Allegretto hardfork)
+            let invalid_policy_id = 999u64;
+            let result = token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: invalid_policy_id,
+                },
+            );
+
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::InvalidTransferPolicyId(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_invalid_recipient_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+        let bob = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_mint(admin, amount + amount)
+                .with_approval(admin, bob, amount)
+                .apply()?;
+
+            token.transfer(
+                admin,
+                ITIP20::transferCall {
+                    to: Address::ZERO,
+                    amount,
+                },
+            )?;
+
+            token.transfer_from(
+                bob,
+                ITIP20::transferFromCall {
+                    from: admin,
+                    to: Address::ZERO,
+                    amount,
+                },
+            )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_invalid_recipient_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+        let bob = Address::random();
+        let amount = U256::from(1000);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_mint(admin, amount)
+                .with_approval(admin, bob, amount)
+                .apply()?;
+
+            let result = token.transfer(
+                admin,
+                ITIP20::transferCall {
+                    to: Address::ZERO,
+                    amount,
+                },
+            );
+            assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
+
+            let result = token.transfer_from(
+                bob,
+                ITIP20::transferFromCall {
+                    from: admin,
+                    to: Address::ZERO,
+                    amount,
+                },
+            );
+            assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
+
             Ok(())
         })
     }

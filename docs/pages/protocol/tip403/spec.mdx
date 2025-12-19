@@ -153,6 +153,13 @@ interface ITIP403Registry {
     /// @dev Starts at 2 and increments with each policy creation
     function policyIdCounter() external view returns (uint64);
 
+    /// @notice Returns whether a policy exists (available from Allegretto hardfork)
+    /// @param policyId ID of the policy to check
+    /// @return True if the policy exists, false otherwise
+    /// @dev Policy IDs 0 and 1 (built-in policies) always exist. For custom policies (ID >= 2),
+    /// checks if the policy ID is within the range of created policies based on policyIdCounter.
+    function policyExists(uint64 policyId) external view returns (bool);
+
     /// @notice Returns the policy type and admin address of the policy associated with the provided policy ID
     /// @param policyId ID of the policy to query
     /// @return policyType Type of the policy (whitelist or blacklist)

@@ -20,6 +20,7 @@ interface ITIP20 {
     error InvalidQuoteToken();
     error InvalidBaseToken();
     error InvalidToken();
+    error InvalidTransferPolicyId();
 
     /// @notice Error when attempting to transfer to an invalid recipient address.
     error InvalidRecipient();
