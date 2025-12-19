@@ -2873,16 +2873,12 @@ pub(crate) mod tests {
             // Test special policies 0 and 1 (should always work)
             token.change_transfer_policy_id(
                 admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: 0,
-                },
+                ITIP20::changeTransferPolicyIdCall { newPolicyId: 0 },
             )?;
 
             token.change_transfer_policy_id(
                 admin,
-                ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: 1,
-                },
+                ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
             )?;
 
             // Test random invalid policy IDs should fail

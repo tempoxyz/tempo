@@ -495,7 +495,9 @@ mod tests {
             let mut rng = rand::thread_rng();
             for _ in 0..100 {
                 let random_policy_id = rng.gen_range(2..u64::MAX);
-                assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: random_policy_id })?);
+                assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
+                    policyId: random_policy_id
+                })?);
             }
 
             // Create 50 policies
@@ -517,7 +519,9 @@ mod tests {
 
             // All created policies should exist
             for policy_id in &created_policy_ids {
-                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: *policy_id })?);
+                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                    policyId: *policy_id
+                })?);
             }
 
             Ok(())
