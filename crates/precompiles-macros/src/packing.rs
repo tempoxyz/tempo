@@ -136,7 +136,10 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         let ty = field.ty;
         let consts = PackingConstants::new(field.name);
         let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
-        let slots = quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) };
+        let slots_to_end = quote! {
+            ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+                .saturating_sub(alloy::primitives::U256::ONE)
+        };
 
         // Generate byte count constants for each field
         let bytes_expr = quote! { <#ty as crate::storage::StorableType>::BYTES };
@@ -148,46 +151,40 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                 let hex_value = format!("{manual_slot}_U256");
                 let slot_lit = syn::LitInt::new(&hex_value, proc_macro2::Span::call_site());
                 // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-                // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - TYPE_LEN)`
+                // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
                 let slot_expr = quote! {
                     ::alloy::primitives::uint!(#slot_lit)
-                        .checked_add(#slots).expect("slot overflow")
-                        .checked_sub(#slots).unwrap()
+                        .checked_add(#slots_to_end).expect("slot overflow")
+                        .saturating_sub(#slots_to_end)
                 };
                 (slot_expr, quote! { 0 })
             }
             // Auto-assignment computes slot/offset using const expressions
             SlotAssignment::Auto { base_slot, .. } => {
-                let output = if let Some(current_base) = current_base_slot {
+                let output = if let Some(current_base) = current_base_slot
+                    && current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot()
+                {
                     // Fields that share the same base compute their slots based on the previous field
-                    if current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot() {
-                        let (prev_slot, prev_offset) =
-                            PackingConstants::new(current_base.name).into_tuple();
-                        gen_slot_packing_logic(
-                            current_base.ty,
-                            field.ty,
-                            quote! { #prev_slot },
-                            quote! { #prev_offset },
-                        )
-                    }
+                    let (prev_slot, prev_offset) =
+                        PackingConstants::new(current_base.name).into_tuple();
+                    gen_slot_packing_logic(
+                        current_base.ty,
+                        field.ty,
+                        quote! { #prev_slot },
+                        quote! { #prev_offset },
+                    )
+                } else {
                     // If a new base is adopted, start from the base slot and offset 0
-                    else {
-                        let limbs = *base_slot.as_limbs();
-                        (
-                            // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-                            // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - TYPE_LEN)`
-                            quote! {
-                                ::alloy::primitives::U256::from_limbs([#(#limbs),*])
-                                    .checked_add(#slots).expect("slot overflow")
-                                    .checked_sub(#slots).unwrap()
-                            },
-                            quote! { 0 },
-                        )
-                    }
-                }
-                // First field always starts at slot 0 and offset 0
-                else {
-                    (quote! { ::alloy::primitives::U256::ZERO }, quote! { 0 })
+                    let limbs = *base_slot.as_limbs();
+
+                    // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+                    // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
+                    let slot_expr = quote! {
+                        ::alloy::primitives::U256::from_limbs([#(#limbs),*])
+                            .checked_add(#slots_to_end).expect("slot overflow")
+                            .saturating_sub(#slots_to_end)
+                    };
+                    (slot_expr, quote! { 0 })
                 };
                 // update cache
                 current_base_slot = Some(field);
@@ -289,8 +286,9 @@ pub(crate) fn gen_slot_packing_logic(
     let prev_layout_slots = quote! {
         ::alloy::primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
     };
-    let curr_layout_slots = quote! {
+    let curr_slots_to_end = quote! {
         ::alloy::primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+            .saturating_sub(::alloy::primitives::U256::ONE)
     };
 
     // Compute packing decision at compile-time
@@ -305,11 +303,11 @@ pub(crate) fn gen_slot_packing_logic(
             #prev_slot_expr
         } else {
             // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - CURR_LEN)`
+            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - 1) - (CURR_LEN - 1)`
             #prev_slot_expr
                 .checked_add(#prev_layout_slots).expect("slot overflow")
-                .checked_add(#curr_layout_slots).expect("slot overflow")
-                .checked_sub(#curr_layout_slots).unwrap()
+                .checked_add(#curr_slots_to_end).expect("slot overflow")
+                .saturating_sub(#curr_slots_to_end)
         }
     }};
 
