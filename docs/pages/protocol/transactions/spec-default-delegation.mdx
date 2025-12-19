@@ -93,7 +93,7 @@ delegateToDefault(bytes32 hash, uint8 v, bytes32 r, bytes32 s)
 - **No event** is emitted.
 
 **Gas:**
-- Charge identical total gas as a 7702 delegation on Tempo (i.e., `ecrecover` cost + code-installation cost consistent with 7702). Exact numeric schedule is inherited from 7702 on Tempo.
+- Charge identical total gas as a 7702 delegation on Tempo (i.e., `ecrecover` cost + code-installation cost consistent with 7702). The exact numeric schedule is inherited from 7702 on Tempo.
 
 ### Always-warm rule
 - **`DEFAULT_7702_IMPL` is always warm** (like a precompile). For gas, treat it as if it appears in the access list at the start of every transaction. This applies chain-wide and unconditionally.
