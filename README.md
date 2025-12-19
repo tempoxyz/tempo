@@ -138,8 +138,7 @@ just localnet
 
 ## Contributing
 
-Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
-
+Our contributor guidelines can be found in [CONTRIBUTING.md](./CONTRIBUTING.md).
 ## Security
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
