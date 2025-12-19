@@ -289,7 +289,7 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
     }
 
     let (_, address) = setup_storage();
-    let layout = Layout::__new(address);
+    let _layout = Layout::__new(address);
     assert_eq!(slots::A, U256::ZERO);
     assert_eq!(slots::B, U256::ZERO);
     assert_eq!(slots::A_OFFSET, 0);
