@@ -35,16 +35,11 @@ pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
 
-/// Calculate quote amount using floor division (rounds down)
-/// Pre-Moderato behavior
-fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
-    base_to_quote(amount, tick, RoundingDirection::Down)
-}
-
-/// Calculate quote amount using ceiling division (rounds up)
-/// Post-Moderato behavior - favors protocol when user deposits funds
-fn calculate_quote_amount_ceil(amount: u128, tick: i16) -> Option<u128> {
-    base_to_quote(amount, tick, RoundingDirection::Up)
+/// Calculate quote amount with specified rounding direction
+/// - `RoundingDirection::Down`: Pre-Moderato behavior (floor division)
+/// - `RoundingDirection::Up`: Post-Moderato behavior, favors protocol when user deposits funds
+fn calculate_quote_amount(amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    base_to_quote(amount, tick, rounding)
 }
 
 #[contract(addr = STABLECOIN_EXCHANGE_ADDRESS)]
@@ -530,12 +525,13 @@ impl StablecoinExchange {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = if self.storage.spec().is_moderato() {
-                calculate_quote_amount_ceil(amount, tick)
+            let rounding = if self.storage.spec().is_moderato() {
+                RoundingDirection::Up
             } else {
-                calculate_quote_amount_floor(amount, tick)
-            }
-            .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                RoundingDirection::Down
+            };
+            let quote_amount = calculate_quote_amount(amount, tick, rounding)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -690,12 +686,13 @@ impl StablecoinExchange {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = if self.storage.spec().is_moderato() {
-                calculate_quote_amount_ceil(amount, tick)
+            let rounding = if self.storage.spec().is_moderato() {
+                RoundingDirection::Up
             } else {
-                calculate_quote_amount_floor(amount, tick)
-            }
-            .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                RoundingDirection::Down
+            };
+            let quote_amount = calculate_quote_amount(amount, tick, rounding)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -1902,59 +1899,50 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_quote_amount_floor() -> eyre::Result<()> {
+    fn test_calculate_quote_amount_rounding() -> eyre::Result<()> {
         // Floor division rounds DOWN
         // amount = 100, tick = 1 means price = 100001
         // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
         // Should round down to 100
         let amount = 100u128;
         let tick = 1i16;
-        let result = calculate_quote_amount_floor(amount, tick).unwrap();
+        let result_floor = calculate_quote_amount(amount, tick, RoundingDirection::Down).unwrap();
+        assert_eq!(
+            result_floor, 100,
+            "Expected 100 (rounded down from 100.001)"
+        );
 
-        assert_eq!(result, 100, "Expected 100 (rounded down from 100.001)");
+        // Ceiling division rounds UP - same inputs should round up to 101
+        let result_ceil = calculate_quote_amount(amount, tick, RoundingDirection::Up).unwrap();
+        assert_eq!(result_ceil, 101, "Expected 101 (rounded up from 100.001)");
 
-        // Another test case
+        // Another test case with floor
         let amount2 = 999u128;
         let tick2 = 5i16; // price = 100005
-        let result2 = calculate_quote_amount_floor(amount2, tick2).unwrap();
+        let result2_floor =
+            calculate_quote_amount(amount2, tick2, RoundingDirection::Down).unwrap();
         // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 999
-        assert_eq!(result2, 999, "Expected 999 (rounded down from 999.04995)");
+        assert_eq!(
+            result2_floor, 999,
+            "Expected 999 (rounded down from 999.04995)"
+        );
 
-        // Test with no remainder (should work the same)
+        // Same inputs with ceiling should round up to 1000
+        let result2_ceil = calculate_quote_amount(amount2, tick2, RoundingDirection::Up).unwrap();
+        assert_eq!(
+            result2_ceil, 1000,
+            "Expected 1000 (rounded up from 999.04995)"
+        );
+
+        // Test with no remainder (should work the same for both)
         let amount3 = 100000u128;
         let tick3 = 0i16; // price = 100000
-        let result3 = calculate_quote_amount_floor(amount3, tick3).unwrap();
+        let result3_floor =
+            calculate_quote_amount(amount3, tick3, RoundingDirection::Down).unwrap();
+        let result3_ceil = calculate_quote_amount(amount3, tick3, RoundingDirection::Up).unwrap();
         // 100000 * 100000 / 100000 = 100000 (exact, no rounding)
-        assert_eq!(result3, 100000, "Exact division should remain exact");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_calculate_quote_amount_ceil() -> eyre::Result<()> {
-        // Ceiling division rounds UP
-        // amount = 100, tick = 1 means price = 100001
-        // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
-        // Should round up to 101
-        let amount = 100u128;
-        let tick = 1i16;
-        let result = calculate_quote_amount_ceil(amount, tick).unwrap();
-
-        assert_eq!(result, 101, "Expected 101 (rounded up from 100.001)");
-
-        // Another test case
-        let amount2 = 999u128;
-        let tick2 = 5i16; // price = 100005
-        let result2 = calculate_quote_amount_ceil(amount2, tick2).unwrap();
-        // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 1000
-        assert_eq!(result2, 1000, "Expected 1000 (rounded up from 999.04995)");
-
-        // Test with no remainder (should work the same)
-        let amount3 = 100000u128;
-        let tick3 = 0i16; // price = 100000
-        let result3 = calculate_quote_amount_ceil(amount3, tick3).unwrap();
-        // 100000 * 100000 / 100000 = 100000 (exact, no rounding needed)
-        assert_eq!(result3, 100000, "Exact division should remain exact");
+        assert_eq!(result3_floor, 100000, "Exact division should remain exact");
+        assert_eq!(result3_ceil, 100000, "Exact division should remain exact");
 
         Ok(())
     }
