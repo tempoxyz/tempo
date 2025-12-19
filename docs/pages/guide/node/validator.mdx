@@ -10,7 +10,7 @@ All validators have two kinds of keys:
 * signing key - this is an ED25519 keypair used to identify your validator amongst others
 * signing share - this is a share of a BLS12-381 keypair used to sign block notarizations and finalizations
 
-The signing key is static and can only be rotated by removing and re-creating a validator on-chain. The signing share is dynamic and is updated periodically on each DKG ceremony. Currently, the DKG ceremony is scheduled to run on-chain every ~48 hours.
+The signing key is static and can only be rotated by removing and re-creating a validator on-chain. The signing share is dynamic and is updated periodically on each DKG ceremony. Once updated, it will be saved to disk. Currently, the DKG ceremony is scheduled to run on-chain every ~48 hours.
 
 ## Generating a signing key
 
