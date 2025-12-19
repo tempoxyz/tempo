@@ -5,33 +5,46 @@ mipd: true
 import * as Demo from '../../components/guides/Demo.tsx'
 import * as Step from '../../components/guides/steps'
 import * as Token from '../../components/guides/tokens'
+import { Tabs } from '../../components/Tabs.tsx'
 
 
 ## Faucet
 
-Get test stablecoins funded to your account using the form below after you connect your wallet.
+Get test stablecoins on Tempo testnet.
 
-<Demo.Container name="Use the Faucet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
+<Tabs>
+  <Tabs.Tab value="Fund your wallet">
+
+<div className="h-4" />
+
+Connect your wallet to receive test stablecoins directly.
+
+<div className="h-6"/>
+<Demo.Container name="Connect and fund your wallet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
   <Step.AddFundsToWallet stepNumber={2} />
   <Step.AddTokensToWallet stepNumber={3} />
   <Step.SetFeeToken stepNumber={4} last />
 </Demo.Container>
 
+  </Tabs.Tab>
+  <Tabs.Tab value="Fund an address">
+
+<div className="h-4" />
+Send test stablecoins to any address.
+
+<div className="h-6"/>
+<Demo.Container name="Fund an address">
+  <Step.AddFundsToOthers stepNumber={1} last />
+</Demo.Container>
+
+  </Tabs.Tab>
+</Tabs>
 
 The faucet funds the following assets.
-
 
 | Asset | Address |Amount|
 |-------|---------|----:|
 | [AlphaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000001) | `0x20c0000000000000000000000000000000000001` | `1M` |
 | [BetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000002) | `0x20c0000000000000000000000000000000000002` | `1M` |
 | [ThetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000003)   | `0x20c0000000000000000000000000000000000003` | `1M` |
-
-## Funding others
-
-You can use the faucet to send funds to any address
-
-<Demo.Container name="Send Faucet Funds to Others">
-  <Step.AddFundsToOthers stepNumber={1} last />
-</Demo.Container>
