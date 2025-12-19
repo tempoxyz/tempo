@@ -170,7 +170,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                         let slots = quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) };
                         (
                             // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-                            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - CURR_LEN)`
+                            // by computing the slot as: `NEW_BASE_SLOT = NEW_BASE_SLOT + (TYPE_LEN - TYPE_LEN)`
                             quote! {
                                 ::alloy::primitives::U256::from_limbs([#(#limbs),*])
                                     .checked_add(#slots).expect("slot overflow")
