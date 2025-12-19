@@ -138,7 +138,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
         let slots_to_end = quote! {
             ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
-                .saturating_sub(alloy::primitives::U256::ONE)
+                .saturating_sub(::alloy::primitives::U256::ONE)
         };
 
         // Generate byte count constants for each field
