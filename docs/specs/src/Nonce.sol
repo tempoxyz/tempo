@@ -12,21 +12,16 @@ import { INonce } from "./interfaces/INonce.sol";
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     mapping(address => uint256) public activeKeyCount;                 // slot 1
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
-/// - Slot 1: Active key count - keccak256(abi.encode(account, 1))
 contract Nonce is INonce {
 
     // ============ Storage Mappings ============
 
     /// @dev Mapping from account -> nonce key -> nonce value
     mapping(address => mapping(uint256 => uint64)) private nonces;
-
-    /// @dev Mapping from account -> count of active nonce keys
-    mapping(address => uint256) private activeKeyCount;
 
     // ============ View Functions ============
 
@@ -39,11 +34,6 @@ contract Nonce is INonce {
         }
 
         return nonces[account][nonceKey];
-    }
-
-    /// @inheritdoc INonce
-    function getActiveNonceKeyCount(address account) external view returns (uint256 count) {
-        return activeKeyCount[account];
     }
 
     // ============ Internal Functions ============
@@ -59,12 +49,6 @@ contract Nonce is INonce {
         }
 
         uint64 currentNonce = nonces[account][nonceKey];
-
-        // If transitioning from 0 to 1, increment active key count
-        if (currentNonce == 0) {
-            activeKeyCount[account]++;
-            emit ActiveKeyCountChanged(account, activeKeyCount[account]);
-        }
 
         // Check for overflow
         if (currentNonce == type(uint64).max) {
