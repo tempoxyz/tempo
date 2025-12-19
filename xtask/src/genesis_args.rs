@@ -88,8 +88,8 @@ pub(crate) struct GenesisArgs {
     pub moderato_time: u64,
 
     /// Allegretto hardfork activation timestamp
-    #[arg(long)]
-    pub allegretto_time: Option<u64>,
+    #[arg(long, default_value_t = 0)]
+    pub allegretto_time: u64,
 
     /// Allegro-Moderato hardfork activation timestamp
     #[arg(long)]
@@ -390,12 +390,10 @@ impl GenesisArgs {
             "moderatoTime".to_string(),
             serde_json::json!(self.moderato_time),
         );
-        if let Some(allegretto_time) = self.allegretto_time {
-            chain_config.extra_fields.insert(
-                "allegrettoTime".to_string(),
-                serde_json::json!(allegretto_time),
-            );
-        }
+        chain_config.extra_fields.insert(
+            "allegrettoTime".to_string(),
+            serde_json::json!(self.allegretto_time),
+        );
         if let Some(allegro_moderato_time) = self.allegro_moderato_time {
             chain_config.extra_fields.insert(
                 "allegroModeratoTime".to_string(),

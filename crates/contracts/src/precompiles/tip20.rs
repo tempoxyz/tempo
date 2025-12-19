@@ -152,6 +152,7 @@ crate::sol! {
         error ScheduledRewardsDisabled();
         error ProtectedAddress();
         error InvalidToken();
+        error InvalidTransferPolicyId();
     }
 }
 
@@ -270,5 +271,10 @@ impl TIP20Error {
     /// Error when an address is not a valid TIP20 token
     pub const fn invalid_token() -> Self {
         Self::InvalidToken(ITIP20::InvalidToken {})
+    }
+
+    /// Error when transfer policy ID does not exist
+    pub const fn invalid_transfer_policy_id() -> Self {
+        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
     }
 }
