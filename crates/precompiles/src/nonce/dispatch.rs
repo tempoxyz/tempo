@@ -24,10 +24,15 @@ impl Precompile for NonceManager {
             INonce::getNonceCall::SELECTOR => {
                 view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
             }
+            // Deprecated post-AllegroModerato: active key count is no longer tracked
             INonce::getActiveNonceKeyCountCall::SELECTOR => {
-                view::<INonce::getActiveNonceKeyCountCall>(calldata, |call| {
-                    self.get_active_nonce_key_count(call)
-                })
+                if self.storage.spec().is_allegro_moderato() {
+                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                } else {
+                    view::<INonce::getActiveNonceKeyCountCall>(calldata, |call| {
+                        self.get_active_nonce_key_count(call)
+                    })
+                }
             }
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
         };

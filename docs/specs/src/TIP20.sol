@@ -96,6 +96,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     //////////////////////////////////////////////////////////////*/
 
     function changeTransferPolicyId(uint64 newPolicyId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        // Validate that the policy exists
+        if (!TIP403_REGISTRY.policyExists(newPolicyId)) {
+            revert InvalidTransferPolicyId();
+        }
+
         emit TransferPolicyUpdate(msg.sender, transferPolicyId = newPolicyId);
     }
 
@@ -295,7 +300,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _mint(address to, uint256 amount) internal {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) revert PolicyForbids();
+        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) {
+            revert PolicyForbids();
+        }
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
 
         // Handle reward accounting for opted-in receiver
@@ -490,7 +497,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) revert PolicyForbids();
+        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+            revert PolicyForbids();
+        }
 
         _updateRewardsAndGetRecipient(msg.sender);
 

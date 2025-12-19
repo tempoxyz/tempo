@@ -64,6 +64,17 @@ impl TIP403Registry {
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
+    pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
+        // Special policies 0 and 1 always exist
+        if call.policyId < 2 {
+            return Ok(true);
+        }
+
+        // Check if policy ID is within the range of created policies
+        let counter = self.policy_id_counter()?;
+        Ok(call.policyId < counter)
+    }
+
     pub fn policy_data(
         &self,
         call: ITIP403Registry::policyDataCall,
