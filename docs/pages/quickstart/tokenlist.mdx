@@ -1,0 +1,42 @@
+---
+title: Tempo Token List Registry
+---
+
+# Tempo Token List Registry
+
+A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadata and icons on Tempo.
+
+<img src="https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000" alt="pathUSD" width="64" height="64" />
+
+## Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/list/{chain_id}` | Token list for a chain |
+| GET | `/icon/{chain_id}` | Chain icon (SVG) |
+| GET | `/icon/{chain_id}/{address}` | Token icon (SVG) |
+
+```bash
+curl https://tokenlist.tempo.xyz/list/42429
+```
+
+## Add Your Token
+
+1. **Fork** [tempoxyz/tempo-apps](https://github.com/tempoxyz/tempo-apps)
+
+2. **Add token** to `apps/tokenlist/data/<chain_id>/tokenlist.json`:
+   ```json
+   {
+     "name": "MyToken",
+     "symbol": "MTK",
+     "decimals": 18,
+     "chainId": 42429,
+     "address": "0x..."
+   }
+   ```
+
+3. **Add icon** to `apps/tokenlist/data/<chain_id>/icons/<address>.svg` (lowercase address)
+
+4. **Submit PR**
+
+[Full API Docs →](https://tokenlist.tempo.xyz/docs)
