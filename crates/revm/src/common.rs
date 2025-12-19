@@ -561,12 +561,11 @@ mod tests {
         )
         .unwrap();
         // Set up the token's USD currency slot so is_valid_fee_token passes
-        db.insert_account_storage(
-            validator_token,
-            tempo_precompiles::tip20::slots::CURRENCY,
-            USD_CURRENCY_SLOT_VALUE,
-        )
-        .unwrap();
+        // "USD" (3 bytes) short string encoding: 0x55='U', 0x53='S', 0x44='D', length=3, so LSB=6
+        let usd_storage =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        db.insert_account_storage(validator_token, tip20::slots::CURRENCY, usd_storage)
+            .unwrap();
 
         let result_token =
             db.get_fee_token(tx.clone(), validator, caller, TempoHardfork::Adagio)?;
