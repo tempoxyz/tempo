@@ -4,7 +4,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 /// Tempo block header.
 ///
-/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
+/// Encoded as `rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, inner])` meaning that any new
 /// fields added to the inner header will only affect the first list element.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
