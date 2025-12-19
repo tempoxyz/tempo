@@ -737,13 +737,14 @@ fn verify_webauthn_data_internal(
         return Err("WebAuthn data too short");
     }
 
-    // Check flags (byte 32): UP (bit 0), AT (bit 6), ED (bit 7)
+    // Check flags (byte 32): UP (bit 0), UV (bit 2), AT (bit 6), ED (bit 7)
     let flags = webauthn_data[32];
-    let (up_flag, at_flag, ed_flag) = (flags & 0x01, flags & 0x40, flags & 0x80);
+    let (up_flag, uv_flag, at_flag, ed_flag) =
+        (flags & 0x01, flags & 0x04, flags & 0x40, flags & 0x80);
 
-    // UP flag MUST be set
-    if up_flag == 0 {
-        return Err("User Presence (UP) flag not set in authenticatorData");
+    // UP or UV flag MUST be set (UV implies user presence per WebAuthn spec)
+    if up_flag == 0 && uv_flag == 0 {
+        return Err("neither UP, nor UV flag set");
     }
 
     // AT flag must NOT be set for assertion signatures (`webauthn.get`)
@@ -980,24 +981,27 @@ mod tests {
     }
 
     #[test]
-    fn test_webauthn_data_verification_missing_up_flag() {
-        // Create authenticatorData without UP flag set
-        let mut auth_data = vec![0u8; 37];
-        auth_data[32] = 0x00; // flags byte with UP flag not set
-
-        // Add minimal clientDataJSON
+    fn test_webauthn_data_verification_missing_up_and_uv_flags() {
+        let tx_hash = B256::ZERO;
         let client_data = b"{\"type\":\"webauthn.get\",\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}";
+
+        // Create valid authenticatorData without UV not UP flag
+        let mut auth_data = vec![0u8; 37];
+        auth_data[32] = 0x00;
         let mut webauthn_data = auth_data;
         webauthn_data.extend_from_slice(client_data);
 
-        let tx_hash = B256::ZERO;
         let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
-
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            "User Presence (UP) flag not set in authenticatorData"
-        );
+        assert_eq!(result.unwrap_err(), "neither UP, nor UV flag set");
+
+        // Create valid authenticatorData with UV flag
+        let mut auth_data = vec![0u8; 37];
+        auth_data[32] = 0x04;
+        let mut webauthn_data = auth_data;
+        webauthn_data.extend_from_slice(client_data);
+
+        assert!(verify_webauthn_data_internal(&webauthn_data, &tx_hash).is_ok());
     }
 
     #[test]
