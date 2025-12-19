@@ -263,6 +263,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::setup_storage,
         tip20::{ISSUER_ROLE, PAUSE_ROLE, TIP20Token, UNPAUSE_ROLE, tests::initialize_path_usd},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
         primitives::{Bytes, U256},
@@ -765,12 +766,24 @@ mod tests {
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
         let (mut storage, admin) = setup_storage();
         let non_admin = Address::random();
-        let new_policy_id = 42u64;
 
         StorageCtx::enter(&mut storage, || {
             initialize_path_usd(admin)?;
             let mut token = TIP20Token::new(1);
             token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
+
+            // Initialize TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Create a valid policy
+            let new_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 newPolicyId: new_policy_id,
@@ -780,7 +793,18 @@ mod tests {
             assert_eq!(result.gas_used, 0);
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
-            let change_policy_call = ITIP20::changeTransferPolicyIdCall { newPolicyId: 100 };
+            // Create another valid policy for the unauthorized test
+            let another_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let change_policy_call = ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: another_policy_id,
+            };
             let calldata = change_policy_call.abi_encode();
             let output = token.call(&calldata, non_admin)?;
             assert!(output.reverted);
