@@ -47,9 +47,12 @@ export function getConfig(options: getConfig.Options = {}) {
       [tempoLocal.id]:
         import.meta.env.VITE_ENVIRONMENT === 'devnet'
           ? withFeePayer(
-              webSocket('wss://devnet.tempoxyz.dev', {
-                keepAlive: { interval: 1_000 },
-              }),
+              webSocket(
+                'wss://rpc.devnet.tempo.xyz?supersecretargument=pleasedonotusemeinprod',
+                {
+                  keepAlive: { interval: 1_000 },
+                },
+              ),
               http('https://sponsor.devnet.tempo.xyz'),
               { policy: 'sign-only' },
             )
