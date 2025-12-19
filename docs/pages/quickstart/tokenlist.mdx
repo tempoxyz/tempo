@@ -1,6 +1,7 @@
 ---
 title: Tempo Token List Registry
 ---
+import { Callout } from 'vocs/components'
 
 # Tempo Token List Registry
 
@@ -10,17 +11,14 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
 
 ## Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/list/{chain_id}` | Token list for a chain |
-| GET | `/icon/{chain_id}` | Chain icon (SVG) |
-| GET | `/icon/{chain_id}/{address}` | Token icon (SVG) |
+| Endpoint | Description |
+|----------|-------------|
+[`/list/{chain_id}`](https://tokenlist.tempo.xyz/list/42429) | Token list for a chain |
+[`/list/{chain_id}/{id}`](https://tokenlist.tempo.xyz/asset/42429/pathUSD) | Get a single token by symbol or address​
+[`/icon/{chain_id}`](https://tokenlist.tempo.xyz/icon/42429) | Chain icon (SVG) |
+[`/icon/{chain_id}/{address}`](https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000) | Token icon (SVG) |
 
-```bash
-curl https://tokenlist.tempo.xyz/list/42429
-```
-
-## Add Your Token
+## Adding a New Token
 
 1. **Fork** [tempoxyz/tempo-apps](https://github.com/tempoxyz/tempo-apps)
 
@@ -39,4 +37,14 @@ curl https://tokenlist.tempo.xyz/list/42429
 
 4. **Submit PR**
 
-[Full API Docs →](https://tokenlist.tempo.xyz/docs)
+### Icon Requirements
+
+- Format: SVG
+- Address filename must be lowercase (e.g., `0xabcd...1234.svg`)
+- Recommended: square aspect ratio, minimal whitespace
+
+<Callout type="info">
+A token that gets added to the tokenlist will atuomatically reflect in the Explorer in the next deployment.
+</Callout>
+
+[Full OpenAPI Spec →](https://tokenlist.tempo.xyz/docs)
