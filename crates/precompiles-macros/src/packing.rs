@@ -136,6 +136,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         let ty = field.ty;
         let consts = PackingConstants::new(field.name);
         let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
+        let slots = quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) };
 
         // Generate byte count constants for each field
         let bytes_expr = quote! { <#ty as crate::storage::StorableType>::BYTES };
@@ -146,7 +147,13 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
             SlotAssignment::Manual(manual_slot) => {
                 let hex_value = format!("{manual_slot}_U256");
                 let slot_lit = syn::LitInt::new(&hex_value, proc_macro2::Span::call_site());
-                let slot_expr = quote! { ::alloy::primitives::uint!(#slot_lit) };
+                // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+                // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - TYPE_LEN)`
+                let slot_expr = quote! {
+                    ::alloy::primitives::uint!(#slot_lit)
+                        .checked_add(#slots).expect("slot overflow")
+                        .checked_sub(#slots).unwrap()
+                };
                 (slot_expr, quote! { 0 })
             }
             // Auto-assignment computes slot/offset using const expressions
@@ -165,12 +172,10 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                     }
                     // If a new base is adopted, start from the base slot and offset 0
                     else {
-                        let ty = field.ty;
                         let limbs = *base_slot.as_limbs();
-                        let slots = quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) };
                         (
                             // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-                            // by computing the slot as: `NEW_BASE_SLOT = NEW_BASE_SLOT + (TYPE_LEN - TYPE_LEN)`
+                            // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - TYPE_LEN)`
                             quote! {
                                 ::alloy::primitives::U256::from_limbs([#(#limbs),*])
                                     .checked_add(#slots).expect("slot overflow")
