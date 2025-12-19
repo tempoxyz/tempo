@@ -340,6 +340,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
+    use rand::Rng;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -474,6 +475,50 @@ mod tests {
                 policyId: policy_id,
                 user,
             })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_exists() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Special policies 0 and 1 always exist
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 0 })?);
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 1 })?);
+
+            // Test 100 random policy IDs > 1 should not exist initially
+            let mut rng = rand::thread_rng();
+            for _ in 0..100 {
+                let random_policy_id = rng.gen_range(2..u64::MAX);
+                assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: random_policy_id })?);
+            }
+
+            // Create 50 policies
+            let mut created_policy_ids = Vec::new();
+            for i in 0..50 {
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: if i % 2 == 0 {
+                            ITIP403Registry::PolicyType::WHITELIST
+                        } else {
+                            ITIP403Registry::PolicyType::BLACKLIST
+                        },
+                    },
+                )?;
+                created_policy_ids.push(policy_id);
+            }
+
+            // All created policies should exist
+            for policy_id in &created_policy_ids {
+                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: *policy_id })?);
+            }
 
             Ok(())
         })
