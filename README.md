@@ -74,6 +74,8 @@ You can connect to Tempo's public testnet using the following details:
 | **WebSocket URL**  | `wss://rpc.testnet.tempo.xyz`   |
 | **Block Explorer** | `https://explore.tempo.xyz`     |
 
+> ⚠️ **Note for Testnet Users:** The testnet is for development and experimentation only. Do not use it for real financial transactions or store any value you are not willing to lose. Network state may be reset during the testing phase.
+
 Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
