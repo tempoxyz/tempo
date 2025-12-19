@@ -2823,4 +2823,110 @@ pub(crate) mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_change_transfer_policy_id_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Before Allegro Moderato, policy validation should be skipped
+            let arbitrary_policy_id = 999u64;
+            let result = token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: arbitrary_policy_id,
+                },
+            );
+
+            assert!(result.is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id_allegro_moderato() -> eyre::Result<()> {
+        use rand::Rng;
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Initialize the TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Test special policies 0 and 1 (should always work)
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: 0,
+                },
+            )?;
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: 1,
+                },
+            )?;
+
+            // Test random invalid policy IDs should fail
+            let mut rng = rand::thread_rng();
+            for _ in 0..20 {
+                let invalid_policy_id = rng.gen_range(2..u64::MAX);
+                let result = token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: invalid_policy_id,
+                    },
+                );
+                assert!(result.is_err());
+            }
+
+            // Create some valid policies
+            let mut valid_policy_ids = Vec::new();
+            for i in 0..10 {
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: if i % 2 == 0 {
+                            ITIP403Registry::PolicyType::WHITELIST
+                        } else {
+                            ITIP403Registry::PolicyType::BLACKLIST
+                        },
+                    },
+                )?;
+                valid_policy_ids.push(policy_id);
+            }
+
+            // Test that all created policies can be set
+            for policy_id in valid_policy_ids {
+                let result = token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                );
+                assert!(result.is_ok());
+            }
+
+            Ok(())
+        })
+    }
 }
