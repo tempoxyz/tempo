@@ -275,3 +275,30 @@ fn test_collision_overlapping_slots_auto() {
     let (_, address) = setup_storage();
     let _layout = Layout::__new(address);
 }
+
+#[test]
+fn test_no_collision_when_using_manual_slot_with_packing() {
+    #[contract]
+    pub struct Layout {
+        a: u128, // assigned to slot 0 with 0 offset
+        b: u128, // assigned to slot 0 with 16 offset
+        c: u128, // assigned to slot 1 with 0 offset
+        #[slot(100)]
+        d: U256, // manually assigned to slot 100
+        e: u128, // assigned to slot 1 with 16 offset.
+    }
+
+    let (_, address) = setup_storage();
+    let layout = Layout::__new(address);
+    assert_eq!(slots::A, U256::ZERO);
+    assert_eq!(slots::B, U256::ZERO);
+    assert_eq!(slots::A_OFFSET, 0);
+    assert_eq!(slots::B_OFFSET, 16);
+
+    assert_eq!(slots::C, U256::ONE);
+    assert_eq!(slots::E, U256::ONE);
+    assert_eq!(slots::C_OFFSET, 0);
+    assert_eq!(slots::E_OFFSET, 16);
+
+    assert_eq!(slots::D, U256::from(100));
+}
