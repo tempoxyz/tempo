@@ -39,7 +39,7 @@ The registry maintains the following state:
 
 - `policyIdCounter`: Starts at `2`, increments with each new policy creation. Returns the next policy ID that will be assigned.
 - `policyData`: Mapping from `policyId` to `PolicyData` struct containing policy type and admin address.
-- `policySet`: Internal mapping from `policyId` to address to boolean, tracking which addresses are in each policy's set.
+- `policySet`: Internal mapping from `policyId` to address to a boolean, tracking which addresses are in each policy's set.
 
 ## Interface Definition
 
