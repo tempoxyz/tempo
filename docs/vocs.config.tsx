@@ -48,8 +48,7 @@ export default defineConfig({
   },
   title: 'Documentation ⋅ Tempo',
   description: 'Documentation for Tempo testnet and protocol specifications',
-  // ogImageUrl is handled per-page by vite-plugin-og-image plugin
-  // ogImageUrl: 'https://vocs.dev/api/og?logo=%logo&title=%title&description=%description',
+  ogImageUrl: 'https://vocs.dev/api/og?logo=%logo&title=%title&description=%description',
   logoUrl: {
     light: '/lockup-light.svg',
     dark: '/lockup-dark.svg',
@@ -1778,8 +1777,8 @@ export default defineConfig({
         },
   vite: {
     plugins: [
-      // biome-ignore lint/suspicious/noExplicitAny: Vite plugin type compatibility
-      ogImagePlugin() as any,
+      // SEO metadata plugin ensures frontmatter exists for all pages
+      // OG images are handled by Vocs' native ogImageUrl configuration
       seoMetadataPlugin(),
       {
         name: 'tempo-node',

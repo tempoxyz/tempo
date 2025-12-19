@@ -162,8 +162,29 @@ export function extractTitle(content: string, filePath: string): string {
 
 /**
  * Extracts description from first paragraph or intro text
+ * Also checks for subtitle in H1 square brackets (Vocs format)
  */
 export function extractDescription(content: string): string {
+  // First, check for subtitle in H1 heading (Vocs format: # Title [Subtitle])
+  const h1Match = content.match(/^#\s+.+\[(.+?)\]/m)
+  if (h1Match && h1Match[1]) {
+    let subtitle = h1Match[1].trim()
+    // Clean up markdown formatting
+    subtitle = subtitle
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // Remove links, keep text
+      .replace(/`([^`]+)`/g, '$1') // Remove code backticks
+      .replace(/\*\*([^*]+)\*\*/g, '$1') // Remove bold
+      .replace(/\*([^*]+)\*/g, '$1') // Remove italic
+    // Use subtitle if it's a reasonable length
+    if (subtitle.length > 10 && subtitle.length <= 160) {
+      // Ensure it ends with period
+      if (!subtitle.endsWith('.')) {
+        subtitle = `${subtitle}.`
+      }
+      return truncateDescription(subtitle)
+    }
+  }
+  
   // Remove frontmatter if present
   let body = content.replace(/^---\n[\s\S]*?\n---\n/, '')
   
