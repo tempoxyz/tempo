@@ -12,6 +12,17 @@ import {
 
 const feeToken = '0x20c0000000000000000000000000000000000001'
 
+const tempoDevnetChain = {
+  ...tempoDevnet({ feeToken }),
+  id: 42429,
+  rpcUrls: {
+    default: {
+      http: ['https://rpc.devnet.tempoxyz.dev'],
+      webSocket: ['wss://rpc.devnet.tempoxyz.dev'],
+    },
+  },
+}
+
 export function getConfig(options: getConfig.Options = {}) {
   const { multiInjectedProviderDiscovery } = options
   return createConfig({
@@ -22,7 +33,7 @@ export function getConfig(options: getConfig.Options = {}) {
       import.meta.env.VITE_ENVIRONMENT === 'local'
         ? tempoLocal({ feeToken })
         : import.meta.env.VITE_ENVIRONMENT === 'devnet'
-          ? tempoDevnet({ feeToken })
+          ? tempoDevnetChain
           : tempoTestnet({ feeToken }),
     ],
     connectors: [
@@ -37,25 +48,23 @@ export function getConfig(options: getConfig.Options = {}) {
       key: 'tempo-docs',
     }),
     transports: {
-      [tempoTestnet.id]: withFeePayer(
-        webSocket('wss://rpc.testnet.tempo.xyz', {
-          keepAlive: { interval: 1_000 },
-        }),
-        http('https://sponsor.testnet.tempo.xyz'),
-        { policy: 'sign-only' },
-      ),
-      [tempoLocal.id]:
+      [tempoTestnet.id]:
         import.meta.env.VITE_ENVIRONMENT === 'devnet'
           ? withFeePayer(
-              webSocket('wss://rpc.devnet.tempoxyz.dev', {
+              webSocket(tempoDevnetChain.rpcUrls.default.webSocket[0], {
                 keepAlive: { interval: 1_000 },
               }),
               http('https://sponsor.devnet.tempo.xyz'),
               { policy: 'sign-only' },
             )
-          : http(undefined, {
-              batch: true,
-            }),
+          : withFeePayer(
+              webSocket('wss://rpc.testnet.tempo.xyz', {
+                keepAlive: { interval: 1_000 },
+              }),
+              http('https://sponsor.testnet.tempo.xyz'),
+              { policy: 'sign-only' },
+            ),
+      [tempoLocal.id]: http(undefined, { batch: true }),
     },
   })
 }
