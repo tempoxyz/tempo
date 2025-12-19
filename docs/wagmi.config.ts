@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { tempoLocal, tempoTestnet } from 'tempo.ts/chains'
+import { tempoDevnet, tempoLocal, tempoTestnet } from 'tempo.ts/chains'
 import { withFeePayer } from 'tempo.ts/viem'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import {
@@ -19,9 +19,11 @@ export function getConfig(options: getConfig.Options = {}) {
       multicall: false,
     },
     chains: [
-      import.meta.env.VITE_LOCAL !== 'true'
-        ? tempoTestnet({ feeToken })
-        : tempoLocal({ feeToken }),
+      import.meta.env.VITE_ENVIRONMENT === 'local'
+        ? tempoLocal({ feeToken })
+        : import.meta.env.VITE_ENVIRONMENT === 'devnet'
+          ? tempoDevnet({ feeToken })
+          : tempoTestnet({ feeToken }),
     ],
     connectors: [
       webAuthn({
@@ -42,9 +44,18 @@ export function getConfig(options: getConfig.Options = {}) {
         http('https://sponsor.testnet.tempo.xyz'),
         { policy: 'sign-only' },
       ),
-      [tempoLocal.id]: http(undefined, {
-        batch: true,
-      }),
+      [tempoLocal.id]:
+        import.meta.env.VITE_ENVIRONMENT === 'devnet'
+          ? withFeePayer(
+              webSocket('wss://devnet.tempoxyz.dev', {
+                keepAlive: { interval: 1_000 },
+              }),
+              http('https://sponsor.devnet.tempo.xyz'),
+              { policy: 'sign-only' },
+            )
+          : http(undefined, {
+              batch: true,
+            }),
     },
   })
 }
