@@ -23,7 +23,7 @@ use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{quorum, set::OrderedAssociated};
+use commonware_utils::{TryFromIterator as _, ordered, quorum};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
@@ -167,19 +167,20 @@ pub async fn setup_validators(
     // The actual port here does not matter because in the simulated p2p
     // oracle it will be ignored. But it's nice because the nodes can be
     // more easily identified in some logs..
-    let peers: OrderedAssociated<_, _> = private_keys
-        .iter()
-        .take(how_many_signers as usize)
-        .cloned()
-        .enumerate()
-        .map(|(i, signer)| {
-            (
-                signer.public_key(),
-                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
-            )
-        })
-        .collect::<Vec<_>>()
-        .into();
+    let peers = ordered::Map::try_from_iter(
+        private_keys
+            .iter()
+            .take(how_many_signers as usize)
+            .cloned()
+            .enumerate()
+            .map(|(i, signer)| {
+                (
+                    signer.public_key(),
+                    SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
+                )
+            }),
+    )
+    .unwrap();
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)

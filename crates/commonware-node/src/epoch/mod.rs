@@ -71,11 +71,13 @@ pub(crate) fn first_block_in_epoch(epoch_length: u64, epoch: Epoch) -> u64 {
     assert!(epoch_length > 0);
 
     // epoch * epoch_length
-    epoch.checked_mul(epoch_length).unwrap()
+    epoch.get().checked_mul(epoch_length).unwrap()
 }
 
 #[cfg(test)]
 mod tests {
+    use commonware_consensus::types::Epoch;
+
     use crate::epoch::{first_block_in_epoch, is_first_block_in_epoch};
 
     use super::{RelativePosition, relative_position};
@@ -136,10 +138,10 @@ mod tests {
 
     #[test]
     fn is_first_block_in_epoch_identifies_first_block() {
-        assert_eq!(is_first_block_in_epoch(10, 0), Some(0));
-        assert_eq!(is_first_block_in_epoch(10, 10), Some(1));
-        assert_eq!(is_first_block_in_epoch(10, 20), Some(2));
-        assert_eq!(is_first_block_in_epoch(5, 215), Some(43));
+        assert_eq!(is_first_block_in_epoch(10, 0), Some(Epoch::new(0)));
+        assert_eq!(is_first_block_in_epoch(10, 10), Some(Epoch::new(1)));
+        assert_eq!(is_first_block_in_epoch(10, 20), Some(Epoch::new(2)));
+        assert_eq!(is_first_block_in_epoch(5, 215), Some(Epoch::new(43)));
     }
 
     #[test]
@@ -152,14 +154,14 @@ mod tests {
     #[should_panic]
     #[test]
     fn first_block_in_epoch_panics_on_epoch_length_0() {
-        first_block_in_epoch(0, 42);
+        first_block_in_epoch(0, Epoch::new(42));
     }
 
     #[test]
     fn first_block_in_epoch_identifies_first_block() {
-        assert_eq!(first_block_in_epoch(10, 0), 0);
-        assert_eq!(first_block_in_epoch(10, 10), 100);
-        assert_eq!(first_block_in_epoch(10, 20), 200);
-        assert_eq!(first_block_in_epoch(5, 215), 1075);
+        assert_eq!(first_block_in_epoch(10, Epoch::new(0)), 0);
+        assert_eq!(first_block_in_epoch(10, Epoch::new(10)), 100);
+        assert_eq!(first_block_in_epoch(10, Epoch::new(20)), 200);
+        assert_eq!(first_block_in_epoch(5, Epoch::new(215)), 1075);
     }
 }

@@ -4,7 +4,7 @@ use alloy_primitives::Address;
 use commonware_codec::{DecodeExt as _, EncodeSize, RangeCfg, Read, Write, varint::UInt};
 use commonware_consensus::{types::Epoch, utils};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::set::{Ordered, OrderedAssociated};
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::{Block as _, ConfigureEvm as _};
@@ -37,7 +37,7 @@ pub(super) async fn read_from_contract(
     node: &TempoFullNode,
     for_epoch: Epoch,
     epoch_length: u64,
-) -> eyre::Result<OrderedAssociated<PublicKey, DecodedValidator>> {
+) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
     let last_height = last_height_before_epoch(for_epoch, epoch_length);
 
     // Try mapping the block height to a hash tracked by reth.
@@ -104,7 +104,7 @@ pub(super) async fn read_from_contract(
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
 async fn decode_from_contract(
     contract_vals: Vec<IValidatorConfig::Validator>,
-) -> OrderedAssociated<PublicKey, DecodedValidator> {
+) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut decoded = HashMap::new();
     for val in contract_vals.into_iter().filter(|val| val.active) {
         // NOTE: not reporting errors because `decode_from_contract` emits
@@ -119,7 +119,7 @@ async fn decode_from_contract(
             );
         }
     }
-    decoded.into_iter().collect::<_>()
+    ordered::Map::from_iter_dedup(decoded)
 }
 
 /// Tracks the participants of each DKG ceremony, and, by extension, the p2p network.
@@ -131,13 +131,13 @@ async fn decode_from_contract(
 /// 3. the syncing players, that will become players in the next ceremony
 #[derive(Clone, Debug)]
 pub(crate) struct ValidatorState {
-    dealers: OrderedAssociated<PublicKey, DecodedValidator>,
-    players: OrderedAssociated<PublicKey, DecodedValidator>,
-    syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
+    dealers: ordered::Map<PublicKey, DecodedValidator>,
+    players: ordered::Map<PublicKey, DecodedValidator>,
+    syncing_players: ordered::Map<PublicKey, DecodedValidator>,
 }
 
 impl ValidatorState {
-    pub(super) fn new(validators: OrderedAssociated<PublicKey, DecodedValidator>) -> Self {
+    pub(super) fn new(validators: ordered::Map<PublicKey, DecodedValidator>) -> Self {
         Self {
             dealers: validators.clone(),
             players: validators.clone(),
@@ -145,23 +145,23 @@ impl ValidatorState {
         }
     }
 
-    pub(super) fn dealers(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
+    pub(super) fn dealers(&self) -> &ordered::Map<PublicKey, DecodedValidator> {
         &self.dealers
     }
 
-    pub(super) fn players(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
+    pub(super) fn players(&self) -> &ordered::Map<PublicKey, DecodedValidator> {
         &self.players
     }
 
-    pub(super) fn syncing_players(&self) -> &OrderedAssociated<PublicKey, DecodedValidator> {
+    pub(super) fn syncing_players(&self) -> &ordered::Map<PublicKey, DecodedValidator> {
         &self.syncing_players
     }
 
-    pub(super) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(super) fn dealer_pubkeys(&self) -> ordered::Set<PublicKey> {
         self.dealers.keys().clone()
     }
 
-    pub(super) fn player_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(super) fn player_pubkeys(&self) -> ordered::Set<PublicKey> {
         self.players.keys().clone()
     }
 
@@ -174,19 +174,18 @@ impl ValidatorState {
     /// If a validator has entries across the tracked sets, then then its entry
     /// for the latest pushed set is taken. For those cases where looking up
     /// domain names failed, the last successfully looked up name is taken.
-    pub(super) fn resolve_addresses_and_merge_peers(
-        &self,
-    ) -> OrderedAssociated<PublicKey, SocketAddr> {
+    pub(super) fn resolve_addresses_and_merge_peers(&self) -> ordered::Map<PublicKey, SocketAddr> {
         // IMPORTANT: Starting with the syncing players to ensure that the
         // latest address for a validator with a given pubkey is used.
-        // OrderedAssociated takes the first instance of a key it sees and
+        // ordered::Map takes the first instance of a key it sees and
         // drops the later instances.
-        self.syncing_players()
-            .iter_pairs()
-            .chain(self.players().iter_pairs())
-            .chain(self.dealers().iter_pairs())
-            .map(|(pubkey, validator)| (pubkey.clone(), validator.inbound_socket_addr()))
-            .collect()
+        ordered::Map::from_iter_dedup(
+            self.syncing_players()
+                .iter_pairs()
+                .chain(self.players().iter_pairs())
+                .chain(self.dealers().iter_pairs())
+                .map(|(pubkey, validator)| (pubkey.clone(), validator.inbound_socket_addr())),
+        )
     }
 
     /// Pushes `syncing_players` into the participants queue.
@@ -198,8 +197,8 @@ impl ValidatorState {
     /// Removes and returns the old dealers.
     pub(super) fn push_on_success(
         &mut self,
-        syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
-    ) -> OrderedAssociated<PublicKey, DecodedValidator> {
+        syncing_players: ordered::Map<PublicKey, DecodedValidator>,
+    ) -> ordered::Map<PublicKey, DecodedValidator> {
         let players = std::mem::replace(&mut self.syncing_players, syncing_players);
         let dealers = std::mem::replace(&mut self.players, players);
         std::mem::replace(&mut self.dealers, dealers)
@@ -213,8 +212,8 @@ impl ValidatorState {
     /// will become the next regular players.
     pub(super) fn push_on_failure(
         &mut self,
-        syncing_players: OrderedAssociated<PublicKey, DecodedValidator>,
-    ) -> OrderedAssociated<PublicKey, DecodedValidator> {
+        syncing_players: ordered::Map<PublicKey, DecodedValidator>,
+    ) -> ordered::Map<PublicKey, DecodedValidator> {
         let players = std::mem::replace(&mut self.syncing_players, syncing_players);
         // The previous players are dropped/returned - these are for who the
         // ceremony failed for.
@@ -247,10 +246,10 @@ impl Read for ValidatorState {
     ) -> Result<Self, commonware_codec::Error> {
         // The range 0..=usize::MAX here is ok: what we are writing to disk
         // is completely under our control and there is no danger of DoS.
-        let dealers = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
-        let players = OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+        let dealers = ordered::Map::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+        let players = ordered::Map::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
         let syncing_players =
-            OrderedAssociated::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
+            ordered::Map::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), (), ()))?;
         Ok(Self {
             dealers,
             players,
@@ -402,7 +401,7 @@ impl Read for DecodedValidator {
 
 fn last_height_before_epoch(epoch: Epoch, epoch_length: u64) -> u64 {
     epoch
-        .checked_sub(1)
+        .previous()
         .map_or(0, |epoch| utils::last_block_in_epoch(epoch_length, epoch))
 }
 

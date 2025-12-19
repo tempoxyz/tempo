@@ -1,10 +1,12 @@
 //! Objects that are created as part of a ceremony and distributed.
 
+use std::num::NonZeroU32;
+
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, FixedSize as _, Read, ReadExt as _, Write, varint::UInt};
+use commonware_codec::{EncodeSize, FixedSize as _, RangeCfg, Read, ReadExt as _, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::bls12381::primitives::{group, poly::Public, variant::MinSig};
-use commonware_utils::quorum;
+use commonware_utils::{NZU32, quorum};
 use tempo_dkg_onchain_artifacts::Ack;
 
 /// The actual message that is sent over p2p.
@@ -16,16 +18,19 @@ pub(super) struct Message {
 
 impl Write for Message {
     fn write(&self, buf: &mut impl BufMut) {
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.payload.write(buf);
     }
 }
 
 impl Read for Message {
-    type Cfg = u32;
+    type Cfg = NonZeroU32;
 
-    fn read_cfg(buf: &mut impl Buf, num_players: &u32) -> Result<Self, commonware_codec::Error> {
-        let epoch = UInt::read(buf)?.into();
+    fn read_cfg(
+        buf: &mut impl Buf,
+        num_players: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        let epoch = Epoch::read(buf)?;
         let payload = Payload::read_cfg(buf, num_players)?;
         Ok(Self { epoch, payload })
     }
@@ -33,7 +38,7 @@ impl Read for Message {
 
 impl EncodeSize for Message {
     fn encode_size(&self) -> usize {
-        UInt(self.epoch).encode_size() + self.payload.encode_size()
+        self.epoch.encode_size() + self.payload.encode_size()
     }
 }
 
@@ -87,9 +92,9 @@ const SHARE_TAG: u8 = 0;
 const ACK_TAG: u8 = 1;
 
 impl Read for Payload {
-    type Cfg = u32;
+    type Cfg = NonZeroU32;
 
-    fn read_cfg(buf: &mut impl Buf, p: &u32) -> Result<Self, commonware_codec::Error> {
+    fn read_cfg(buf: &mut impl Buf, p: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
         let result = match tag {
             SHARE_TAG => Self::Share(Share::read_cfg(buf, p)?),
@@ -139,12 +144,12 @@ impl EncodeSize for Share {
 }
 
 impl Read for Share {
-    type Cfg = u32;
+    type Cfg = NonZeroU32;
 
-    fn read_cfg(buf: &mut impl Buf, t: &u32) -> Result<Self, commonware_codec::Error> {
-        let q = quorum(*t);
+    fn read_cfg(buf: &mut impl Buf, t: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+        let q = NZU32!(quorum(t.get()));
         Ok(Self {
-            commitment: Public::<MinSig>::read_cfg(buf, &(q as usize))?,
+            commitment: Public::<MinSig>::read_cfg(buf, &RangeCfg::from(q..=q))?,
             share: group::Share::read(buf)?,
         })
     }
@@ -153,25 +158,26 @@ impl Read for Share {
 #[cfg(test)]
 mod tests {
     use commonware_codec::{Encode as _, Read as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer as _,
         bls12381::{dkg, primitives::variant::MinSig},
         ed25519::{PrivateKey, PublicKey},
     };
-    use commonware_utils::{set::Ordered, union};
+    use commonware_utils::{TryFromIterator as _, ordered, union};
     use rand::{SeedableRng as _, rngs::StdRng};
 
     use crate::dkg::ceremony::ACK_NAMESPACE;
 
     use super::Ack;
 
-    fn three_public_keys() -> Ordered<PublicKey> {
-        vec![
+    fn three_public_keys() -> ordered::Set<PublicKey> {
+        ordered::Set::try_from_iter(vec![
             PrivateKey::from_seed(0).public_key(),
             PrivateKey::from_seed(1).public_key(),
             PrivateKey::from_seed(2).public_key(),
-        ]
-        .into()
+        ])
+        .unwrap()
     }
 
     #[test]
@@ -187,7 +193,7 @@ mod tests {
             &union(b"test", ACK_NAMESPACE),
             player.clone(),
             player.public_key(),
-            42,
+            Epoch::new(42),
             &dealer,
             &commitment,
         );

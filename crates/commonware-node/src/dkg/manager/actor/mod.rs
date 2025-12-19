@@ -7,7 +7,7 @@ use commonware_consensus::{
     Block as _, Reporter as _,
     marshal::Update,
     simplex::signing_scheme::bls12381_threshold::Scheme,
-    types::{Epoch, Round},
+    types::{Epoch, EpochDelta, Round},
     utils,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
@@ -18,9 +18,7 @@ use commonware_p2p::{
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, Storage, spawn_cell};
 use commonware_storage::metadata::{self, Metadata};
-use commonware_utils::{
-    Acknowledgement, acknowledgement::Exact, sequence::U64, set::OrderedAssociated, union,
-};
+use commonware_utils::{Acknowledgement, acknowledgement::Exact, ordered, sequence::U64, union};
 
 use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
 use futures::{
@@ -34,7 +32,7 @@ use rand_core::CryptoRngCore;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, debug, info, instrument, warn};
+use tracing::{Span, debug, field::display, info, instrument, warn};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -152,10 +150,8 @@ impl Future for PendingFinalizedGap {
 impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
 where
     TContext: Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + Storage,
-    TPeerManager: commonware_p2p::Manager<
-            PublicKey = PublicKey,
-            Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        > + Sync,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = ordered::Map<PublicKey, SocketAddr>>
+        + Sync,
 {
     pub(super) async fn new(
         config: super::Config<TPeerManager>,
@@ -415,7 +411,7 @@ where
                 })?;
 
             ensure!(
-                initial_dkg_outcome.epoch == 0,
+                initial_dkg_outcome.epoch.is_zero(),
                 "at genesis, the epoch must be zero, but genesis reported `{}`",
                 initial_dkg_outcome.epoch
             );
@@ -443,7 +439,7 @@ where
             let initial_validators = validators::read_from_contract(
                 0,
                 &self.config.execution_node,
-                0,
+                Epoch::zero(),
                 self.config.epoch_length,
             )
             .await
@@ -473,7 +469,7 @@ where
             tx.set_actor_state(State {
                 dkg_outcome: DkgOutcome {
                     dkg_successful: true,
-                    epoch: 0,
+                    epoch: Epoch::zero(),
                     participants: initial_dkg_outcome.participants,
                     public: initial_dkg_outcome.public,
                     share: self.config.initial_share.clone(),
@@ -496,7 +492,7 @@ where
         parent = &cause,
         skip_all,
         fields(
-            request.epoch = epoch,
+            request.epoch = %epoch,
             ceremony.epoch = %ceremony.epoch(),
         ),
         err,
@@ -619,9 +615,9 @@ where
         parent = &cause,
         skip_all,
         fields(
-            block.derived_epoch = utils::epoch(self.config.epoch_length, block.height()),
+            block.derived_epoch = %utils::epoch(self.config.epoch_length, block.height()),
             block.height = block.height(),
-            ceremony.epoch = ceremony.epoch(),
+            ceremony.epoch = %ceremony.epoch(),
         ),
     )]
     async fn handle_finalized_block<TReceiver, TSender>(
@@ -776,8 +772,8 @@ where
         // state on the last block of the epoch.
         if block_epoch != current_epoch_state.epoch() {
             info!(
-                block_epoch,
-                actor_epoch = current_epoch_state.epoch(),
+                %block_epoch,
+                actor_epoch = %current_epoch_state.epoch(),
                 "block was for an epoch other than what the actor is currently tracking; ignoring",
             );
             return;
@@ -822,7 +818,7 @@ where
 
             // Similar for the validators: we only need to track the current
             // and last two epochs.
-            if let Some(epoch) = current_epoch_state.epoch().checked_sub(3) {
+            if let Some(epoch) = current_epoch_state.epoch().checked_sub(EpochDelta::new(3)) {
                 tx.remove_validators(epoch);
             }
         }
@@ -857,7 +853,7 @@ where
             .map_or_else(|e| e.epoch, |o| o.epoch);
 
         assert_eq!(
-            old_epoch_state.epoch() + 1,
+            old_epoch_state.epoch().next(),
             new_epoch,
             "sanity check: old outcome must be new outcome - 1"
         );
@@ -976,7 +972,9 @@ where
                 .await;
         }
 
-        if let Some(epoch) = epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(2)) {
+        if let Some(epoch) =
+            epoch_to_shutdown.and_then(|epoch| epoch.checked_sub(EpochDelta::new(2)))
+        {
             tx.remove_validators(epoch);
         }
     }
@@ -993,7 +991,7 @@ where
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_state: State = self.current_epoch_state(tx).await;
-        Span::current().record("epoch", epoch_state.epoch());
+        Span::current().record("epoch", display(epoch_state.epoch()));
 
         let config = ceremony::Config {
             namespace: self.config.namespace.clone(),
@@ -1032,7 +1030,7 @@ where
             .syncing_players
             .set(epoch_state.validator_state.syncing_players().len() as i64);
 
-        if let Some(old_epoch) = epoch_state.epoch().checked_sub(2) {
+        if let Some(old_epoch) = epoch_state.epoch().checked_sub(EpochDelta::new(2)) {
             tx.remove_ceremony(old_epoch);
         }
 
@@ -1047,16 +1045,16 @@ where
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         let epoch_state = self.current_epoch_state(tx).await;
-        Span::current().record("epoch", epoch_state.epoch());
+        Span::current().record("epoch", display(epoch_state.epoch()));
 
-        if let Some(previous_epoch) = epoch_state.epoch().checked_sub(1)
+        if let Some(previous_epoch) = epoch_state.epoch().previous()
             && let boundary_height =
                 utils::last_block_in_epoch(self.config.epoch_length, previous_epoch)
             && let None = self.config.marshal.get_info(boundary_height).await
         {
             info!(
                 boundary_height,
-                previous_epoch,
+                %previous_epoch,
                 "don't have the finalized boundary block of the previous epoch; \
                 this usually happens if the node restarted right after processing \
                 the the pre-to-last block; not starting a consensus engine backing \
@@ -1082,7 +1080,7 @@ where
             )
             .await;
         info!(
-            epoch = epoch_state.epoch(),
+            epoch = %epoch_state.epoch(),
             participants = ?epoch_state.participants(),
             public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
             "reported epoch state to epoch manager",
@@ -1108,7 +1106,7 @@ where
         tx: &mut DkgReadWriteTransaction<ContextCell<TContext>>,
     ) {
         if let Some(epoch_state) = self.previous_epoch_state(tx).await {
-            Span::current().record("previous_epoch", epoch_state.epoch());
+            Span::current().record("previous_epoch", display(epoch_state.epoch()));
             self.config
                 .epoch_manager
                 .report(
@@ -1122,7 +1120,7 @@ where
                 )
                 .await;
             info!(
-                epoch = epoch_state.epoch(),
+                epoch = %epoch_state.epoch(),
                 participants = ?epoch_state.participants(),
                 public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
                 "reported epoch state to epoch manager",
@@ -1131,12 +1129,12 @@ where
 
         let current_epoch = self.current_epoch_state(tx).await.epoch();
 
-        if let Some(epoch) = current_epoch.checked_sub(2)
+        if let Some(epoch) = current_epoch.checked_sub(EpochDelta::new(2))
             && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
         }
-        if let Some(epoch) = current_epoch.checked_sub(1)
+        if let Some(epoch) = current_epoch.previous()
             && let Ok(Some(validator_state)) = tx.get_validators(epoch).await
         {
             self.register_validators(epoch, validator_state).await;
@@ -1150,7 +1148,7 @@ where
         self.metrics.peers.set(peers_to_register.len() as i64);
         self.config
             .peer_manager
-            .update(epoch, peers_to_register.clone())
+            .update(epoch.get(), peers_to_register.clone())
             .await;
 
         info!(
@@ -1197,7 +1195,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     node: &TempoFullNode,
     epoch: Epoch,
     epoch_length: u64,
-) -> OrderedAssociated<PublicKey, DecodedValidator> {
+) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut attempts = 1;
     let retry_after = Duration::from_secs(1);
     loop {

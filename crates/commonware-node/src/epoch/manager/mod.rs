@@ -7,7 +7,9 @@ pub(crate) use actor::Actor;
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 pub(crate) use ingress::Mailbox;
 
-use commonware_consensus::{marshal, simplex::signing_scheme::bls12381_threshold::Scheme};
+use commonware_consensus::{
+    marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::ViewDelta,
+};
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
 use rand::{CryptoRng, Rng};
@@ -28,8 +30,8 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
-    pub(crate) views_to_track: u64,
-    pub(crate) views_until_leader_skip: u64,
+    pub(crate) views_to_track: ViewDelta,
+    pub(crate) views_until_leader_skip: ViewDelta,
 }
 
 pub(crate) fn init<TBlocker, TContext>(

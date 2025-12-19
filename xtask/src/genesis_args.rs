@@ -5,7 +5,9 @@ use alloy::{
 };
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::ed25519::PublicKey;
+use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
@@ -128,7 +130,7 @@ pub(crate) struct ConsensusConfig {
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
         PublicOutcome {
-            epoch: 0,
+            epoch: Epoch::zero(),
             participants: self.peers.public_keys().clone(),
             public: self.public_polynomial.clone().into_inner(),
         }
@@ -750,11 +752,13 @@ fn generate_consensus_config(
     >(&mut rng, None, validators.len() as u32, threshold);
 
     signers.sort_by_key(|signer| signer.public_key());
-    let peers = validators
-        .iter()
-        .zip(signers.iter())
-        .map(|(addr, private_key)| (private_key.public_key(), *addr))
-        .collect::<commonware_utils::set::OrderedAssociated<_, _>>();
+    let peers = ordered::Map::try_from_iter(
+        validators
+            .iter()
+            .zip(signers.iter())
+            .map(|(addr, private_key)| (private_key.public_key(), *addr)),
+    )
+    .expect("must not contain duplicate keys");
 
     let mut validators = vec![];
     for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {

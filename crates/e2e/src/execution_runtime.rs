@@ -16,11 +16,12 @@ use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::primitives::{poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseEnv;
@@ -98,7 +99,7 @@ impl Builder {
         }
     }
 
-    pub fn with_validators(self, validators: OrderedAssociated<PublicKey, SocketAddr>) -> Self {
+    pub fn with_validators(self, validators: ordered::Map<PublicKey, SocketAddr>) -> Self {
         Self {
             validators: Some(validators.into()),
             ..self
@@ -141,7 +142,7 @@ impl Builder {
             .wrap_err("failed to insert allegretto timestamp into genesis")?;
 
         genesis.extra_data = PublicOutcome {
-            epoch: 0,
+            epoch: Epoch::zero(),
             participants: validators.public_keys().clone(),
             public: public_polynomial.into_inner(),
         }

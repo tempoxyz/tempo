@@ -47,10 +47,10 @@
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 use bytes::Bytes;
-use commonware_codec::{DecodeExt as _, Encode as _, varint::UInt};
+use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
     Reporters,
-    simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Voter},
+    simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Certificate},
     types::Epoch,
     utils,
 };
@@ -67,7 +67,7 @@ use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand::{CryptoRng, Rng};
-use tracing::{Level, Span, error, error_span, info, instrument, warn, warn_span};
+use tracing::{Level, Span, error, error_span, field::display, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
@@ -236,7 +236,7 @@ where
                     };
                     let _: Result<_, _>  = self.handle_msg_for_unregistered_epoch(
                         &mut boundary_certificates_sender,
-                        their_epoch,
+                        Epoch::new(their_epoch),
                         from,
                     ).await;
                 },
@@ -375,9 +375,9 @@ where
             },
         );
 
-        let pending_sc = pending_mux.register(epoch).await.unwrap();
-        let recovered_sc = recovered_mux.register(epoch).await.unwrap();
-        let resolver_sc = resolver_mux.register(epoch).await.unwrap();
+        let pending_sc = pending_mux.register(epoch.get()).await.unwrap();
+        let recovered_sc = recovered_mux.register(epoch.get()).await.unwrap();
+        let resolver_sc = resolver_mux.register(epoch.get()).await.unwrap();
 
         assert!(
             self.active_epochs
@@ -391,7 +391,7 @@ where
 
         self.metrics.latest_participants.set(n_participants as i64);
         self.metrics.active_epochs.inc();
-        self.metrics.latest_epoch.set(epoch as i64);
+        self.metrics.latest_epoch.set(epoch.get() as i64);
         self.metrics.how_often_signer.inc_by(is_signer as u64);
         self.metrics.how_often_verifier.inc_by(!is_signer as u64);
 
@@ -431,7 +431,7 @@ where
     /// epoch. Upon receiving a message on an un-registered epoch, the
     /// commonware p2p muxer will send the message to the backup channel, tagged
     /// with the unknown epoch.
-    #[instrument(skip_all, fields(msg.epoch = their_epoch, msg.from = %from), err(level = Level::INFO))]
+    #[instrument(skip_all, fields(msg.epoch = %their_epoch, msg.from = %from), err(level = Level::INFO))]
     async fn handle_msg_for_unregistered_epoch(
         &mut self,
         boundary_certificates_sender: &mut impl Sender<PublicKey = PublicKey>,
@@ -460,11 +460,7 @@ where
         );
 
         boundary_certificates_sender
-            .send(
-                Recipients::One(from),
-                UInt(our_epoch).encode().freeze(),
-                true,
-            )
+            .send(Recipients::One(from), our_epoch.encode().freeze(), true)
             .await
             .wrap_err("failed request for finalization certificate of our epoch")?;
 
@@ -484,10 +480,9 @@ where
         bytes: Bytes,
         recovered_global_sender: &mut GlobalSender<impl Sender<PublicKey = PublicKey>>,
     ) -> eyre::Result<()> {
-        let requested_epoch = UInt::<Epoch>::decode(bytes.as_ref())
-            .wrap_err("failed decoding epoch channel payload as epoch")?
-            .into();
-        tracing::Span::current().record("msg.decoded_epoch", requested_epoch);
+        let requested_epoch = Epoch::decode(bytes.as_ref())
+            .wrap_err("failed decoding epoch channel payload as epoch")?;
+        tracing::Span::current().record("msg.decoded_epoch", display(requested_epoch));
         let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, requested_epoch);
         let cert = self
             .config
@@ -501,10 +496,10 @@ where
                     available locally; cannot serve request"
                 )
             })?;
-        let message = Voter::<Scheme<PublicKey, MinSig>, Digest>::Finalization(cert);
+        let message = Certificate::<Scheme<PublicKey, MinSig>, Digest>::Finalization(cert);
         recovered_global_sender
             .send(
-                requested_epoch,
+                requested_epoch.get(),
                 Recipients::One(from),
                 message.encode().freeze(),
                 false,
