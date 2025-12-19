@@ -37,7 +37,7 @@ Assign roles to specific addresses to delegate token management capabilities.
 
 ```tsx twoslash [GrantRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -71,11 +71,11 @@ export function GrantRoles() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -95,7 +95,7 @@ Use `hasRole` to verify whether an address has been granted a specific role.
 
 ```tsx twoslash [GrantRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -150,11 +150,11 @@ export function GrantRoles() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -182,7 +182,7 @@ Revoke roles from addresses when you need to remove their permissions.
 
 ```tsx twoslash [RevokeRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -263,11 +263,11 @@ export function RevokeRoles() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -298,7 +298,7 @@ Limit the maximum total supply of your token. Setting supply caps requires the *
 
 ```tsx twoslash [SetSupplyCap.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 // @noErrors
@@ -334,11 +334,11 @@ export function SetSupplyCap() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -374,7 +374,7 @@ Learn more about configuring transfer policies in the [TIP-403 specification](/p
 
 ```tsx twoslash [CreateTokenPolicy.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function CreateTokenPolicy() {
@@ -412,7 +412,7 @@ export function CreateTokenPolicy() {
 
 ```tsx twoslash [LinkTokenPolicy.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function LinkTokenPolicy() {
@@ -443,11 +443,11 @@ export function LinkTokenPolicy() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -475,7 +475,7 @@ Temporarily halt all token transfers during emergency situations or maintenance 
 
 ```tsx twoslash [PauseUnpauseTransfers.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function PauseUnpauseTransfers() {
@@ -523,11 +523,11 @@ export function PauseUnpauseTransfers() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -558,7 +558,7 @@ The Burn Blocked role allows your team to burn tokens from blocked or frozen add
 
 ```tsx twoslash [BurnBlocked.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 // @noErrors
@@ -597,11 +597,11 @@ export function BurnBlocked() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],

@@ -34,7 +34,7 @@ Before executing a swap, get a quote to see the expected price.
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -56,7 +56,7 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -86,7 +86,7 @@ Set appropriate slippage based on your quote to protect against unfavorable pric
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -119,7 +119,7 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -160,8 +160,8 @@ To execute a swap, you need to approve the Stablecoin DEX contract to spend the 
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem' // [!code ++]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Actions, Addresses } from 'viem/tempo' // [!code ++]
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code ++]
 
@@ -209,8 +209,8 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem' // [!code ++]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Actions, Addresses } from 'viem/tempo' // [!code ++]
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code ++]
 
@@ -266,8 +266,8 @@ Batch the token approval with the swap in a single transaction for better UX.
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Actions, Addresses } from 'viem/tempo'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
@@ -321,8 +321,8 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Actions, Addresses } from 'viem/tempo'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
@@ -387,7 +387,7 @@ Quote requests will fail with an `InsufficientLiquidity` error if there isn't en
 Handle this error when fetching quotes:
 
 ```tsx
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'

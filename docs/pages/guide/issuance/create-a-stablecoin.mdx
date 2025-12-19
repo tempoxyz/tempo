@@ -47,7 +47,7 @@ Luckily, the built-in Tempo testnet faucet supports funding accounts with `Alpha
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 
 export function AddFunds() {
@@ -65,11 +65,11 @@ export function AddFunds() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -126,11 +126,11 @@ export function CreateStablecoin() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -155,7 +155,7 @@ After this step, your users will be able to create a stablecoin by clicking the 
 :::code-group
 
 ```tsx twoslash [CreateStablecoin.tsx]
-import { Hooks } from 'tempo.ts/wagmi' // [!code ++]
+import { Hooks } from 'wagmi/tempo' // [!code ++]
 
 // @noErrors
 export function CreateStablecoin() {
@@ -190,11 +190,11 @@ export function CreateStablecoin() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -214,7 +214,7 @@ the name of the stablecoin and a link to the transaction receipt.
 :::code-group
 
 ```tsx twoslash [CreateStablecoin.tsx]
-import { Hooks } from 'tempo.ts/wagmi' 
+import { Hooks } from 'wagmi/tempo' 
 
 // @noErrors
 export function CreateStablecoin() {
@@ -258,11 +258,11 @@ export function CreateStablecoin() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],

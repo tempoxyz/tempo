@@ -34,7 +34,7 @@ Using a custom fee token is as simple as passing a `feeToken` attribute to mutab
 
 ```tsx twoslash
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -101,7 +101,7 @@ The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 
 function AddFunds() {
@@ -142,7 +142,7 @@ After this step, your users can send payments with a specified fee token by clic
 :::code-group
 
 ```tsx twoslash [PayWithFeeToken.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -206,7 +206,7 @@ Now that users can send payments with a specified fee token, you can link to the
 :::code-group
 
 ```tsx twoslash [PayWithFeeToken.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'

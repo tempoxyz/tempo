@@ -33,7 +33,7 @@ Assign the issuer role to the address that will mint tokens. Minting requires th
 
 ```tsx twoslash [GrantIssuerRole.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -74,11 +74,11 @@ export function GrantIssuerRole() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -106,7 +106,7 @@ Now that the issuer role is granted, you can mint tokens to any address.
 
 ```tsx twoslash [MintToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -177,11 +177,11 @@ export function MintToken() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -271,7 +271,7 @@ To decrease supply, you can burn tokens from your own balance. Burning requires 
 
 ```tsx twoslash [BurnToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -331,11 +331,11 @@ export function BurnToken() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -405,7 +405,7 @@ If your token has a supply cap set, any `mint()` or `mintWithMemo()` call that w
 - Increase the supply cap (requires `DEFAULT_ADMIN_ROLE`)
 - Remove the cap entirely by setting it to `type(uint256).max`
 
-Use [`getMetadata`](/sdk/typescript/viem/token.getMetadata) to check your token's total supply before minting.
+Use [`getMetadata`](https://viem.sh/tempo/actions/token.getMetadata) to check your token's total supply before minting.
 
 ### Role Separation
 
