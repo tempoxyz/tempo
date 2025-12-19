@@ -356,8 +356,7 @@ where
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit =
-            (parent_header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+        let general_gas_limit = non_shared_gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
 
         let mut cumulative_gas_used = 0;
         let mut non_payment_gas_used = 0;
