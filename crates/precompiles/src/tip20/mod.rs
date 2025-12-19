@@ -2854,7 +2854,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_change_transfer_policy_id_allegro_moderato() -> eyre::Result<()> {
-        use rand::Rng;
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         let admin = Address::random();
 
