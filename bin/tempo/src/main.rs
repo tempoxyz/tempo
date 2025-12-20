@@ -246,7 +246,9 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(&args.node_args, validator_key))
+            .node(
+                TempoNode::new(&args.node_args, validator_key).set_follower(args.follow.is_some()),
+            )
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());

@@ -403,9 +403,6 @@ where
                     }
                 }
 
-                // Pre-compute TempoTxEnv to avoid the cost during payload building.
-                transaction.transaction().prepare_tx_env();
-
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,
