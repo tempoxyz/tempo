@@ -1,4 +1,4 @@
-//! Implementation of the `#[derive(Storable)]` macro.
+//! Implementation of the `#[derive(Storable)]` and `#[derive(StorableInSpace)]` macros.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -12,16 +12,28 @@ use crate::{
     utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
 };
 
-/// Implements the `Storable` derive macro for structs.
-///
-/// Packs fields into storage slots based on their byte sizes.
-/// Fields are placed sequentially in slots, moving to a new slot when
-/// the current slot cannot fit the next field (no spanning across slots).
-pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
-    // Extract struct name, generics
-    let strukt = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+/// Parsed struct information shared between Storable and StorableInSpace derives.
+struct ParsedStruct<'a> {
+    strukt: &'a Ident,
+    impl_generics: syn::ImplGenerics<'a>,
+    ty_generics: syn::TypeGenerics<'a>,
+    where_clause: Option<&'a syn::WhereClause>,
+    layout_fields: Vec<LayoutField<'a>>,
+    mod_ident: Ident,
+    direct_fields: Vec<(&'a Ident, &'a Type)>,
+    direct_names: Vec<&'a Ident>,
+    mapping_names: Vec<&'a Ident>,
+    direct_tys: Vec<&'a Type>,
+    attrs: &'a [syn::Attribute],
+}
 
+/// Parse and validate struct for derive macros.
+fn parse_struct(
+    input: &DeriveInput,
+) -> syn::Result<(
+    Vec<FieldInfo>,
+    &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+)> {
     // Parse struct fields
     let fields = match &input.data {
         Data::Struct(data_struct) => match &data_struct.fields {
@@ -59,32 +71,74 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // Build layout IR using the unified function
-    let layout_fields = packing::allocate_slots(&field_infos)?;
+    Ok((field_infos, fields))
+}
 
-    // Generate helper module with packing layout calculations
+/// Common setup for both Storable and StorableInSpace derives.
+fn setup_derive<'a>(
+    input: &'a DeriveInput,
+    field_infos: &'a [FieldInfo],
+) -> syn::Result<ParsedStruct<'a>> {
+    let strukt = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    // Build layout IR
+    let layout_fields = packing::allocate_slots(field_infos)?;
     let mod_ident = format_ident!("__packing_{}", to_snake_case(&strukt.to_string()));
-    let packing_module = gen_packing_module_from_ir(&layout_fields, &mod_ident);
 
     // Classify fields: direct (storable) vs indirect (mappings)
-    let len = fields.len();
+    let len = field_infos.len();
     let (direct_fields, direct_names, mapping_names) = field_infos.iter().fold(
         (Vec::with_capacity(len), Vec::with_capacity(len), Vec::new()),
         |mut out, field_info| {
             if extract_mapping_types(&field_info.ty).is_none() {
-                // fields with direct slot allocation
                 out.0.push((&field_info.name, &field_info.ty));
                 out.1.push(&field_info.name);
             } else {
-                // fields with indirect slot allocation (mappings)
                 out.2.push(&field_info.name);
             }
             out
         },
     );
 
-    // Extract just the types for IS_DYNAMIC calculation
     let direct_tys: Vec<_> = direct_fields.iter().map(|(_, ty)| *ty).collect();
+
+    Ok(ParsedStruct {
+        strukt,
+        impl_generics,
+        ty_generics,
+        where_clause,
+        layout_fields,
+        mod_ident,
+        direct_fields,
+        direct_names,
+        mapping_names,
+        direct_tys,
+        attrs: &input.attrs,
+    })
+}
+
+/// Implements the `Storable` derive macro for structs.
+pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
+    let (field_infos, _) = parse_struct(&input)?;
+    let parsed = setup_derive(&input, &field_infos)?;
+
+    let ParsedStruct {
+        strukt,
+        impl_generics,
+        ty_generics,
+        where_clause,
+        layout_fields,
+        mod_ident,
+        direct_fields,
+        direct_names,
+        mapping_names,
+        direct_tys,
+        attrs,
+    } = parsed;
+
+    // Generate helper module with packing layout calculations
+    let packing_module = gen_packing_module_from_ir(&layout_fields, &mod_ident);
 
     // Generate load/store/delete implementations for scalar fields only
     let load_impl = gen_load_store_impl(&direct_fields, &mod_ident, true);
@@ -95,14 +149,9 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let handler_struct = gen_handler_struct(strukt, &layout_fields, &mod_ident);
     let handler_name = format_ident!("{}Handler", strukt);
 
-    // Generate space handler struct for DirectAddressMap access
-    let space_handler_struct = gen_space_handler_struct(strukt, &layout_fields, &mod_ident);
-    let space_handler_name = format_ident!("{}SpaceHandler", strukt);
-
     let expanded = quote! {
         #packing_module
         #handler_struct
-        #space_handler_struct
 
         // impl `StorableType` for layout information
         impl #impl_generics crate::storage::StorableType for #strukt #ty_generics #where_clause {
@@ -118,20 +167,6 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
             fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 #handler_name::new(slot, address)
-            }
-        }
-
-        // impl `StorableInSpace` for DirectAddressMap access
-        impl #impl_generics crate::storage::StorableInSpace for #strukt #ty_generics #where_clause {
-            type SpaceHandler = #space_handler_name;
-
-            fn handle_in_space(
-                space: u8,
-                key: ::alloy::primitives::Address,
-                _ctx: crate::storage::LayoutCtx,
-                address: ::alloy::primitives::Address
-            ) -> Self::SpaceHandler {
-                #space_handler_name::new(space, key, address)
             }
         }
 
@@ -183,21 +218,61 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     };
 
     // Generate array implementations if requested
-    let array_impls = if let Some(sizes) = extract_storable_array_sizes(&input.attrs)? {
-        // Generate the struct type path for array generation
+    let array_impls = if let Some(sizes) = extract_storable_array_sizes(attrs)? {
         let struct_type = quote! { #strukt #ty_generics };
         gen_struct_arrays(struct_type, &sizes)
     } else {
         quote! {}
     };
 
-    // Combine struct implementation with array implementations
-    let combined = quote! {
+    Ok(quote! {
         #expanded
         #array_impls
-    };
+    })
+}
 
-    Ok(combined)
+/// Derives the `StorableInSpace` trait for structs used in `AddressMapping<T>`.
+///
+/// This is an ADD-ON to `#[derive(Storable)]`, which must also be derived.
+pub(crate) fn derive_space_impl(input: DeriveInput) -> syn::Result<TokenStream> {
+    let (field_infos, _) = parse_struct(&input)?;
+
+    let strukt = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    // Build layout IR (same as Storable - we need it for SpaceHandler field generation)
+    let layout_fields = packing::allocate_slots(&field_infos)?;
+
+    // Reference the packing module generated by Storable
+    let mod_ident = format_ident!("__packing_{}", to_snake_case(&strukt.to_string()));
+
+    // Generate space handler struct for DirectAddressMap access
+    let space_handler_struct = gen_space_handler_struct(strukt, &layout_fields, &mod_ident);
+    let space_handler_name = format_ident!("{}SpaceHandler", strukt);
+
+    Ok(quote! {
+        // Compile-time check: verify Storable was also derived by referencing its packing module
+        const _: () = {
+            // This will fail to compile if #[derive(Storable)] was not also applied
+            let _ = #mod_ident::SLOT_COUNT;
+        };
+
+        #space_handler_struct
+
+        // impl `StorableInSpace` for AddressMapping access
+        impl #impl_generics crate::storage::StorableInSpace for #strukt #ty_generics #where_clause {
+            type SpaceHandler = #space_handler_name;
+
+            fn handle_in_space(
+                space: u8,
+                key: ::alloy::primitives::Address,
+                _ctx: crate::storage::LayoutCtx,
+                address: ::alloy::primitives::Address
+            ) -> Self::SpaceHandler {
+                #space_handler_name::new(space, key, address)
+            }
+        }
+    })
 }
 
 /// Generate a compile-time module that calculates the packing layout from IR.

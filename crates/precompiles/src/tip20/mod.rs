@@ -24,7 +24,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
 };
 use std::sync::LazyLock;
-use tempo_precompiles_macros::{Storable, contract};
+use tempo_precompiles_macros::{Storable, StorableInSpace, contract};
 use tracing::trace;
 
 /// u128::MAX as U256
@@ -104,7 +104,7 @@ pub struct TIP20Token {
     fee_recipient: Address,
 }
 
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone, Storable, StorableInSpace)]
 pub struct UserInfo {
     balance: U256,
     rewards: UserRewardInfo,

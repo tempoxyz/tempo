@@ -1,7 +1,7 @@
 use crate::{
     FieldKind,
     packing::{self, LayoutField, PackingConstants, SlotAssignment},
-    utils::extract_direct_address_map_info,
+    utils::extract_address_mapping_value_ty,
 };
 use quote::{format_ident, quote};
 use syn::{Expr, Ident, Visibility};
@@ -10,20 +10,17 @@ use syn::{Expr, Ident, Visibility};
 pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::TokenStream {
     let field_name = field.name;
 
-    // Check if this is a DirectAddressMap field with auto-allocation
-    if let Some(info) = extract_direct_address_map_info(field.ty) {
-        if info.is_auto {
-            let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
-            let value_ty = info.value_ty;
+    // Check if this is an AddressMapping field (auto-allocated SPACE)
+    if let Some(value_ty) = extract_address_mapping_value_ty(field.ty) {
+        let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
 
-            // The handler type is the mapping itself with the allocated SPACE
-            return quote! {
-                pub #field_name: crate::storage::MappingInner<
-                    crate::storage::DirectAddressMap<{ slots::#space_const }>,
-                    #value_ty
-                >
-            };
-        }
+        // The handler type is the mapping itself with the allocated SPACE
+        return quote! {
+            pub #field_name: crate::storage::MappingInner<
+                crate::storage::DirectAddressMap<{ slots::#space_const }>,
+                #value_ty
+            >
+        };
     }
 
     let handler_type = match &field.kind {
@@ -72,22 +69,16 @@ pub(crate) fn gen_handler_field_init(
         quote! { base_slot.saturating_add(::alloy::primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
     };
 
-    // Check if this is a DirectAddressMap field with auto-allocation
-    if is_contract {
-        if let Some(info) = extract_direct_address_map_info(field.ty) {
-            if info.is_auto {
-                // Use the auto-allocated SPACE constant from the slots module
-                let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
-                let value_ty = info.value_ty;
+    // Check if this is an AddressMapping field (auto-allocated SPACE)
+    if is_contract && let Some(value_ty) = extract_address_mapping_value_ty(field.ty) {
+        let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
 
-                return quote! {
-                    #field_name: crate::storage::MappingInner::<
-                        crate::storage::DirectAddressMap<{ slots::#space_const }>,
-                        #value_ty
-                    >::new(::alloy::primitives::U256::ZERO, address)
-                };
-            }
-        }
+        return quote! {
+            #field_name: crate::storage::MappingInner::<
+                crate::storage::DirectAddressMap<{ slots::#space_const }>,
+                #value_ty
+            >::new(::alloy::primitives::U256::ZERO, address)
+        };
     }
 
     match &field.kind {
@@ -266,7 +257,7 @@ pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_mac
     }
 }
 
-/// Generate SPACE constants for DirectAddressMap fields that use auto-allocation.
+/// Generate SPACE constants for `AddressMapping` fields.
 ///
 /// Generates chained constants where each field's SPACE is computed from the previous:
 /// ```ignore
@@ -278,30 +269,23 @@ fn gen_space_constants(fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
     let mut prev_space_const: Option<(Ident, &syn::Type)> = None;
 
     for field in fields {
-        // Check if this is a DirectAddressMap field that needs auto-allocation
-        if let Some(info) = extract_direct_address_map_info(field.ty) {
-            if info.is_auto {
-                let field_name = field.name;
-                let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
-                let value_ty = info.value_ty;
+        if let Some(value_ty) = extract_address_mapping_value_ty(field.ty) {
+            let field_name = field.name;
+            let space_const = format_ident!("{}_SPACE", field_name.to_string().to_uppercase());
 
-                let space_expr = if let Some((prev_const, prev_value_ty)) = &prev_space_const {
-                    // Chain from previous: PREV_SPACE + <PrevType as StorableType>::SLOTS
-                    quote! {
-                        #prev_const + <#prev_value_ty as crate::storage::StorableType>::SLOTS as u8
-                    }
-                } else {
-                    // First DirectAddressMap starts at SPACE 1 (0 is reserved for keccak)
-                    quote! { 1u8 }
-                };
+            let space_expr = if let Some((prev_const, prev_value_ty)) = &prev_space_const {
+                quote! { #prev_const + <#prev_value_ty as crate::storage::StorableType>::SLOTS as u8 }
+            } else {
+                // First `AddressMapping` starts at SPACE 1 (0 is the reserved default space)
+                quote! { 1u8 }
+            };
 
-                constants.extend(quote! {
-                    /// Auto-allocated SPACE for DirectAddressMap field `#field_name`.
-                    pub const #space_const: u8 = #space_expr;
-                });
+            constants.extend(quote! {
+                /// Auto-allocated SPACE for AddressMapping field `#field_name`.
+                pub const #space_const: u8 = #space_expr;
+            });
 
-                prev_space_const = Some((space_const, value_ty));
-            }
+            prev_space_const = Some((space_const, value_ty));
         }
     }
 

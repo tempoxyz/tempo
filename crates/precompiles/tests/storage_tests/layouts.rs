@@ -4,7 +4,7 @@
 //! including auto-assignment, explicit slots, base_slot, and string literal slots.
 
 use super::*;
-use tempo_precompiles::storage::{AddressMapping, DirectAddressMap, Mapping, MappingInner};
+use tempo_precompiles::storage::{AddressMapping, Mapping};
 
 #[test]
 fn test_mixed_slot_allocation() {
@@ -529,7 +529,7 @@ fn test_multiple_address_mappings_in_different_spaces() -> eyre::Result<()> {
         // Read back and verify
         assert_eq!(layout.balances.at(user).read()?, balance);
         assert_eq!(layout.info.at(user).owner.read()?, owner);
-        assert_eq!(layout.info.at(user).active.read()?, true);
+        assert!(layout.info.at(user).active.read()?);
         assert_eq!(layout.info.at(user).balance.read()?, balance + U256::ONE);
         assert_eq!(layout.nonces.at(user).read()?, 1234);
 

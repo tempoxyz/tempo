@@ -220,112 +220,32 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
     Ok(None)
 }
 
-/// Information about a DirectAddressMap field that needs SPACE auto-allocation.
-#[derive(Debug)]
-pub(crate) struct DirectAddressMapInfo<'a> {
-    /// The value type stored in the mapping
-    pub value_ty: &'a Type,
-    /// Whether the field uses auto-allocation (SPACE=0 or no const generic)
-    pub is_auto: bool,
-}
-
-/// Extracts DirectAddressMap information from a `MappingInner<DirectAddressMap, V>` type.
+/// Extracts the value type from an `AddressMapping<V>` type.
 ///
-/// Returns `Some(DirectAddressMapInfo)` if the type is a DirectAddressMap-based mapping.
+/// Returns `Some(&Type)` with the value type if the field is `AddressMapping<V>`.
 /// Returns `None` for regular `Mapping<K, V>` or other types.
 ///
-/// # Auto-allocation detection
-///
-/// A field needs auto-allocation if:
-/// - `MappingInner<DirectAddressMap, V>` (no const generic, defaults to 0)
-/// - `MappingInner<DirectAddressMap<0>, V>` (explicit sentinel value)
-///
-/// Fields with explicit SPACE like `MappingInner<DirectAddressMap<5>, V>` don't need auto-allocation.
-pub(crate) fn extract_direct_address_map_info(ty: &Type) -> Option<DirectAddressMapInfo<'_>> {
-    if let Type::Path(type_path) = ty {
-        let last_segment = type_path.path.segments.last()?;
+/// Note: Only `AddressMapping<V>` is supported. The more verbose
+/// `MappingInner<DirectAddressMap<SPACE>, V>` syntax is not recognized,
+/// enforcing auto-allocation of storage spaces.
+pub(crate) fn extract_address_mapping_value_ty(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
 
-        // Check if the type is MappingInner
-        if !["MappingInner", "AddressMapping"]
-            .iter()
-            .any(|ty| last_segment.ident == ty)
-        {
-            return None;
-        }
-
-        // Extract generic arguments
-        if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
-            let mut iter = args.args.iter();
-
-            let is_auto = {
-                if last_segment.ident == "MappingInner" {
-                    // First argument: hash strategy (DirectAddressMap or DirectAddressMap<SPACE>)
-                    let strategy = iter.next()?;
-                    let (is_direct_address_map, is_auto) =
-                        check_direct_address_map_strategy(strategy)?;
-
-                    if !is_direct_address_map {
-                        return None;
-                    }
-
-                    is_auto
-                } else {
-                    true
-                }
-            };
-
-            // Second argument: value type
-            let value_ty = if let Some(syn::GenericArgument::Type(ty)) = iter.next() {
-                ty
-            } else {
-                return None;
-            };
-
-            return Some(DirectAddressMapInfo { value_ty, is_auto });
-        };
+    let last_segment = type_path.path.segments.last()?;
+    if last_segment.ident != "AddressMapping" {
+        return None;
     }
-    None
-}
 
-/// Checks if a generic argument is a DirectAddressMap strategy.
-///
-/// Returns `Some((true, is_auto))` if it's DirectAddressMap:
-/// - `is_auto = true` for `DirectAddressMap` or `DirectAddressMap<0>`
-/// - `is_auto = false` for `DirectAddressMap<N>` where N != 0
-///
-/// Returns `None` for non-DirectAddressMap types.
-fn check_direct_address_map_strategy(arg: &syn::GenericArgument) -> Option<(bool, bool)> {
-    if let syn::GenericArgument::Type(Type::Path(type_path)) = arg {
-        let last_segment = type_path.path.segments.last()?;
+    // Extract generic argument (the value type)
+    let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments else {
+        return None;
+    };
 
-        if last_segment.ident != "DirectAddressMap" {
-            return None;
-        }
-
-        // Check for const generic argument
-        match &last_segment.arguments {
-            // DirectAddressMap (no const generic) - auto-allocate
-            syn::PathArguments::None => Some((true, true)),
-
-            // DirectAddressMap<N> - check if N == 0 (auto) or N != 0 (explicit)
-            syn::PathArguments::AngleBracketed(args) => {
-                if let Some(syn::GenericArgument::Const(expr)) = args.args.first() {
-                    // Check if the const is 0
-                    let is_zero = match expr {
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Int(lit),
-                            ..
-                        }) => lit.base10_parse::<u8>().ok() == Some(0),
-                        _ => false,
-                    };
-                    Some((true, is_zero))
-                } else {
-                    Some((true, true)) // No const arg means auto
-                }
-            }
-
-            _ => None,
-        }
+    // First (and only) argument: value type
+    if let Some(syn::GenericArgument::Type(value_ty)) = args.args.first() {
+        Some(value_ty)
     } else {
         None
     }

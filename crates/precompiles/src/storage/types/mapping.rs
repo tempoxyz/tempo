@@ -469,13 +469,16 @@ mod tests {
         assert_eq!(final_slot.slot(), expected_slot);
     }
 
-    // --- USER MAPPING TESTS --------------------------------------------------
+    // --- DIRECT ADDRESS MAP TESTS --------------------------------------------
+
+    /// Type alias for testing with explicit SPACE=1
+    type TestAddressMapping<V> = MappingInner<DirectAddressMap<1>, V>;
 
     #[test]
-    fn test_user_mapping_slot_is_direct() {
+    fn test_direct_address_map_slot_is_direct() {
         let user = Address::random();
         let contract_addr = Address::random();
-        let mapping = AddressMapping::<U256>::new(U256::ZERO, contract_addr);
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
 
         let handler = mapping.at(user);
 
@@ -489,9 +492,9 @@ mod tests {
     }
 
     #[test]
-    fn test_user_mapping_different_addresses_different_slots() {
+    fn test_direct_address_map_different_addresses_different_slots() {
         let contract_addr = Address::random();
-        let mapping = AddressMapping::<U256>::new(U256::ZERO, contract_addr);
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
 
         let addr1 = Address::random();
         let addr2 = Address::random();
@@ -500,9 +503,9 @@ mod tests {
     }
 
     #[test]
-    fn test_user_mapping_deterministic() {
+    fn test_direct_address_map_deterministic() {
         let contract_addr = Address::random();
-        let mapping = AddressMapping::<U256>::new(U256::ZERO, contract_addr);
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
         let user = Address::random();
 
         // Same user always gets same slot
@@ -510,14 +513,14 @@ mod tests {
     }
 
     #[test]
-    fn test_user_mapping_storable_type() {
+    fn test_direct_address_map_storable_type() {
         // Verify `StorableType` implementation
         assert_eq!(
-            <AddressMapping<U256> as crate::storage::StorableType>::SLOTS,
+            <TestAddressMapping<U256> as crate::storage::StorableType>::SLOTS,
             1
         );
         assert_eq!(
-            <AddressMapping<U256> as crate::storage::StorableType>::LAYOUT,
+            <TestAddressMapping<U256> as crate::storage::StorableType>::LAYOUT,
             crate::storage::Layout::Slots(1)
         );
     }
@@ -572,8 +575,8 @@ mod tests {
         assert_eq!(&bytes2[1..], &bytes3[1..]);
 
         // Verify address and zeroes
-        assert_eq!(&bytes[1..21], addr.as_slice(),);
-        assert_eq!(&bytes[21..], &[0u8; 11]);
+        assert_eq!(&bytes1[1..21], addr.as_slice());
+        assert_eq!(&bytes1[21..], &[0u8; 11]);
 
         // Only first byte differs
         assert_eq!(bytes1[0], 1);
