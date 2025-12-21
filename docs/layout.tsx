@@ -28,27 +28,38 @@ const mipdConfig = WagmiConfig.getConfig({
 export default function Layout(
   props: React.PropsWithChildren<{ path: string; frontmatter?: { mipd?: boolean } }>,
 ) {
+  const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
+  const posthogHost = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
+
+  const appContent = (
+    <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
+      <QueryClientProvider client={queryClient}>
+        <NuqsAdapter>
+          {posthogKey && posthogHost && <PostHogSiteIdentifier />}
+          {posthogKey && posthogHost && <PageViewTracker />}
+          <DemoContextProvider>{props.children}</DemoContextProvider>
+        </NuqsAdapter>
+      </QueryClientProvider>
+    </WagmiProvider>
+  )
+
   return (
     <>
-      <PostHogProvider
-        apiKey={import.meta.env.VITE_PUBLIC_POSTHOG_KEY}
-        options={{
-          api_host: import.meta.env.VITE_PUBLIC_POSTHOG_HOST,
-          defaults: '2025-05-24',
-          capture_exceptions: true, // This enables capturing exceptions using Error Tracking
-          debug: import.meta.env.MODE === 'development',
-        }}
-      >
-        <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
-          <QueryClientProvider client={queryClient}>
-            <NuqsAdapter>
-              <PostHogSiteIdentifier />
-              <PageViewTracker />
-              <DemoContextProvider>{props.children}</DemoContextProvider>
-            </NuqsAdapter>
-          </QueryClientProvider>
-        </WagmiProvider>
-      </PostHogProvider>
+      {posthogKey && posthogHost ? (
+        <PostHogProvider
+          apiKey={posthogKey}
+          options={{
+            api_host: posthogHost,
+            defaults: '2025-05-24',
+            capture_exceptions: true, // This enables capturing exceptions using Error Tracking
+            debug: import.meta.env.MODE === 'development',
+          }}
+        >
+          {appContent}
+        </PostHogProvider>
+      ) : (
+        appContent
+      )}
 
       <Toaster
         className="z-[42069] select-none"
