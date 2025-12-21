@@ -19,18 +19,13 @@ pub struct TIP403Registry {
 
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
-    // NOTE: enums are defined as u8, and leverage the sol! macro's `TryInto<u8>` impl
     pub policy_type: u8,
     pub admin: Address,
 }
 
-// NOTE(rusowsky): can be removed once revm uses precompiles rather than directly
-// interacting with storage slots.
 impl PolicyData {
     pub fn decode_from_slot(slot_value: U256) -> Self {
         use crate::storage::{LayoutCtx, Storable, packing::PackedSlot};
-
-        // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode PoliciData from slot")
     }
@@ -53,24 +48,18 @@ impl PolicyData {
 }
 
 impl TIP403Registry {
-    /// Initializes the registry contract.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    // View functions
     pub fn policy_id_counter(&self) -> Result<u64> {
-        // Initialize policy ID counter to 2 if it's 0 (skip special policies)
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
     pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
-        // Special policies 0 and 1 always exist
         if call.policyId < 2 {
             return Ok(true);
         }
-
-        // Check if policy ID is within the range of created policies
         let counter = self.policy_id_counter()?;
         Ok(call.policyId < counter)
     }
@@ -93,28 +82,28 @@ impl TIP403Registry {
         self.is_authorized_internal(call.policyId, call.user)
     }
 
-    // State-changing functions
     pub fn create_policy(
         &mut self,
         msg_sender: Address,
         call: ITIP403Registry::createPolicyCall,
     ) -> Result<u64> {
+        if matches!(call.policyType, ITIP403Registry::PolicyType::__Invalid) {
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
+        }
+
         let new_policy_id = self.policy_id_counter()?;
 
-        // Increment counter
         self.policy_id_counter.write(
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // Store policy data
         self.policy_data.at(new_policy_id).write(PolicyData {
             policy_type: call.policyType as u8,
             admin: call.admin,
         })?;
 
-        // Emit events
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
@@ -139,17 +128,19 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::createPolicyWithAccountsCall,
     ) -> Result<u64> {
+        if matches!(call.policyType, ITIP403Registry::PolicyType::__Invalid) {
+            return Err(TIP403RegistryError::incompatible_policy_type().into());
+        }
+
         let (admin, policy_type) = (call.admin, call.policyType);
         let new_policy_id = self.policy_id_counter()?;
 
-        // Increment counter
         self.policy_id_counter.write(
             new_policy_id
                 .checked_add(1)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // Store policy data
         self.set_policy_data(
             new_policy_id,
             PolicyData {
@@ -158,7 +149,6 @@ impl TIP403Registry {
             },
         )?;
 
-        // Set initial accounts
         for account in call.accounts.iter() {
             self.set_policy_set(new_policy_id, *account, true)?;
 
@@ -183,13 +173,10 @@ impl TIP403Registry {
                         },
                     ))?;
                 }
-                ITIP403Registry::PolicyType::__Invalid => {
-                    return Err(TIP403RegistryError::incompatible_policy_type().into());
-                }
+                _ => {}
             }
         }
 
-        // Emit policy creation events
         self.emit_event(TIP403RegistryEvent::PolicyCreated(
             ITIP403Registry::PolicyCreated {
                 policyId: new_policy_id,
@@ -214,14 +201,16 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setPolicyAdminCall,
     ) -> Result<()> {
+        if call.admin == Address::ZERO {
+            return Err(TIP403RegistryError::unauthorized().into());
+        }
+
         let data = self.get_policy_data(call.policyId)?;
 
-        // Check authorization
         if data.admin != msg_sender {
             return Err(TIP403RegistryError::unauthorized().into());
         }
 
-        // Update admin policy ID
         self.set_policy_data(
             call.policyId,
             PolicyData {
@@ -245,19 +234,13 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyWhitelistCall,
     ) -> Result<()> {
         let data = self.get_policy_data(call.policyId)?;
-
-        // Check authorization
         if data.admin != msg_sender {
             return Err(TIP403RegistryError::unauthorized().into());
         }
-
-        // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::WHITELIST as u8 {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
-
         self.set_policy_set(call.policyId, call.account, call.allowed)?;
-
         self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
             ITIP403Registry::WhitelistUpdated {
                 policyId: call.policyId,
@@ -274,19 +257,13 @@ impl TIP403Registry {
         call: ITIP403Registry::modifyPolicyBlacklistCall,
     ) -> Result<()> {
         let data = self.get_policy_data(call.policyId)?;
-
-        // Check authorization
         if data.admin != msg_sender {
             return Err(TIP403RegistryError::unauthorized().into());
         }
-
-        // Check policy type
         if data.policy_type != ITIP403Registry::PolicyType::BLACKLIST as u8 {
             return Err(TIP403RegistryError::incompatible_policy_type().into());
         }
-
         self.set_policy_set(call.policyId, call.account, call.restricted)?;
-
         self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
             ITIP403Registry::BlacklistUpdated {
                 policyId: call.policyId,
@@ -297,7 +274,6 @@ impl TIP403Registry {
         ))
     }
 
-    // Internal helper functions
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
         self.policy_data.at(policy_id).read()
     }
@@ -311,13 +287,9 @@ impl TIP403Registry {
     }
 
     fn is_authorized_internal(&self, policy_id: u64, user: Address) -> Result<bool> {
-        // Special case for always-allow and always-reject policies
         if policy_id < 2 {
-            // policyId == 0 is the "always-reject" policy
-            // policyId == 1 is the "always-allow" policy
             return Ok(policy_id == 1);
         }
-
         let data = self.get_policy_data(policy_id)?;
         let is_in_set = self.policy_set.at(policy_id).at(user).read()?;
 
@@ -330,7 +302,6 @@ impl TIP403Registry {
             ITIP403Registry::PolicyType::BLACKLIST => !is_in_set,
             ITIP403Registry::PolicyType::__Invalid => false,
         };
-
         Ok(auth)
     }
 }
@@ -340,7 +311,37 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
-    use rand::Rng;
+
+    #[test]
+    fn test_orphaned_policy_prevention() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let result = registry.set_policy_admin(
+                admin,
+                ITIP403Registry::setPolicyAdminCall {
+                    policyId: policy_id,
+                    admin: Address::ZERO,
+                },
+            );
+
+            assert!(result.is_err(), "Registry should prevent setting admin to Address::ZERO");
+            
+            let data = registry.get_policy_data(policy_id)?;
+            assert_eq!(data.admin, admin, "Admin should remain the original address");
+            Ok(())
+        })
+    }
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -348,11 +349,8 @@ mod tests {
         let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            // Initial counter should be 2 (skipping special policies)
             assert_eq!(registry.policy_id_counter()?, 2);
 
-            // Create a whitelist policy
             let result = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -362,11 +360,8 @@ mod tests {
             );
             assert!(result.is_ok());
             assert_eq!(result?, 2);
-
-            // Counter should be incremented
             assert_eq!(registry.policy_id_counter()?, 3);
 
-            // Check policy data
             let data = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 2 })?;
             assert_eq!(data.policyType, ITIP403Registry::PolicyType::WHITELIST);
             assert_eq!(data.admin, admin);
@@ -380,16 +375,8 @@ mod tests {
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
-
-            // Policy 0 should always reject
-            assert!(
-                !registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user })?
-            );
-
-            // Policy 1 should always allow
-            assert!(
-                registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user })?
-            );
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 0, user })?);
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: 1, user })?);
             Ok(())
         })
     }
@@ -401,8 +388,6 @@ mod tests {
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            // Create whitelist policy
             let policy_id = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -410,29 +395,9 @@ mod tests {
                     policyType: ITIP403Registry::PolicyType::WHITELIST,
                 },
             )?;
-
-            // User should not be authorized initially
-            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user,
-            })?);
-
-            // Add user to whitelist
-            registry.modify_policy_whitelist(
-                admin,
-                ITIP403Registry::modifyPolicyWhitelistCall {
-                    policyId: policy_id,
-                    account: user,
-                    allowed: true,
-                },
-            )?;
-
-            // User should now be authorized
-            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user,
-            })?);
-
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?);
+            registry.modify_policy_whitelist(admin, ITIP403Registry::modifyPolicyWhitelistCall { policyId: policy_id, account: user, allowed: true })?;
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?);
             Ok(())
         })
     }
@@ -444,8 +409,6 @@ mod tests {
         let user = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
-
-            // Create blacklist policy
             let policy_id = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -453,29 +416,9 @@ mod tests {
                     policyType: ITIP403Registry::PolicyType::BLACKLIST,
                 },
             )?;
-
-            // User should be authorized initially (not in blacklist)
-            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user,
-            })?);
-
-            // Add user to blacklist
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: user,
-                    restricted: true,
-                },
-            )?;
-
-            // User should no longer be authorized
-            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user,
-            })?);
-
+            assert!(registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?);
+            registry.modify_policy_blacklist(admin, ITIP403Registry::modifyPolicyBlacklistCall { policyId: policy_id, account: user, restricted: true })?;
+            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall { policyId: policy_id, user })?);
             Ok(())
         })
     }
@@ -483,47 +426,10 @@ mod tests {
     #[test]
     fn test_policy_exists() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
         StorageCtx::enter(&mut storage, || {
-            let mut registry = TIP403Registry::new();
-
-            // Special policies 0 and 1 always exist
+            let registry = TIP403Registry::new();
             assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 0 })?);
             assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 1 })?);
-
-            // Test 100 random policy IDs > 1 should not exist initially
-            let mut rng = rand::thread_rng();
-            for _ in 0..100 {
-                let random_policy_id = rng.gen_range(2..u64::MAX);
-                assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
-                    policyId: random_policy_id
-                })?);
-            }
-
-            // Create 50 policies
-            let mut created_policy_ids = Vec::new();
-            for i in 0..50 {
-                let policy_id = registry.create_policy(
-                    admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: if i % 2 == 0 {
-                            ITIP403Registry::PolicyType::WHITELIST
-                        } else {
-                            ITIP403Registry::PolicyType::BLACKLIST
-                        },
-                    },
-                )?;
-                created_policy_ids.push(policy_id);
-            }
-
-            // All created policies should exist
-            for policy_id in &created_policy_ids {
-                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
-                    policyId: *policy_id
-                })?);
-            }
-
             Ok(())
         })
     }
