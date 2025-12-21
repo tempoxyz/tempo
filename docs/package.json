@@ -9,7 +9,7 @@
     "dev": "vocs dev",
     "extract-sdk-types": "tsx scripts/extract-sdk-types.ts",
     "gen:specs": "node scripts/gen-specs.ts",
-    "prepare": "simple-git-hooks",
+    "prepare": "test -d .git && simple-git-hooks || true",
     "preview": "vocs preview"
   },
   "dependencies": {
@@ -24,6 +24,7 @@
     "monaco-editor": "^0.55.1",
     "nuqs": "^2.8.2",
     "ox": "^0.10.2",
+    "posthog-js": "^1.309.1",
     "prool": "^0.2.1",
     "react": "latest",
     "react-dom": "latest",
