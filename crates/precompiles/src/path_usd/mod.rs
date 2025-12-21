@@ -282,6 +282,7 @@ mod tests {
         storage::hashmap::HashMapStorageProvider,
         test_util::setup_storage,
         tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     fn transfer_test_setup(admin: Address) -> Result<PathUSD> {
@@ -1194,9 +1195,20 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut path_usd = PathUSD::new();
-            let new_policy_id = 42u64;
-
             path_usd.initialize(admin)?;
+
+            // Initialize TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Create a valid policy
+            let new_policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
 
             // Admin can change transfer policy ID
             path_usd.token.change_transfer_policy_id(

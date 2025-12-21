@@ -36,10 +36,10 @@ export function useWebAuthnConnector() {
 }
 
 function getExplorerHost() {
-  const { VITE_LOCAL, VITE_LOCAL_EXPLORER } = import.meta.env
+  const { VITE_ENVIRONMENT, VITE_EXPLORER_OVERRIDE } = import.meta.env
 
-  if (VITE_LOCAL === 'true' && VITE_LOCAL_EXPLORER !== undefined) {
-    return VITE_LOCAL_EXPLORER
+  if (VITE_ENVIRONMENT !== 'testnet' && VITE_EXPLORER_OVERRIDE !== undefined) {
+    return VITE_EXPLORER_OVERRIDE
   }
 
   return tempo({}).blockExplorers.default.url

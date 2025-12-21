@@ -30,14 +30,58 @@ export default defineConfig({
         <meta name="twitter:title" content="Documentation ⋅ Tempo" />
         <meta name="twitter:image" content="/og-docs.png" />
         <link rel="icon" href="/favicon.ico" sizes="32x32" />
-        <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: light)" />
-        <link rel="icon" type="image/svg+xml" href="/favicon-dark.svg" media="(prefers-color-scheme: dark)" />
-        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-light.png" media="(prefers-color-scheme: dark)" />
-        <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-dark.png" media="(prefers-color-scheme: light)" />
-        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-light.png" media="(prefers-color-scheme: dark)" />
-        <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-dark.png" media="(prefers-color-scheme: light)" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-light.png" media="(prefers-color-scheme: light)" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/favicon-dark.png" media="(prefers-color-scheme: dark)" />
+        <link
+          rel="icon"
+          type="image/svg+xml"
+          href="/favicon-light.svg"
+          media="(prefers-color-scheme: light)"
+        />
+        <link
+          rel="icon"
+          type="image/svg+xml"
+          href="/favicon-dark.svg"
+          media="(prefers-color-scheme: dark)"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="32x32"
+          href="/favicon-32x32-light.png"
+          media="(prefers-color-scheme: dark)"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="32x32"
+          href="/favicon-32x32-dark.png"
+          media="(prefers-color-scheme: light)"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="16x16"
+          href="/favicon-16x16-light.png"
+          media="(prefers-color-scheme: dark)"
+        />
+        <link
+          rel="icon"
+          type="image/png"
+          sizes="16x16"
+          href="/favicon-16x16-dark.png"
+          media="(prefers-color-scheme: light)"
+        />
+        <link
+          rel="apple-touch-icon"
+          sizes="180x180"
+          href="/favicon-light.png"
+          media="(prefers-color-scheme: light)"
+        />
+        <link
+          rel="apple-touch-icon"
+          sizes="180x180"
+          href="/favicon-dark.png"
+          media="(prefers-color-scheme: dark)"
+        />
       </>
     )
   },
@@ -94,6 +138,10 @@ export default defineConfig({
           {
             text: 'Predeployed Contracts',
             link: '/quickstart/predeployed-contracts',
+          },
+          {
+            text: 'Wallet Developers',
+            link: '/quickstart/wallet-developers',
           },
         ],
       },
@@ -1771,8 +1819,8 @@ export default defineConfig({
         name: 'tempo-node',
         async configureServer(_server) {
           if (
-            !('VITE_LOCAL' in process.env) ||
-            process.env['VITE_LOCAL'] === 'false'
+            !('VITE_ENVIRONMENT' in process.env) ||
+            process.env['VITE_ENVIRONMENT'] !== 'local'
           )
             return
           const instance = Instance.tempo({
