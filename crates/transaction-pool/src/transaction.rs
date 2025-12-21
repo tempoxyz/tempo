@@ -206,10 +206,10 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::MissingFeeToken
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
-            | Self::InvalidValidAfter { .. }
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_) => false,
-            Self::NonZeroValue | Self::SubblockNonceKey => true,
+
+            Self::NonZeroValue | Self::SubblockNonceKey | Self::InvalidValidAfter { .. } => true,
         }
     }
 
