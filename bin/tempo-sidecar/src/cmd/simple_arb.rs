@@ -45,6 +45,10 @@ pub struct SimpleArbArgs {
     /// Prometheus port for metrics
     #[arg(long, default_value_t = 8000)]
     metrics_port: u64,
+
+    /// Token address to include (can be specified multiple times, if not provided all tokens will be fetched)
+    #[arg(long)]
+    token: Vec<String>,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -54,13 +58,20 @@ struct Pair {
 }
 
 #[instrument(skip(provider))]
-async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<Pair>> {
-    let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
-    let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
+async fn fetch_all_pairs<P: Provider>(
+    provider: P,
+    token_filter: Option<Vec<Address>>,
+) -> eyre::Result<HashSet<Pair>> {
+    let tokens = if let Some(filter) = token_filter {
+        filter
+    } else {
+        let tip20_factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider);
+        let last_token_id = tip20_factory.tokenIdCounter().call().await?.to::<u64>();
 
-    let tokens = (0..last_token_id)
-        .map(token_id_to_address)
-        .collect::<Vec<_>>();
+        (0..last_token_id)
+            .map(token_id_to_address)
+            .collect::<Vec<_>>()
+    };
 
     let mut pairs = HashSet::new();
     for pair in tokens.iter().permutations(2) {
@@ -301,8 +312,21 @@ impl SimpleArbArgs {
 
         let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
+        // Parse token addresses if provided
+        let token_filter = if !self.token.is_empty() {
+            let tokens = self
+                .token
+                .iter()
+                .map(|s| s.parse::<Address>())
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to parse token addresses")?;
+            Some(tokens)
+        } else {
+            None
+        };
+
         info!("Fetching all pairs...");
-        let pairs = fetch_all_pairs(provider.clone()).await?;
+        let pairs = fetch_all_pairs(provider.clone(), token_filter).await?;
 
         info!("Rebalancing initial pools...");
         initial_rebalance(&fee_amm, &pairs, &signer_address).await?;
