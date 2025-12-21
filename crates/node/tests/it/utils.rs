@@ -22,7 +22,7 @@ use reth_node_api::{FullNodeComponents, PayloadBuilderAttributes};
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
 use reth_node_core::args::RpcServerArgs;
 use reth_rpc_builder::RpcModuleSelection;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_contracts::precompiles::{
     IRolesAuth,
@@ -236,8 +236,11 @@ impl TestNodeBuilder {
     }
 
     /// Set Allegretto hardfork activation time to 0.
+    /// Also disables Allegro Moderato (sets to far future) for pre-AM behavior.
     pub(crate) fn allegretto_activated(self) -> Self {
-        self.moderato_activated().with_allegretto_time(0)
+        self.moderato_activated()
+            .with_allegretto_time(0)
+            .with_allegro_moderato_time(u64::MAX)
     }
 
     /// Set Allegro Moderato hardfork activation time to 0
@@ -330,6 +333,7 @@ impl TestNodeBuilder {
                     .with_http_api(RpcModuleSelection::All),
             );
         node_config.txpool.max_account_slots = usize::MAX;
+        node_config.dev.block_time = Some(Duration::from_millis(100));
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(tasks.executor())

@@ -34,7 +34,7 @@ export function AddFunds(props: DemoStepProps) {
       if (!address) throw new Error('account.address not found')
       if (!client) throw new Error('client not found')
 
-      if (import.meta.env.VITE_LOCAL !== 'true')
+      if (import.meta.env.VITE_ENVIRONMENT !== 'local')
         await Actions.faucet.fundSync(
           client as unknown as Client<Transport, Chain.Chain<null>>,
           { account: address },

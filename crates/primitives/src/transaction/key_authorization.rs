@@ -4,7 +4,6 @@ use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
 use core::mem;
-use reth_primitives_traits::InMemorySize;
 
 /// Token spending limit for access keys
 ///
@@ -40,6 +39,7 @@ pub struct TokenLimit {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct KeyAuthorization {
     /// Chain ID for replay protection (0 = valid on any chain)
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: u64,
 
     /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
@@ -51,6 +51,7 @@ pub struct KeyAuthorization {
     /// Unix timestamp when key expires.
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<u64>,
 
     /// TIP20 spending limits for this key.
@@ -85,10 +86,9 @@ impl KeyAuthorization {
             signature,
         }
     }
-}
 
-impl InMemorySize for KeyAuthorization {
-    fn size(&self) -> usize {
+    /// Calculates a heuristic for the in-memory size of the key authorization
+    pub fn size(&self) -> usize {
         mem::size_of::<u64>() + // chain_id
         mem::size_of::<u8>() + // key_type
         mem::size_of::<Address>() + // key_id
@@ -133,6 +133,11 @@ impl SignedKeyAuthorization {
         self.signature
             .recover_signer(&self.authorization.signature_hash())
     }
+
+    /// Calculates a heuristic for the in-memory size of the signed key authorization
+    pub fn size(&self) -> usize {
+        self.authorization.size() + self.signature.size()
+    }
 }
 
 #[cfg(feature = "reth-codec")]
@@ -150,12 +155,6 @@ impl reth_codecs::Compact for SignedKeyAuthorization {
         let item = alloy_rlp::Decodable::decode(&mut buf)
             .expect("Failed to decode KeyAuthorization from compact");
         (item, buf)
-    }
-}
-
-impl reth_primitives_traits::InMemorySize for SignedKeyAuthorization {
-    fn size(&self) -> usize {
-        self.authorization.size() + self.signature.size()
     }
 }
 

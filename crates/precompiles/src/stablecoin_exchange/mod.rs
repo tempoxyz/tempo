@@ -5,7 +5,10 @@ pub mod order;
 pub mod orderbook;
 
 pub use order::Order;
-pub use orderbook::{MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, TickLevel, tick_to_price};
+pub use orderbook::{
+    MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
+    quote_to_base, tick_to_price,
+};
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IStablecoinExchange, StablecoinExchangeError, StablecoinExchangeEvents,
@@ -32,18 +35,11 @@ pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
 
-/// Calculate quote amount using floor division (rounds down)
-/// Pre-Moderato behavior
-fn calculate_quote_amount_floor(amount: u128, tick: i16) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    amount.checked_mul(price)?.checked_div(PRICE_SCALE as u128)
-}
-
-/// Calculate quote amount using ceiling division (rounds up)
-/// Post-Moderato behavior
-fn calculate_quote_amount_ceil(amount: u128, tick: i16) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    Some(amount.checked_mul(price)?.div_ceil(PRICE_SCALE as u128))
+/// Calculate quote amount with specified rounding direction
+/// - `RoundingDirection::Down`: Pre-Moderato behavior (floor division)
+/// - `RoundingDirection::Up`: Post-Moderato behavior, favors protocol when user deposits funds
+fn calculate_quote_amount(amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    base_to_quote(amount, tick, rounding)
 }
 
 #[contract(addr = STABLECOIN_EXCHANGE_ADDRESS)]
@@ -94,6 +90,12 @@ impl StablecoinExchange {
     fn increment_pending_order_id(&mut self) -> Result<u128> {
         let next_id = self.get_pending_order_id()? + 1;
         self.set_pending_order_id(next_id)?;
+        Ok(next_id)
+    }
+
+    /// Get the next order Id
+    fn next_order_id(&mut self) -> Result<u128> {
+        let next_id = self.active_order_id.read()? + 1;
         Ok(next_id)
     }
 
@@ -412,12 +414,12 @@ impl StablecoinExchange {
             .read()
     }
 
-    /// Get active order ID
+    /// Get active order ID (Pre Allegro-Moderato)
     pub fn active_order_id(&self) -> Result<u128> {
         self.active_order_id.read()
     }
 
-    /// Get pending order ID
+    /// Get pending order ID (Pre Allegro-Moderato)
     pub fn pending_order_id(&self) -> Result<u128> {
         self.pending_order_id.read()
     }
@@ -523,12 +525,13 @@ impl StablecoinExchange {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = if self.storage.spec().is_moderato() {
-                calculate_quote_amount_ceil(amount, tick)
+            let rounding = if self.storage.spec().is_moderato() {
+                RoundingDirection::Up
             } else {
-                calculate_quote_amount_floor(amount, tick)
-            }
-            .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                RoundingDirection::Down
+            };
+            let quote_amount = calculate_quote_amount(amount, tick, rounding)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -539,17 +542,27 @@ impl StablecoinExchange {
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
 
         // Create the order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = if self.storage.spec().is_allegro_moderato() {
+            self.next_order_id()?
+        } else {
+            self.increment_pending_order_id()?
+        };
+
         let order = if is_bid {
             Order::new_bid(order_id, sender, book_key, amount, tick)
         } else {
             Order::new_ask(order_id, sender, book_key, amount, tick)
         };
 
-        // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
-        // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
-        // linked and then considered "active"
-        self.orders.at(order_id).write(order)?;
+        // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
+        if self.storage.spec().is_allegro_moderato() {
+            self.commit_order_to_book(order)?;
+        } else {
+            // Store in pending queue. Orders are stored as a DLL at each tick level and are initially
+            // stored without a prev or next pointer. This is considered a "pending" order. Once `execute_block` is called, orders are
+            // linked and then considered "active"
+            self.orders.at(order_id).write(order)?;
+        }
 
         // Emit OrderPlaced event
         self.emit_event(StablecoinExchangeEvents::OrderPlaced(
@@ -564,6 +577,56 @@ impl StablecoinExchange {
         ))?;
 
         Ok(order_id)
+    }
+
+    /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
+    fn commit_order_to_book(&mut self, mut order: Order) -> Result<()> {
+        let mut book_handler = self.books.at(order.book_key());
+        let mut level_handler = book_handler.get_tick_level_handler(order.tick(), order.is_bid());
+        let orderbook = book_handler.read()?;
+        let mut level = level_handler.read()?;
+
+        let prev_tail = level.tail;
+        if prev_tail == 0 {
+            level.head = order.order_id();
+            level.tail = order.order_id();
+
+            book_handler.set_tick_bit(order.tick(), order.is_bid())?;
+
+            if order.is_bid() {
+                if order.tick() > orderbook.best_bid_tick {
+                    self.books
+                        .at(order.book_key())
+                        .best_bid_tick
+                        .write(order.tick())?;
+                }
+            } else if order.tick() < orderbook.best_ask_tick {
+                self.books
+                    .at(order.book_key())
+                    .best_ask_tick
+                    .write(order.tick())?;
+            }
+        } else {
+            // Update previous tail's next pointer
+            let mut prev_order = self.orders.at(prev_tail).read()?;
+            prev_order.next = order.order_id();
+            self.orders.at(prev_tail).write(prev_order)?;
+
+            // Set current order's prev pointer
+            order.prev = prev_tail;
+            level.tail = order.order_id();
+        }
+
+        let new_liquidity = level
+            .total_liquidity
+            .checked_add(order.remaining())
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        level.total_liquidity = new_liquidity;
+
+        level_handler.write(level)?;
+        self.set_active_order_id(order.order_id())?;
+
+        self.orders.at(order.order_id()).write(order)
     }
 
     /// Place a flip order that auto-flips when filled
@@ -623,12 +686,13 @@ impl StablecoinExchange {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = if self.storage.spec().is_moderato() {
-                calculate_quote_amount_ceil(amount, tick)
+            let rounding = if self.storage.spec().is_moderato() {
+                RoundingDirection::Up
             } else {
-                calculate_quote_amount_floor(amount, tick)
-            }
-            .ok_or(StablecoinExchangeError::insufficient_balance())?;
+                RoundingDirection::Down
+            };
+            let quote_amount = calculate_quote_amount(amount, tick, rounding)
+                .ok_or(StablecoinExchangeError::insufficient_balance())?;
             (quote_token, quote_amount)
         } else {
             // For asks, escrow base tokens
@@ -639,12 +703,22 @@ impl StablecoinExchange {
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
 
         // Create the flip order
-        let order_id = self.increment_pending_order_id()?;
+        let order_id = if self.storage.spec().is_allegro_moderato() {
+            self.next_order_id()?
+        } else {
+            self.increment_pending_order_id()?
+        };
+
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
             .map_err(|_| StablecoinExchangeError::invalid_flip_tick())?;
 
-        // Store in pending queue
-        self.orders.at(order_id).write(order)?;
+        // Post Allegro Moderato, commit the order to the book immediately rather than storing in a pending state until end of block execution
+        if self.storage.spec().is_allegro_moderato() {
+            self.commit_order_to_book(order)?;
+        } else {
+            // Store in pending queue
+            self.orders.at(order_id).write(order)?;
+        }
 
         // Emit FlipOrderPlaced event
         self.emit_event(StablecoinExchangeEvents::FlipOrderPlaced(
@@ -665,12 +739,21 @@ impl StablecoinExchange {
     /// Process all pending orders into the active orderbook
     ///
     /// Only callable by the protocol via system transaction (sender must be Address::ZERO)
+    ///
+    /// Post Allegro-Moderato: This function is a no-op since orders are immediately
+    /// linked into the orderbook when placed.
     pub fn execute_block(&mut self, sender: Address) -> Result<()> {
         // Only protocol can call this
         if sender != Address::ZERO {
             return Err(StablecoinExchangeError::unauthorized().into());
         }
 
+        // Post Allegro-Moderato: orders are immediately active, nothing to process
+        if self.storage.spec().is_allegro_moderato() {
+            return Ok(());
+        }
+
+        // Pre Allegro-Moderato: process pending orders into the active orderbook
         let next_order_id = self.get_active_order_id()?;
 
         let pending_order_id = self.get_pending_order_id()?;
@@ -688,7 +771,7 @@ impl StablecoinExchange {
         self.set_active_order_id(pending_order_id)
     }
 
-    /// Process a single pending order into the active orderbook
+    /// Process a single pending order into the active orderbook (pre Allegro-Moderato only)
     fn process_pending_order(&mut self, order_id: u128) -> Result<()> {
         let order = self.orders.at(order_id).read()?;
 
@@ -748,7 +831,6 @@ impl StablecoinExchange {
     ) -> Result<u128> {
         let book_handler = self.books.at(order.book_key());
         let orderbook = book_handler.read()?;
-        let price = tick_to_price(order.tick());
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
@@ -758,19 +840,18 @@ impl StablecoinExchange {
             .write(new_remaining)?;
 
         if order.is_bid() {
+            // Bid order maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
-            let quote_amount = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            // Ask order maker receives quote tokens - round DOWN to favor protocol
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
+        // Calculate amount out for taker - round DOWN to favor protocol
         let amount_out = if order.is_bid() {
-            fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             fill_amount
@@ -813,23 +894,23 @@ impl StablecoinExchange {
         };
 
         let orderbook = book_handler_order.read()?;
-        let price = tick_to_price(order.tick());
         let fill_amount = order.remaining();
 
+        // Settlement: round DOWN for both maker and taker to favor protocol
         let amount_out = if order.is_bid() {
+            // Bid maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
-            fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            // Taker receives quote tokens - round DOWN
+            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?
         } else {
-            let quote_amount = fill_amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+            // Ask maker receives quote tokens - round DOWN
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
 
+            // Taker receives base tokens (exact amount)
             fill_amount
         };
 
@@ -1250,9 +1331,10 @@ impl StablecoinExchange {
         };
 
         // For bids, calculate quote amount to refund; for asks, refund base amount
+        // Refunds round DOWN to favor protocol
         let refund_amount = if order.is_bid() {
-            let price = orderbook::tick_to_price(order.tick());
-            (order.remaining() * price as u128) / orderbook::PRICE_SCALE as u128
+            base_to_quote(order.remaining(), order.tick(), RoundingDirection::Down)
+                .ok_or(TempoPrecompileError::under_overflow())?
         } else {
             order.remaining()
         };
@@ -1333,20 +1415,17 @@ impl StablecoinExchange {
 
         level_handler.write(level)?;
 
-        // Refund tokens to maker
+        // Refund tokens to maker - round DOWN to favor protocol
         let orderbook = self.books.at(order.book_key()).read()?;
         if order.is_bid() {
-            // Bid orders are in quote token, refund quote amount
-            let price = orderbook::tick_to_price(order.tick());
-            let quote_amount = order
-                .remaining()
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            // Bid orders are in quote token, refund quote amount - round DOWN
+            let quote_amount =
+                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Down)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         } else {
-            // Ask orders are in base token, refund base amount
+            // Ask orders are in base token, refund base amount (exact)
             self.increment_balance(order.maker(), orderbook.base, order.remaining())?;
         }
 
@@ -1498,10 +1577,12 @@ impl StablecoinExchange {
         let path_in = self.find_path_to_root(token_in)?;
         let path_out = self.find_path_to_root(token_out)?;
 
-        // Find the lowest common ancestor (LCA)
+        // Find the lowest common ancestor (LCA) using O(n+m) algorithm:
+        // Build a HashSet from path_out for O(1) lookups, then iterate path_in
+        let path_out_set: std::collections::HashSet<Address> = path_out.iter().copied().collect();
         let mut lca = None;
         for token_a in &path_in {
-            if path_out.contains(token_a) {
+            if path_out_set.contains(token_a) {
                 lca = Some(*token_a);
                 break;
             }
@@ -1818,61 +1899,169 @@ mod tests {
     }
 
     #[test]
-    fn test_calculate_quote_amount_floor() -> eyre::Result<()> {
+    fn test_calculate_quote_amount_rounding() -> eyre::Result<()> {
         // Floor division rounds DOWN
         // amount = 100, tick = 1 means price = 100001
         // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
         // Should round down to 100
         let amount = 100u128;
         let tick = 1i16;
-        let result = calculate_quote_amount_floor(amount, tick).unwrap();
+        let result_floor = calculate_quote_amount(amount, tick, RoundingDirection::Down).unwrap();
+        assert_eq!(
+            result_floor, 100,
+            "Expected 100 (rounded down from 100.001)"
+        );
 
-        assert_eq!(result, 100, "Expected 100 (rounded down from 100.001)");
+        // Ceiling division rounds UP - same inputs should round up to 101
+        let result_ceil = calculate_quote_amount(amount, tick, RoundingDirection::Up).unwrap();
+        assert_eq!(result_ceil, 101, "Expected 101 (rounded up from 100.001)");
 
-        // Another test case
+        // Another test case with floor
         let amount2 = 999u128;
         let tick2 = 5i16; // price = 100005
-        let result2 = calculate_quote_amount_floor(amount2, tick2).unwrap();
+        let result2_floor =
+            calculate_quote_amount(amount2, tick2, RoundingDirection::Down).unwrap();
         // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 999
-        assert_eq!(result2, 999, "Expected 999 (rounded down from 999.04995)");
+        assert_eq!(
+            result2_floor, 999,
+            "Expected 999 (rounded down from 999.04995)"
+        );
 
-        // Test with no remainder (should work the same)
+        // Same inputs with ceiling should round up to 1000
+        let result2_ceil = calculate_quote_amount(amount2, tick2, RoundingDirection::Up).unwrap();
+        assert_eq!(
+            result2_ceil, 1000,
+            "Expected 1000 (rounded up from 999.04995)"
+        );
+
+        // Test with no remainder (should work the same for both)
         let amount3 = 100000u128;
         let tick3 = 0i16; // price = 100000
-        let result3 = calculate_quote_amount_floor(amount3, tick3).unwrap();
+        let result3_floor =
+            calculate_quote_amount(amount3, tick3, RoundingDirection::Down).unwrap();
+        let result3_ceil = calculate_quote_amount(amount3, tick3, RoundingDirection::Up).unwrap();
         // 100000 * 100000 / 100000 = 100000 (exact, no rounding)
-        assert_eq!(result3, 100000, "Exact division should remain exact");
+        assert_eq!(result3_floor, 100000, "Exact division should remain exact");
+        assert_eq!(result3_ceil, 100000, "Exact division should remain exact");
 
         Ok(())
     }
 
     #[test]
-    fn test_calculate_quote_amount_ceil() -> eyre::Result<()> {
-        // Ceiling division rounds UP
-        // amount = 100, tick = 1 means price = 100001
-        // 100 * 100001 / 100000 = 10000100 / 100000 = 100.001
-        // Should round up to 101
-        let amount = 100u128;
-        let tick = 1i16;
-        let result = calculate_quote_amount_ceil(amount, tick).unwrap();
+    fn test_settlement_rounding_favors_protocol_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
 
-        assert_eq!(result, 101, "Expected 101 (rounded up from 100.001)");
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
 
-        // Another test case
-        let amount2 = 999u128;
-        let tick2 = 5i16; // price = 100005
-        let result2 = calculate_quote_amount_ceil(amount2, tick2).unwrap();
-        // 999 * 100005 / 100000 = 99904995 / 100000 = 999.04995 -> should be 1000
-        assert_eq!(result2, 1000, "Expected 1000 (rounded up from 999.04995)");
+            let base_amount = 10_000_003u128;
+            let tick = 100i16;
 
-        // Test with no remainder (should work the same)
-        let amount3 = 100000u128;
-        let tick3 = 0i16; // price = 100000
-        let result3 = calculate_quote_amount_ceil(amount3, tick3).unwrap();
-        // 100000 * 100000 / 100000 = 100000 (exact, no rounding needed)
-        assert_eq!(result3, 100000, "Exact division should remain exact");
+            let price = orderbook::tick_to_price(tick) as u128;
+            let expected_quote_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
+            let expected_quote_ceil =
+                (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
 
-        Ok(())
+            let max_escrow = expected_quote_ceil * 2;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(base_amount * 2))
+                .with_mint(bob, U256::from(base_amount * 2))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(max_escrow))
+                .with_mint(bob, U256::from(max_escrow))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .with_approval(bob, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            exchange.place(alice, base_token, base_amount, false, tick)?;
+            exchange.execute_block(Address::ZERO)?;
+
+            let alice_quote_before = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(alice_quote_before, 0);
+
+            exchange.swap_exact_amount_in(bob, quote_token, base_token, expected_quote_ceil, 0)?;
+
+            let alice_quote_after = exchange.balance_of(alice, quote_token)?;
+
+            assert_eq!(
+                alice_quote_after, expected_quote_floor,
+                "Maker settlement should round DOWN to favor protocol. Got {alice_quote_after}, expected floor {expected_quote_floor}"
+            );
+
+            assert!(
+                expected_quote_ceil > expected_quote_floor,
+                "Test setup error: should have a non-zero remainder"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancellation_refund_rounding_favors_protocol_post_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let base_amount = 10_000_003u128;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick) as u128;
+            let escrow_ceil = (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let refund_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(escrow_ceil))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .apply()?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, base_amount, true, tick)?;
+            exchange.execute_block(Address::ZERO)?;
+
+            exchange.cancel(alice, order_id)?;
+
+            let alice_refund = exchange.balance_of(alice, quote_token)?;
+
+            assert_eq!(
+                alice_refund, refund_floor,
+                "Cancellation refund should round DOWN to favor protocol. Got {alice_refund}, expected floor {refund_floor}"
+            );
+
+            assert!(
+                escrow_ceil > refund_floor,
+                "Protocol should keep the rounding difference: escrowed {escrow_ceil} but refunded {refund_floor}"
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -2406,14 +2595,14 @@ mod tests {
             let order_0 = exchange.orders.at(order_id_0).read()?;
             let order_1 = exchange.orders.at(order_id_1).read()?;
             assert_eq!(order_0.prev(), 0);
-            assert_eq!(order_0.next(), order_1.order_id());
-            assert_eq!(order_1.prev(), order_0.order_id());
+            assert_eq!(order_0.next(), order_id_1);
+            assert_eq!(order_1.prev(), order_id_0);
             assert_eq!(order_1.next(), 0);
 
             // Assert tick level is updated
             let level_after = book_handler.get_tick_level_handler(tick, true).read()?;
-            assert_eq!(level_after.head, order_0.order_id());
-            assert_eq!(level_after.tail, order_1.order_id());
+            assert_eq!(level_after.head, order_id_0);
+            assert_eq!(level_after.tail, order_id_1);
             assert_eq!(level_after.total_liquidity, min_order_amount * 2);
 
             // Verify orderbook best bid tick is updated
@@ -4286,6 +4475,334 @@ mod tests {
 
             assert!(result.is_err());
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_order_immediately_active() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+
+            assert_eq!(order_id, 1);
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let book_handler = exchange.books.at(book_key);
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            assert_eq!(level.head, order_id, "Order should be head of tick level");
+            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(
+                level.total_liquidity, min_order_amount,
+                "Tick level should have order's liquidity"
+            );
+
+            let orderbook = book_handler.read()?;
+            assert_eq!(
+                orderbook.best_bid_tick, tick,
+                "Best bid tick should be updated"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_flip_order_immediately_active() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id =
+                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+
+            assert_eq!(order_id, 1);
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let book_handler = exchange.books.at(book_key);
+            let level = book_handler.get_tick_level_handler(tick, true).read()?;
+            assert_eq!(level.head, order_id, "Order should be head of tick level");
+            assert_eq!(level.tail, order_id, "Order should be tail of tick level");
+            assert_eq!(
+                level.total_liquidity, min_order_amount,
+                "Tick level should have order's liquidity"
+            );
+
+            let orderbook = book_handler.read()?;
+            assert_eq!(
+                orderbook.best_bid_tick, tick,
+                "Best bid tick should be updated"
+            );
+
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert!(stored_order.is_flip(), "Order should be a flip order");
+            assert_eq!(
+                stored_order.flip_tick(),
+                flip_tick,
+                "Flip tick should match"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert_eq!(stored_order.maker(), alice);
+            assert_eq!(stored_order.remaining(), min_order_amount);
+            assert_eq!(stored_order.tick(), tick);
+            assert!(stored_order.is_bid());
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange
+                .books
+                .at(book_key)
+                .get_tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(level.head, 0);
+            assert_eq!(level.tail, 0);
+            assert_eq!(level.total_liquidity, 0);
+
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
+
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert_eq!(stored_order.maker(), alice);
+            assert_eq!(stored_order.remaining(), min_order_amount);
+            assert_eq!(stored_order.tick(), tick);
+            assert!(stored_order.is_bid());
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange
+                .books
+                .at(book_key)
+                .get_tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(level.head, order_id);
+            assert_eq!(level.tail, order_id);
+            assert_eq!(level.total_liquidity, min_order_amount);
+
+            let book = exchange.books.at(book_key).read()?;
+            assert_eq!(book.best_bid_tick, tick);
+
+            assert_eq!(exchange.active_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_flip_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id =
+                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert_eq!(stored_order.maker(), alice);
+            assert_eq!(stored_order.remaining(), min_order_amount);
+            assert_eq!(stored_order.tick(), tick);
+            assert!(stored_order.is_bid());
+            assert!(stored_order.is_flip());
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange
+                .books
+                .at(book_key)
+                .get_tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(level.head, 0);
+            assert_eq!(level.tail, 0);
+            assert_eq!(level.total_liquidity, 0);
+
+            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.active_order_id()?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_flip_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let min_order_amount = MIN_ORDER_AMOUNT;
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let price = orderbook::tick_to_price(tick);
+            let expected_escrow =
+                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+
+            TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_role(alice, *TRANSFER_ROLE)
+                .with_mint(alice, U256::from(expected_escrow))
+                .with_approval(alice, exchange.address, U256::from(expected_escrow))
+                .apply()?;
+
+            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
+            let base_token = base.address();
+            let quote_token = base.quote_token()?;
+
+            exchange.create_pair(base_token)?;
+
+            let order_id =
+                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+
+            let stored_order = exchange.orders.at(order_id).read()?;
+            assert_eq!(stored_order.maker(), alice);
+            assert_eq!(stored_order.remaining(), min_order_amount);
+            assert_eq!(stored_order.tick(), tick);
+            assert!(stored_order.is_bid());
+            assert!(stored_order.is_flip());
+
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange
+                .books
+                .at(book_key)
+                .get_tick_level_handler(tick, true)
+                .read()?;
+            assert_eq!(level.head, order_id);
+            assert_eq!(level.tail, order_id);
+            assert_eq!(level.total_liquidity, min_order_amount);
+
+            let book = exchange.books.at(book_key).read()?;
+            assert_eq!(book.best_bid_tick, tick);
+
+            assert_eq!(exchange.active_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             Ok(())
         })
