@@ -20,6 +20,7 @@ import LucideRotateCcw from '~icons/lucide/rotate-ccw'
 import LucideWalletCards from '~icons/lucide/wallet-cards'
 import { cva, cx } from '../../cva.config'
 import { Container as ParentContainer } from '../Container'
+import { usePostHogTracking } from '../../lib/posthog'
 import { alphaUsd } from './tokens'
 
 export const FAKE_RECIPIENT = '0xbeefcafe54750903ac1c8909323af7beb21ea2cb'
@@ -45,13 +46,17 @@ function getExplorerHost() {
 }
 
 export function ExplorerLink({ hash }: { hash: string }) {
+  const { trackExternalLinkClick } = usePostHogTracking()
+  const url = `${getExplorerHost()}/tx/${hash}`
+
   return (
     <div className="mt-1">
       <a
-        href={`${getExplorerHost()}/tx/${hash}`}
+        href={url}
         target="_blank"
         rel="noreferrer"
         className="text-accent text-[13px] -tracking-[1%] flex items-center gap-1 hover:underline"
+        onClick={() => trackExternalLinkClick(url, 'View receipt')}
       >
         View receipt
         <LucideExternalLink className="size-3" />
@@ -61,13 +66,17 @@ export function ExplorerLink({ hash }: { hash: string }) {
 }
 
 export function ExplorerAccountLink({ address }: { address: string }) {
+  const { trackExternalLinkClick } = usePostHogTracking()
+  const url = `${getExplorerHost()}/account/${address}`
+
   return (
     <div className="mt-1">
       <a
-        href={`${getExplorerHost()}/account/${address}`}
+        href={url}
         target="_blank"
         rel="noreferrer"
         className="text-accent text-[13px] -tracking-[1%] flex items-center gap-1 hover:underline"
+        onClick={() => trackExternalLinkClick(url, 'View account')}
       >
         View account
         <LucideExternalLink className="size-3" />
@@ -263,13 +272,19 @@ export namespace Container {
   export function SourceFooter(props: { src: string }) {
     const { src } = props
     const [isCopied, copy] = useCopyToClipboard()
+    const { trackCopy, trackDemo, trackExternalLinkClick } = usePostHogTracking()
+    const command = `pnpx gitpick ${src}`
+
     return (
       <div className="flex justify-between w-full">
         {/** biome-ignore lint/a11y/noStaticElementInteractions: _ */}
         {/** biome-ignore lint/a11y/useKeyWithClickEvents: _ */}
         <div
           className="text-primary flex cursor-pointer items-center gap-[6px] font-mono text-[12px] tracking-tight max-sm:hidden"
-          onClick={() => copy(`pnpx gitpick ${src}`)}
+          onClick={() => {
+            copy(command)
+            trackCopy('command', command)
+          }}
           title="Copy to clipboard"
         >
           <div>
@@ -287,6 +302,10 @@ export namespace Container {
             href={`https://github.com/${src}`}
             rel="noreferrer"
             target="_blank"
+            onClick={() => {
+              trackDemo('source_click', undefined, undefined, undefined, `https://github.com/${src}`)
+              trackExternalLinkClick(`https://github.com/${src}`, 'Source')
+            }}
           >
             Source <LucideExternalLink className="size-[12px]" />
           </a>
@@ -405,10 +424,17 @@ export function Logout() {
   const { address, connector } = useAccount()
   const disconnect = useDisconnect()
   const [copied, copyToClipboard] = useCopyToClipboard()
+  const { trackCopy, trackButtonClick } = usePostHogTracking()
   if (!address) return null
   return (
     <div className="flex items-center gap-1">
-      <Button onClick={() => copyToClipboard(address)} variant="default">
+      <Button
+        onClick={() => {
+          copyToClipboard(address)
+          trackCopy('code', address)
+        }}
+        variant="default"
+      >
         {copied ? (
           <LucideCheck className="text-gray9 mt-px" />
         ) : (
@@ -423,7 +449,10 @@ export function Logout() {
       <Button
         variant="destructive"
         className="text-[14px] -tracking-[2%] font-normal"
-        onClick={() => disconnect.disconnect({ connector })}
+        onClick={() => {
+          disconnect.disconnect({ connector })
+          trackButtonClick('Sign out', 'destructive')
+        }}
         type="button"
       >
         Sign out

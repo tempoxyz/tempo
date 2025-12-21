@@ -6,7 +6,10 @@ import { Json } from 'ox'
 import type React from 'react'
 import { Toaster } from 'sonner'
 import { WagmiProvider } from 'wagmi'
+import { PostHogProvider } from 'posthog-js/react'
 import { DemoContextProvider } from './components/DemoContext'
+import { PageViewTracker } from './components/PageViewTracker'
+import { PostHogSiteIdentifier } from './components/PostHogSiteIdentifier'
 import * as WagmiConfig from './wagmi.config'
 
 const queryClient = new QueryClient({
@@ -23,20 +26,29 @@ const mipdConfig = WagmiConfig.getConfig({
 })
 
 export default function Layout(
-  props: React.PropsWithChildren<{
-    path: string
-    frontmatter?: { mipd?: boolean }
-  }>,
+  props: React.PropsWithChildren<{ path: string; frontmatter?: { mipd?: boolean } }>,
 ) {
   return (
     <>
-      <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
-        <QueryClientProvider client={queryClient}>
-          <NuqsAdapter>
-            <DemoContextProvider>{props.children}</DemoContextProvider>
-          </NuqsAdapter>
-        </QueryClientProvider>
-      </WagmiProvider>
+      <PostHogProvider
+        apiKey={import.meta.env.VITE_PUBLIC_POSTHOG_KEY}
+        options={{
+          api_host: import.meta.env.VITE_PUBLIC_POSTHOG_HOST,
+          defaults: '2025-05-24',
+          capture_exceptions: true, // This enables capturing exceptions using Error Tracking
+          debug: import.meta.env.MODE === 'development',
+        }}
+      >
+        <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
+          <QueryClientProvider client={queryClient}>
+            <NuqsAdapter>
+              <PostHogSiteIdentifier />
+              <PageViewTracker />
+              <DemoContextProvider>{props.children}</DemoContextProvider>
+            </NuqsAdapter>
+          </QueryClientProvider>
+        </WagmiProvider>
+      </PostHogProvider>
 
       <Toaster
         className="z-[42069] select-none"
