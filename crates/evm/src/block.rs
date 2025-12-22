@@ -30,8 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
     tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{

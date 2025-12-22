@@ -53,8 +53,8 @@ mod tests {
     #[test]
     fn test_nonce_selector_coverage_pre_allegro_moderato() -> eyre::Result<()> {
         // Pre-AllegroModerato: all selectors should be supported
-        let mut storage =
-            HashMapStorageProvider::new(1).with_spec(tempo_chainspec::hardfork::TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1)
+            .with_spec(tempo_chainspec::hardfork::TempoHardfork::Allegretto);
         StorageCtx::enter(&mut storage, || {
             let mut nonce_manager = NonceManager::new();
 
@@ -84,8 +84,7 @@ mod tests {
                 INonceCalls::name_by_selector,
             );
 
-            let unsupported_names: Vec<&str> =
-                unsupported.iter().map(|(_, name)| *name).collect();
+            let unsupported_names: Vec<&str> = unsupported.iter().map(|(_, name)| *name).collect();
             assert_eq!(unsupported_names, vec!["getActiveNonceKeyCount"]);
             Ok(())
         })
