@@ -203,65 +203,10 @@ impl IntermediateOutcome {
         }
     }
 
-    /// Creates a new intermediate ceremony outcome.
-    ///
-    /// This method constructs a signature without the number players. This is
-    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
-    /// exists for compatibility reasons and should only be used for hardforks
-    /// pre allegretto.
-    ///
-    /// This object contains, the number of players, the epoch of the ceremony,
-    /// the dealer's commitment (public polynomial), the acks received by the
-    /// players and the revealed shares for which no acks are received.
-    ///
-    /// Finally, it also includes a signature over
-    /// `(namespace, epoch, commitment, acks, reveals)` signed by the dealer.
-    pub fn new_pre_allegretto(
-        n_players: u16,
-        dealer_signer: &PrivateKey,
-        namespace: &[u8],
-        epoch: Epoch,
-        commitment: Public<MinSig>,
-        acks: Vec<Ack>,
-        reveals: Vec<group::Share>,
-    ) -> Self {
-        // Sign the resharing outcome
-        let payload =
-            Self::signature_payload_from_parts_pre_allegretto(epoch, &commitment, &acks, &reveals);
-        let dealer_signature = dealer_signer.sign(namespace, payload.as_ref());
-
-        Self {
-            n_players,
-            dealer: dealer_signer.public_key(),
-            dealer_signature,
-            epoch,
-            commitment,
-            acks,
-            reveals,
-        }
-    }
-
     /// Verifies the intermediate outcome's signature.
     pub fn verify(&self, namespace: &[u8]) -> bool {
         let payload = Self::signature_payload_from_parts(
             self.n_players,
-            self.epoch,
-            &self.commitment,
-            &self.acks,
-            &self.reveals,
-        );
-        self.dealer
-            .verify(namespace, &payload, &self.dealer_signature)
-    }
-
-    /// Verifies the intermediate outcome's signature.
-    ///
-    /// This method constructs a signature without the number players. This is
-    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
-    /// exists for compatibility reasons and should only be used for hardforks
-    /// pre allegretto.
-    pub fn verify_pre_allegretto(&self, namespace: &[u8]) -> bool {
-        let payload = Self::signature_payload_from_parts_pre_allegretto(
             self.epoch,
             &self.commitment,
             &self.acks,
@@ -287,31 +232,6 @@ impl IntermediateOutcome {
                 + reveals.encode_size(),
         );
         UInt(n_players).write(&mut buf);
-        epoch.write(&mut buf);
-        commitment.write(&mut buf);
-        acks.write(&mut buf);
-        reveals.write(&mut buf);
-        buf
-    }
-
-    /// Returns the payload that was signed by the dealer, formed from raw parts.
-    ///
-    /// This method constructs a signature without the number players. This is
-    /// incorrect and addressed by [`Self::new`]. [`Self::new_pre_allegretto`]
-    /// exists for compatibility reasons and should only be used for hardforks
-    /// pre allegretto.
-    fn signature_payload_from_parts_pre_allegretto(
-        epoch: Epoch,
-        commitment: &Public<MinSig>,
-        acks: &Vec<Ack>,
-        reveals: &Vec<group::Share>,
-    ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(
-            epoch.encode_size()
-                + commitment.encode_size()
-                + acks.encode_size()
-                + reveals.encode_size(),
-        );
         epoch.write(&mut buf);
         commitment.write(&mut buf);
         acks.write(&mut buf);
