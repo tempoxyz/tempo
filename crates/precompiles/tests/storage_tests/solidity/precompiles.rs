@@ -110,14 +110,7 @@ fn test_stablecoin_exchange_layout() {
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
-    let rust_layout = layout_fields!(
-        books,
-        orders,
-        balances,
-        active_order_id,
-        pending_order_id,
-        book_keys
-    );
+    let rust_layout = layout_fields!(books, orders, balances, next_order_id, book_keys);
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
     }
