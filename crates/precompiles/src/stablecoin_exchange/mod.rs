@@ -1953,8 +1953,8 @@ mod tests {
     }
 
     #[test]
-    fn test_place_order_pair_does_not_exist_post_moderato() -> eyre::Result<()> {
-        // Test with Moderato hardfork (validation should be enforced)
+    fn test_place_order_pair_auto_created_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork - pair is auto-created when placing order
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -1972,19 +1972,17 @@ mod tests {
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
 
+            // Pair is auto-created when placing order
             let result = exchange.place(alice, base_token, min_order_amount, true, tick);
-            assert_eq!(
-                result,
-                Err(StablecoinExchangeError::pair_does_not_exist().into())
-            );
+            assert!(result.is_ok());
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_place_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - validation is enforced in all hardforks
+    fn test_place_order_pair_auto_created_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - pair is auto-created when placing order
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -2002,15 +2000,9 @@ mod tests {
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
 
-            // Try to place an order without creating the pair first
-            // This validation is enforced both pre and post Moderato
+            // Pair is auto-created when placing order
             let result = exchange.place(alice, base_token, min_order_amount, true, tick);
-
-            // Should fail with pair_does_not_exist error
-            assert_eq!(
-                result,
-                Err(StablecoinExchangeError::pair_does_not_exist().into())
-            );
+            assert!(result.is_ok());
 
             Ok(())
         })
@@ -2082,8 +2074,7 @@ mod tests {
                 .expect("Place bid order should succeed");
 
             assert_eq!(order_id, 1);
-            assert_eq!(exchange.active_order_id()?, 0);
-            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
             let stored_order = exchange.orders.at(order_id).read()?;
@@ -2093,16 +2084,14 @@ mod tests {
             assert_eq!(stored_order.tick(), tick);
             assert!(stored_order.is_bid());
             assert!(!stored_order.is_flip());
-            assert_eq!(stored_order.prev(), 0);
-            assert_eq!(stored_order.next(), 0);
 
-            // Verify the order is not yet in the active orderbook
+            // Verify the order is in the active orderbook (committed immediately post-AllegroModerato)
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
             let level = book_handler.get_tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, 0);
-            assert_eq!(level.tail, 0);
-            assert_eq!(level.total_liquidity, 0);
+            assert_eq!(level.head, order_id);
+            assert_eq!(level.tail, order_id);
+            assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
@@ -2145,8 +2134,7 @@ mod tests {
                 .expect("Place ask order should succeed");
 
             assert_eq!(order_id, 1);
-            assert_eq!(exchange.active_order_id()?, 0);
-            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
             let stored_order = exchange.orders.at(order_id).read()?;
@@ -2156,15 +2144,14 @@ mod tests {
             assert_eq!(stored_order.tick(), tick);
             assert!(!stored_order.is_bid());
             assert!(!stored_order.is_flip());
-            assert_eq!(stored_order.prev(), 0);
-            assert_eq!(stored_order.next(), 0);
 
+            // Verify the order is in the active orderbook (committed immediately post-AllegroModerato)
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
             let level = book_handler.get_tick_level_handler(tick, false).read()?;
-            assert_eq!(level.head, 0);
-            assert_eq!(level.tail, 0);
-            assert_eq!(level.total_liquidity, 0);
+            assert_eq!(level.head, order_id);
+            assert_eq!(level.tail, order_id);
+            assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
             let base_tip20 = TIP20Token::from_address(base_token)?;
@@ -2220,8 +2207,8 @@ mod tests {
     }
 
     #[test]
-    fn test_place_flip_order_pair_does_not_exist_post_moderato() -> eyre::Result<()> {
-        // Test with Moderato hardfork (validation should be enforced)
+    fn test_place_flip_order_pair_auto_created_post_moderato() -> eyre::Result<()> {
+        // Test with Moderato hardfork - pair is auto-created when placing flip order
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -2240,21 +2227,18 @@ mod tests {
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
 
-            // Try to place a flip order without creating the pair first
+            // Pair is auto-created when placing flip order
             let result =
                 exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
-            assert_eq!(
-                result,
-                Err(StablecoinExchangeError::pair_does_not_exist().into())
-            );
+            assert!(result.is_ok());
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_place_flip_order_pair_does_not_exist_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - validation should not be enforced
+    fn test_place_flip_order_pair_auto_created_pre_moderato() -> eyre::Result<()> {
+        // Test with Adagio (pre-Moderato) - pair is auto-created when placing flip order
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -2273,13 +2257,9 @@ mod tests {
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
 
-            // Try to place a flip order without creating the pair first
-            // Pre-Moderato, the book existence check is skipped, so the order is accepted
-            // (it would only fail later during execute_block when trying to process it)
+            // Pair is auto-created when placing flip order
             let result =
                 exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick);
-
-            // Pre-Moderato: order should be accepted (placed in pending queue)
             assert!(result.is_ok());
 
             Ok(())
@@ -2316,8 +2296,7 @@ mod tests {
                 .expect("Place flip bid order should succeed");
 
             assert_eq!(order_id, 1);
-            assert_eq!(exchange.active_order_id()?, 0);
-            assert_eq!(exchange.pending_order_id()?, 1);
+            assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
             let stored_order = exchange.orders.at(order_id).read()?;
@@ -2328,16 +2307,14 @@ mod tests {
             assert!(stored_order.is_bid());
             assert!(stored_order.is_flip());
             assert_eq!(stored_order.flip_tick(), flip_tick);
-            assert_eq!(stored_order.prev(), 0);
-            assert_eq!(stored_order.next(), 0);
 
-            // Verify the order is not yet in the active orderbook
+            // Verify the order is in the active orderbook (committed immediately post-AllegroModerato)
             let book_key = compute_book_key(base_token, quote_token);
             let book_handler = exchange.books.at(book_key);
             let level = book_handler.get_tick_level_handler(tick, true).read()?;
-            assert_eq!(level.head, 0);
-            assert_eq!(level.tail, 0);
-            assert_eq!(level.total_liquidity, 0);
+            assert_eq!(level.head, order_id);
+            assert_eq!(level.tail, order_id);
+            assert_eq!(level.total_liquidity, min_order_amount);
 
             // Verify balance was reduced by the escrow amount
             let quote_tip20 = TIP20Token::from_address(quote_token)?;
@@ -2747,11 +2724,12 @@ mod tests {
                 .swap_exact_amount_in(bob, base_token, quote_token, amount, 0)
                 .expect("Swap should succeed");
 
-            // Assert that the order has filled
+            // Assert that the order has filled (remaining should be 0)
             let filled_order = exchange.orders.at(flip_order_id).read()?;
-            assert_eq!(filled_order.maker(), Address::ZERO);
+            assert_eq!(filled_order.remaining(), 0);
 
-            let new_order_id = exchange.pending_order_id()?;
+            // The flipped order should be created with id = flip_order_id + 1
+            let new_order_id = exchange.next_order_id()? - 1;
             assert_eq!(new_order_id, flip_order_id + 1);
 
             let new_order = exchange.orders.at(new_order_id).read()?;

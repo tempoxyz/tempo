@@ -1353,6 +1353,10 @@ pub(crate) mod tests {
             token.mint(admin, ITIP20::mintCall { to: admin, amount })?;
             token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo })?;
 
+            // Post-AllegroModerato event order:
+            // [2] Transfer (from _transfer in _burn)
+            // [3] TransferWithMemo (from burn_with_memo)
+            // [4] Burn (from burn_with_memo, only post-AllegroModerato)
             assert_eq!(
                 token.emitted_events()[2],
                 TIP20Event::Transfer(ITIP20::Transfer {
@@ -1365,20 +1369,20 @@ pub(crate) mod tests {
 
             assert_eq!(
                 token.emitted_events()[3],
-                TIP20Event::Burn(ITIP20::Burn {
+                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
                     from: admin,
-                    amount
+                    to: Address::ZERO,
+                    amount,
+                    memo
                 })
                 .into_log_data()
             );
 
             assert_eq!(
                 token.emitted_events()[4],
-                TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                TIP20Event::Burn(ITIP20::Burn {
                     from: admin,
-                    to: Address::ZERO,
-                    amount,
-                    memo
+                    amount
                 })
                 .into_log_data()
             );

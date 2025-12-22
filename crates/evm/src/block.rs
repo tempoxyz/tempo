@@ -220,35 +220,6 @@ where
             }
 
             seen_fee_manager = true;
-        } else if to == STABLECOIN_EXCHANGE_ADDRESS {
-            // The stablecoin dex system tx is disabled post allegro moderato hardfork
-            if self
-                .inner
-                .spec
-                .is_allegro_moderato_active_at_timestamp(block_timestamp.saturating_to::<u64>())
-            {
-                return Err(BlockValidationError::msg("invalid system transaction"));
-            }
-
-            if seen_stablecoin_dex {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
-            }
-
-            let dex_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != dex_input {
-                return Err(BlockValidationError::msg(
-                    "invalid stablecoin DEX system transaction",
-                ));
-            }
-
-            seen_stablecoin_dex = true;
         } else if to.is_zero() {
             if seen_subblocks_signatures {
                 return Err(BlockValidationError::msg(

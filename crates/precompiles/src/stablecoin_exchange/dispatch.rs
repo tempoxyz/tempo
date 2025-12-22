@@ -434,29 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_order_id_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::ZERO;
-            let call = IStablecoinExchange::pendingOrderIdCall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-
-            assert!(result.is_ok());
-            let output = result?;
-            assert!(output.reverted);
-            assert!(UnknownFunctionSelector::abi_decode(&output.bytes).is_ok());
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_create_pair_call() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -619,52 +596,6 @@ mod tests {
             // Should dispatch to quote_swap_exact_amount_out function and succeed
             let result = exchange.call(&calldata, sender);
             assert!(result.is_ok());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_active_order_id_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            let call = IStablecoinExchange::activeOrderIdCall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?;
-            let active_order_id = u128::abi_decode(&output.bytes)?;
-            assert_eq!(active_order_id, 0); // Should be 0 initially
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pending_order_id_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            let call = IStablecoinExchange::pendingOrderIdCall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?;
-            let pending_order_id = u128::abi_decode(&output.bytes)?;
-            assert_eq!(pending_order_id, 0); // Should be 0 initially
 
             Ok(())
         })

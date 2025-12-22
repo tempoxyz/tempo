@@ -50,7 +50,6 @@ crate::sol! {
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
         function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
         function cancel(uint128 orderId) external;
-        function executeBlock() external;
 
         // Swap Functions
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -67,9 +66,7 @@ crate::sol! {
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
-        function activeOrderId() external view returns (uint128);
         function nextOrderId() external view returns (uint128);
-        function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
 
         // Constants (exposed as view functions)

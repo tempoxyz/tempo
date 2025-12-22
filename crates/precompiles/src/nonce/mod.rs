@@ -189,7 +189,8 @@ mod tests {
 
     #[test]
     fn test_active_key_count() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        // Use pre-AllegroModerato hardfork where active_key_count tracking is enabled
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
 

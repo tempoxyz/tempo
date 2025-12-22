@@ -190,29 +190,6 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
                 TEMPO_SYSTEM_TX_SENDER,
             );
             txs.push(fee_manager_tx);
-
-            let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_env.number.to_be_bytes_vec())
-                .collect();
-
-            let stablecoin_exchange_tx = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    TxLegacy {
-                        chain_id,
-                        nonce: 0,
-                        gas_price: 0,
-                        gas_limit: 0,
-                        to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: stablecoin_exchange_input,
-                    },
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                )),
-                TEMPO_SYSTEM_TX_SENDER,
-            );
-            txs.push(stablecoin_exchange_tx);
         }
 
         // Build subblocks signatures system transaction
