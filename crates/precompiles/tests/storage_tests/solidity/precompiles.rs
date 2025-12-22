@@ -330,14 +330,7 @@ fn export_all_storage_constants() {
             order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
-        let fields = layout_fields!(
-            books,
-            orders,
-            balances,
-            active_order_id,
-            pending_order_id,
-            book_keys
-        );
+        let fields = layout_fields!(books, orders, balances, next_order_id, book_keys);
 
         let order_base_slot = slots::ORDERS;
         let order_struct = struct_fields!(
