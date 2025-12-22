@@ -3,8 +3,8 @@
 
 if [ "$TOOLBOX_ACTION" = "describe" ]; then
     cat <<'EOF'
-name: bench-stack
-description: Start or stop the observability stack (Grafana + Prometheus) for benchmarking. Use this instead of manually running nu bench.nu stack up/down.
+name: tempo-infra
+description: Start or stop the observability stack (Grafana + Prometheus) for benchmarking. Use this instead of manually running nu tempo.nu infra up/down.
 action: string Action to perform: up or down (required)
 EOF
     exit 0
@@ -25,7 +25,7 @@ if [ "$TOOLBOX_ACTION" = "execute" ]; then
         exit 1
     fi
     
-    cmd="nu bench.nu stack $action"
+    cmd="nu tempo.nu infra $action"
     echo "Running: $cmd"
     eval "$cmd"
 fi

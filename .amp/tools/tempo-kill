@@ -3,13 +3,13 @@
 
 if [ "$TOOLBOX_ACTION" = "describe" ]; then
     cat <<'EOF'
-name: bench-kill
-description: Kill any running tempo processes and cleanup stale IPC sockets. Use this instead of manually running nu bench.nu kill.
+name: tempo-kill
+description: Kill any running tempo processes and cleanup stale IPC sockets. Use this instead of manually running nu tempo.nu kill.
 EOF
     exit 0
 fi
 
 if [ "$TOOLBOX_ACTION" = "execute" ]; then
-    echo "Running: nu bench.nu kill"
-    nu bench.nu kill
+    echo "Running: nu tempo.nu kill"
+    nu tempo.nu kill
 fi
