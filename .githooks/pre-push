@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+zero_sha="0000000000000000000000000000000000000000"
+
+cargo_version=$(awk -F '"' '/^version =/ {print $2; exit}' Cargo.toml)
+if [[ -z "${cargo_version}" ]]; then
+  echo "pre-push: unable to determine Cargo.toml version" >&2
+  exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "${local_ref}" != refs/tags/* ]]; then
+    continue
+  fi
+
+  if [[ "${local_sha}" == "${zero_sha}" ]]; then
+    continue
+  fi
+
+  tag_name=${local_ref#refs/tags/}
+  tag_version=${tag_name#v}
+
+  if [[ "${tag_version}" != "${cargo_version}" ]]; then
+    echo "pre-push: tag ${tag_name} does not match Cargo.toml version ${cargo_version}" >&2
+    echo "pre-push: please update Cargo.toml or use a matching tag (v${cargo_version})." >&2
+    exit 1
+  fi
+done
+
+exit 0
