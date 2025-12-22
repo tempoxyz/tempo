@@ -12,10 +12,7 @@
 //! - **Unpacked**: When `T::BYTES > 16` or doesn't divide 32, each element uses full slot(s)
 
 use alloy::primitives::{Address, U256};
-use std::{
-    marker::PhantomData,
-    ops::{Index, IndexMut},
-};
+use std::ops::{Index, IndexMut};
 use tempo_precompiles_macros;
 
 use crate::{
@@ -62,7 +59,6 @@ pub struct ArrayHandler<T: StorableType, const N: usize> {
     base_slot: U256,
     address: Address,
     cache: HandlerCache<usize, T::Handler>,
-    _phantom: PhantomData<T>,
 }
 
 impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
@@ -73,7 +69,6 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
             base_slot,
             address,
             cache: HandlerCache::new(),
-            _phantom: PhantomData,
         }
     }
 

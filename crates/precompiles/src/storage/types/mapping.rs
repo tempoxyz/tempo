@@ -3,7 +3,6 @@
 use alloy::primitives::{Address, U256};
 use std::{
     hash::Hash,
-    marker::PhantomData,
     ops::{Index, IndexMut},
 };
 
@@ -46,7 +45,6 @@ pub struct Mapping<K, V: StorableType> {
     base_slot: U256,
     address: Address,
     cache: HandlerCache<K, V::Handler>,
-    _phantom: PhantomData<V>,
 }
 
 impl<K, V: StorableType> Mapping<K, V> {
@@ -59,7 +57,6 @@ impl<K, V: StorableType> Mapping<K, V> {
             base_slot,
             address,
             cache: HandlerCache::new(),
-            _phantom: PhantomData,
         }
     }
 
@@ -94,7 +91,7 @@ impl<K, V: StorableType> Mapping<K, V> {
     /// Use this when you need to call mutable methods like `write()` or `delete()`.
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
-    pub fn at_mut(&self, key: K) -> &mut V::Handler
+    pub fn at_mut(&mut self, key: K) -> &mut V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
     {
