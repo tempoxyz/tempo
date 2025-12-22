@@ -89,7 +89,7 @@ pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
         Err(e) => match e.kind() {
             ErrorKind::InvalidSubcommand => None,
             _ => {
-                e.print().expect("failed to print error");
+                e.print().expect("should be able to write to STDOUT");.
                 Some(Ok(()))
             }
         },
