@@ -142,25 +142,14 @@ impl AccountKeychain {
         }
 
         // Emit event
-        if !self.storage.spec().is_allegro_moderato() {
-            self.emit_event(AccountKeychainEvent::KeyAuthorized_1(
-                IAccountKeychain::KeyAuthorized_1 {
-                    account: msg_sender,
-                    publicKey: call.keyId.into_word(),
-                    signatureType: signature_type,
-                    expiry: call.expiry,
-                },
-            ))
-        } else {
-            self.emit_event(AccountKeychainEvent::KeyAuthorized_0(
-                IAccountKeychain::KeyAuthorized_0 {
-                    account: msg_sender,
-                    publicKey: call.keyId,
-                    signatureType: signature_type,
-                    expiry: call.expiry,
-                },
-            ))
-        }
+        self.emit_event(AccountKeychainEvent::KeyAuthorized(
+            IAccountKeychain::KeyAuthorized {
+                account: msg_sender,
+                publicKey: call.keyId,
+                signatureType: signature_type,
+                expiry: call.expiry,
+            },
+        ))
     }
 
     /// Revoke an authorized key
@@ -194,21 +183,12 @@ impl AccountKeychain {
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        if !self.storage.spec().is_allegro_moderato() {
-            self.emit_event(AccountKeychainEvent::KeyRevoked_1(
-                IAccountKeychain::KeyRevoked_1 {
-                    account: msg_sender,
-                    publicKey: call.keyId.into_word(),
-                },
-            ))
-        } else {
-            self.emit_event(AccountKeychainEvent::KeyRevoked_0(
-                IAccountKeychain::KeyRevoked_0 {
-                    account: msg_sender,
-                    publicKey: call.keyId,
-                },
-            ))
-        }
+        self.emit_event(AccountKeychainEvent::KeyRevoked(
+            IAccountKeychain::KeyRevoked {
+                account: msg_sender,
+                publicKey: call.keyId,
+            },
+        ))
     }
 
     /// Update spending limit for a key-token pair
@@ -248,25 +228,14 @@ impl AccountKeychain {
             .write(call.newLimit)?;
 
         // Emit event
-        if !self.storage.spec().is_allegro_moderato() {
-            self.emit_event(AccountKeychainEvent::SpendingLimitUpdated_1(
-                IAccountKeychain::SpendingLimitUpdated_1 {
-                    account: msg_sender,
-                    publicKey: call.keyId.into_word(),
-                    token: call.token,
-                    newLimit: call.newLimit,
-                },
-            ))
-        } else {
-            self.emit_event(AccountKeychainEvent::SpendingLimitUpdated_0(
-                IAccountKeychain::SpendingLimitUpdated_0 {
-                    account: msg_sender,
-                    publicKey: call.keyId,
-                    token: call.token,
-                    newLimit: call.newLimit,
-                },
-            ))
-        }
+        self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
+            IAccountKeychain::SpendingLimitUpdated {
+                account: msg_sender,
+                publicKey: call.keyId,
+                token: call.token,
+                newLimit: call.newLimit,
+            },
+        ))
     }
 
     /// Get key information
@@ -444,12 +413,9 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        // Gate behind allegro-moderato to avoid breaking existing behavior.
-        if self.storage.spec().is_allegro_moderato() {
-            let tx_origin = self.tx_origin.t_read()?;
-            if account != tx_origin {
-                return Ok(());
-            }
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
         }
 
         // Verify and update spending limits for this access key
@@ -487,12 +453,9 @@ impl AccountKeychain {
         }
 
         // Only apply spending limits if the caller is the tx origin.
-        // Gate behind allegro-moderato to avoid breaking existing behavior.
-        if self.storage.spec().is_allegro_moderato() {
-            let tx_origin = self.tx_origin.t_read()?;
-            if account != tx_origin {
-                return Ok(());
-            }
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
         }
 
         // Calculate the increase in approval (only deduct if increasing)
@@ -770,8 +733,7 @@ mod tests {
     ///    (the contract is transferring its own tokens, not Alice's)
     #[test]
     fn test_spending_limits_only_apply_to_tx_origin() -> eyre::Result<()> {
-        // Use AllegroModerato hardfork to enable the tx_origin check
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
 
         let eoa_alice = Address::random(); // The EOA that signs the transaction
         let access_key = Address::random(); // Alice's access key with spending limits
