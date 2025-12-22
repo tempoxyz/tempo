@@ -180,7 +180,6 @@ impl Precompile for StablecoinExchange {
 #[cfg(test)]
 mod tests {
 
-    
     use crate::{
         Precompile,
         path_usd::TRANSFER_ROLE,
@@ -190,7 +189,7 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, U256},
-        sol_types::{SolCall, SolError, SolValue},
+        sol_types::{SolCall, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
