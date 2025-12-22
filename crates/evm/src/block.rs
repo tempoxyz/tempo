@@ -31,8 +31,7 @@ use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-    tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
+    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
@@ -42,8 +41,8 @@ use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockSection {
-    /// Start of block system transactions (rewards registry).
-    StartOfBlock { seen_tip20_rewards_registry: bool },
+    /// Start of block system transactions.
+    StartOfBlock,
     /// Basic section of the block. Includes arbitrary transactions chosen by the proposer.
     ///
     /// Must use at most `non_shared_gas_left` gas.
@@ -132,9 +131,7 @@ where
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            section: BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: false,
-            },
+            section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
