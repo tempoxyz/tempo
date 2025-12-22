@@ -114,7 +114,7 @@ If the top-level call of a transaction is to one of the following functions on a
 
 then that TIP-20 token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
 
-For [Tempo transactions](/documentation/protocol/transactions/spec-account-abstraction.mdx), this rule applies only if _all_ top-level calls are to the same TIP-20 contract, and each such call is to one of the functions listed above, with `fee_payer == tx.origin`.
+For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if _all_ top-level calls are to the same TIP-20 contract, and each such call is to one of the functions listed above, with `fee_payer == tx.origin`.
 
 
 ### Stablecoin Exchange contract
