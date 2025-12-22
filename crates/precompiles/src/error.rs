@@ -11,8 +11,8 @@ use alloy::{
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
-    TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
-    UnknownFunctionSelector, ValidatorConfigError,
+    TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError,
 };
 
 // TODO: add error type for overflow/underflow
@@ -28,7 +28,6 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
-
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]

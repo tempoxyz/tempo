@@ -15,9 +15,7 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{hardfork::TempoHardforks, spec::TempoChainSpec};
-use tempo_contracts::precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-};
+use tempo_contracts::precompiles::{STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
@@ -152,7 +150,6 @@ impl Consensus<Block> for TempoConsensus {
                 tx.tx_hash()
             )));
         }
-
 
         let spec_is_allegro_moderato = self
             .inner

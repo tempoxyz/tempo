@@ -22,7 +22,6 @@ fn test_tip20_factory_layout() {
     }
 }
 
-
 #[test]
 fn test_tip403_registry_layout() {
     use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};
@@ -258,7 +257,6 @@ fn export_all_storage_constants() {
             }),
         );
     }
-
 
     // TIP403 Registry
     {
