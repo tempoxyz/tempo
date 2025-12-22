@@ -116,21 +116,13 @@ impl Precompile for TIP20Token {
 
             ITIP20::feeRecipientCall::SELECTOR => {
                 if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
+                    return unknown_selector(selector, self.storage.gas_used());
                 }
                 view::<ITIP20::feeRecipientCall>(calldata, |_call| self.fee_recipient.read())
             }
             ITIP20::setFeeRecipientCall::SELECTOR => {
                 if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
+                    return unknown_selector(selector, self.storage.gas_used());
                 }
                 mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
                     self.set_fee_recipient(s, call.newRecipient)

@@ -76,22 +76,14 @@ impl Precompile for StablecoinExchange {
 
             IStablecoinExchange::nextOrderIdCall::SELECTOR => {
                 if !self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
+                    return unknown_selector(selector, self.storage.gas_used());
                 }
                 view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
             }
 
             IStablecoinExchange::activeOrderIdCall::SELECTOR => {
                 if self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
+                    return unknown_selector(selector, self.storage.gas_used());
                 }
                 view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
                     self.active_order_id()
@@ -100,11 +92,7 @@ impl Precompile for StablecoinExchange {
 
             IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
                 if self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
+                    return unknown_selector(selector, self.storage.gas_used());
                 }
 
                 view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
