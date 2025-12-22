@@ -138,40 +138,6 @@ mod tests {
     }
 
     #[test]
-    fn test_active_key_count() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut mgr = NonceManager::new();
-
-            let account = address!("0x1111111111111111111111111111111111111111");
-
-            // Initially, no active keys
-            let count =
-                mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })?;
-            assert_eq!(count, U256::ZERO);
-
-            // Increment a nonce key - should increase active count
-            mgr.increment_nonce(account, U256::ONE)?;
-            let count =
-                mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })?;
-            assert_eq!(count, U256::ONE);
-
-            // Increment same key again - count should stay the same
-            mgr.increment_nonce(account, U256::ONE)?;
-            let count =
-                mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })?;
-            assert_eq!(count, U256::ONE);
-
-            // Increment a different key - count should increase
-            mgr.increment_nonce(account, U256::from(2))?;
-            let count =
-                mgr.get_active_nonce_key_count(INonce::getActiveNonceKeyCountCall { account })?;
-            assert_eq!(count, U256::from(2));
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_different_accounts_independent() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
