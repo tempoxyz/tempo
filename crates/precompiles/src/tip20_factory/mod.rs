@@ -36,11 +36,9 @@ impl TIP20Factory {
 
     /// Returns true if the address is a valid TIP20 token.
     ///
-    /// Post-AllegroModerato: Matches the Solidity implementation which checks both:
+    /// Checks both:
     /// 1. The address has the correct TIP20 prefix
     /// 2. The token ID (lower 8 bytes) is less than tokenIdCounter
-    ///
-    /// Pre-AllegroModerato: Only checks the address prefix for backwards compatibility.
     pub fn is_tip20(&self, token: Address) -> Result<bool> {
         if !is_tip20_prefix(token) {
             return Ok(false);
@@ -130,7 +128,6 @@ mod tests {
         tip20::tests::initialize_path_usd,
     };
     use alloy::primitives::Address;
-    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_create_token() -> eyre::Result<()> {
@@ -189,8 +186,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_invalid_quote_token_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_invalid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -213,8 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_quote_token_not_deployed_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_quote_token_not_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -238,11 +235,11 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_off_by_one_rejected_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_off_by_one_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
-            // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
+            // Test that using token_id as quote token is rejected
             let mut factory = TIP20Setup::factory()?;
 
             // Get the current token_id (should be 1)
@@ -261,7 +258,7 @@ mod tests {
             };
 
             let result = factory.create_token(sender, call);
-            // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
+            // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -271,20 +268,22 @@ mod tests {
     }
 
     #[test]
-    fn test_token_id_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_token_id() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let factory = TIP20Setup::factory()?;
 
             let current_token_id = factory.token_id_counter()?;
             assert_eq!(current_token_id, U256::ZERO);
             Ok(())
+
+            // TODO:  deploy tokens and then test token id for n tokens
         })
     }
 
     #[test]
-    fn test_create_token_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_create_token_first_token_validation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -317,12 +316,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_is_tip20() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // initialize_path_usd deploys PathUSD via factory for post-Allegretto specs,
+            // initialize_path_usd deploys PathUSD via factory
             // which properly increments tokenIdCounter to 1
             initialize_path_usd(sender)?;
 
@@ -341,36 +340,6 @@ mod tests {
             assert!(!factory.is_tip20(non_existent_tip20)?);
 
             // Non-TIP20 address should be invalid
-            assert!(!factory.is_tip20(Address::random())?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_tip20_pre_allegro_moderato() -> eyre::Result<()> {
-        // Pre-AllegroModerato: only check prefix, not tokenIdCounter
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(sender)?;
-
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
-
-            // PATH_USD (token ID 0) should be valid
-            assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
-
-            // Token ID >= tokenIdCounter should still be valid (only checks prefix pre-AllegroModerato)
-            let token_id_counter: u64 = factory.token_id_counter()?.to();
-            let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
-            assert!(
-                factory.is_tip20(non_existent_tip20)?,
-                "Pre-AllegroModerato: should only check prefix"
-            );
-
-            // Non-TIP20 address should still be invalid (wrong prefix)
             assert!(!factory.is_tip20(Address::random())?);
 
             Ok(())
