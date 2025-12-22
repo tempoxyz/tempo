@@ -17,7 +17,6 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     error::{Result, TempoPrecompileError},
-    path_usd::PathUSD,
     stablecoin_exchange::orderbook::{
         MAX_PRICE_POST_MODERATO, MAX_PRICE_PRE_MODERATO, MIN_PRICE_POST_MODERATO,
         MIN_PRICE_PRE_MODERATO, compute_book_key,
@@ -207,47 +206,26 @@ impl StablecoinExchange {
 
     /// Transfer tokens, accounting for pathUSD
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
-        if token == PATH_USD_ADDRESS {
-            PathUSD::new().transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to,
-                    amount: U256::from(amount),
-                },
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to,
-                    amount: U256::from(amount),
-                },
-            )?;
-        }
+        TIP20Token::from_address(token)?.transfer(
+            self.address,
+            ITIP20::transferCall {
+                to,
+                amount: U256::from(amount),
+            },
+        )?;
         Ok(())
     }
 
     /// Transfer tokens from user, accounting for pathUSD
     fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
-        if token == PATH_USD_ADDRESS {
-            PathUSD::new().transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
-            )?;
-        }
+        TIP20Token::from_address(token)?.transfer_from(
+            self.address,
+            ITIP20::transferFromCall {
+                from,
+                to: self.address,
+                amount: U256::from(amount),
+            },
+        )?;
         Ok(())
     }
 
