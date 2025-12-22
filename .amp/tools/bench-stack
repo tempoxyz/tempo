@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Amp toolbox tool: Manage the observability stack (Grafana + Prometheus)
+
+if [ "$TOOLBOX_ACTION" = "describe" ]; then
+    cat <<'EOF'
+name: bench-stack
+description: Start or stop the observability stack (Grafana + Prometheus) for benchmarking. Use this instead of manually running nu bench.nu stack up/down.
+action: string Action to perform: up or down (required)
+EOF
+    exit 0
+fi
+
+if [ "$TOOLBOX_ACTION" = "execute" ]; then
+    input=$(cat)
+    
+    action=$(echo "$input" | grep -E '^action:' | sed 's/^action: *//')
+    
+    if [ -z "$action" ]; then
+        echo "Error: action is required (up or down)"
+        exit 1
+    fi
+    
+    if [ "$action" != "up" ] && [ "$action" != "down" ]; then
+        echo "Error: action must be 'up' or 'down'"
+        exit 1
+    fi
+    
+    cmd="nu bench.nu stack $action"
+    echo "Running: $cmd"
+    eval "$cmd"
+fi
