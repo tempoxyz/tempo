@@ -1737,7 +1737,6 @@ mod tests {
 
     use crate::{
         error::TempoPrecompileError,
-        path_usd::TRANSFER_ROLE,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -1753,7 +1752,6 @@ mod tests {
         // Configure PathUSD
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
-            .with_role(user, *TRANSFER_ROLE)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange_address, U256::from(amount))
             .apply()?;
@@ -4476,7 +4474,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -4530,7 +4527,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -4638,7 +4634,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -4745,7 +4740,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -4809,10 +4803,7 @@ mod tests {
             )?;
 
             // Setup quote token (PathUSD) with the blacklist policy
-            let mut quote = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
-                .apply()?;
+            let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
 
             quote.change_transfer_policy_id(
                 admin,

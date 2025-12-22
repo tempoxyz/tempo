@@ -224,7 +224,6 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
-        path_usd::TRANSFER_ROLE,
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, check_selector_coverage},
@@ -251,7 +250,6 @@ mod tests {
         // Initialize quote token (PathUSD)
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
-            .with_role(user, *TRANSFER_ROLE)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange.address, U256::from(amount))
             .apply()?;
