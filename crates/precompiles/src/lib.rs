@@ -9,7 +9,6 @@ pub mod storage;
 
 pub mod account_keychain;
 pub mod nonce;
-pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
@@ -25,7 +24,6 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
     tip_account_registrar::TipAccountRegistrar,
@@ -80,12 +78,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     let spec = cfg.spec;
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20_prefix(*address) {
-            let token_id = address_to_token_id_unchecked(*address);
-            if token_id == 0 {
-                Some(PathUSDPrecompile::create(chain_id, spec))
-            } else {
-                Some(TIP20Precompile::create(*address, chain_id, spec))
-            }
+            Some(TIP20Precompile::create(*address, chain_id, spec))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id, spec))
         } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
@@ -218,13 +211,6 @@ impl AccountKeychainPrecompile {
         tempo_precompile!("AccountKeychain", chain_id, spec, |input| {
             AccountKeychain::new()
         })
-    }
-}
-
-pub struct PathUSDPrecompile;
-impl PathUSDPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("PathUSD", chain_id, spec, |input| { PathUSD::new() })
     }
 }
 
