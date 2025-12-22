@@ -1,4 +1,4 @@
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
