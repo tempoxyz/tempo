@@ -63,6 +63,11 @@ interface ITIP403Registry {
     /// @return The next policy ID that will be assigned to a newly created policy
     function policyIdCounter() external view returns (uint64);
 
+    /// @notice Returns whether a policy exists
+    /// @param policyId The ID of the policy to check
+    /// @return True if the policy exists, false otherwise
+    function policyExists(uint64 policyId) external view returns (bool);
+
     /// @notice Returns the policy data for a given policy ID
     /// @param policyId The ID of the policy to query
     /// @return policyType The type of the policy (whitelist or blacklist)

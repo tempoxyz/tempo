@@ -100,7 +100,7 @@ In the code sample below, we use the `useSendCallsSync` hook to batch the approv
 
 ```tsx twoslash [PlaceOrder.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code hl]
 
@@ -202,7 +202,7 @@ When you cancel an order, any remaining funds are credited to your exchange bala
 
 ```tsx twoslash [ManageOrder.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
@@ -300,13 +300,13 @@ console.log('Quote Token:', metadata?.quoteToken) // returns `pathUSD` address
 
 ### Flip order
 
-Flip orders automatically switch between buy and sell sides when filled, providing continuous liquidity. Use viem's [`dex.placeFlip`](/sdk/typescript/viem/dex.placeFlip) to create a flip order call.
+Flip orders automatically switch between buy and sell sides when filled, providing continuous liquidity. Use viem's [`dex.placeFlip`](https://viem.sh/tempo/actions/dex.placeFlip) to create a flip order call.
 
 :::code-group
 
 ```tsx twoslash [PlaceFlipOrder.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
@@ -362,7 +362,7 @@ For example, price $1.0000 → tick = 0, price $0.9990 → tick = -10, and price
 Use the `Tick` utility to convert between prices and ticks:
 
 ```tsx 
-import { Actions, Tick } from 'tempo.ts/viem' // [!code hl]
+import { Actions, Tick } from 'viem/tempo' // [!code hl]
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'

@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { tempoTestnet } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 
 type QueryRequest = {
   query: string

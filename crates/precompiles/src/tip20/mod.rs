@@ -206,6 +206,17 @@ impl TIP20Token {
         call: ITIP20::changeTransferPolicyIdCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+
+        // Validate that the policy exists (only after AllegroModerato hardfork)
+        if self.storage.spec().is_allegro_moderato() {
+            let registry = TIP403Registry::new();
+            if !registry.policy_exists(ITIP403Registry::policyExistsCall {
+                policyId: call.newPolicyId,
+            })? {
+                return Err(TIP20Error::invalid_transfer_policy_id().into());
+            }
+        }
+
         self.transfer_policy_id.write(call.newPolicyId)?;
 
         self.emit_event(TIP20Event::TransferPolicyUpdate(
@@ -2707,6 +2718,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_change_transfer_policy_id_invalid_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Initialize the TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Try to change to a non-existent policy ID (should fail with Allegretto hardfork)
+            let invalid_policy_id = 999u64;
+            let result = token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: invalid_policy_id,
+                },
+            );
+
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::InvalidTransferPolicyId(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_transfer_invalid_recipient_pre_allegro_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let admin = Address::random();
@@ -2773,6 +2819,116 @@ pub(crate) mod tests {
                 },
             );
             assert!(result.is_err_and(|err| err.to_string().contains("InvalidRecipient")));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Before Allegro Moderato, policy validation should be skipped
+            let arbitrary_policy_id = 999u64;
+            let result = token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: arbitrary_policy_id,
+                },
+            );
+
+            assert!(result.is_ok());
+
+            // Verify the policy ID was actually stored
+            assert_eq!(token.transfer_policy_id()?, arbitrary_policy_id);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_change_transfer_policy_id_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Deploy PathUSD token
+            deploy_path_usd(&mut factory, admin)?;
+            let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Initialize the TIP403 registry
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+
+            // Test special policies 0 and 1 (should always work)
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall { newPolicyId: 0 },
+            )?;
+            assert_eq!(token.transfer_policy_id()?, 0);
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall { newPolicyId: 1 },
+            )?;
+            assert_eq!(token.transfer_policy_id()?, 1);
+
+            // Test random invalid policy IDs should fail
+            let mut rng = rand::thread_rng();
+            for _ in 0..20 {
+                let invalid_policy_id = rng.gen_range(2..u64::MAX);
+                let result = token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: invalid_policy_id,
+                    },
+                );
+                assert!(matches!(
+                    result.unwrap_err(),
+                    TempoPrecompileError::TIP20(TIP20Error::InvalidTransferPolicyId(_))
+                ));
+            }
+
+            // Create some valid policies
+            let mut valid_policy_ids = Vec::new();
+            for i in 0..10 {
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: if i % 2 == 0 {
+                            ITIP403Registry::PolicyType::WHITELIST
+                        } else {
+                            ITIP403Registry::PolicyType::BLACKLIST
+                        },
+                    },
+                )?;
+                valid_policy_ids.push(policy_id);
+            }
+
+            // Test that all created policies can be set
+            for policy_id in valid_policy_ids {
+                let result = token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: policy_id,
+                    },
+                );
+                assert!(result.is_ok());
+                assert_eq!(token.transfer_policy_id()?, policy_id);
+            }
 
             Ok(())
         })
