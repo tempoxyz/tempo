@@ -803,8 +803,7 @@ mod tests {
 
     #[test]
     fn test_prevent_insufficient_balance_transfer() -> eyre::Result<()> {
-        // Use pre-AllegroModerato hardfork where validators_with_fees tracking is enabled
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let validator = Address::random();
         let beneficiary = Address::random();
