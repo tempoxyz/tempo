@@ -147,41 +147,6 @@ where
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        if !self
-            .inner
-            .spec
-            .is_moderato_active_at_timestamp(block_timestamp.to::<u64>())
-        {
-            // Handle start-of-block system transaction (rewards registry)
-            // Only enforce this restriction when we haven't seen the rewards registry yet
-            if let BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: false,
-            } = self.section
-            {
-                if to != TIP20_REWARDS_REGISTRY_ADDRESS {
-                    return Err(BlockValidationError::msg(
-                        "only rewards registry system transaction allowed at start of block",
-                    ));
-                }
-
-                let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-                    .abi_encode()
-                    .into_iter()
-                    .chain(block_number)
-                    .collect::<Bytes>();
-
-                if *tx.input() != finalize_streams_input {
-                    return Err(BlockValidationError::msg(
-                        "invalid TIP20 rewards registry system transaction",
-                    ));
-                }
-
-                return Ok(BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry: true,
-                });
-            }
-        }
-
         // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
         let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
             match self.section {
@@ -385,17 +350,10 @@ where
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
             match self.section {
-                BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry,
-                } if !post_moderato && !seen_tip20_rewards_registry => {
-                    Err(BlockValidationError::msg(
-                        "TIP20 rewards registry system transaction was not seen",
-                    ))
-                }
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
-                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
+                BlockSection::StartOfBlock | BlockSection::NonShared => {
                     Ok(BlockSection::SubBlock {
                         proposer: tx_proposer,
                     })
@@ -416,14 +374,7 @@ where
             }
         } else {
             match self.section {
-                BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry,
-                } if !post_moderato && !seen_tip20_rewards_registry => {
-                    Err(BlockValidationError::msg(
-                        "TIP20 rewards registry system transaction was not seen",
-                    ))
-                }
-                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
+                BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
                     {
