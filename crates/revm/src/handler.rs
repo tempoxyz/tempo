@@ -947,6 +947,7 @@ where
         }
 
         if gas_balance_spending.is_zero() {
+            evm.nonce_2d_gas = nonce_2d_gas;
             return Ok(());
         }
 
