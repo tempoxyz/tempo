@@ -80,6 +80,11 @@ export function BuySwap({ onSuccess }: { onSuccess?: () => void }) {
           {sendCalls.isPending ? 'Buying...' : 'Buy'}
         </Button>
       </div>
+      {sendCalls.error && (
+        <div className="text-red-500 text-[14px]">
+          {sendCalls.error.message}
+        </div>
+      )}
       {quote && address && (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-start gap-1">
