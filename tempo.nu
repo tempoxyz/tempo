@@ -1,6 +1,6 @@
 #!/usr/bin/env nu
 
-# Tempo local benchmarking utilities
+# Tempo local utilities
 
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
@@ -65,11 +65,11 @@ def find-tempo-pids [] {
 }
 
 # ============================================================================
-# Stack commands
+# Infra commands
 # ============================================================================
 
 # Start the observability stack (Grafana + Prometheus)
-def "main stack up" [] {
+def "main infra up" [] {
     print "Starting observability stack..."
     docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
     print "Grafana available at http://localhost:3000 (admin/admin)"
@@ -77,7 +77,7 @@ def "main stack up" [] {
 }
 
 # Stop the observability stack
-def "main stack down" [] {
+def "main infra down" [] {
     print "Stopping observability stack..."
     docker compose -f $"($BENCH_DIR)/docker-compose.yml" down
 }
@@ -133,11 +133,11 @@ def "main kill" [
 }
 
 # ============================================================================
-# Node command
+# Network command
 # ============================================================================
 
-# Run Tempo node(s) for benchmarking
-def "main node" [
+# Run Tempo network
+def "main network" [
     --mode: string = "dev"      # Mode: "dev" or "consensus"
     --nodes: int = 3            # Number of validators (consensus mode)
     --accounts: int = 1000      # Number of genesis accounts
@@ -384,7 +384,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 # Bench command
 # ============================================================================
 
-# Run a full benchmark: start stack, nodes, and tempo-bench
+# Run a full benchmark: start infra, network, and tempo-bench
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
     --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
@@ -439,7 +439,7 @@ def "main bench" [
     let genesis_accounts = ([$accounts $num_nodes] | math max) + 1
 
     let node_cmd = [
-        "nu" "bench.nu" "node"
+        "nu" "tempo.nu" "network"
         "--mode" $mode
         "--accounts" $"($genesis_accounts)"
         "--skip-build"
@@ -561,14 +561,14 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
 
 # Show help
 def main [] {
-    print "Tempo local benchmarking utilities"
+    print "Tempo local utilities"
     print ""
     print "Usage:"
-    print "  nu bench.nu bench [flags]           Run full benchmark (stack + nodes + bench)"
-    print "  nu bench.nu stack up                Start Grafana + Prometheus"
-    print "  nu bench.nu stack down              Stop the observability stack"
-    print "  nu bench.nu kill                    Kill any running tempo processes"
-    print "  nu bench.nu node [flags]            Run Tempo node(s)"
+    print "  nu tempo.nu bench [flags]            Run full benchmark (infra + network + bench)"
+    print "  nu tempo.nu network [flags]          Run Tempo network"
+    print "  nu tempo.nu infra up                 Start Grafana + Prometheus"
+    print "  nu tempo.nu infra down               Stop the observability stack"
+    print "  nu tempo.nu kill                     Kill any running tempo processes"
     print ""
     print "Bench flags (either --preset or --bench-args required):"
     print "  --mode <M>               Mode: dev or consensus (default: consensus)"
@@ -586,7 +586,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print ""
-    print "Node flags:"
+    print "Network flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
@@ -599,11 +599,11 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print ""
     print "Examples:"
-    print "  nu bench.nu bench --preset tip20 --tps 20000 --duration 60"
-    print "  nu bench.nu bench --preset tempo-mix --tps 5000 --samply --reset"
-    print "  nu bench.nu stack up"
-    print "  nu bench.nu node --mode dev --samply --accounts 50000 --reset"
-    print "  nu bench.nu node --mode consensus --nodes 3"
+    print "  nu tempo.nu bench --preset tip20 --tps 20000 --duration 60"
+    print "  nu tempo.nu bench --preset tempo-mix --tps 5000 --samply --reset"
+    print "  nu tempo.nu infra up"
+    print "  nu tempo.nu network --mode dev --samply --accounts 50000 --reset"
+    print "  nu tempo.nu network --mode consensus --nodes 3"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
     print "  Consensus:     8000 + N*100"
