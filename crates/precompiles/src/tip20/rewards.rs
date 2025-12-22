@@ -432,68 +432,14 @@ mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         storage::{
-            ContractStorage, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+            PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
         },
         test_util::TIP20Setup,
         tip20::{ISSUER_ROLE, tests::initialize_path_usd},
-        tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP403Registry;
 
-    #[test]
-    fn test_start_reward_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-        let current_time = storage.timestamp().to::<u64>();
-        let token_id = 1;
-
-        StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-
-            let mut token = TIP20Token::new(token_id);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            let mint_amount = U256::from(1000e18);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: admin,
-                    amount: mint_amount,
-                },
-            )?;
-
-            let reward_amount = U256::from(100e18);
-            let stream_id = token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 10,
-                },
-            )?;
-            assert_eq!(stream_id, 1);
-
-            let token_address = token.address;
-            let balance = token.get_balance(token_address)?;
-            assert_eq!(balance, reward_amount);
-
-            let stream = token.get_stream(stream_id)?;
-            assert_eq!(stream.funder, admin);
-            assert_eq!(stream.start_time, current_time);
-            assert_eq!(stream.end_time, current_time + 10);
-
-            let total_reward_per_second = token.get_total_reward_per_second()?;
-            let expected_rate = (reward_amount * ACC_PRECISION) / U256::from(10);
-            assert_eq!(total_reward_per_second, expected_rate);
-
-            let global_reward_per_token = token.get_global_reward_per_token()?;
-            assert_eq!(global_reward_per_token, U256::ZERO);
-
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {

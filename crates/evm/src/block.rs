@@ -340,10 +340,6 @@ where
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
         let block_timestamp = block.timestamp.to::<u64>();
-        let post_moderato = self
-            .inner
-            .spec
-            .is_moderato_active_at_timestamp(block_timestamp);
 
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
