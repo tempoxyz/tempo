@@ -11,6 +11,8 @@ profile.json.gz
 .DS_Store
 .idea
 **/.env
+**/.envrc
+!.envrc
 localnet/**
 
 .claude/
