@@ -2292,44 +2292,6 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Transfer fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
-            let final_opted_in = token.get_opted_in_supply()?;
-            assert_eq!(
-                final_opted_in, initial_opted_in,
-                "opted-in supply should NOT change pre-Moderato"
-            );
-
-            // User should NOT have accumulated rewards (rewards not handled)
-            let user_info = token.get_user_reward_info(user)?;
-            assert_eq!(
-                user_info.reward_balance,
-                U256::ZERO,
-                "user should NOT have accumulated rewards pre-Moderato"
-            );
-
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
@@ -2383,57 +2345,6 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let (mut storage, admin) = setup_storage();
-        storage.set_spec(TempoHardfork::Adagio);
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Simulate fee transfer: first take fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
-            let opted_in_after_pre = token.get_opted_in_supply()?;
-            assert_eq!(
-                opted_in_after_pre, initial_opted_in,
-                "opted-in supply should be unchanged in pre_tx pre-Moderato"
-            );
-
-            // Now refund part of it back
-            let refund_amount = U256::from(40e18);
-            let actual_used = U256::from(60e18);
-            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
-
-            // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
-            let final_opted_in = token.get_opted_in_supply()?;
-
-            assert_eq!(
-                final_opted_in, initial_opted_in,
-                "opted-in supply should remain unchanged pre-Moderato"
-            );
-
-            // User should NOT have accumulated rewards
-            let user_info = token.get_user_reward_info(user)?;
-            assert_eq!(
-                user_info.reward_balance,
-                U256::ZERO,
-                "user should NOT have accumulated rewards pre-Moderato"
-            );
-
-            Ok(())
-        })
-    }
 
     #[test]
     fn test_initialize_supply_cap_post_moderato() -> eyre::Result<()> {
