@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { VariantProps } from 'cva'
 import * as React from 'react'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { Hooks } from 'tempo.ts/wagmi'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
@@ -41,7 +41,7 @@ function getExplorerHost() {
     return VITE_EXPLORER_OVERRIDE
   }
 
-  return tempo({}).blockExplorers.default.url
+  return tempoTestnet.blockExplorers.default.url
 }
 
 export function ExplorerLink({ hash }: { hash: string }) {
