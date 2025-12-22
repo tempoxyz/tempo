@@ -17,20 +17,16 @@ use alloy::primitives::{Address, U256};
 /// ```solidity
 /// contract Nonce {
 ///     mapping(address => mapping(uint256 => uint64)) public nonces;      // slot 0
-///     mapping(address => uint256) public activeKeyCount;                  // slot 1 (deprecated post-AllegroModerato)
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
-/// - Slot 1: Active key count - keccak256(abi.encode(account, 1)) (deprecated post-AllegroModerato)
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
-    /// Deprecated post-AllegroModerato: tracks number of active nonce keys per account
-    active_key_count: Mapping<Address, U256>,
 }
 
 impl NonceManager {
