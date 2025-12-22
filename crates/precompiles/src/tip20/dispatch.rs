@@ -178,20 +178,9 @@ impl Precompile for TIP20Token {
                     self.set_reward_recipient(s, call)
                 })
             }
-            ITIP20::cancelRewardCall::SELECTOR => {
-                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
-                    self.cancel_reward(s, call)
-                })
-            }
             ITIP20::claimRewardsCall::SELECTOR => {
                 mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, |_, _| {
                     self.claim_rewards(msg_sender)
-                })
-            }
-
-            ITIP20::finalizeStreamsCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
-                    self.finalize_streams(sender, call.timestamp as u128)
                 })
             }
 
