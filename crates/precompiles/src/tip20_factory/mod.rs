@@ -282,7 +282,7 @@ mod tests {
             assert_eq!(token_id_after_path_usd, U256::from(1));
 
             for i in 1..=50 {
-                let token = TIP20Setup::create("Test".into(), "Test".into(), sender).apply()?;
+                let token = TIP20Setup::create("Test", "Test", sender).apply()?;
                 // Note that this is +1 because PathUSD is token 0
                 let expected_counter = U256::from(i + 1);
                 let actual_counter = factory.token_id_counter()?;
