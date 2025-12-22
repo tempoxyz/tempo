@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { VariantProps } from 'cva'
 import * as React from 'react'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { Hooks } from 'tempo.ts/wagmi'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
@@ -35,13 +35,13 @@ export function useWebAuthnConnector() {
 }
 
 function getExplorerHost() {
-  const { VITE_LOCAL, VITE_LOCAL_EXPLORER } = import.meta.env
+  const { VITE_ENVIRONMENT, VITE_EXPLORER_OVERRIDE } = import.meta.env
 
-  if (VITE_LOCAL === 'true' && VITE_LOCAL_EXPLORER !== undefined) {
-    return VITE_LOCAL_EXPLORER
+  if (VITE_ENVIRONMENT !== 'testnet' && VITE_EXPLORER_OVERRIDE !== undefined) {
+    return VITE_EXPLORER_OVERRIDE
   }
 
-  return tempo({}).blockExplorers.default.url
+  return tempoTestnet.blockExplorers.default.url
 }
 
 export function ExplorerLink({ hash }: { hash: string }) {
