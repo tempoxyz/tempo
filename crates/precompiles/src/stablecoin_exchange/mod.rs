@@ -974,38 +974,6 @@ impl StablecoinExchange {
         Ok(())
     }
 
-    /// Cancel a pending order (not yet in the active orderbook)
-    fn cancel_pending_order(&mut self, order: Order) -> Result<()> {
-        let orderbook = self.books.at(order.book_key()).read()?;
-        let token = if order.is_bid() {
-            orderbook.quote
-        } else {
-            orderbook.base
-        };
-
-        // For bids, calculate quote amount to refund; for asks, refund base amount
-        // Refunds round DOWN to favor protocol
-        let refund_amount = if order.is_bid() {
-            base_to_quote(order.remaining(), order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?
-        } else {
-            order.remaining()
-        };
-
-        // Credit remaining tokens to user's withdrawable balance
-        self.increment_balance(order.maker(), token, refund_amount)?;
-
-        // Clear the order from storage
-        self.orders.at(order.order_id()).delete()?;
-
-        // Emit OrderCancelled event
-        self.emit_event(StablecoinExchangeEvents::OrderCancelled(
-            IStablecoinExchange::OrderCancelled {
-                orderId: order.order_id(),
-            },
-        ))
-    }
-
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
         let mut book_handler = self.books.at(order.book_key());
@@ -1968,69 +1936,6 @@ mod tests {
                 account: exchange.address,
             })?;
             assert_eq!(exchange_balance, U256::from(expected_escrow));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_cancel_pending_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-            let min_order_amount = MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-
-            // Calculate escrow amount needed for bid
-            let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-
-            // Setup tokens
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
-
-            exchange
-                .create_pair(base_token)
-                .expect("Could not create pair");
-
-            // Place the bid order
-            let order_id = exchange
-                .place(alice, base_token, min_order_amount, true, tick)
-                .expect("Place bid order should succeed");
-
-            // Verify order was placed and tokens were escrowed
-            assert_eq!(exchange.balance_of(alice, quote_token)?, 0);
-
-            let (alice_balance_before, exchange_balance_before) = {
-                let quote_tip20 = TIP20Token::from_address(quote_token)?;
-
-                (
-                    quote_tip20.balance_of(ITIP20::balanceOfCall { account: alice })?,
-                    quote_tip20.balance_of(ITIP20::balanceOfCall {
-                        account: exchange.address,
-                    })?,
-                )
-            };
-
-            assert_eq!(alice_balance_before, U256::ZERO);
-            assert_eq!(exchange_balance_before, U256::from(expected_escrow));
-
-            // Cancel the pending order
-            exchange
-                .cancel(alice, order_id)
-                .expect("Cancel pending order should succeed");
-
-            // Verify order was deleted
-            let cancelled_order = exchange.orders.at(order_id).read()?;
-            assert_eq!(cancelled_order.maker(), Address::ZERO);
-
-            // Verify tokens were refunded to user's internal balance
-            assert_eq!(exchange.balance_of(alice, quote_token)?, expected_escrow);
 
             Ok(())
         })

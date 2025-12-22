@@ -180,7 +180,7 @@ impl Precompile for StablecoinExchange {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
+    
     use crate::{
         Precompile,
         path_usd::TRANSFER_ROLE,
@@ -189,13 +189,11 @@ mod tests {
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{Address, Bytes, U256},
+        primitives::{Address, U256},
         sol_types::{SolCall, SolError, SolValue},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IStablecoinExchange::IStablecoinExchangeCalls, UnknownFunctionSelector,
-    };
+    use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
     fn setup_exchange_with_liquidity()
