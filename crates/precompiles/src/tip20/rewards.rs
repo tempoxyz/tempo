@@ -270,11 +270,6 @@ impl TIP20Token {
         self.next_stream_id.read().map(|id| id.max(1))
     }
 
-    /// Sets the next stream ID counter.
-    fn set_next_stream_id(&mut self, value: u64) -> Result<()> {
-        self.next_stream_id.write(value)
-    }
-
     /// Gets the accumulated global reward per token.
     fn get_global_reward_per_token(&self) -> Result<U256> {
         self.global_reward_per_token.read()
@@ -305,24 +300,9 @@ impl TIP20Token {
         self.opted_in_supply.write(value)
     }
 
-    /// Gets the scheduled rate decrease at a specific time from storage.
-    fn get_scheduled_rate_decrease_at(&self, end_time: u128) -> Result<U256> {
-        self.scheduled_rate_decrease.at(end_time).read()
-    }
-
-    /// Sets the scheduled rate decrease at a specific time in storage.
-    fn set_scheduled_rate_decrease_at(&mut self, end_time: u128, value: U256) -> Result<()> {
-        self.scheduled_rate_decrease.at(end_time).write(value)
-    }
-
     /// Gets the total reward per second rate from storage.
     pub fn get_total_reward_per_second(&self) -> Result<U256> {
         self.total_reward_per_second.read()
-    }
-
-    /// Sets the total reward per second rate in storage.
-    fn set_total_reward_per_second(&mut self, value: U256) -> Result<()> {
-        self.total_reward_per_second.write(value)
     }
 
     /// Handles reward accounting for both sender and receiver during token transfers.
