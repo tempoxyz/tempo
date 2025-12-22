@@ -141,6 +141,7 @@ def "main localnet" [
     --mode: string = "dev"      # Mode: "dev" or "consensus"
     --nodes: int = 3            # Number of validators (consensus mode)
     --accounts: int = 1000      # Number of genesis accounts
+    --genesis: string = ""      # Custom genesis file path (skips generation)
     --samply                    # Enable samply profiling (foreground node only)
     --samply-args: string = ""  # Additional samply arguments (space-separated)
     --reset                     # Wipe and regenerate localnet data
@@ -174,9 +175,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $samply $samply_args_list $reset $profile $loud $extra_args
+        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
     } else {
-        run-consensus-nodes $nodes $accounts $samply $samply_args_list $reset $profile $loud $extra_args
+        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
     }
 }
 
@@ -184,20 +185,25 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
-    let needs_generation = $reset or (not ($genesis_path | path exists))
+def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+    let genesis_path = if $genesis != "" {
+        $genesis
+    } else {
+        let default_genesis = $"($LOCALNET_DIR)/genesis.json"
+        let needs_generation = $reset or (not ($default_genesis | path exists))
 
-    if $needs_generation {
-        if $reset {
-            print "Resetting localnet data..."
-        } else {
-            print "Genesis not found, generating..."
+        if $needs_generation {
+            if $reset {
+                print "Resetting localnet data..."
+            } else {
+                print "Genesis not found, generating..."
+            }
+            rm -rf $LOCALNET_DIR
+            mkdir $LOCALNET_DIR
+            print $"Generating genesis with ($accounts) accounts..."
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
         }
-        rm -rf $LOCALNET_DIR
-        mkdir $LOCALNET_DIR
-        print $"Generating genesis with ($accounts) accounts..."
-        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
+        $default_genesis
     }
 
     let tempo_bin = if $profile == "dev" {
@@ -252,30 +258,32 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
-    # Check if we need to generate localnet
-    let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
-        (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
-    )
+def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+    # Check if we need to generate localnet (only if no custom genesis provided)
+    if $genesis == "" {
+        let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
+            (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
+        )
 
-    if $needs_generation {
-        if $reset {
-            print "Resetting localnet data..."
-        } else {
-            print "Localnet not found, generating..."
+        if $needs_generation {
+            if $reset {
+                print "Resetting localnet data..."
+            } else {
+                print "Localnet not found, generating..."
+            }
+            rm -rf $LOCALNET_DIR
+
+            # Generate validator addresses (port 8000, 8100, 8200, ...)
+            # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
+            let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
+
+            print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
         }
-        rm -rf $LOCALNET_DIR
-
-        # Generate validator addresses (port 8000, 8100, 8200, ...)
-        # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-        let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
-
-        print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
     }
 
     # Parse the generated node configs
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
+    let genesis_path = if $genesis != "" { $genesis } else { $"($LOCALNET_DIR)/genesis.json" }
 
     # Build trusted peers from enode.identity files
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
@@ -392,6 +400,7 @@ def "main bench" [
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
     --nodes: int = 3                                # Number of consensus nodes (consensus mode only)
+    --genesis: string = ""                          # Custom genesis file path (skips generation)
     --samply                                        # Profile nodes with samply
     --samply-args: string = ""                      # Additional samply arguments (space-separated)
     --reset                                         # Reset localnet before starting
@@ -448,6 +457,7 @@ def "main bench" [
         "--features" $features
     ]
     | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
+    | append (if $genesis != "" { ["--genesis" $genesis] } else { [] })
     | append (if $reset { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
     | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
