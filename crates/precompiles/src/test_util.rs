@@ -1,5 +1,7 @@
 //! Test utilities for precompile dispatch testing
 
+#[cfg(any(test, feature = "test-utils"))]
+use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
@@ -11,6 +13,8 @@ use alloy::{
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
+#[cfg(any(test, feature = "test-utils"))]
+use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 
 /// Checks that all selectors in an interface have dispatch handlers.
@@ -273,11 +277,6 @@ impl TIP20Setup {
 
     /// Apply the configuration, returning just the TIP20Token.
     pub fn apply(self) -> Result<TIP20Token> {
-        self.apply_with_id().map(|(_, token)| token)
-    }
-
-    /// Apply the configuration, returning both token_id and TIP20Token.
-    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
         let mut token = match self.action {
             Action::PathUSD => self.path_usd_inner()?,
             Action::CreateToken {
@@ -342,8 +341,25 @@ impl TIP20Setup {
             token.start_reward(admin, ITIP20::startRewardCall { amount, secs })?;
         }
 
-        let token_id = tip20::address_to_token_id_unchecked(token.address());
-        Ok((token_id, token))
+        Ok(token)
+    }
+
+    /// Apply the configuration, returning both token_id and TIP20Token.
+    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
+        self.apply().map(|token| {
+            let token_id = tip20::address_to_token_id_unchecked(token.address());
+            (token_id, token)
+        })
+    }
+
+    pub fn expect_err(self, expected: TempoPrecompileError) {
+        let result = self.apply();
+        assert!(result.is_err_and(|err| err == expected));
+    }
+
+    pub fn expect_tip20_err(self, expected: TIP20Error) {
+        let result = self.apply();
+        assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
     }
 }
 
