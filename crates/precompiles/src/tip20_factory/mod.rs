@@ -241,8 +241,9 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             // Test that using token_id as quote token is rejected
             let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
 
-            // Get the current token_id (should be 1)
+            // Get the current token_id (should be 1 after PathUSD deployment)
             let current_token_id = factory.token_id_counter()?;
             assert_eq!(current_token_id, U256::from(1));
 
