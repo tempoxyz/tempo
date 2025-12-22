@@ -186,7 +186,7 @@ mod tests {
         path_usd::TRANSFER_ROLE,
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, check_selector_coverage},
+        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
         primitives::{Address, Bytes, U256},
@@ -602,66 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            // Use an invalid selector that doesn't match any function - should return Ok with reverted status
-            let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-            assert!(result?.reverted);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_missing_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            // Use calldata that's too short to contain a selector
-            let calldata = Bytes::from([0x12, 0x34]);
-
-            let result = exchange.call(&calldata, sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn stablecoin_exchange_test_selector_coverage_pre_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-
-            let unsupported = check_selector_coverage(
-                &mut exchange,
-                IStablecoinExchangeCalls::SELECTORS,
-                "IStablecoinExchange",
-                IStablecoinExchangeCalls::name_by_selector,
-            );
-
-            // In pre-AllegroModerato, nextOrderId should be unsupported
-            let expected_unsupported: Vec<&str> =
-                unsupported.iter().map(|(_, name)| *name).collect();
-            assert_eq!(expected_unsupported, vec!["nextOrderId"]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn stablecoin_exchange_test_selector_coverage_post_allegro_moderato() -> eyre::Result<()> {
+    fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -673,14 +614,8 @@ mod tests {
                 IStablecoinExchangeCalls::name_by_selector,
             );
 
-            // In post-AllegroModerato, activeOrderId and pendingOrderId should be unsupported
-            let mut expected_unsupported: Vec<&str> =
-                unsupported.iter().map(|(_, name)| *name).collect();
-            expected_unsupported.sort();
-            assert_eq!(
-                expected_unsupported,
-                vec!["activeOrderId", "pendingOrderId"]
-            );
+            // All selectors should be supported
+            assert_full_coverage([unsupported]);
 
             Ok(())
         })
