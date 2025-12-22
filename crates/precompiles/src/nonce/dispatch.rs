@@ -48,13 +48,13 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::INonce::INonceCalls;
 
     #[test]
     fn test_nonce_selector_coverage_pre_allegro_moderato() -> eyre::Result<()> {
         // Pre-AllegroModerato: all selectors should be supported
-        let mut storage = HashMapStorageProvider::new(1)
-            .with_spec(tempo_chainspec::hardfork::TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         StorageCtx::enter(&mut storage, || {
             let mut nonce_manager = NonceManager::new();
 
