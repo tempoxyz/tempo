@@ -17,8 +17,6 @@ use tracing::trace;
 
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {
-    // TODO: It would be nice to have a `#[initial_value=`n`]` macro
-    // to mimic setting an initial value in solidity
     token_id_counter: U256,
 }
 
@@ -38,21 +36,15 @@ impl TIP20Factory {
 
     /// Returns true if the address is a valid TIP20 token.
     ///
-    /// Post-AllegroModerato: Matches the Solidity implementation which checks both:
+    /// Checks both:
     /// 1. The address has the correct TIP20 prefix
     /// 2. The token ID (lower 8 bytes) is less than tokenIdCounter
-    ///
-    /// Pre-AllegroModerato: Only checks the address prefix for backwards compatibility.
     pub fn is_tip20(&self, token: Address) -> Result<bool> {
         if !is_tip20_prefix(token) {
             return Ok(false);
         }
-        // Post-AllegroModerato: also check that token ID < tokenIdCounter
-        if self.storage.spec().is_allegro_moderato() {
-            let token_id = U256::from(address_to_token_id_unchecked(token));
-            return Ok(token_id < self.token_id_counter()?);
-        }
-        Ok(true)
+        let token_id = U256::from(address_to_token_id_unchecked(token));
+        Ok(token_id < self.token_id_counter()?)
     }
 
     pub fn create_token(
@@ -72,23 +64,15 @@ impl TIP20Factory {
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         // Note that the token Id increments on each deployment.
 
-        // Post-Allegretto, require that the first TIP20 deployed has a quote token of address(0)
-        if self.storage.spec().is_allegretto() && token_id == 0 {
+        // Require that the first TIP20 deployed has a quote token of address(0)
+        if token_id == 0 {
             if !call.quoteToken.is_zero() {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
-        } else if self.storage.spec().is_moderato() {
-            // Post-Moderato: Fixed validation - quote token id must be < current token_id (strictly less than).
+        } else {
+            // Quote token must be a valid deployed TIP20
             if !is_tip20_prefix(call.quoteToken)
                 || address_to_token_id_unchecked(call.quoteToken) >= token_id
-            {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
-        } else {
-            // Pre-Moderato: Original validation with off-by-one bug for consensus compatibility.
-            // The buggy check allowed quote_token_id == token_id to pass.
-            if !is_tip20_prefix(call.quoteToken)
-                || address_to_token_id_unchecked(call.quoteToken) > token_id
             {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -130,14 +114,7 @@ impl TIP20Factory {
     }
 
     pub fn token_id_counter(&self) -> Result<U256> {
-        let counter = self.token_id_counter.read()?;
-
-        // Pre Allegreto, start the counter at 1
-        if !self.storage.spec().is_allegretto() && counter.is_zero() {
-            Ok(U256::ONE)
-        } else {
-            Ok(counter)
-        }
+        self.token_id_counter.read()
     }
 }
 
@@ -151,7 +128,6 @@ mod tests {
         tip20::tests::initialize_path_usd,
     };
     use alloy::primitives::Address;
-    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_create_token() -> eyre::Result<()> {
@@ -210,8 +186,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_invalid_quote_token_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_invalid_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -234,8 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_quote_token_not_deployed_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_quote_token_not_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -259,14 +235,15 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_off_by_one_rejected_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_create_token_off_by_one_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
-            // Test the off-by-one bug fix: using token_id as quote token should be rejected post-Moderato
+            // Test that using token_id as quote token is rejected
             let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
 
-            // Get the current token_id (should be 1)
+            // Get the current token_id (should be 1 after PathUSD deployment)
             let current_token_id = factory.token_id_counter()?;
             assert_eq!(current_token_id, U256::from(1));
 
@@ -282,7 +259,7 @@ mod tests {
             };
 
             let result = factory.create_token(sender, call);
-            // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet (off-by-one)
+            // Should fail with InvalidQuoteToken error because token 1 doesn't exist yet
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
@@ -292,108 +269,36 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_future_quote_token_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_token_id() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            // Test that pre-Moderato SHOULD still validate that quote tokens exist
-            // Using a TIP20 address with ID > current token_id should fail (not yet created)
-            let mut factory = TIP20Setup::factory()?;
-
-            // Current token_id should be 1
-            assert_eq!(factory.token_id_counter()?, U256::from(1));
-
-            // Try to use token ID 5 as quote token (doesn't exist yet)
-            // This should fail factory validation even pre-Moderato
-            let future_quote_token = token_id_to_address(5);
-            let call = ITIP20Factory::createTokenCall {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
-                currency: "EUR".to_string(), // Use non-USD to avoid TIP20Token::initialize validation
-                quoteToken: future_quote_token,
-                admin: sender,
-            };
-
-            let result = factory.create_token(sender, call);
-
-            // This should fail with InvalidQuoteToken from factory validation
-            // Currently this test will PASS (not fail) because factory validation is skipped pre-Moderato
-            assert!(
-                result.is_err(),
-                "Should fail when using a not-yet-created token as quote token"
-            );
-            if let Err(e) = result {
-                assert_eq!(
-                    e,
-                    TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token()),
-                    "Should fail with InvalidQuoteToken from factory validation"
-                );
-            }
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_create_token_off_by_one_allowed_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let sender = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Setup::factory()?;
-
-            // Get the current token_id (should be 1)
-            let current_token_id = factory.token_id_counter()?;
-            assert_eq!(current_token_id, U256::from(1));
-
-            // Try to use token_id 1 (the token being created) as the quote token
-            // Pre-Moderato, the old buggy validation (> instead of >=) allows this to pass
-            let same_id_quote_token = token_id_to_address(1);
-            let call = ITIP20Factory::createTokenCall {
-                name: "Test Token".to_string(),
-                symbol: "TEST".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: same_id_quote_token,
-                admin: sender,
-            };
-
-            let result = factory.create_token(sender, call);
-
-            // Pre-Moderato: the old buggy validation (> token_id) allows quote_token_id == token_id
-            // The operation may succeed or fail with a different error later, but it should NOT
-            // fail with InvalidQuoteToken from validation
-            match result {
-                Ok(_) => {
-                    // Operation succeeded - the buggy validation allowed it through
-                }
-                Err(e) => {
-                    // If it fails, it should NOT be due to InvalidQuoteToken validation
-                    assert!(
-                        !matches!(
-                            e,
-                            TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(_))
-                        ),
-                        "Pre-Moderato should not reject with InvalidQuoteToken when quote_token_id == token_id (buggy > logic)"
-                    );
-                }
-            }
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_token_id_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         StorageCtx::enter(&mut storage, || {
             let factory = TIP20Setup::factory()?;
 
+            // Initially, token counter should be 0
             let current_token_id = factory.token_id_counter()?;
             assert_eq!(current_token_id, U256::ZERO);
+
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
+            let token_id_after_path_usd = factory.token_id_counter()?;
+            assert_eq!(token_id_after_path_usd, U256::from(1));
+
+            for i in 1..=50 {
+                let token = TIP20Setup::create("Test", "Test", sender).apply()?;
+                // Note that this is +1 because PathUSD is token 0
+                let expected_counter = U256::from(i + 1);
+                let actual_counter = factory.token_id_counter()?;
+                assert_eq!(actual_counter, expected_counter);
+                assert_eq!(address_to_token_id_unchecked(token.address()), i as u64);
+            }
+
             Ok(())
         })
     }
 
     #[test]
-    fn test_create_token_post_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_create_token_first_token_validation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -426,12 +331,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_is_tip20() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // initialize_path_usd deploys PathUSD via factory for post-Allegretto specs,
+            // initialize_path_usd deploys PathUSD via factory
             // which properly increments tokenIdCounter to 1
             initialize_path_usd(sender)?;
 
@@ -450,36 +355,6 @@ mod tests {
             assert!(!factory.is_tip20(non_existent_tip20)?);
 
             // Non-TIP20 address should be invalid
-            assert!(!factory.is_tip20(Address::random())?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_tip20_pre_allegro_moderato() -> eyre::Result<()> {
-        // Pre-AllegroModerato: only check prefix, not tokenIdCounter
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(sender)?;
-
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
-
-            // PATH_USD (token ID 0) should be valid
-            assert!(factory.is_tip20(crate::PATH_USD_ADDRESS)?);
-
-            // Token ID >= tokenIdCounter should still be valid (only checks prefix pre-AllegroModerato)
-            let token_id_counter: u64 = factory.token_id_counter()?.to();
-            let non_existent_tip20 = token_id_to_address(token_id_counter + 100);
-            assert!(
-                factory.is_tip20(non_existent_tip20)?,
-                "Pre-AllegroModerato: should only check prefix"
-            );
-
-            // Non-TIP20 address should still be invalid (wrong prefix)
             assert!(!factory.is_tip20(Address::random())?);
 
             Ok(())
