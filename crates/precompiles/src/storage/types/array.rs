@@ -106,34 +106,32 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     ///
     /// Returns `None` if the index is out of bounds (>= N).
     #[inline]
-    pub fn at(&self, index: usize) -> Option<&T::Handler> {
+    pub fn at(&mut self, index: usize) -> Option<&T::Handler> {
         if index >= N {
             return None;
         }
+        let (base_slot, address) = (self.base_slot, self.address);
         Some(
             self.cache
-                .get_or_insert(index, || self.compute_handler(index)),
+                .get_or_insert(index, || Self::compute_handler(base_slot, address, index)),
         )
     }
 
     /// Computes the handler for a given index (unchecked).
     #[inline]
-    fn compute_handler(&self, index: usize) -> T::Handler {
+    fn compute_handler(base_slot: U256, address: Address, index: usize) -> T::Handler {
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
-        let (base_slot, layout_ctx) = if T::BYTES <= 16 {
+        let (slot, layout_ctx) = if T::BYTES <= 16 {
             let location = packing::calc_element_loc(index, T::BYTES);
             (
-                self.base_slot + U256::from(location.offset_slots),
+                base_slot + U256::from(location.offset_slots),
                 LayoutCtx::packed(location.offset_bytes),
             )
         } else {
-            (
-                self.base_slot + U256::from(index * T::SLOTS),
-                LayoutCtx::FULL,
-            )
+            (base_slot + U256::from(index * T::SLOTS), LayoutCtx::FULL)
         };
 
-        T::handle(base_slot, layout_ctx, self.address)
+        T::handle(slot, layout_ctx, address)
     }
 }
 
@@ -146,8 +144,9 @@ impl<T: StorableType, const N: usize> Index<usize> for ArrayHandler<T, N> {
     /// For gracefully checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < N, "index out of bounds: {index} >= {N}");
+        let (base_slot, address) = (self.base_slot, self.address);
         self.cache
-            .get_or_insert(index, || self.compute_handler(index))
+            .get_or_insert(index, || Self::compute_handler(base_slot, address, index))
     }
 }
 
@@ -158,8 +157,9 @@ impl<T: StorableType, const N: usize> IndexMut<usize> for ArrayHandler<T, N> {
     /// For gracefully checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < N, "index out of bounds: {index} >= {N}");
+        let (base_slot, address) = (self.base_slot, self.address);
         self.cache
-            .get_or_insert_mut(index, || self.compute_handler(index))
+            .get_or_insert_mut(index, || Self::compute_handler(base_slot, address, index))
     }
 }
 

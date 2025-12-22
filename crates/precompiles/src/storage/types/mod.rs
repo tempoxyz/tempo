@@ -345,9 +345,17 @@ impl<K, H> Clone for HandlerCache<K, H> {
 
 impl<K: Hash + Eq, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
+    ///
+    /// # SAFETY
+    ///
+    /// This method is safe to call as long as the closure `f` doesn't re-enter.
     #[inline]
     pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
-        self.get_or_insert_mut(key, f)
+        // SAFETY: Same guarantees as get_or_insert_mut
+        unsafe {
+            let cache = &mut *self.inner.get();
+            cache.entry(key).or_insert_with(|| Box::new(f()))
+        }
     }
 
     /// Returns a mutable reference to a lazily initialized handler for the given key.
@@ -357,7 +365,7 @@ impl<K: Hash + Eq, H> HandlerCache<K, H> {
     /// This method is safe to call as long as the closure `f` doesn't re-enter.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub(super) fn get_or_insert_mut(&self, key: K, f: impl FnOnce() -> H) -> &mut H {
+    pub(super) fn get_or_insert_mut(&mut self, key: K, f: impl FnOnce() -> H) -> &mut H {
         // SAFETY:
         // 1. Single-threaded access (EVM execution model)
         // 2. Box ensures stable heap address even when HashMap rehashes

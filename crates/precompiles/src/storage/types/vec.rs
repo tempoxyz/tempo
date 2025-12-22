@@ -246,11 +246,9 @@ where
     }
 
     #[inline]
-    fn compute_handler(&self, index: usize) -> T::Handler {
-        let data_start = self.data_slot();
-
+    fn compute_handler(data_start: U256, address: Address, index: usize) -> T::Handler {
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
-        let (base_slot, layout_ctx) = if T::BYTES <= 16 {
+        let (slot, layout_ctx) = if T::BYTES <= 16 {
             let location = calc_element_loc(index, T::BYTES);
             (
                 data_start + U256::from(location.offset_slots),
@@ -260,7 +258,7 @@ where
             (data_start + U256::from(index * T::SLOTS), LayoutCtx::FULL)
         };
 
-        T::handle(base_slot, layout_ctx, self.address)
+        T::handle(slot, layout_ctx, address)
     }
 
     /// Returns a `Handler` for the element at the given index with bounds checking.
@@ -276,10 +274,10 @@ where
             return Ok(None);
         }
 
-        Ok(Some(
-            self.cache
-                .get_or_insert(index, || self.compute_handler(index)),
-        ))
+        let (data_start, address) = (self.data_slot(), self.address);
+        Ok(Some(self.cache.get_or_insert(index, || {
+            Self::compute_handler(data_start, address, index)
+        })))
     }
 
     /// Pushes a new element to the end of the vector.
@@ -294,8 +292,8 @@ where
         // Read current length
         let length = self.len()?;
 
-        // Write element at the end (use compute_handler for mutable access)
-        let mut elem_slot = self.compute_handler(length);
+        // Write element at the end
+        let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, length);
         elem_slot.write(value)?;
 
         // Increment length
@@ -320,8 +318,8 @@ where
         }
         let last_index = length - 1;
 
-        // Read the last element (use compute_handler for mutable access)
-        let mut elem_slot = self.compute_handler(last_index);
+        // Read the last element
+        let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, last_index);
         let element = elem_slot.read()?;
 
         // Zero out the element's storage
@@ -346,8 +344,9 @@ where
     /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
     /// For checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
+        let (data_start, address) = (self.data_slot(), self.address);
         self.cache
-            .get_or_insert(index, || self.compute_handler(index))
+            .get_or_insert(index, || Self::compute_handler(data_start, address, index))
     }
 }
 
@@ -360,8 +359,9 @@ where
     /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
     /// For checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        let (data_start, address) = (self.data_slot(), self.address);
         self.cache
-            .get_or_insert_mut(index, || self.compute_handler(index))
+            .get_or_insert_mut(index, || Self::compute_handler(data_start, address, index))
     }
 }
 

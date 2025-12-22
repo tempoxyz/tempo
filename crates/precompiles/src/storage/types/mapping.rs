@@ -77,12 +77,9 @@ impl<K, V: StorableType> Mapping<K, V> {
     where
         K: StorageKey + Hash + Eq + Clone,
     {
+        let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert(key.clone(), || {
-            V::handle(
-                key.mapping_slot(self.base_slot),
-                LayoutCtx::FULL,
-                self.address,
-            )
+            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
 
@@ -121,12 +118,9 @@ where
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
     fn index(&self, key: K) -> &Self::Output {
+        let (base_slot, address) = (self.base_slot, self.address);
         self.cache.get_or_insert(key.clone(), || {
-            V::handle(
-                key.mapping_slot(self.base_slot),
-                LayoutCtx::FULL,
-                self.address,
-            )
+            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
 }
