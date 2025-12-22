@@ -1,9 +1,7 @@
 use crate::{
-    TIP20_REWARDS_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip20::TIP20Token,
-    tip20_rewards_registry::TIP20RewardsRegistry,
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -61,61 +59,9 @@ impl TIP20Token {
 
             Ok(0)
         } else {
-            // Scheduled rewards are disabled post-Moderato hardfork
-            if self.storage.spec().is_moderato() {
-                return Err(TIP20Error::scheduled_rewards_disabled().into());
-            }
-
-            let rate = call
-                .amount
-                .checked_mul(ACC_PRECISION)
-                .and_then(|v| v.checked_div(U256::from(call.secs)))
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            let stream_id = self.get_next_stream_id()?;
-            let next_stream_id = stream_id
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_next_stream_id(next_stream_id)?;
-
-            let current_total = self.get_total_reward_per_second()?;
-            let new_total = current_total
-                .checked_add(rate)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_total_reward_per_second(new_total)?;
-
-            let current_time = self.storage.timestamp().to::<u128>();
-            let end_time = current_time
-                .checked_add(call.secs as u128)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            self.streams.at(stream_id).write(RewardStream::new(
-                msg_sender,
-                current_time as u64,
-                end_time as u64,
-                rate,
-                call.amount,
-            ))?;
-
-            let current_decrease = self.get_scheduled_rate_decrease_at(end_time)?;
-            let new_decrease = current_decrease
-                .checked_add(rate)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_scheduled_rate_decrease_at(end_time, new_decrease)?;
-
-            // If the stream has not been added before, add it to the registry
-            if current_decrease.is_zero() {
-                let mut registry = TIP20RewardsRegistry::new();
-                registry.add_stream(self.address, end_time)?;
-            }
-            // Emit reward scheduled event for streaming reward
-            self.emit_event(TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
-                funder: msg_sender,
-                id: stream_id,
-                amount: call.amount,
-                durationSeconds: call.secs,
-            }))?;
-
-            Ok(stream_id)
+            // TODO: Remove this entirely as we update the startReward function to
+            // distributeRewards
+            Err(TIP20Error::scheduled_rewards_disabled().into())
         }
     }
 
@@ -258,146 +204,6 @@ impl TIP20Token {
             holder: msg_sender,
             recipient: call.recipient,
         }))?;
-
-        Ok(())
-    }
-
-    /// Cancels an active reward stream and refunds remaining tokens.
-    ///
-    /// This function allows the funder of a reward stream to cancel it early,
-    /// stopping future reward distribution and refunding unused tokens.
-    pub fn cancel_reward(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP20::cancelRewardCall,
-    ) -> Result<U256> {
-        let stream_id = call.id;
-        let stream = self.streams.at(stream_id).read()?;
-
-        if stream.funder.is_zero() {
-            return Err(TIP20Error::stream_inactive().into());
-        }
-
-        if stream.funder != msg_sender {
-            return Err(TIP20Error::not_stream_funder().into());
-        }
-
-        let current_time = self.storage.timestamp();
-        if current_time >= stream.end_time {
-            return Err(TIP20Error::stream_inactive().into());
-        }
-
-        self.accrue(current_time)?;
-
-        let elapsed = if current_time > U256::from(stream.start_time) {
-            current_time
-                .checked_sub(U256::from(stream.start_time))
-                .ok_or(TempoPrecompileError::under_overflow())?
-        } else {
-            U256::ZERO
-        };
-
-        let mut distributed = stream
-            .rate_per_second_scaled
-            .checked_mul(elapsed)
-            .and_then(|v| v.checked_div(ACC_PRECISION))
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        distributed = distributed.min(stream.amount_total);
-        let refund = stream
-            .amount_total
-            .checked_sub(distributed)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        let total_rps = self
-            .get_total_reward_per_second()?
-            .checked_sub(stream.rate_per_second_scaled)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_total_reward_per_second(total_rps)?;
-
-        let end_time = stream.end_time as u128;
-        let new_rate = self
-            .get_scheduled_rate_decrease_at(end_time)?
-            .checked_sub(stream.rate_per_second_scaled)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_scheduled_rate_decrease_at(end_time, new_rate)?;
-
-        // Remove from registry when all streams at this end_time are cancelled (Moderato+)
-        if self.storage.spec().is_moderato() && new_rate == U256::ZERO {
-            let mut registry = TIP20RewardsRegistry::new();
-            registry.remove_stream(self.address, end_time)?;
-        }
-
-        self.streams.at(stream_id).delete()?;
-
-        let mut actual_refund = U256::ZERO;
-        if refund > U256::ZERO && self.is_transfer_authorized(stream.funder, self.address)? {
-            let funder_delegate = self.update_rewards(stream.funder)?;
-            if funder_delegate != Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_add(refund)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
-            }
-
-            let contract_address = self.address;
-            let contract_balance = self
-                .get_balance(contract_address)?
-                .checked_sub(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(contract_address, contract_balance)?;
-
-            let funder_balance = self
-                .get_balance(stream.funder)?
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(stream.funder, funder_balance)?;
-
-            self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-                from: contract_address,
-                to: stream.funder,
-                amount: refund,
-            }))?;
-
-            actual_refund = refund;
-        }
-
-        self.emit_event(TIP20Event::RewardCanceled(ITIP20::RewardCanceled {
-            funder: stream.funder,
-            id: stream_id,
-            refund: actual_refund,
-        }))?;
-
-        Ok(actual_refund)
-    }
-
-    /// Finalizes expired reward streams by updating the total reward rate.
-    ///
-    /// This function is called to clean up streams that have reached their end time,
-    /// reducing the total reward per second rate by the amount of the expired streams.
-    pub fn finalize_streams(&mut self, msg_sender: Address, end_time: u128) -> Result<()> {
-        if msg_sender != TIP20_REWARDS_REGISTRY_ADDRESS {
-            return Err(TIP20Error::unauthorized().into());
-        }
-
-        let rate_decrease = self.get_scheduled_rate_decrease_at(end_time)?;
-
-        if rate_decrease == U256::ZERO {
-            return Ok(());
-        }
-
-        self.accrue(U256::from(end_time))?;
-
-        let total_rps = self
-            .get_total_reward_per_second()?
-            .checked_sub(rate_decrease)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_total_reward_per_second(total_rps)?;
-
-        self.set_scheduled_rate_decrease_at(end_time, U256::ZERO)?;
 
         Ok(())
     }
