@@ -16,7 +16,7 @@ declare module 'wagmi' {
 }
 // ---cut---
 import { Hooks } from 'tempo.ts/wagmi'
-import { Tick } from 'tempo.ts/viem'
+import { Tick } from 'viem/tempo'
 
 const { data: level } = Hooks.dex.useTickLevel({
   base: '0x20c0000000000000000000000000000000000001',
