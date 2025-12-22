@@ -1019,26 +1019,18 @@ pub(crate) mod tests {
     };
     use rand::{Rng, distributions::Alphanumeric, random, thread_rng};
 
-    /// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
-    /// For older specs, initializes directly.
+    /// Initialize PathUSD token using the factory flow.
     pub(crate) fn initialize_path_usd(admin: Address) -> Result<()> {
-        if !StorageCtx.spec().is_allegretto() {
-            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize(
-                "PathUSD",
-                "PUSD",
-                "USD",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )
-        } else {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
-            deploy_path_usd(&mut factory, admin)?;
-
-            Ok(())
+        // Check if PathUSD is already initialized
+        if StorageCtx.has_bytecode(PATH_USD_ADDRESS) {
+            return Ok(());
         }
+
+        let mut factory = TIP20Factory::new();
+        factory.initialize()?;
+        deploy_path_usd(&mut factory, admin)?;
+
+        Ok(())
     }
 
     /// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
@@ -1123,6 +1115,7 @@ pub(crate) mod tests {
         initialize_path_usd(admin)?;
 
         let mut factory = TIP20Factory::new();
+        factory.initialize()?;
         let token_address = factory.create_token(
             admin,
             ITIP20Factory::createTokenCall {
