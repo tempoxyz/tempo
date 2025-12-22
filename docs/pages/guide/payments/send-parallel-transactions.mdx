@@ -58,7 +58,7 @@ In order to send a transfer on a custom `nonceKey`, you need to know the current
 :::code-group
 
 ```ts twoslash [example.ts]
-import { Actions } from 'wagmi/tempo'
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { config } from './wagmi.config'
 
@@ -94,7 +94,7 @@ To send multiple transactions in parallel, specify different `nonceKey` values. 
 :::code-group
 
 ```ts twoslash [example.ts]
-import { Actions } from 'wagmi/tempo'
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { config } from './wagmi.config'
 
@@ -147,7 +147,7 @@ For simple cases where you don't need to manage specific keys, use `'random'` to
 :::code-group
 
 ```ts twoslash [example.ts]
-import { Actions } from 'wagmi/tempo'
+import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { config } from './wagmi.config'
 

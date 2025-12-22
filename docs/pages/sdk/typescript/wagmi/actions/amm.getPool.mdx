@@ -1,0 +1,63 @@
+import ReadParameters from '../../../../../snippets/read-parameters.mdx'
+
+# `amm.getPool`
+
+Gets the reserves for a liquidity pool.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { Actions } from 'tempo.ts/wagmi'
+import { config } from './wagmi.config'
+
+const pool = await Actions.amm.getPool(config, {
+  userToken: '0x20c0000000000000000000000000000000000000',
+  validatorToken: '0x20c0000000000000000000000000000000000001',
+})
+
+console.log('User token reserve:', pool.reserveUserToken)
+// @log: User token reserve: 1000000000000000000000n
+console.log('Validator token reserve:', pool.reserveValidatorToken)
+// @log: Validator token reserve: 1000000000000000000000n
+console.log('Total supply:', pool.totalSupply)
+// @log: Total supply: 1000000000000000000000n
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+```ts
+type ReturnType = {
+  /** Reserve of user token */
+  reserveUserToken: bigint
+  /** Reserve of validator token */
+  reserveValidatorToken: bigint
+  /** Total supply of LP tokens */
+  totalSupply: bigint
+}
+```
+
+## Parameters
+
+### userToken
+
+- **Type:** `Address | bigint`
+
+Address or ID of the user token.
+
+### validatorToken
+
+- **Type:** `Address | bigint`
+
+Address or ID of the validator token.
+
+<ReadParameters wagmi />
+

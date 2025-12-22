@@ -1,0 +1,50 @@
+# `token.useGetBalance`
+
+Gets the token balance of an address.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+// @errors: 2322
+import { config } from './wagmi.config'
+declare module 'wagmi' {
+  interface Register {
+    config: typeof config
+  }
+}
+// ---cut---
+import { Hooks } from 'tempo.ts/wagmi'
+
+const { data: balance } = Hooks.token.useGetBalance({
+  account: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+  token: '0x20c0000000000000000000000000000000000000',
+})
+
+console.log('Balance:', balance)
+// @log: Balance: 10500000n
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Return Type
+
+See [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook return types.
+
+### data
+
+See [Wagmi Action `token.getBalance` Return Type](/sdk/typescript/wagmi/actions/token.getBalance#return-type)
+
+## Parameters
+
+See [Wagmi Action `token.getBalance` Parameters](/sdk/typescript/wagmi/actions/token.getBalance#parameters)
+
+### query
+
+See the [TanStack Query query docs](https://tanstack.com/query/v5/docs/framework/react/reference/useQuery) for more info hook parameters.

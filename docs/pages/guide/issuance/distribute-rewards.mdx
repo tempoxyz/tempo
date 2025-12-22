@@ -41,7 +41,7 @@ Token holders must opt in to receive rewards by setting their reward recipient a
 
 ```tsx twoslash [OptInToRewards.tsx]
 import React from 'react'
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { useConnection } from 'wagmi'
 
 // @noErrors
@@ -75,7 +75,7 @@ export function OptInToRewards() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
   chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
@@ -98,7 +98,7 @@ Anyone can make a reward distribution that allocates tokens to all opted-in hold
 
 ```tsx twoslash [StartReward.tsx]
 import React from 'react'
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 
 // @noErrors
@@ -135,7 +135,7 @@ export function StartReward() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
   chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
@@ -158,7 +158,7 @@ Once a reward is distributed, opted-in holders can claim their share.
 
 ```tsx twoslash [ClaimReward.tsx]
 import React from 'react'
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 
 // @noErrors
 export function ClaimReward() {
@@ -188,7 +188,7 @@ export function ClaimReward() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
   chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
@@ -212,7 +212,7 @@ export const config = createConfig({
 Use `useWatchRewardScheduled` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
 
 ```tsx twoslash
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 
 // @noErrors
 function WatchRewards() {
@@ -235,7 +235,7 @@ function WatchRewards() {
 Use `useWatchRewardRecipientSet` to listen for when users opt in to rewards by setting their recipient address. This is useful for tracking opt-in activity.
 
 ```tsx twoslash
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 
 // @noErrors
 function WatchOptIns() {

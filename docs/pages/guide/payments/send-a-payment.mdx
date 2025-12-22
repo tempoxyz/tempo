@@ -43,7 +43,7 @@ The built-in Tempo testnet faucet funds accounts with `AlphaUSD`.
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { useConnection } from 'wagmi'
 
 function AddFunds() {
@@ -82,7 +82,7 @@ Now that you have `AlphaUSD` you are ready to add logic to send a payment with a
 :::code-group
 
 ```tsx twoslash [SendPaymentWithMemo.tsx]
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits, stringToHex, pad } from 'viem'
 
 // @noErrors
@@ -140,7 +140,7 @@ Now that you can send a payment, you can display the transaction receipt on succ
 :::code-group
 
 ```tsx twoslash [SendPaymentWithMemo.tsx]
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits, stringToHex, pad } from 'viem'
 
 // @noErrors
@@ -433,7 +433,7 @@ You can use the `isPending` property from the `useTransferSync` hook to show pen
 If an error unexpectedly occurs, you can display an error message to the user by using the `error` property from the `useTransferSync` hook.
 
 ```tsx
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 
 function SendPayment() {
   const sendPayment = Hooks.token.useTransferSync()

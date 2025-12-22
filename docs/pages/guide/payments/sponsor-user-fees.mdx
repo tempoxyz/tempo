@@ -58,7 +58,7 @@ You can also sponsor transactions with a local account. See the [recipe below](/
 :::code-group
 
 ```tsx twoslash [SendSponsoredPayment.tsx] filename="SendSponsoredPayment.tsx"
-import { Hooks } from 'wagmi/tempo'
+import { Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -130,7 +130,9 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { tempoTestnet } from 'viem/chains'
 
 const client = createClient({
-  chain: tempo({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+  chain: tempoTestnet.extend({ 
+    feeToken: '0x20c0000000000000000000000000000000000001' 
+  }),
   transport: http(),
 })
 

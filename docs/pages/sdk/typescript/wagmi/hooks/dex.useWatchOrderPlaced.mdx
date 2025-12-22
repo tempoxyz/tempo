@@ -1,0 +1,46 @@
+# `dex.useWatchOrderPlaced`
+
+Watches for order placed events on the Stablecoin DEX.
+
+## Usage
+
+:::code-group
+
+```ts twoslash [example.ts]
+// @errors: 2322
+import { config } from './wagmi.config'
+declare module 'wagmi' {
+  interface Register {
+    config: typeof config
+  }
+}
+// ---cut---
+import { Hooks } from 'tempo.ts/wagmi'
+
+Hooks.dex.useWatchOrderPlaced({
+  onOrderPlaced: (args, log) => {
+    console.log('Order placed:', args.orderId)
+    console.log('Maker:', args.maker)
+    console.log('Token:', args.token)
+    console.log('Amount:', args.amount)
+    console.log('Tick:', args.tick)
+  },
+})
+```
+
+```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+// [!include ~/snippets/wagmi.config.ts:setup]
+```
+
+:::
+
+## Parameters
+
+See [Wagmi Action `dex.watchOrderPlaced` Parameters](/sdk/typescript/wagmi/actions/dex.watchOrderPlaced#parameters)
+
+### config
+
+`Config | undefined`
+
+[`Config`](https://wagmi.sh/react/api/createConfig#config) to use instead of retrieving from the nearest [`WagmiProvider`](https://wagmi.sh/react/api/WagmiProvider).

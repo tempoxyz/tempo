@@ -15,7 +15,9 @@ const handler = Handler.compose([
   // Create a fee payer handler
   Handler.feePayer({
     account: privateKeyToAccount('0x...'),
-    chain: tempo({ feeToken: '0x20c0...0001' }),
+    chain: tempoTestnet.extend({ 
+      feeToken: '0x20c0...0001' 
+    }),
     transport: http(),
     path: '/fee-payer',
   })
