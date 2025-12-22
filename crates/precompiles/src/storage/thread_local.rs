@@ -265,6 +265,10 @@ impl StorageCtx {
         self.as_hashmap().clear_transient()
     }
 
+    pub fn clear_events(&mut self, address: Address) {
+        self.as_hashmap().clear_events(address);
+    }
+
     /// Checks if a contract at the given address has bytecode deployed.
     pub fn has_bytecode(&self, address: Address) -> bool {
         if let Some(account_info) = self.get_account_info(address) {

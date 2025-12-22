@@ -119,7 +119,7 @@ impl TipFeeManager {
         }
 
         // Validate that the fee token is USD
-        validate_usd_currency(call.token, self.storage)?;
+        validate_usd_currency(call.token)?;
 
         self.validator_tokens.at(sender).write(call.token)?;
 
@@ -160,7 +160,7 @@ impl TipFeeManager {
         }
 
         // Validate that the fee token is USD
-        validate_usd_currency(call.token, self.storage)?;
+        validate_usd_currency(call.token)?;
 
         self.user_tokens.at(sender).write(call.token)?;
 
