@@ -151,6 +151,10 @@ interface ITIP20 {
     
     /// @notice Changes the transfer policy ID (requires DEFAULT_ADMIN_ROLE)
     /// @param newPolicyId The new policy ID from TIP-403 registry
+    /// @dev From Allegretto hardfork onwards, validates that the policy exists using TIP403Registry.policyExists()
+    /// Built-in policies (ID 0 = always-reject, ID 1 = always-allow) are always valid.
+    /// For custom policies (ID >= 2), the policy must exist in the TIP-403 registry.
+    /// Reverts with InvalidTransferPolicyId if the policy does not exist.
     function changeTransferPolicyId(uint64 newPolicyId) external;
     
     /// @notice Stages a new quote token for update (requires DEFAULT_ADMIN_ROLE)
@@ -361,6 +365,9 @@ interface ITIP20 {
     /// @notice The recipient address is not a valid destination for this operation
     ///         (for example, another TIP-20 token contract)
     error InvalidRecipient();
+
+    /// @notice The specified transfer policy ID does not exist in the TIP-403 registry
+    error InvalidTransferPolicyId();
 
     /// @notice The new supply cap is invalid, for example lower than the current total supply
     error InvalidSupplyCap();

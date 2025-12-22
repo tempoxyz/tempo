@@ -92,6 +92,16 @@ contract TIP403Registry is ITIP403Registry {
                         GENERAL POLICY QUERYING
     //////////////////////////////////////////////////////////////*/
 
+    function policyExists(uint64 policyId) public view returns (bool) {
+        // Special policies 0 and 1 always exist
+        if (policyId < 2) {
+            return true;
+        }
+
+        // Check if policy ID is within the range of created policies
+        return policyId < policyIdCounter;
+    }
+
     function isAuthorized(uint64 policyId, address user) public view returns (bool) {
         // Special case for the "always-allow" and "always-reject" policies.
         if (policyId < 2) {

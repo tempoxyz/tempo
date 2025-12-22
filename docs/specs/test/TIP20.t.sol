@@ -482,9 +482,15 @@ contract TIP20Test is BaseTest {
         vm.prank(alice);
         token.approve(bob, 1000e18);
 
-        // Change to policy 2 which blocks alice
+        // Create a policy that blocks alice
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(
+            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
+
         vm.prank(admin);
-        token.changeTransferPolicyId(2);
+        token.changeTransferPolicyId(blockingPolicy);
 
         // 1. mint - blocked recipient
         vm.prank(admin);
@@ -643,17 +649,33 @@ contract TIP20Test is BaseTest {
     }
 
     function testChangeTransferPolicyId() public {
+        // Create a policy first
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
         vm.prank(admin);
-        token.changeTransferPolicyId(42);
-        assertEq(token.transferPolicyId(), 42);
+        token.changeTransferPolicyId(policyId);
+        assertEq(token.transferPolicyId(), policyId);
     }
 
     function testChangeTransferPolicyIdUnauthorized() public {
+        // Create a policy first
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.WHITELIST);
+
         vm.prank(alice);
-        try token.changeTransferPolicyId(42) {
+        try token.changeTransferPolicyId(policyId) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20RolesAuth.Unauthorized.selector));
+        }
+    }
+
+    function testFuzz_ChangeTransferPolicyId_RevertsIf_PolicyDoesNotExist(uint64 policyId) public {
+        vm.assume(policyId >= registry.policyIdCounter());
+        vm.prank(admin);
+        try token.changeTransferPolicyId(policyId) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.InvalidTransferPolicyId.selector));
         }
     }
 
@@ -829,10 +851,17 @@ contract TIP20Test is BaseTest {
     }
 
     function testBurnBlockedSuccess() public {
+        // Create a policy that blocks alice
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(
+            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
+
         // Change to a policy where alice is blocked
         vm.startPrank(admin);
         token.grantRole(token.BURN_BLOCKED_ROLE(), admin);
-        token.changeTransferPolicyId(2); // policy 2 blocks alice in mock
+        token.changeTransferPolicyId(blockingPolicy);
 
         uint256 aliceBalanceBefore = token.balanceOf(alice);
         uint256 totalSupplyBefore = token.totalSupply();
@@ -848,8 +877,15 @@ contract TIP20Test is BaseTest {
         vm.prank(alice);
         token.approve(bob, 1000e18);
 
+        // Create a policy that blocks alice
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blockingPolicy = registry.createPolicyWithAccounts(
+            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
+
         vm.prank(admin);
-        token.changeTransferPolicyId(2); // policy 2 blocks alice
+        token.changeTransferPolicyId(blockingPolicy);
 
         vm.prank(alice);
         try token.transfer(bob, 100e18) {

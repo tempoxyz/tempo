@@ -15,7 +15,10 @@ pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 use futures::{TryFutureExt, future::Either};
 pub use policy::{TempoPolicy, TempoPolicyApiServer};
 use reth_errors::RethError;
-use reth_primitives_traits::{Recovered, TransactionMeta, WithEncoded, transaction::TxHashRef};
+use reth_primitives_traits::{
+    Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef,
+};
+use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
 use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
@@ -54,7 +57,7 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock,
+    EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
     builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
@@ -339,6 +342,34 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
             // Send regular transactions to the transaction pool.
             Either::Right(self.inner.send_transaction(tx).map_err(Into::into))
         }
+    }
+
+    async fn fill_transaction(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+    ) -> Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error> {
+        if let Some(nonce_key) = request.nonce_key
+            && request.nonce.is_none()
+            && !nonce_key.is_zero()
+        {
+            let slot = NonceManager::new()
+                .nonces
+                .at(request.from.unwrap_or_default())
+                .at(nonce_key)
+                .slot();
+            request.nonce = Some(
+                self.spawn_blocking_io(move |this| {
+                    this.latest_state()?
+                        .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())
+                        .map_err(Self::Error::from_eth_err)
+                })
+                .await?
+                .unwrap_or_default()
+                .saturating_to(),
+            );
+        }
+
+        Ok(self.inner.fill_transaction(request).await?)
     }
 }
 
