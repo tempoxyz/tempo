@@ -44,9 +44,9 @@ hardfork!(
         /// Testnet hardforks for Andantino. To be removed before mainnet launch.
         Moderato,
         /// Allegretto hardfork.
+        #[default]
         Allegretto,
         /// Allegro-Moderato hardfork.
-        #[default]
         AllegroModerato,
     }
 );
