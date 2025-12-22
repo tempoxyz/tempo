@@ -133,11 +133,11 @@ def "main kill" [
 }
 
 # ============================================================================
-# Network command
+# Localnet command
 # ============================================================================
 
-# Run Tempo network
-def "main network" [
+# Run Tempo localnet
+def "main localnet" [
     --mode: string = "dev"      # Mode: "dev" or "consensus"
     --nodes: int = 3            # Number of validators (consensus mode)
     --accounts: int = 1000      # Number of genesis accounts
@@ -384,7 +384,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 # Bench command
 # ============================================================================
 
-# Run a full benchmark: start infra, network, and tempo-bench
+# Run a full benchmark: start infra, localnet, and tempo-bench
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
     --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
@@ -439,7 +439,7 @@ def "main bench" [
     let genesis_accounts = ([$accounts $num_nodes] | math max) + 1
 
     let node_cmd = [
-        "nu" "tempo.nu" "network"
+        "nu" "tempo.nu" "localnet"
         "--mode" $mode
         "--accounts" $"($genesis_accounts)"
         "--skip-build"
@@ -564,8 +564,8 @@ def main [] {
     print "Tempo local utilities"
     print ""
     print "Usage:"
-    print "  nu tempo.nu bench [flags]            Run full benchmark (infra + network + bench)"
-    print "  nu tempo.nu network [flags]          Run Tempo network"
+    print "  nu tempo.nu bench [flags]            Run full benchmark (infra + localnet + bench)"
+    print "  nu tempo.nu localnet [flags]         Run Tempo localnet"
     print "  nu tempo.nu infra up                 Start Grafana + Prometheus"
     print "  nu tempo.nu infra down               Stop the observability stack"
     print "  nu tempo.nu kill                     Kill any running tempo processes"
@@ -586,7 +586,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print ""
-    print "Network flags:"
+    print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
@@ -602,8 +602,8 @@ def main [] {
     print "  nu tempo.nu bench --preset tip20 --tps 20000 --duration 60"
     print "  nu tempo.nu bench --preset tempo-mix --tps 5000 --samply --reset"
     print "  nu tempo.nu infra up"
-    print "  nu tempo.nu network --mode dev --samply --accounts 50000 --reset"
-    print "  nu tempo.nu network --mode consensus --nodes 3"
+    print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
+    print "  nu tempo.nu localnet --mode consensus --nodes 3"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
     print "  Consensus:     8000 + N*100"
