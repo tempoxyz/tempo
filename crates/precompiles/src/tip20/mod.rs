@@ -1021,6 +1021,11 @@ pub(crate) mod tests {
 
     /// Initialize PathUSD token using the factory flow.
     pub(crate) fn initialize_path_usd(admin: Address) -> Result<()> {
+        // Check if PathUSD is already initialized
+        if StorageCtx.has_bytecode(PATH_USD_ADDRESS) {
+            return Ok(());
+        }
+
         let mut factory = TIP20Factory::new();
         factory.initialize()?;
         deploy_path_usd(&mut factory, admin)?;
@@ -1110,6 +1115,7 @@ pub(crate) mod tests {
         initialize_path_usd(admin)?;
 
         let mut factory = TIP20Factory::new();
+        factory.initialize()?;
         let token_address = factory.create_token(
             admin,
             ITIP20Factory::createTokenCall {
