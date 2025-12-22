@@ -31,7 +31,7 @@
     "sql-formatter": "^15.6.10",
     "tailwind-merge": "^3.3.1",
     "tailwindcss": "^4.1.14",
-    "tempo.ts": "https://pkg.pr.new/tempoxyz/tempo-ts/tempo.ts@c756c40",
+    "tempo.ts": "~0.12.0",
     "viem": "^2.43.3",
     "vocs": "^1.4.0",
     "wagmi": "^3.0.1",
