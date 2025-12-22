@@ -946,7 +946,10 @@ where
             })?;
         }
 
+        // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
+        // call will not collect any fees.
         if gas_balance_spending.is_zero() {
+            evm.nonce_2d_gas = nonce_2d_gas;
             return Ok(());
         }
 
