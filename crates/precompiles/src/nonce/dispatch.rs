@@ -38,31 +38,10 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::INonce::INonceCalls;
 
     #[test]
-    fn test_nonce_selector_coverage_pre_allegro_moderato() -> eyre::Result<()> {
-        // Pre-AllegroModerato: all selectors should be supported
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        StorageCtx::enter(&mut storage, || {
-            let mut nonce_manager = NonceManager::new();
-
-            let unsupported = check_selector_coverage(
-                &mut nonce_manager,
-                INonceCalls::SELECTORS,
-                "INonce",
-                INonceCalls::name_by_selector,
-            );
-
-            assert_full_coverage([unsupported]);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_nonce_selector_coverage_post_allegro_moderato() -> eyre::Result<()> {
-        // Post-AllegroModerato: getActiveNonceKeyCount is deprecated
+    fn test_nonce_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut nonce_manager = NonceManager::new();
@@ -74,8 +53,7 @@ mod tests {
                 INonceCalls::name_by_selector,
             );
 
-            let unsupported_names: Vec<&str> = unsupported.iter().map(|(_, name)| *name).collect();
-            assert_eq!(unsupported_names, vec!["getActiveNonceKeyCount"]);
+            assert_full_coverage([unsupported]);
             Ok(())
         })
     }
