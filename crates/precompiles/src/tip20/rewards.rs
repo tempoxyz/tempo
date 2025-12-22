@@ -431,15 +431,12 @@ mod tests {
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
-        storage::{
-            PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
-        },
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{ISSUER_ROLE, tests::initialize_path_usd},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
-
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {

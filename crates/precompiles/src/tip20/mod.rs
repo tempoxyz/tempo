@@ -1055,61 +1055,6 @@ pub(crate) mod tests {
         )
     }
 
-    /// Helper to setup a token with rewards for testing fee transfer functions
-    /// Returns (token_id, initial_opted_in_supply)
-    fn setup_token_with_rewards(
-        admin: Address,
-        user: Address,
-        mint_amount: U256,
-        reward_amount: U256,
-    ) -> Result<(u64, u128)> {
-        initialize_path_usd(admin)?;
-        let token_id = setup_factory_with_token(admin, "Test", "TST")?;
-
-        let mut token = TIP20Token::new(token_id);
-        token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-        // Mint tokens to admin (for reward stream)
-        token.mint(
-            admin,
-            ITIP20::mintCall {
-                to: admin,
-                amount: reward_amount,
-            },
-        )?;
-
-        // Mint tokens to user
-        token.mint(
-            admin,
-            ITIP20::mintCall {
-                to: user,
-                amount: mint_amount,
-            },
-        )?;
-
-        // User opts into rewards
-        token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
-
-        // Verify initial opted-in supply
-        let initial_opted_in = token.get_opted_in_supply()?;
-        assert_eq!(initial_opted_in, mint_amount.to::<u128>());
-
-        // Start a reward stream
-        token.start_reward(
-            admin,
-            ITIP20::startRewardCall {
-                amount: reward_amount,
-                secs: 100,
-            },
-        )?;
-
-        // Advance time to accrue rewards
-        let initial_time = StorageCtx.timestamp();
-        StorageCtx.set_timestamp(initial_time + U256::from(50));
-
-        Ok((token_id, initial_opted_in))
-    }
-
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(admin: Address, name: &str, symbol: &str) -> Result<u64> {
         initialize_path_usd(admin)?;
