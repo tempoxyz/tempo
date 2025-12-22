@@ -17,7 +17,6 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     STABLECOIN_EXCHANGE_ADDRESS,
     error::{Result, TempoPrecompileError},
-    path_usd::PathUSD,
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
@@ -159,47 +158,26 @@ impl StablecoinExchange {
 
     /// Transfer tokens, accounting for pathUSD
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
-        if token == PATH_USD_ADDRESS {
-            PathUSD::new().transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to,
-                    amount: U256::from(amount),
-                },
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer(
-                self.address,
-                ITIP20::transferCall {
-                    to,
-                    amount: U256::from(amount),
-                },
-            )?;
-        }
+        TIP20Token::from_address(token)?.transfer(
+            self.address,
+            ITIP20::transferCall {
+                to,
+                amount: U256::from(amount),
+            },
+        )?;
         Ok(())
     }
 
     /// Transfer tokens from user, accounting for pathUSD
     fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
-        if token == PATH_USD_ADDRESS {
-            PathUSD::new().transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
-            )?;
-        } else {
-            TIP20Token::from_address(token)?.transfer_from(
-                self.address,
-                ITIP20::transferFromCall {
-                    from,
-                    to: self.address,
-                    amount: U256::from(amount),
-                },
-            )?;
-        }
+        TIP20Token::from_address(token)?.transfer_from(
+            self.address,
+            ITIP20::transferFromCall {
+                from,
+                to: self.address,
+                amount: U256::from(amount),
+            },
+        )?;
         Ok(())
     }
 
@@ -1362,7 +1340,6 @@ mod tests {
 
     use crate::{
         error::TempoPrecompileError,
-        path_usd::TRANSFER_ROLE,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -1378,7 +1355,6 @@ mod tests {
         // Configure PathUSD
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
-            .with_role(user, *TRANSFER_ROLE)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange_address, U256::from(amount))
             .apply()?;
@@ -3568,7 +3544,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -3622,7 +3597,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -3684,7 +3658,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -3741,7 +3714,6 @@ mod tests {
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
                 .with_mint(alice, U256::from(expected_escrow))
                 .with_approval(alice, exchange.address, U256::from(expected_escrow))
                 .apply()?;
@@ -3804,10 +3776,7 @@ mod tests {
             )?;
 
             // Setup quote token (PathUSD) with the blacklist policy
-            let mut quote = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_role(alice, *TRANSFER_ROLE)
-                .apply()?;
+            let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
 
             quote.change_transfer_policy_id(
                 admin,
