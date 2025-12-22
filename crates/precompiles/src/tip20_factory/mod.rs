@@ -271,14 +271,28 @@ mod tests {
     #[test]
     fn test_token_id() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let factory = TIP20Setup::factory()?;
 
+            // Initially, token counter should be 0
             let current_token_id = factory.token_id_counter()?;
             assert_eq!(current_token_id, U256::ZERO);
-            Ok(())
 
-            // TODO:  deploy tokens and then test token id for n tokens
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
+            let token_id_after_path_usd = factory.token_id_counter()?;
+            assert_eq!(token_id_after_path_usd, U256::from(1));
+
+            for i in 1..=50 {
+                let token = TIP20Setup::create("Test".into(), "Test".into(), sender).apply()?;
+                // Note that this is +1 because PathUSD is token 0
+                let expected_counter = U256::from(i + 1);
+                let actual_counter = factory.token_id_counter()?;
+                assert_eq!(actual_counter, expected_counter);
+                assert_eq!(address_to_token_id_unchecked(token.address()), i as u64);
+            }
+
+            Ok(())
         })
     }
 
