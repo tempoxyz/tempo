@@ -1463,7 +1463,7 @@ impl StablecoinExchange {
         }
 
         // Validate that both tokens are TIP20 tokens
-        if (!is_tip20_prefix(token_in) || !is_tip20_prefix(token_out)) {
+        if !is_tip20_prefix(token_in) || !is_tip20_prefix(token_out) {
             return Err(StablecoinExchangeError::invalid_token().into());
         }
 

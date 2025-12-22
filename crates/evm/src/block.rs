@@ -30,8 +30,8 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_REWARDS_REGISTRY_ADDRESS,
     tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
@@ -186,7 +186,7 @@ where
         }
 
         // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
-        let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
+        let (mut seen_fee_manager, seen_stablecoin_dex, mut seen_subblocks_signatures) =
             match self.section {
                 BlockSection::System {
                     seen_fee_manager,
