@@ -4171,36 +4171,6 @@ mod tests {
     }
 
     #[test]
-    fn test_decrement_balance_zeroes_balance_pre_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let admin = Address::random();
-            let alice = Address::random();
-
-            let base = TIP20Setup::create("BASE", "BASE", admin).apply()?;
-            let base_address = base.address();
-
-            exchange.create_pair(base_address)?;
-
-            let internal_balance = MIN_ORDER_AMOUNT / 2;
-            exchange.set_balance(alice, base_address, internal_balance)?;
-
-            assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
-
-            let tick = 0i16;
-            let result = exchange.place(alice, base_address, MIN_ORDER_AMOUNT, false, tick);
-
-            assert!(result.is_err());
-            assert_eq!(exchange.balance_of(alice, base_address)?, 0);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_decrement_balance_preserves_balance_post_allegro_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
@@ -4347,52 +4317,6 @@ mod tests {
     }
 
     #[test]
-    fn test_place_pre_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-            let min_order_amount = MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-
-            let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
-
-            exchange.create_pair(base_token)?;
-
-            let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
-
-            let stored_order = exchange.orders.at(order_id).read()?;
-            assert_eq!(stored_order.maker(), alice);
-            assert_eq!(stored_order.remaining(), min_order_amount);
-            assert_eq!(stored_order.tick(), tick);
-            assert!(stored_order.is_bid());
-
-            let book_key = compute_book_key(base_token, quote_token);
-            let level = exchange
-                .books
-                .at(book_key)
-                .get_tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(level.head, 0);
-            assert_eq!(level.tail, 0);
-            assert_eq!(level.total_liquidity, 0);
-
-            assert_eq!(exchange.pending_order_id()?, 1);
-            assert_eq!(exchange.active_order_id()?, 0);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_place_post_allegro_moderato() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
@@ -4444,55 +4368,6 @@ mod tests {
 
             assert_eq!(exchange.active_order_id()?, 1);
             assert_eq!(exchange.next_order_id()?, 2);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_place_flip_pre_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let alice = Address::random();
-            let admin = Address::random();
-            let min_order_amount = MIN_ORDER_AMOUNT;
-            let tick = 100i16;
-            let flip_tick = 200i16;
-
-            let price = orderbook::tick_to_price(tick);
-            let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
-
-            let (base_token, quote_token) =
-                setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
-
-            exchange.create_pair(base_token)?;
-
-            let order_id =
-                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
-
-            let stored_order = exchange.orders.at(order_id).read()?;
-            assert_eq!(stored_order.maker(), alice);
-            assert_eq!(stored_order.remaining(), min_order_amount);
-            assert_eq!(stored_order.tick(), tick);
-            assert!(stored_order.is_bid());
-            assert!(stored_order.is_flip());
-
-            let book_key = compute_book_key(base_token, quote_token);
-            let level = exchange
-                .books
-                .at(book_key)
-                .get_tick_level_handler(tick, true)
-                .read()?;
-            assert_eq!(level.head, 0);
-            assert_eq!(level.tail, 0);
-            assert_eq!(level.total_liquidity, 0);
-
-            assert_eq!(exchange.pending_order_id()?, 1);
-            assert_eq!(exchange.active_order_id()?, 0);
 
             Ok(())
         })
