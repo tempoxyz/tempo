@@ -19,7 +19,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{self, TIP20Token},
 };
 
@@ -386,7 +386,7 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     calldata.extend_from_slice(&[0u8; 64]);
 
     let tx = TransactionRequest::default()
-        .to(TIP_ACCOUNT_REGISTRAR)
+        .to(TIP20_FACTORY_ADDRESS)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
     // The call should fail with UnknownFunctionSelector error

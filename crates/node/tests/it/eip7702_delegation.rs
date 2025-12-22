@@ -9,7 +9,6 @@ use alloy_primitives::{Address, B256, U256, b256};
 use reth_evm::revm::state::Bytecode;
 use std::str::FromStr;
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};
-use tempo_precompiles::{TIP_ACCOUNT_REGISTRAR, tip_account_registrar::ITipAccountRegistrar};
 
 sol! {
     struct Call {
@@ -194,101 +193,6 @@ async fn test_ensure_7702_delegation_on_revert() -> eyre::Result<()> {
         code_after,
         *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
     );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn test_default_account_registrar() -> eyre::Result<()> {
-    reth_tracing::init_test_tracing();
-
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
-    let http_url = setup.http_url;
-
-    let alice = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
-    let provider = ProviderBuilder::new()
-        .wallet(alice)
-        .connect_http(http_url.clone());
-
-    let deployer = provider.default_signer_address();
-    let token = setup_test_token(provider.clone(), deployer).await?;
-
-    let bob = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
-    let bob_addr = bob.address();
-
-    let amount = U256::from(1000000);
-    token
-        .mint(bob_addr, amount)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Assert account has nonce 0 and empty code
-    assert_eq!(provider.get_transaction_count(bob_addr).await?, 0);
-    let code_before = provider.get_code_at(bob_addr).await?;
-    assert!(code_before.is_empty());
-
-    // User can sign any arbitrary message
-    let message = b"I authorize delegation of my account to the default 7702 implementation";
-
-    // Compute the hash from the message
-    let hash = alloy::primitives::keccak256(message);
-    let signature = bob.sign_hash_sync(&hash)?;
-
-    // Create a new tx to delegate to the default 7702 impl using the new signature (bytes,bytes)
-    let registrar = ITipAccountRegistrar::new(TIP_ACCOUNT_REGISTRAR, provider.clone());
-    let registrar_call =
-        registrar.delegateToDefault_1(message.to_vec().into(), signature.as_bytes().into());
-    let addr = registrar_call.call().await?;
-    assert_eq!(addr, bob_addr);
-    let receipt = registrar_call.send().await?.get_receipt().await?;
-    assert!(receipt.status(), "TipAccountRegistrar call failed");
-
-    let code_after = provider.get_code_at(bob_addr).await?;
-    assert_eq!(
-        code_after,
-        *Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS).bytecode(),
-    );
-
-    // Ensure that the account can execute 7702 txs
-    let recipient = Address::random();
-    let bob_bal_before = token.balanceOf(bob_addr).call().await?;
-    let recip_bal_before = token.balanceOf(recipient).call().await?;
-    assert_eq!(bob_bal_before, amount);
-    assert_eq!(recip_bal_before, U256::ZERO);
-
-    let delegate_calldata = token
-        .transfer(recipient, bob_bal_before)
-        .calldata()
-        .to_owned();
-
-    let calls = vec![Call {
-        to: *token.address(),
-        value: U256::from(0),
-        data: delegate_calldata,
-    }];
-
-    let bob_provider = ProviderBuilder::new().wallet(bob).connect_http(http_url);
-    let delegate_account = IthacaAccount::new(bob_addr, bob_provider.clone());
-    let execution_mode =
-        b256!("0x0100000000007821000100000000000000000000000000000000000000000000");
-
-    let execute_call = delegate_account.execute(execution_mode, calls.abi_encode().into());
-    let receipt = execute_call.send().await?.get_receipt().await?;
-
-    assert!(receipt.status(), "7702 delegate execution tx failed");
-    assert_eq!(bob_provider.get_transaction_count(bob_addr).await?, 1);
-
-    let bob_bal_after = token.balanceOf(bob_addr).call().await?;
-    let recip_bal_after = token.balanceOf(recipient).call().await?;
-    assert_eq!(bob_bal_after, U256::ZERO);
-    assert_eq!(recip_bal_after, amount);
 
     Ok(())
 }
