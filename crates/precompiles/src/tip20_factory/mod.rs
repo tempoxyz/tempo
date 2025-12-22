@@ -65,10 +65,8 @@ impl TIP20Factory {
         // Note that the token Id increments on each deployment.
 
         // Require that the first TIP20 deployed has a quote token of address(0)
-        if token_id == 0 {
-            if !call.quoteToken.is_zero() {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
+        if token_id == 0 && !call.quoteToken.is_zero() {
+            return Err(TIP20Error::invalid_quote_token().into());
         } else {
             // Quote token must be a valid deployed TIP20
             if !is_tip20_prefix(call.quoteToken)
