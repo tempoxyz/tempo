@@ -22,7 +22,7 @@ impl Precompile for TipAccountRegistrar {
             // Old signature: delegateToDefault(bytes32,bytes) - only pre-Moderato
             ITipAccountRegistrar::delegateToDefault_0Call::SELECTOR => {
                 if self.storage.spec().is_moderato() {
-                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                    unknown_selector(selector, self.storage.gas_used())
                 } else {
                     mutate::<ITipAccountRegistrar::delegateToDefault_0Call>(
                         calldata,
@@ -40,10 +40,10 @@ impl Precompile for TipAccountRegistrar {
                         |_, call| self.delegate_to_default_v2(call),
                     )
                 } else {
-                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                    unknown_selector(selector, self.storage.gas_used())
                 }
             }
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
