@@ -75,41 +75,7 @@ impl Precompile for StablecoinExchange {
             }
 
             IStablecoinExchange::nextOrderIdCall::SELECTOR => {
-                if !self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
-                }
                 view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
-            }
-
-            IStablecoinExchange::activeOrderIdCall::SELECTOR => {
-                if self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
-                }
-                view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
-                    self.active_order_id()
-                })
-            }
-
-            IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
-                if self.storage.spec().is_allegro_moderato() {
-                    return unknown_selector(
-                        selector,
-                        self.storage.gas_used(),
-                        self.storage.spec(),
-                    );
-                }
-
-                view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
-                    self.pending_order_id()
-                })
             }
 
             IStablecoinExchange::createPairCall::SELECTOR => {
@@ -166,13 +132,6 @@ impl Precompile for StablecoinExchange {
                 view::<IStablecoinExchange::quoteSwapExactAmountOutCall>(calldata, |call| {
                     self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
                 })
-            }
-            IStablecoinExchange::executeBlockCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::executeBlockCall>(
-                    calldata,
-                    msg_sender,
-                    |_s, _call| self.execute_block(msg_sender),
-                )
             }
             IStablecoinExchange::MIN_TICKCall::SELECTOR => {
                 view::<IStablecoinExchange::MIN_TICKCall>(calldata, |_call| {
@@ -267,9 +226,6 @@ mod tests {
 
         // Place an order to provide liquidity
         exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
-
-        // Execute block to activate orders
-        exchange.execute_block(Address::ZERO)?;
 
         Ok((exchange, base.address(), quote.address(), user))
     }
@@ -599,7 +555,6 @@ mod tests {
 
             // Place an ask order to provide liquidity for selling base
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
-            exchange.execute_block(Address::ZERO)?;
 
             // Set balance for the swapper
             exchange.set_balance(user, quote_token, 1_000_000u128)?;
@@ -651,7 +606,6 @@ mod tests {
 
             // Place an ask order to provide liquidity for selling base
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
-            exchange.execute_block(Address::ZERO)?;
 
             let sender = Address::random();
 
