@@ -1,7 +1,6 @@
 pub mod account_keychain;
 pub mod common_errors;
 pub mod nonce;
-pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
@@ -15,7 +14,6 @@ pub use account_keychain::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
-pub use path_usd::*;
 pub use stablecoin_exchange::*;
 pub use tip_account_registrar::*;
 pub use tip_fee_manager::*;
