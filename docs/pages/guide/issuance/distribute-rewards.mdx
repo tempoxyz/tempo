@@ -78,7 +78,7 @@ import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -138,7 +138,7 @@ import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -191,7 +191,7 @@ import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],

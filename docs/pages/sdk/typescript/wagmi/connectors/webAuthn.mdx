@@ -16,7 +16,7 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(), // [!code focus]
     }), // [!code focus]
   ],
-  chains: [tempoTestnet.extend({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   multiInjectedProviderDiscovery: false,
   transports: {
     [tempoTestnet.id]: http(),

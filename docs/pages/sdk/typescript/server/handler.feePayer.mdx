@@ -29,7 +29,7 @@ import { tempoTestnet } from 'viem/chains'
 import { tempoActions, withFeePayer } from 'viem/tempo'
 
 const client = createClient({
-  chain: tempoTestnet.extend({ feeToken: '0x20c0...0001' }),
+  chain: tempoTestnet,
   transport: withFeePayer(
     http(), // Default transport
     http('http://localhost:3000/fee-payer'), // Fee payer transport (your server)

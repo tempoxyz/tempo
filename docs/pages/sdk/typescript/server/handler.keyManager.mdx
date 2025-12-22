@@ -30,7 +30,7 @@ export const config = createConfig({
       rpId: 'example.com',
     }),
   ],
-  chains: [tempoTestnet.extend({ feeToken: '0x20c0...0001' })],
+  chains: [tempoTestnet],
   transports: {
     [tempo.id]: http(),
   },
