@@ -1,11 +1,11 @@
 use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     providers::{Provider, ProviderBuilder, WalletProvider},
-    signers::{SignerSync, local::MnemonicBuilder},
+    signers::local::MnemonicBuilder,
     sol,
     sol_types::SolValue,
 };
-use alloy_primitives::{Address, B256, U256, b256};
+use alloy_primitives::{Address, B256, U256};
 use reth_evm::revm::state::Bytecode;
 use std::str::FromStr;
 use tempo_contracts::{DEFAULT_7702_DELEGATE_ADDRESS, IthacaAccount};

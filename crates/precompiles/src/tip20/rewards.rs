@@ -646,7 +646,7 @@ mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         storage::{
-            ContractStorage, PrecompileStorageProvider, StorageCtx, hashmap::HashMapStorageProvider,
+            ContractStorage, StorageCtx, hashmap::HashMapStorageProvider,
         },
         test_util::TIP20Setup,
         tip20::{ISSUER_ROLE, tests::initialize_path_usd},
