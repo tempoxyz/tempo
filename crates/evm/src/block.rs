@@ -55,7 +55,6 @@ enum BlockSection {
     /// End of block system transactions.
     System {
         seen_fee_manager: bool,
-        seen_stablecoin_dex: bool,
         seen_subblocks_signatures: bool,
     },
 }
@@ -185,20 +184,14 @@ where
             }
         }
 
-        // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
-        let (mut seen_fee_manager, seen_stablecoin_dex, mut seen_subblocks_signatures) =
-            match self.section {
-                BlockSection::System {
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                } => (
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                ),
-                _ => (false, false, false),
-            };
+        // Handle end-of-block system transactions (fee manager, subblocks signatures)
+        let (mut seen_fee_manager, mut seen_subblocks_signatures) = match self.section {
+            BlockSection::System {
+                seen_fee_manager,
+                seen_subblocks_signatures,
+            } => (seen_fee_manager, seen_subblocks_signatures),
+            _ => (false, false),
+        };
 
         if to == TIP_FEE_MANAGER_ADDRESS {
             if seen_fee_manager {
@@ -257,7 +250,6 @@ where
 
         Ok(BlockSection::System {
             seen_fee_manager,
-            seen_stablecoin_dex,
             seen_subblocks_signatures,
         })
     }
@@ -620,13 +612,12 @@ where
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
 
-        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
-        let expected_seen_system_tx = !is_allegro_moderato;
+        // Post AllegroModerato, fee manager system tx is no longer required
+        let expected_seen_fee_manager = !is_allegro_moderato;
 
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: expected_seen_system_tx,
-                seen_stablecoin_dex: expected_seen_system_tx,
+                seen_fee_manager: expected_seen_fee_manager,
                 seen_subblocks_signatures: true,
             })
         {
