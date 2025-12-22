@@ -11,7 +11,7 @@ Places a flip order that automatically flips to the opposite side when filled.
 ```ts twoslash [example.ts]
 import { Actions } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
-import { Tick } from 'tempo.ts/viem'
+import { Tick } from 'viem/tempo'
 import { config } from './wagmi.config'
 
 const { orderId, receipt } = await Actions.dex.placeFlipSync(config, {
@@ -41,10 +41,10 @@ If you are optimizing for performance, you should use the non-sync `dex.placeFli
 
 ```ts twoslash
 import { Actions } from 'tempo.ts/wagmi'
-import { Actions as viem_Actions } from 'tempo.ts/viem'
+import { Actions as viem_Actions } from 'viem/tempo'
 import { waitForTransactionReceipt } from 'wagmi/actions'
 import { parseUnits } from 'viem'
-import { Tick } from 'tempo.ts/viem'
+import { Tick } from 'viem/tempo'
 import { config } from './wagmi.config'
 
 const hash = await Actions.dex.placeFlip(config, {

@@ -1,5 +1,5 @@
 import type { Abi, AbiEvent, AbiFunction } from 'abitype'
-import { Abis } from 'tempo.ts/viem'
+import { Abis } from 'viem/tempo'
 
 export type SignatureInfo = {
   signature: string
