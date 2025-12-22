@@ -51,17 +51,6 @@ impl NonceManager {
         self.nonces.at(call.account).at(call.nonceKey).read()
     }
 
-    /// Get the number of active user nonce keys for an account
-    ///
-    /// Deprecated: This function is only available pre-AllegroModerato for backwards compatibility.
-    /// Post-AllegroModerato, the dispatch layer returns unknown_selector error.
-    pub fn get_active_nonce_key_count(
-        &self,
-        call: INonce::getActiveNonceKeyCountCall,
-    ) -> Result<U256> {
-        self.active_key_count.at(call.account).read()
-    }
-
     /// Internal: Increment nonce for a specific account and nonce key
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
@@ -70,54 +59,19 @@ impl NonceManager {
 
         let current = self.nonces.at(account).at(nonce_key).read()?;
 
-        // Pre-AllegroModerato: If transitioning from 0 to 1, increment active key count
-        // This is deprecated post-AllegroModerato where we use fixed gas pricing instead
-        if current == 0 && !self.storage.spec().is_allegro_moderato() {
-            self.increment_active_key_count(account)?;
-        }
-
         let new_nonce = current
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
         self.nonces.at(account).at(nonce_key).write(new_nonce)?;
 
-        if self.storage.spec().is_allegretto() {
-            self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
-                account,
-                nonceKey: nonce_key,
-                newNonce: new_nonce,
-            }))?;
-        }
+        self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
+            account,
+            nonceKey: nonce_key,
+            newNonce: new_nonce,
+        }))?;
 
         Ok(new_nonce)
-    }
-
-    /// Increment the active key count for an account (deprecated post-AllegroModerato)
-    ///
-    /// This function is only called pre-AllegroModerato to maintain backwards compatibility.
-    /// Post-AllegroModerato, we use fixed gas pricing based on whether the nonce slot is
-    /// zero or non-zero, rather than tracking the total count of active keys.
-    fn increment_active_key_count(&mut self, account: Address) -> Result<()> {
-        let current = self.active_key_count.at(account).read()?;
-
-        let new_count = current
-            .checked_add(U256::ONE)
-            .ok_or_else(NonceError::nonce_overflow)?;
-
-        self.active_key_count.at(account).write(new_count)?;
-
-        // Emit ActiveKeyCountChanged event (only between Moderato and AllegroModerato for backwards compatibility)
-        if self.storage.spec().is_moderato() && !self.storage.spec().is_allegro_moderato() {
-            self.emit_event(NonceEvent::ActiveKeyCountChanged(
-                INonce::ActiveKeyCountChanged {
-                    account,
-                    newCount: new_count,
-                },
-            ))?;
-        }
-
-        Ok(())
     }
 }
 
