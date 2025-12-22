@@ -62,14 +62,14 @@ impl StablecoinExchange {
         self.__initialize()
     }
 
-    /// Read next order ID
+    /// Read next order ID (always at least 1)
     fn next_order_id(&self) -> Result<u128> {
-        self.next_order_id.read()
+        Ok(self.next_order_id.read()?.max(1))
     }
 
-    /// Set active order ID
+    /// Increment next order ID
     fn increment_next_order_id(&mut self) -> Result<()> {
-        let next_order_id = self.next_order_id.read()?;
+        let next_order_id = self.next_order_id()?;
         self.next_order_id.write(next_order_id + 1)
     }
 
@@ -444,6 +444,7 @@ impl StablecoinExchange {
 
         // Create the order
         let order_id = self.next_order_id()?;
+        self.increment_next_order_id()?;
         let order = if is_bid {
             Order::new_bid(order_id, sender, book_key, amount, tick)
         } else {
@@ -511,7 +512,6 @@ impl StablecoinExchange {
         level.total_liquidity = new_liquidity;
 
         level_handler.write(level)?;
-        self.set_active_order_id(order.order_id())?;
 
         self.orders.at(order.order_id()).write(order)
     }
@@ -584,6 +584,7 @@ impl StablecoinExchange {
 
         // Create the flip order
         let order_id = self.next_order_id()?;
+        self.increment_next_order_id()?;
         let order = Order::new_flip(order_id, sender, book_key, amount, tick, is_bid, flip_tick)
             .map_err(|_| StablecoinExchangeError::invalid_flip_tick())?;
 
@@ -967,14 +968,8 @@ impl StablecoinExchange {
             return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
-        // Check if the order is still pending (not yet in active orderbook)
-        let next_order_id = self.get_active_order_id()?;
-
-        if order.order_id() > next_order_id {
-            self.cancel_pending_order(order)?;
-        } else {
-            self.cancel_active_order(order)?;
-        }
+        // All orders are immediately active in the orderbook
+        self.cancel_active_order(order)?;
 
         Ok(())
     }
@@ -1441,7 +1436,7 @@ mod tests {
     }
 
     #[test]
-    fn test_price_to_tick() -> eyre::Result<()> {
+    fn test_price_to_tick_pre_moderato() -> eyre::Result<()> {
         let test_prices = [
             98000u32, 99000, 99900, 99999, 100000, 100001, 100100, 101000, 102000,
         ];
@@ -3816,7 +3811,6 @@ mod tests {
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
 
-            assert_eq!(exchange.active_order_id()?, 1);
             assert_eq!(exchange.next_order_id()?, 2);
 
             Ok(())
@@ -3876,7 +3870,6 @@ mod tests {
             let book = exchange.books.at(book_key).read()?;
             assert_eq!(book.best_bid_tick, tick);
 
-            assert_eq!(exchange.active_order_id()?, 1);
             assert_eq!(exchange.next_order_id()?, 2);
 
             Ok(())

@@ -308,8 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn test_min_price_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_min_price() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -324,35 +324,7 @@ mod tests {
             let output = result?.bytes;
             let returned_value = u32::abi_decode(&output)?;
 
-            assert_eq!(
-                returned_value, 67_232,
-                "Pre-moderato MIN_PRICE should be 67_232"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_min_price_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::ZERO;
-            let call = IStablecoinExchange::MIN_PRICECall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?.bytes;
-            let returned_value = u32::abi_decode(&output)?;
-
-            assert_eq!(
-                returned_value, 98_000,
-                "Post-moderato MIN_PRICE should be 98_000"
-            );
+            assert_eq!(returned_value, 98_000, "MIN_PRICE should be 98_000");
             Ok(())
         })
     }
@@ -384,8 +356,8 @@ mod tests {
     }
 
     #[test]
-    fn test_max_price_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_max_price() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -400,35 +372,7 @@ mod tests {
             let output = result?.bytes;
             let returned_value = u32::abi_decode(&output)?;
 
-            assert_eq!(
-                returned_value, 132_767,
-                "Pre-moderato MAX_PRICE should be 132_767"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_max_price_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::ZERO;
-            let call = IStablecoinExchange::MAX_PRICECall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?.bytes;
-            let returned_value = u32::abi_decode(&output)?;
-
-            assert_eq!(
-                returned_value, 102_000,
-                "Post-moderato MAX_PRICE should be 102_000"
-            );
+            assert_eq!(returned_value, 102_000, "MAX_PRICE should be 102_000");
             Ok(())
         })
     }
