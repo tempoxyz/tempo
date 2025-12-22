@@ -11,7 +11,7 @@ use alloy::{
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
-    TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
+    TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
     UnknownFunctionSelector, ValidatorConfigError,
 };
 
@@ -29,9 +29,6 @@ pub enum TempoPrecompileError {
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
 
-    /// Error from TIP20RewardsRegistry
-    #[error("TIP20 rewards registry error: {0:?}")]
-    TIP20RewardsRegistry(TIP20RewardsRegistryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -126,7 +123,6 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
 
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinExchange);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20RewardsRegistry);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
@@ -180,7 +176,6 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 let bytes = match err {
                     TPErr::StablecoinExchange(e) => e.abi_encode().into(),
                     TPErr::TIP20(e) => e.abi_encode().into(),
-                    TPErr::TIP20RewardsRegistry(e) => e.abi_encode().into(),
                     TPErr::RolesAuthError(e) => e.abi_encode().into(),
                     TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
                     TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
@@ -223,7 +218,6 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         let bytes = match self {
             Self::StablecoinExchange(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
-            Self::TIP20RewardsRegistry(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::TIPAccountRegistrarError(e) => e.abi_encode().into(),
