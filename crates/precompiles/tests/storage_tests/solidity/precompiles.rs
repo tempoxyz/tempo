@@ -23,19 +23,6 @@ fn test_tip20_factory_layout() {
 }
 
 #[test]
-fn test_tip20_rewards_registry_layout() {
-    use tempo_precompiles::tip20_rewards_registry::slots;
-
-    let sol_path = testdata("tip20_rewards_registry.sol");
-    let solc_layout = load_solc_layout(&sol_path);
-    let rust_layout = layout_fields!(last_updated_timestamp, ending_streams, stream_index);
-
-    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic_layout_mismatch("Layout", errors, &sol_path);
-    }
-}
-
-#[test]
 fn test_tip403_registry_layout() {
     use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};
 
@@ -265,18 +252,6 @@ fn export_all_storage_constants() {
         let fields = layout_fields!(token_id_counter);
         all_constants.insert(
             "tip20_factory".to_string(),
-            json!({
-                "fields": fields.iter().map(field_to_json).collect::<Vec<_>>()
-            }),
-        );
-    }
-
-    // TIP20 Rewards Registry
-    {
-        use tempo_precompiles::tip20_rewards_registry::slots;
-        let fields = layout_fields!(last_updated_timestamp, ending_streams, stream_index);
-        all_constants.insert(
-            "tip20_rewards_registry".to_string(),
             json!({
                 "fields": fields.iter().map(field_to_json).collect::<Vec<_>>()
             }),
