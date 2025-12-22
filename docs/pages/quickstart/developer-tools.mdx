@@ -58,6 +58,14 @@ Integrating with Tempo is easy by leveraging services provided by our infrastruc
   <p>Reach out to <a href="mailto:partners@tempo.xyz">get listed on this page</a>.</p>
 </Card.Notice>
 
+<Card.Notice
+  icon={LucideWallet}
+  title="Are you a wallet developer?"
+  inline
+>
+  <p>Read our <a href="/quickstart/wallet-developers">guide for wallet developers</a> to get started.</p>
+</Card.Notice>
+
 ## Data & Analytics
 
 ### Allium
@@ -118,12 +126,6 @@ Explore Tempo activity in the [Stablecoin Explorer](https://explorer.money/trans
 
 Tempo's official block explorer is available at [explore.tempo.xyz](https://explore.tempo.xyz). View transactions, blocks, accounts, and token activity on the Tempo network.
 
-### Blockscout
-
-Blockscout provides an open-source block explorer with support for Tempo’s network. Developers can use Blockscout to inspect Tempo transactions, contracts, and account activity.
-
-Visit the [Tempo Blockscout Explorer](https://scout.tempo.xyz).
-
 ### Tenderly
 
 [Tenderly](https://tenderly.co) delivers full-stack observability, debugging, and simulation tools for Tempo smart contract development and monitoring. With Tenderly you get real-time error tracking, EVM-level tracing, and off-chain transaction simulation — enabling you to catch bugs, analyze reverts, and inspect gas usage before transactions go live.
@@ -164,6 +166,10 @@ Get started by signing up through the [Para Dev Portal](https://developer.getpar
 Privy takes advantage of Tempo-native experiences to enable better stablecoin and payments experiences. Easily enable gas sponsorship, leverage webhooks for onchain events, delegated signatures, simple wallet funding, etc.
 
 You can get started now. Simply [create](https://docs.privy.io/wallets/wallets/create/create-a-wallet#param-chain-type-1) an ethereum wallet with Privy and pass in `"caip2": "eip155:42429"` when [making transactions](https://docs.privy.io/wallets/using-wallets/ethereum/send-a-transaction#usage-9).
+
+:::tip
+Check out Privy's [example](https://github.com/privy-io/examples/tree/main/examples/privy-next-tempo) peer-to-peer payments app that uses Tempo transaction memos.
+:::
 
 ### thirdweb
 
@@ -239,22 +245,23 @@ Learn how Blockaid’s transaction scanning improves security by visiting their 
 
 ### Chainalysis
 
-[Chainalysis](https://www.chainalysis.com) delivers industry-leading on-chain intelligence, compliance, and security infrastructure. Through Hexagate, Chainalysis supports Tempo with real-time monitoring, anomaly detection, and threat insights to help developers and platforms better understand and manage on-chain risk as the ecosystem grows.
+[Chainalysis](https://www.chainalysis.com) delivers industry-leading onchain intelligence, compliance, and security infrastructure. Through Hexagate, Chainalysis supports Tempo with real-time monitoring, anomaly detection, and threat insights to help developers and platforms better understand and manage onchain risk as the ecosystem grows.
 
 Discover how Hexagate supports Tempo [here](https://www.hexagate.com), or request a dedicated walkthrough from the Chainalysis team through their [demo form](https://www.hexagate.com/request-demo).
 
 ## Issuance
 ### Brale
 
-[Brale](https://brale.xyz) makes it easy to issue, move, and manage stablecoins across chains. Developers can create their own stablecoin or work with existing issued assets, using Brale’s APIs to power on/off-ramps, automate payouts, and move stablecoins across ecosystems.
+[Brale](https://brale.xyz) provides infrastructure for issuing, transferring, and managing stablecoins across chains. Developers can create new stablecoins or work with existing issued assets using Brale’s APIs to support on- and off-ramps, payouts, and cross-ecosystem stablecoin movement.
 
-Brale provides two complementary APIs:
+Brale exposes two complementary APIs:
 
-- [**Stablecoin Movement & Account Management:**](https://docs.brale.xyz/#stablecoin-movement--account-management-apibralexyz) a secure, authenticated API for orchestrating stablecoin workflows, including issuing assets, transferring funds across accounts or chains, linking financial institutions, and managing custody.
-- [**Stablecoin Market Data:**](https://docs.brale.xyz/#stablecoin-market-data-databralexyz) a public, read-only API offering token metadata, stablecoin definitions, and price feeds.
+- **[Stablecoin Movement & Account Management](https://docs.brale.xyz/#stablecoin-movement--account-management-apibralexyz):**  
+  An authenticated API for orchestrating stablecoin workflows, including issuance, transfers across accounts or chains, custody management, and integration with financial institutions.
 
-With support for minting, redeeming, swapping stablecoins, and leveraging them for payouts or treasury operations, Brale gives fintechs, exchanges, and payment platforms the infrastructure to build stablecoin-enabled products on Tempo.
+- **[Stablecoin Market Data](https://docs.brale.xyz/#stablecoin-market-data-databralexyz):**  
+  A public, read-only API that provides token metadata, stablecoin definitions, and price feeds.
 
-Brale also offers a [**$0 Business plan**](https://brale.xyz/pricing) that allows teams to mint, redeem, and custody popular stablecoins at no monthly cost, making it simple to get started with Brale’s APIs before scaling.
+These APIs support common stablecoin workflows such as minting, redemption, swaps, payouts, and treasury operations, making Brale suitable for fintechs, exchanges, and payment platforms building on Tempo.
 
-[Create your stablecoin today](https://app.brale.xyz/buy/signup/).
+Get started by creating an account [here](https://app.brale.xyz/buy/signup/).

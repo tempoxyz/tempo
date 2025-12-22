@@ -1,9 +1,8 @@
 pub use ITIP20RewardsRegistry::ITIP20RewardsRegistryErrors as TIP20RewardsRegistryError;
-use alloy::sol;
 
-sol! {
+crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface ITIP20RewardsRegistry {
         /// Finalize streams for all tokens ending at the current timestamp
         function finalizeStreams() external;

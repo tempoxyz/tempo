@@ -10,7 +10,7 @@ publish.workspace = true
 [dependencies]
 # Tempo
 tempo-alloy.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["rpc"] }
 tempo-contracts.workspace = true
 
 # Workspace dependencies
@@ -24,6 +24,7 @@ alloy = { workspace = true, features = [
     "signer-mnemonic",
     "signers",
     "sol-types",
+    "contract",
 ] }
 alloy-consensus = { workspace = true, features = ["secp256k1"] }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -39,7 +40,7 @@ tokio.workspace = true
 # Bespoke dependencies
 indicatif = { workspace = true, features = ["rayon", "futures"] }
 mimalloc = "0.1.47"
-rayon = "1.10"
+rayon.workspace = true
 rlimit = "0.10.2"
 governor = "0.10.1"
 rand = "0.9.2"

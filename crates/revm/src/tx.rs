@@ -50,6 +50,11 @@ pub struct TempoBatchCallEnv {
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
+
+    /// Optional access key ID override for gas estimation.
+    /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
+    /// This is not used in actual transaction execution - the key_id is recovered from the signature.
+    pub override_key_id: Option<Address>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -389,6 +394,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
+                // override_key_id is only used for gas estimation, not actual execution
+                override_key_id: None,
             })),
         }
     }
