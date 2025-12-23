@@ -497,7 +497,7 @@ mod tests {
     use super::*;
     use alloy_consensus::{Block, Transaction};
     use alloy_eips::Decodable2718;
-    use alloy_primitives::{B256, U256, hex};
+    use alloy_primitives::{Address, B256, U256, hex};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
