@@ -202,41 +202,6 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Drain all tokens with fees by popping from the back until empty
-    /// Returns a `Vec<Address>` with all the tokens that were in storage
-    /// Also sets token_in_fees_array to false for each token
-    fn drain_tokens_with_fees(&mut self) -> Result<Vec<Address>> {
-        let mut tokens = Vec::new();
-        while let Some(token) = self.tokens_with_fees.pop()? {
-            tokens.push(token);
-            if self.storage.spec().is_moderato() {
-                self.token_in_fees_array.at(token).write(false)?;
-            }
-        }
-
-        Ok(tokens)
-    }
-
-    /// Drain all validators with fees by popping from the back until empty
-    fn drain_validators_with_fees(&mut self) -> Result<Vec<Address>> {
-        let mut validators = Vec::new();
-        while let Some(validator) = self.validators_with_fees.pop()? {
-            validators.push(validator);
-            self.validator_in_fees_array.at(validator).write(false)?;
-        }
-        Ok(validators)
-    }
-
-    /// Drain all pools with fees by popping from the back until empty
-    fn drain_pools_with_fees(&mut self) -> Result<Vec<TokenPair>> {
-        let mut pools = Vec::new();
-        while let Some(pool) = self.pools_with_fees.pop()? {
-            pools.push(pool);
-            self.pool_in_fees_array.at(pool).write(false)?;
-        }
-        Ok(pools)
-    }
-
     /// Increment collected fees for the validator token
     fn increment_collected_fees(&mut self, validator: Address, amount: U256) -> Result<()> {
         if amount.is_zero() {
