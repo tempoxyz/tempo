@@ -99,7 +99,6 @@ pub struct TIP20Token {
     opted_in_supply: u128,
     next_stream_id: u64,
     streams: Mapping<u64, RewardStream>,
-    scheduled_rate_decrease: Mapping<u128, U256>,
     user_reward_info: Mapping<Address, UserRewardInfo>,
 
     // Fee recipient

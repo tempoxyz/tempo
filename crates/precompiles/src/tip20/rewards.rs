@@ -32,37 +32,31 @@ impl TIP20Token {
 
         self._transfer(msg_sender, token_address, call.amount)?;
 
-        if call.secs == 0 {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?);
-            if opted_in_supply.is_zero() {
-                return Err(TIP20Error::no_opted_in_supply().into());
-            }
-
-            let delta_rpt = call
-                .amount
-                .checked_mul(ACC_PRECISION)
-                .and_then(|v| v.checked_div(opted_in_supply))
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            let current_rpt = self.get_global_reward_per_token()?;
-            let new_rpt = current_rpt
-                .checked_add(delta_rpt)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_global_reward_per_token(new_rpt)?;
-
-            // Emit reward scheduled event for immediate payout
-            self.emit_event(TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
-                funder: msg_sender,
-                id: 0,
-                amount: call.amount,
-                durationSeconds: 0,
-            }))?;
-
-            Ok(0)
-        } else {
-            // TODO: Remove this entirely as we update the startReward function to
-            // distributeRewards
-            Err(TIP20Error::scheduled_rewards_disabled().into())
+        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+        if opted_in_supply.is_zero() {
+            return Err(TIP20Error::no_opted_in_supply().into());
         }
+
+        let delta_rpt = call
+            .amount
+            .checked_mul(ACC_PRECISION)
+            .and_then(|v| v.checked_div(opted_in_supply))
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        let current_rpt = self.get_global_reward_per_token()?;
+        let new_rpt = current_rpt
+            .checked_add(delta_rpt)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_global_reward_per_token(new_rpt)?;
+
+        // Emit reward scheduled event for immediate payout
+        self.emit_event(TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
+            funder: msg_sender,
+            id: 0,
+            amount: call.amount,
+            durationSeconds: 0,
+        }))?;
+
+        Ok(0)
     }
 
     /// Accrues rewards based on elapsed time since last update.
@@ -497,7 +491,6 @@ mod tests {
                 admin,
                 ITIP20::startRewardCall {
                     amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
@@ -505,39 +498,6 @@ mod tests {
 
             let total_reward_per_second = token.get_total_reward_per_second()?;
             assert_eq!(total_reward_per_second, U256::ZERO);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_scheduled_rewards_disabled() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let mint_amount = U256::from(1000e18);
-
-        StorageCtx::enter(&mut storage, || {
-            // Setup and start stream in a scope to release the borrow
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .with_mint(admin, mint_amount)
-                .apply()?;
-
-            let reward_amount = U256::from(100e18);
-            let result = token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 10,
-                },
-            );
-
-            assert!(result.is_err());
-            let error = result.unwrap_err();
-            assert!(matches!(
-                error,
-                TempoPrecompileError::TIP20(TIP20Error::ScheduledRewardsDisabled(_))
-            ));
 
             Ok(())
         })

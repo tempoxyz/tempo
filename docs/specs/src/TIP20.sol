@@ -443,9 +443,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    /// @notice Starts a reward distribution. Post-Moderato, only immediate rewards (seconds_ == 0) are allowed.
-    /// Scheduled/streaming rewards (seconds_ > 0) are disabled and will revert with ScheduledRewardsDisabled.
-    function startReward(uint256 amount, uint32 seconds_)
+    /// @notice Starts a reward distribution.
+    function startReward(uint256 amount)
         external
         virtual
         notPaused
@@ -459,19 +458,14 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // Transfer tokens from sender to this contract
         _transfer(msg.sender, address(this), amount);
 
-        if (seconds_ == 0) {
-            // Immediate payout
-            if (optedInSupply == 0) {
-                revert NoOptedInSupply();
-            }
-            uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
-            globalRewardPerToken += deltaRPT;
-            emit RewardScheduled(msg.sender, 0, amount, 0);
-            return 0;
-        } else {
-            // Scheduled/streaming rewards are disabled post-Moderato
-            revert ScheduledRewardsDisabled();
+        // Immediate payout
+        if (optedInSupply == 0) {
+            revert NoOptedInSupply();
         }
+        uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
+        globalRewardPerToken += deltaRPT;
+        emit RewardScheduled(msg.sender, 0, amount, 0);
+        return 0;
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {

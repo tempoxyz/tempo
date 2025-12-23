@@ -26,8 +26,6 @@ interface ITIP20 {
     error InvalidRecipient();
     error InvalidSupplyCap();
     error NoOptedInSupply();
-    /// @notice Error when starting a reward stream with seconds > 0
-    error ScheduledRewardsDisabled();
 
     /// @notice Error when a transfer is blocked by the current transfer policy.
     error PolicyForbids();
@@ -182,7 +180,7 @@ interface ITIP20 {
 
     function setSupplyCap(uint256 newSupplyCap) external;
 
-    function startReward(uint256 amount, uint32 seconds_) external returns (uint64);
+    function startReward(uint256 amount) external returns (uint64);
 
     /// @notice Returns the maximum supply cap for the token.
     /// @return The supply cap amount.

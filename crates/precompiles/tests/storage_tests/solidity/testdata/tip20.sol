@@ -59,9 +59,6 @@ contract TIP20 {
     /// Mapping of stream ID to reward stream data
     mapping(uint64 => RewardStream) public streams;
 
-    /// Mapping of timestamp to scheduled rate decrease
-    mapping(uint128 => uint256) public scheduledRateDecrease;
-
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;
 }

@@ -180,19 +180,11 @@
             "type": "t_mapping(t_uint64,t_struct(RewardStream)13_storage)"
           },
           {
-            "astId": 91,
-            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "scheduledRateDecrease",
-            "offset": 0,
-            "slot": "20",
-            "type": "t_mapping(t_uint128,t_uint256)"
-          },
-          {
-            "astId": 97,
+            "astId": 92,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
             "label": "userRewardInfo",
             "offset": 0,
-            "slot": "21",
+            "slot": "20",
             "type": "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)"
           }
         ],
@@ -253,13 +245,6 @@
             "label": "mapping(bytes32 => bytes32)",
             "numberOfBytes": "32",
             "value": "t_bytes32"
-          },
-          "t_mapping(t_uint128,t_uint256)": {
-            "encoding": "mapping",
-            "key": "t_uint128",
-            "label": "mapping(uint128 => uint256)",
-            "numberOfBytes": "32",
-            "value": "t_uint256"
           },
           "t_mapping(t_uint64,t_struct(RewardStream)13_storage)": {
             "encoding": "mapping",

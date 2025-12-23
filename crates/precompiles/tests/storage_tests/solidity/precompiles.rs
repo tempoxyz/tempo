@@ -178,7 +178,6 @@ fn test_tip20_layout() {
         opted_in_supply,
         next_stream_id,
         streams,
-        scheduled_rate_decrease,
         user_reward_info
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
@@ -382,7 +381,6 @@ fn export_all_storage_constants() {
             opted_in_supply,
             next_stream_id,
             streams,
-            scheduled_rate_decrease,
             user_reward_info
         );
 
