@@ -13,7 +13,12 @@ const baseUrl = process.env['VITE_BASE_URL'] ||
 function findMdxFile(path: string, pagesDir: string): string | null {
   // Remove query params and hash
   const withoutQuery = path.split('?')[0] ?? path
-  const cleanPath = withoutQuery.split('#')[0] ?? withoutQuery
+  let cleanPath = withoutQuery.split('#')[0] ?? withoutQuery
+  
+  // Normalize /index.html to / for root path
+  if (cleanPath === '/index.html' || cleanPath === 'index.html') {
+    cleanPath = '/'
+  }
   
   // Normalize path - remove leading/trailing slashes
   const normalizedPath = cleanPath.replace(/^\//, '').replace(/\/$/, '')
@@ -63,10 +68,22 @@ export function ogImagePlugin(): Plugin {
         console.log('[OG Plugin] Context keys:', Object.keys(ctx))
       }
 
-      // Only process pages (not API routes, etc.)
-      const path = 'path' in ctx ? ctx.path : undefined
+      // Get the actual route path - check originalUrl first, then path
+      // Vocs uses /index.html for the root, but originalUrl has the real path
+      let path = 'originalUrl' in ctx && ctx.originalUrl 
+        ? new URL(ctx.originalUrl, 'http://localhost').pathname
+        : ('path' in ctx ? ctx.path : undefined)
+      
+      // Normalize /index.html to / for root path
+      if (path === '/index.html' || path === 'index.html') {
+        path = '/'
+      }
+      
       if (isDev) {
         console.log('[OG Plugin] Path from context:', path)
+        if ('originalUrl' in ctx) {
+          console.log('[OG Plugin] Original URL:', ctx.originalUrl)
+        }
       }
       
       if (!path || path.startsWith('/api/')) {
