@@ -70,7 +70,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .await?;
 
     let pending_tx = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_token.address(),
             *validator_token.address(),
             U256::from(1e8),
@@ -288,10 +288,9 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         );
     }
 
-    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     assert!(
         fee_amm
-            .mintWithValidatorToken(
+            .mint(
                 *user_token.address(),
                 PATH_USD_ADDRESS,
                 U256::from(1e18),

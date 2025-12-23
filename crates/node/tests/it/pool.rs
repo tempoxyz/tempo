@@ -26,7 +26,7 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, tip_fee_manager::TipFeeManager};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope, TxFeeToken,
     transaction::{
@@ -112,7 +112,7 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         chain_id: 1,
         nonce: U256::random().saturating_to(),
         // Use AlphaUSD since PathUSD is only valid post-Allegretto
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,
         gas_limit: 1015288,
@@ -177,7 +177,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: alloy_primitives::Bytes::new(),
         }],
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         valid_before: Some(current_time + 1),
         ..Default::default()
     };
