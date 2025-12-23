@@ -42,7 +42,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -254,24 +254,18 @@ fn fill_precompile_output(
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
-    if !output.reverted && storage.spec().is_allegretto() {
+    if !output.reverted {
         output.gas_refunded = storage.gas_refunded();
     }
     output
 }
 
-/// Helper function to return an unknown function selector error
-///
-/// Before Moderato: Returns a generic PrecompileError::Other
-/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+/// Helper function to return an unknown function selector error.
+/// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
 #[inline]
-pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
-    if spec.is_moderato() {
-        error::TempoPrecompileError::UnknownFunctionSelector(selector)
-            .into_precompile_result(gas, |_: ()| Bytes::new())
-    } else {
-        Err(PrecompileError::Other("Unknown function selector".into()))
-    }
+pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
+    error::TempoPrecompileError::UnknownFunctionSelector(selector)
+        .into_precompile_result(gas, |_: ()| Bytes::new())
 }
 
 #[cfg(test)]

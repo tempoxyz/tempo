@@ -1,13 +1,12 @@
-use crate::{
-    Precompile, fill_precompile_output, input_cost, nonce::NonceManager, unknown_selector, view,
-};
+use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::ITIP20RewardsRegistry;
 
-use super::INonce;
+use crate::tip20_rewards_registry::TIP20RewardsRegistry;
 
-impl Precompile for NonceManager {
-    fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
+impl Precompile for TIP20RewardsRegistry {
+    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
@@ -18,11 +17,15 @@ impl Precompile for NonceManager {
                 PrecompileError::Other("Invalid input: missing function selector".into())
             })?
             .try_into()
-            .unwrap();
+            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
-            INonce::getNonceCall::SELECTOR => {
-                view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
+            ITIP20RewardsRegistry::finalizeStreamsCall::SELECTOR => {
+                mutate_void::<ITIP20RewardsRegistry::finalizeStreamsCall>(
+                    calldata,
+                    msg_sender,
+                    |sender, _call| self.finalize_streams(sender),
+                )
             }
             _ => unknown_selector(selector, self.storage.gas_used()),
         };
@@ -38,23 +41,23 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use tempo_contracts::precompiles::INonce::INonceCalls;
+    use tempo_contracts::precompiles::ITIP20RewardsRegistry::ITIP20RewardsRegistryCalls;
 
     #[test]
-    fn test_nonce_selector_coverage() -> eyre::Result<()> {
+    fn tip20_rewards_registry_test_selector_coverage() {
         let mut storage = HashMapStorageProvider::new(1);
+
         StorageCtx::enter(&mut storage, || {
-            let mut nonce_manager = NonceManager::new();
+            let mut registry = TIP20RewardsRegistry::new();
 
             let unsupported = check_selector_coverage(
-                &mut nonce_manager,
-                INonceCalls::SELECTORS,
-                "INonce",
-                INonceCalls::name_by_selector,
+                &mut registry,
+                ITIP20RewardsRegistryCalls::SELECTORS,
+                "ITIP20RewardsRegistry",
+                ITIP20RewardsRegistryCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);
-            Ok(())
         })
     }
 }
