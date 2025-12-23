@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_consensus::Transaction;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -263,14 +263,12 @@ where
             .chain_spec()
             .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
-        let fee_token =
-            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
-            {
-                Ok(fee_token) => fee_token,
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
-            };
+        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
+            Ok(fee_token) => fee_token,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
 
         // Ensure that fee token is valid.
         match state_provider.is_valid_fee_token(fee_token, spec) {
