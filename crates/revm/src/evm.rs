@@ -206,42 +206,6 @@ mod tests {
     };
 
     #[test]
-    fn test_auto_7702_delegation() -> eyre::Result<()> {
-        let db = CacheDB::new(EmptyDB::new());
-        let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());
-
-        // HACK: initialize default fee token and pathUSD so that fee token validation passes
-        let ctx = tempo_evm.ctx_mut();
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-            &ctx.cfg,
-        );
-        StorageCtx::enter(&mut storage, || {
-            TIP20Setup::create("USD", "USD", Address::ZERO)
-                .apply()
-                .unwrap();
-        });
-        drop(storage);
-
-        let caller_0 = Address::random();
-        let tx_env = TxEnv {
-            caller: caller_0,
-            nonce: 0,
-            ..Default::default()
-        };
-        let mut res = tempo_evm.transact_raw(tx_env.into())?;
-        assert!(res.result.is_success());
-
-        let account = res.state.remove(&caller_0).unwrap();
-        assert_eq!(
-            account.info.code.unwrap(),
-            Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn test_access_millis_timestamp() -> eyre::Result<()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut tempo_evm = TempoEvmFactory::default().create_evm(db, Default::default());

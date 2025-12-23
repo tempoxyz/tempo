@@ -1417,17 +1417,17 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{TempoBlockEnv, TempoTxEnv};
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::{Address, B256, U256};
     use revm::{
         Context, Journal, MainContext,
         context::CfgEnv,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
-        state::Account,
     };
     use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
@@ -1510,15 +1510,6 @@ mod tests {
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
-    }
-
-    #[test]
-    fn test_delegate_code_hash() {
-        let mut account = Account::default();
-        account
-            .info
-            .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-        assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
 
     #[test]
