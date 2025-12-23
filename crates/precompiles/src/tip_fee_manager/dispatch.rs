@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_tip_fee_manager_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = TipFeeManager::new();
 
@@ -385,10 +385,7 @@ mod tests {
                 IFeeManagerCalls::SELECTORS,
                 "IFeeManager",
                 IFeeManagerCalls::name_by_selector,
-            )
-            .into_iter()
-            .filter(|(selector, _)| *selector != IFeeManager::executeBlockCall::SELECTOR)
-            .collect();
+            );
 
             let amm_unsupported = check_selector_coverage(
                 &mut fee_manager,
