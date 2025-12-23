@@ -265,6 +265,10 @@ impl StorageCtx {
         self.as_hashmap().clear_transient()
     }
 
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    ///
+    /// USAGE: `TIP20Setup` automatically clears events of the configured
+    /// contract when `apply()` is called, unless explicitly asked no to.
     pub fn clear_events(&mut self, address: Address) {
         self.as_hashmap().clear_events(address);
     }
