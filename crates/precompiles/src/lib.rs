@@ -13,7 +13,6 @@ pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
-pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
@@ -25,7 +24,6 @@ use crate::{
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
-    tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
     tip20_factory::TIP20Factory,
@@ -49,7 +47,7 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     VALIDATOR_CONFIG_ADDRESS,
 };
@@ -83,8 +81,6 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id, spec))
-        } else if *address == TIP_ACCOUNT_REGISTRAR {
-            Some(TipAccountRegistrarPrecompile::create(chain_id, spec))
         } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
             Some(StablecoinExchangePrecompile::create(chain_id, spec))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
@@ -133,15 +129,6 @@ impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", chain_id, spec, |input| {
             TipFeeManager::new()
-        })
-    }
-}
-
-pub struct TipAccountRegistrarPrecompile;
-impl TipAccountRegistrarPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", chain_id, spec, |input| {
-            TipAccountRegistrar::new()
         })
     }
 }
