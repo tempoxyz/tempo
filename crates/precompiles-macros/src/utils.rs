@@ -3,8 +3,21 @@
 use alloy::primitives::{U256, keccak256};
 use syn::{Attribute, Lit, Type};
 
-/// Return type for [`extract_attributes`]: (slot, base_slot)
-type ExtractedAttributes = (Option<U256>, Option<U256>);
+/// Field slot assignment attribute.
+///
+/// At most one attribute can be present per field.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum FieldAttribute {
+    /// No attribute - auto-assigned using current base slot
+    #[default]
+    Auto,
+    /// Explicit fixed slot via `#[slot(N)]` - doesn't affect auto-assignment chain
+    Slot(U256),
+    /// Explicit base slot via `#[base_slot(N)]` - resets auto-assignment chain
+    BaseSlot(U256),
+    /// Skip N slots via `#[skip(N)]` - advances current base slot
+    Skip(U256),
+}
 
 /// Parses a slot value from a literal.
 ///
@@ -85,59 +98,41 @@ pub(crate) fn to_camel_case(s: &str) -> String {
     result
 }
 
-/// Extracts `#[slot(N)]`, `#[base_slot(N)]` attributes from a field's attributes.
+/// Extracts `#[slot(N)]`, `#[base_slot(N)]`, `#[skip(N)]` attributes from a field's attributes.
 ///
-/// This function iterates through the attributes a single time to find all
-/// relevant values. It returns a tuple containing:
-/// - The slot number (if present)
-/// - The base_slot number (if present)
+/// Returns the parsed [`FieldAttribute`] variant for slot assignment.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Both `#[slot]` and `#[base_slot]` are present on the same field
-/// - Duplicate attributes of the same type are found
-pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<ExtractedAttributes> {
-    let mut slot_attr: Option<U256> = None;
-    let mut base_slot_attr: Option<U256> = None;
+/// Returns an error if multiple slot attributes are present on the same field.
+pub(crate) fn extract_attributes(attrs: &[Attribute]) -> syn::Result<FieldAttribute> {
+    let mut res = FieldAttribute::Auto;
 
     for attr in attrs {
-        // Extract `#[slot(N)]` attribute
-        if attr.path().is_ident("slot") {
-            if slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(attr, "duplicate `slot` attribute"));
-            }
-            if base_slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "cannot use both `slot` and `base_slot` attributes on the same field",
-                ));
-            }
-
+        // Check attribute type first, skip unrecognized ones
+        let parsed = if attr.path().is_ident("slot") {
             let value: Lit = attr.parse_args()?;
-            slot_attr = Some(parse_slot_value(&value)?);
-        }
-        // Extract `#[base_slot(N)]` attribute
-        else if attr.path().is_ident("base_slot") {
-            if base_slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "duplicate `base_slot` attribute",
-                ));
-            }
-            if slot_attr.is_some() {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    "cannot use both `slot` and `base_slot` attributes on the same field",
-                ));
-            }
-
+            FieldAttribute::Slot(parse_slot_value(&value)?)
+        } else if attr.path().is_ident("base_slot") {
             let value: Lit = attr.parse_args()?;
-            base_slot_attr = Some(parse_slot_value(&value)?);
+            FieldAttribute::BaseSlot(parse_slot_value(&value)?)
+        } else if attr.path().is_ident("skip") {
+            let value: Lit = attr.parse_args()?;
+            FieldAttribute::Skip(parse_slot_value(&value)?)
+        } else {
+            continue;
+        };
+
+        if !matches!(res, FieldAttribute::Auto) {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "cannot have multiple slot attributes on the same field",
+            ));
         }
+        res = parsed;
     }
 
-    Ok((slot_attr, base_slot_attr))
+    Ok(res)
 }
 
 /// Extracts array sizes from the `#[storable_arrays(...)]` attribute.

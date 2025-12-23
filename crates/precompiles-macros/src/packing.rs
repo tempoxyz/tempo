@@ -8,7 +8,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, Type};
 
-use crate::{FieldInfo, FieldKind};
+use crate::{FieldInfo, FieldKind, utils::FieldAttribute};
 
 /// Helper for generating packing constant identifiers
 pub(crate) struct PackingConstants(String);
@@ -50,12 +50,14 @@ pub(crate) fn const_name(name: &Ident) -> String {
 /// Represents how a slot is assigned
 #[derive(Debug, Clone)]
 pub(crate) enum SlotAssignment {
-    /// Manual slot value: `#[slot(N)]` or `#[base_slot(N)]`
+    /// Manual slot value: `#[slot(N)]`
     Manual(U256),
-    /// Auto-assigned: stores after the latest auto-assigned field
+    /// Auto-assigned: chains from previous field or starts at base_slot
     Auto {
         /// Base slot for packing decisions.
         base_slot: U256,
+        /// Skip amount from previous field (0 == regular chain).
+        skip: U256,
     },
 }
 
@@ -63,7 +65,7 @@ impl SlotAssignment {
     pub(crate) fn ref_slot(&self) -> &U256 {
         match self {
             Self::Manual(slot) => slot,
-            Self::Auto { base_slot } => base_slot,
+            Self::Auto { base_slot, .. } => base_slot,
         }
     }
 }
@@ -97,19 +99,26 @@ pub(crate) fn allocate_slots(fields: &[FieldInfo]) -> syn::Result<Vec<LayoutFiel
     for field in fields.iter() {
         let kind = classify_field_type(&field.ty)?;
 
-        // Explicit fixed slot, doesn't affect auto-assignment chain
-        let assigned_slot = if let Some(explicit) = field.slot {
-            SlotAssignment::Manual(explicit)
-        } else if let Some(new_base) = field.base_slot {
-            // Explicit base slot, resets auto-assignment chain
-            current_base_slot = new_base;
-            SlotAssignment::Auto {
-                base_slot: new_base,
+        let assigned_slot = match &field.attr {
+            // Explicit fixed slot, doesn't affect auto-assignment chain
+            FieldAttribute::Slot(explicit) => SlotAssignment::Manual(*explicit),
+            // Otherwise, use the auto-assignment chain
+            FieldAttribute::BaseSlot(new_base) => {
+                current_base_slot = *new_base;
+                SlotAssignment::Auto {
+                    base_slot: current_base_slot,
+                    skip: U256::ZERO,
+                }
             }
-        } else {
-            SlotAssignment::Auto {
+            // Skip computes from previous field at compile-time
+            FieldAttribute::Skip(skip) => SlotAssignment::Auto {
                 base_slot: current_base_slot,
-            }
+                skip: *skip,
+            },
+            FieldAttribute::Auto => SlotAssignment::Auto {
+                base_slot: current_base_slot,
+                skip: U256::ZERO,
+            },
         };
 
         result.push(LayoutField {
@@ -160,7 +169,7 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                 (slot_expr, quote! { 0 })
             }
             // Auto-assignment computes slot/offset using const expressions
-            SlotAssignment::Auto { base_slot, .. } => {
+            SlotAssignment::Auto { base_slot, skip } => {
                 let output = if let Some(current_base) = current_base_slot
                     && current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot()
                 {
@@ -172,15 +181,18 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
                         field.ty,
                         quote! { #prev_slot },
                         quote! { #prev_offset },
+                        *skip,
                     )
                 } else {
                     // If a new base is adopted, start from the base slot and offset 0
                     let limbs = *base_slot.as_limbs();
+                    let skip_limbs = *skip.as_limbs();
 
                     // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-                    // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
+                    // by computing the slot as: `SLOT = SLOT + SKIP + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
                     let slot_expr = quote! {
                         ::alloy::primitives::U256::from_limbs([#(#limbs),*])
+                            .checked_add(::alloy::primitives::U256::from_limbs([#(#skip_limbs),*])).expect("slot_overflow")
                             .checked_add(#slots_to_end).expect("slot overflow")
                             .saturating_sub(#slots_to_end)
                     };
@@ -281,6 +293,7 @@ pub(crate) fn gen_slot_packing_logic(
     curr_ty: &Type,
     prev_slot_expr: TokenStream,
     prev_offset_expr: TokenStream,
+    skip: U256,
 ) -> (TokenStream, TokenStream) {
     // Helper for converting SLOTS to U256
     let prev_layout_slots = quote! {
@@ -290,10 +303,14 @@ pub(crate) fn gen_slot_packing_logic(
         ::alloy::primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
             .saturating_sub(::alloy::primitives::U256::ONE)
     };
+    let skip_limbs = *skip.as_limbs();
+    let skip_slots = quote! { ::alloy::primitives::U256::from_limbs([#(#skip_limbs),*]) };
 
     // Compute packing decision at compile-time
+    let skip_flag = if skip.is_zero() { 0_usize } else { 32_usize };
     let can_pack_expr = quote! {
         #prev_offset_expr
+            + #skip_flag
             + <#prev_ty as crate::storage::StorableType>::BYTES
             + <#curr_ty as crate::storage::StorableType>::BYTES <= 32
     };
@@ -303,9 +320,10 @@ pub(crate) fn gen_slot_packing_logic(
             #prev_slot_expr
         } else {
             // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
-            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - 1) - (CURR_LEN - 1)`
+            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + SKIP + (CURR_LEN - 1) - (CURR_LEN - 1)`
             #prev_slot_expr
                 .checked_add(#prev_layout_slots).expect("slot overflow")
+                .checked_add(#skip_slots).expect("slot overflow")
                 .checked_add(#curr_slots_to_end).expect("slot overflow")
                 .saturating_sub(#curr_slots_to_end)
         }

@@ -9,7 +9,7 @@ use crate::{
     layout::{gen_handler_field_decl, gen_handler_field_init},
     packing::{self, LayoutField, PackingConstants},
     storable_primitives::gen_struct_arrays,
-    utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
+    utils::{FieldAttribute, extract_mapping_types, extract_storable_array_sizes, to_snake_case},
 };
 
 /// Implements the `Storable` derive macro for structs.
@@ -54,8 +54,7 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         .map(|f| FieldInfo {
             name: f.ident.as_ref().unwrap().clone(),
             ty: f.ty.clone(),
-            slot: None,
-            base_slot: None,
+            attr: FieldAttribute::Auto,
         })
         .collect();
 

@@ -230,6 +230,41 @@ fn test_string_literal_slots() {
 }
 
 #[test]
+fn test_skip_slots() {
+    // skip(N) computes slot as prev_slot + N
+    #[contract]
+    pub struct Layout {
+        #[skip(5)]
+        pub field_a: U256, // Skip 5: slot 0 + 5 = 5
+        #[skip(1)]
+        pub field_b: U256, // Skip 1: slot 6 + 1 = 7
+        pub field_c: TestBlock, // Auto: slots 8, 9, 10
+        #[skip(1)]
+        pub field_d: U256, // Skip 1: slot 11 + 1 = 12
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        // Verify slot assignments
+        assert_eq!(layout.field_a.slot(), U256::from(5));
+        assert_eq!(layout.field_b.slot(), U256::from(7));
+        assert_eq!(layout.field_c.base_slot(), U256::from(8));
+        assert_eq!(layout.field_d.slot(), U256::from(12));
+
+        // Verify slots module
+        assert_eq!(slots::FIELD_A, U256::from(5));
+        assert_eq!(slots::FIELD_B, U256::from(7));
+        assert_eq!(slots::FIELD_C, U256::from(8));
+        assert_eq!(slots::FIELD_D, U256::from(12));
+
+        Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+    })
+    .unwrap();
+}
+
+#[test]
 #[should_panic(expected = "Storage slot collision")]
 fn test_collision_same_slot() {
     // Two fields with identical slot assignments should panic in debug builds

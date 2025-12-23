@@ -14,7 +14,6 @@ mod storable_primitives;
 mod storable_tests;
 mod utils;
 
-use alloy::primitives::U256;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
@@ -24,7 +23,7 @@ use syn::{
     punctuated::Punctuated,
 };
 
-use crate::utils::extract_attributes;
+use crate::utils::{FieldAttribute, extract_attributes};
 
 /// Configuration parsed from `#[contract(...)]` attribute arguments.
 struct ContractConfig {
@@ -116,8 +115,7 @@ fn gen_contract_output(
 struct FieldInfo {
     name: Ident,
     ty: Type,
-    slot: Option<U256>,
-    base_slot: Option<U256>,
+    attr: FieldAttribute,
 }
 
 /// Classification of a field based on its type
@@ -166,12 +164,10 @@ fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {
                 ));
             }
 
-            let (slot, base_slot) = extract_attributes(&field.attrs)?;
             Ok(FieldInfo {
                 name: name.to_owned(),
                 ty: field.ty,
-                slot,
-                base_slot,
+                attr: extract_attributes(&field.attrs)?,
             })
         })
         .collect()
