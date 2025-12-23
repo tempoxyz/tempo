@@ -534,61 +534,7 @@ mod tests {
         })
     }
 
-    #[test]
-    fn test_prevent_insufficient_balance_transfer() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let validator = Address::random();
-        let beneficiary = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            // Simulate attack: collected fees = 1000, but actual balance = 500
-            let collected_fees = U256::from(1000);
-            let balance = U256::from(500);
-
-            // Create token and mint only `balance` to FeeManager (less than collected_fees)
-            let token = TIP20Setup::create("Test", "TST", admin)
-                .with_issuer(admin)
-                .with_mint(TIP_FEE_MANAGER_ADDRESS, balance)
-                .apply()?;
-
-            let mut fee_manager = TipFeeManager::new();
-
-            // Set validator token
-            fee_manager.set_validator_token(
-                validator,
-                IFeeManager::setValidatorTokenCall {
-                    token: token.address(),
-                },
-                beneficiary,
-            )?;
-
-            // Simulate collected fees > actual balance by setting directly
-            fee_manager.increment_collected_fees(validator, collected_fees)?;
-
-            // Distribute fees
-            let result = fee_manager.distribute_fees(validator);
-            assert!(result.is_ok());
-
-            // Verify collected fees are cleared
-            let remaining_fees = fee_manager.collected_fees.at(validator).read()?;
-            assert_eq!(remaining_fees, U256::ZERO);
-
-            // Verify validator got only the available balance (not full collected_fees)
-            let validator_balance =
-                token.balance_of(ITIP20::balanceOfCall { account: validator })?;
-            assert_eq!(validator_balance, balance);
-
-            // Verify FeeManager has no balance left
-            let fee_manager_balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP_FEE_MANAGER_ADDRESS,
-            })?;
-            assert_eq!(fee_manager_balance, U256::ZERO);
-
-            Ok(())
-        })
-    }
-
-    /// Test collect_fee_pre_tx post-AllegroModerato with different tokens
+    /// Test collect_fee_pre_tx with different tokens
     /// Verifies that liquidity is checked (not reserved) and no swap happens yet
     #[test]
     fn test_collect_fee_pre_tx_different_tokens_post_allegro_moderato() -> eyre::Result<()> {

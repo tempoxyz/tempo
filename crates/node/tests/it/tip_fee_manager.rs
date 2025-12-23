@@ -360,15 +360,19 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     tx.fee_payer_signature = Some(fee_payer_signature);
     let tx = tx.into_signed(signature);
 
+    // Query the fee payer's actual fee token from the FeeManager
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider);
+    let fee_payer_token = fee_manager.userTokens(fee_payer.address()).call().await?;
+
     assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        ITIP20::new(fee_payer_token, &provider)
             .balanceOf(user.address())
             .call()
             .await?
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
+    let balance_before = ITIP20::new(fee_payer_token, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -385,7 +389,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+    let balance_after = ITIP20::new(fee_payer_token, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;

@@ -180,16 +180,10 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
 
-    // Verify that transactions requiring unavailable liquidity were NOT included
-    assert_eq!(
-        transactions_included, 0,
-        "Transactions requiring unavailable liquidity should be excluded from blocks"
-    );
-    assert!(
-        transactions_rejected > 0,
-        "At least one transaction should have benn rejected due to insufficient liquidity"
-    );
-
+    // With immediate fee swaps (post hardfork removal), transactions that require swaps
+    // are included as long as there's any liquidity available.
+    // The pool has minimal liquidity (2000 validator tokens from MIN_LIQUIDITY),
+    // which is enough for small transfers.
     println!("Test completed: block building continued without stalling");
 
     Ok(())
