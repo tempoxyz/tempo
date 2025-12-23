@@ -181,7 +181,7 @@ impl TIP20Setup {
 
     /// Do not clear the emitted events of the token.
     ///
-    /// WARNING: requires `HashMapStorageProvider`.
+    /// SAFETY: it is the caller's responsibility to ensure the test uses `HashMapStorageProvider`.
     pub fn clear_events(mut self) -> Self {
         self.clear_events = true;
         self
