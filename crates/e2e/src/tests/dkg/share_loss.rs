@@ -9,7 +9,7 @@ use futures::future::join_all;
 
 use crate::{Setup, setup_validators};
 
-#[test_traced]
+#[test_traced("WARN")]
 fn validator_lost_key_but_gets_key_in_next_epoch() {
     let _ = tempo_eyre::install();
 
@@ -85,6 +85,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                     ))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_forgot_share = value > 0;
                 }
 
@@ -94,6 +95,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_is_not_signer = value == 0;
                 }
 
@@ -105,6 +107,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_got_new_share = value > 0;
                 }
 

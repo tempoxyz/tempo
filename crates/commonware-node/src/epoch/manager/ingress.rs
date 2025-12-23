@@ -36,12 +36,12 @@ impl Message {
 
 #[derive(Debug)]
 pub(crate) enum Activity {
-    Enter(Enter),
+    Enter(EpochTransition),
     Exit(Exit),
 }
 
-impl From<Enter> for Activity {
-    fn from(value: Enter) -> Self {
+impl From<EpochTransition> for Activity {
+    fn from(value: EpochTransition) -> Self {
         Self::Enter(value)
     }
 }
@@ -53,7 +53,7 @@ impl From<Exit> for Activity {
 }
 
 #[derive(Debug)]
-pub(crate) struct Enter {
+pub(crate) struct EpochTransition {
     pub(crate) epoch: Epoch,
     pub(crate) public: Public<MinSig>,
     pub(crate) share: Option<Share>,
