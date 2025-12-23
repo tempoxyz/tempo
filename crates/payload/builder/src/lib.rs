@@ -342,8 +342,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs =
-            self.build_seal_block_txs(builder.evm().block(), &subblocks);
+        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }

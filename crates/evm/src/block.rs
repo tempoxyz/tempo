@@ -29,9 +29,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
-use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS,
-};
+use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
@@ -51,9 +49,7 @@ enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System {
-        seen_subblocks_signatures: bool,
-    },
+    System { seen_subblocks_signatures: bool },
 }
 
 /// Builder for [`TempoReceipt`].
