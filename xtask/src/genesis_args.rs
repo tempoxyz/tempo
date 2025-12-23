@@ -39,7 +39,6 @@ use tempo_precompiles::{
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -232,9 +231,6 @@ impl GenesisArgs {
             U256::from(u64::MAX),
             &mut evm,
         )?;
-
-        println!("Initializing TIP20RewardsRegistry");
-        initialize_tip20_rewards_registry(&mut evm)?;
 
         println!(
             "generating consensus config for validators: {:?}",
@@ -580,15 +576,6 @@ fn create_and_mint_token(
 
         Ok((token_id, token.address()))
     })
-}
-
-fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20RewardsRegistry::new().initialize()
-    })?;
-
-    Ok(())
 }
 
 fn initialize_fee_manager(
