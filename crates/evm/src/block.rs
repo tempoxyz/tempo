@@ -30,8 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
@@ -142,7 +141,6 @@ where
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
-        let block_timestamp = block.timestamp;
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 

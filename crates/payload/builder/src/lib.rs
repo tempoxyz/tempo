@@ -47,10 +47,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
-use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager,
-    tip20_rewards_registry::ITIP20RewardsRegistry,
-};
+use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     subblock::PartialValidatorKey,
