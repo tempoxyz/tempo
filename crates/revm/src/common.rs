@@ -540,8 +540,7 @@ mod tests {
         db.insert_account_storage(validator_token, tip20::slots::CURRENCY, usd_storage)
             .unwrap();
 
-        let result_token =
-            db.get_fee_token(tx.clone(), validator, caller, TempoHardfork::Adagio)?;
+        let result_token = db.get_fee_token(tx.clone(), caller, TempoHardfork::Adagio)?;
         assert_eq!(result_token, validator_token);
 
         // Validator token is not set
@@ -583,7 +582,7 @@ mod tests {
         .unwrap();
 
         // Pre-Allegretto: PATH_USD is invalid for fee payment, so should fall back to default
-        let result_token = db.get_fee_token(tx, validator, caller, TempoHardfork::Adagio)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Adagio)?;
 
         // Should NOT return PATH_USD (which would cause DoS), should return default instead
         assert_ne!(

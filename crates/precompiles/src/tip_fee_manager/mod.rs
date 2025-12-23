@@ -1,23 +1,18 @@
 pub mod amm;
 pub mod dispatch;
 
-use alloy::primitives::B256;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
-pub use tempo_contracts::precompiles::{
-    FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent,
-};
-
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorableType, StorageKey},
     tip_fee_manager::amm::{Pool, compute_amount_out},
-    tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, token_id_to_address,
-        validate_usd_currency,
-    },
+    tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
-
+use alloy::primitives::B256;
+pub use tempo_contracts::precompiles::{
+    DEFAULT_FEE_TOKEN, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
+    TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
+};
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::{Storable, contract};
