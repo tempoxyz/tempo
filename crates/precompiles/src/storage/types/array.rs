@@ -132,7 +132,42 @@ where
 
         Some(T::handle(base_slot, layout_ctx, self.address))
     }
+
+    /// Returns an iterator over element handlers.
+    #[inline]
+    pub fn iter(&self) -> ArrayIter<'_, T, N> {
+        ArrayIter {
+            handler: self,
+            current: 0,
+        }
+    }
 }
+
+/// Iterator over `[T; N]` element handlers. Implements [`ExactSizeIterator`].
+pub struct ArrayIter<'a, T: StorableType, const N: usize> {
+    handler: &'a ArrayHandler<T, N>,
+    current: usize,
+}
+
+impl<'a, T: StorableType, const N: usize> Iterator for ArrayIter<'a, T, N> {
+    type Item = T::Handler;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current >= N {
+            return None;
+        }
+        let handler = self.handler.at(self.current).unwrap();
+        self.current += 1;
+        Some(handler)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = N - self.current;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: StorableType, const N: usize> ExactSizeIterator for ArrayIter<'_, T, N> {}
 
 impl<T, const N: usize> Handler<[T; N]> for ArrayHandler<T, N>
 where
