@@ -12,7 +12,6 @@ pub mod nonce;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
-pub mod tip20_rewards_registry;
 pub mod tip403_registry;
 pub mod tip_account_registrar;
 pub mod tip_fee_manager;
@@ -30,7 +29,6 @@ use crate::{
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -52,8 +50,8 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -81,8 +79,6 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP20Precompile::create(*address, chain_id, spec))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id, spec))
-        } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
-            Some(TIP20RewardsRegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
@@ -146,15 +142,6 @@ impl TipAccountRegistrarPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipAccountRegistrar", chain_id, spec, |input| {
             TipAccountRegistrar::new()
-        })
-    }
-}
-
-pub struct TIP20RewardsRegistryPrecompile;
-impl TIP20RewardsRegistryPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20RewardsRegistry", chain_id, spec, |input| {
-            TIP20RewardsRegistry::new()
         })
     }
 }

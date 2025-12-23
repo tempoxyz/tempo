@@ -45,10 +45,10 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS, tip_fee_manager::IFeeManager,
+    TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager,
     tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
@@ -108,47 +108,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to execute at the start of the block.
-    ///
-    /// Returns a vector of system transactions that must be executed at the beginning of each block:
-    /// 1. TIP20 Rewards Registry finalizeStreams - finalizes expired reward streams
-    fn build_start_block_txs(
-        &self,
-        evm: &TempoEvm<impl Database>,
-    ) -> Vec<Recovered<TempoTxEnvelope>> {
-        // No start of block system transactions after moderato.
-        if evm.ctx().cfg.spec.is_moderato() {
-            return vec![];
-        }
-
-        let chain_id = Some(self.provider.chain_spec().chain().id());
-
-        // Build rewards registry system transaction
-        let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(evm.block().number.to_be_bytes_vec())
-            .collect();
-
-        let rewards_registry_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: TIP20_REWARDS_REGISTRY_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: rewards_registry_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        vec![rewards_registry_tx]
-    }
-
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
@@ -437,20 +396,6 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-
-        // Execute start-of-block system transactions (rewards registry finalize)
-        let start_block_txs_execution_start = Instant::now();
-        for tx in self.build_start_block_txs(builder.evm()) {
-            block_size_used += tx.inner().length();
-
-            builder
-                .execute_transaction(tx)
-                .map_err(PayloadBuilderError::evm)?;
-        }
-        let start_block_txs_execution_elapsed = start_block_txs_execution_start.elapsed();
-        self.metrics
-            .start_block_txs_execution_duration_seconds
-            .record(start_block_txs_execution_elapsed);
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
