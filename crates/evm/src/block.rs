@@ -30,8 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
+    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::IStablecoinExchange,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
@@ -53,7 +52,6 @@ enum BlockSection {
     GasIncentive,
     /// End of block system transactions.
     System {
-        seen_fee_manager: bool,
         seen_stablecoin_dex: bool,
         seen_subblocks_signatures: bool,
     },
@@ -147,42 +145,16 @@ where
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
-        let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
-            match self.section {
-                BlockSection::System {
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                } => (
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                ),
-                _ => (false, false, false),
-            };
+        // Handle end-of-block system transactions (DEX, subblocks signatures)
+        let (mut seen_stablecoin_dex, mut seen_subblocks_signatures) = match self.section {
+            BlockSection::System {
+                seen_stablecoin_dex,
+                seen_subblocks_signatures,
+            } => (seen_stablecoin_dex, seen_subblocks_signatures),
+            _ => (false, false),
+        };
 
-        if to == TIP_FEE_MANAGER_ADDRESS {
-            if seen_fee_manager {
-                return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
-                ));
-            }
-
-            let fee_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != fee_input {
-                return Err(BlockValidationError::msg(
-                    "invalid fee manager system transaction",
-                ));
-            }
-
-            seen_fee_manager = true;
-        } else if to == STABLECOIN_EXCHANGE_ADDRESS {
+        if to == STABLECOIN_EXCHANGE_ADDRESS {
             // The stablecoin dex system tx is disabled post allegro moderato hardfork
             if self
                 .inner
@@ -247,7 +219,6 @@ where
         }
 
         Ok(BlockSection::System {
-            seen_fee_manager,
             seen_stablecoin_dex,
             seen_subblocks_signatures,
         })
@@ -593,12 +564,11 @@ where
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
 
-        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
+        // Post AllegroModerato, stablecoin DEX system tx is no longer required
         let expected_seen_system_tx = !is_allegro_moderato;
 
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: expected_seen_system_tx,
                 seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })

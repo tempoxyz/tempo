@@ -23,10 +23,6 @@ pub use validator_config::*;
 
 pub const TIP_FEE_MANAGER_ADDRESS: Address = address!("0xfeec000000000000000000000000000000000000");
 pub const PATH_USD_ADDRESS: Address = address!("0x20C0000000000000000000000000000000000000");
-/// Default fee token pre allegretto hardfork
-pub const DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO: Address =
-    address!("0x20C0000000000000000000000000000000000001");
-/// Default fee token (PathUSD)
 pub const DEFAULT_FEE_TOKEN: Address = PATH_USD_ADDRESS;
 pub const TIP403_REGISTRY_ADDRESS: Address = address!("0x403C000000000000000000000000000000000000");
 pub const TIP20_FACTORY_ADDRESS: Address = address!("0x20FC000000000000000000000000000000000000");

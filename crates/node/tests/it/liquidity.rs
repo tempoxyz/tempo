@@ -7,7 +7,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use alloy_network::TxSignerSync;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
-use tempo_precompiles::DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
+use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::TxFeeToken;
 
 use crate::utils::setup_test_token_pre_allegretto;
@@ -40,7 +40,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Get validator token address (default fee token from genesis)
     use tempo_contracts::precompiles::ITIPFeeAMM;
     use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
-    let validator_token_addr = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
+    let validator_token_addr = DEFAULT_FEE_TOKEN;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token = ITIP20::new(validator_token_addr, provider.clone());
@@ -71,7 +71,6 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .mint(
             payment_token_addr,
             validator_token_addr,
-            liquidity_amount,
             liquidity_amount,
             sender_address,
         )
@@ -127,7 +126,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
     let mut tx = TxFeeToken {
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         to: TIP_FEE_MANAGER_ADDRESS.into(),
         input: setUserTokenCall {
             token: payment_token_addr,
@@ -181,16 +180,10 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
 
-    // Verify that transactions requiring unavailable liquidity were NOT included
-    assert_eq!(
-        transactions_included, 0,
-        "Transactions requiring unavailable liquidity should be excluded from blocks"
-    );
-    assert!(
-        transactions_rejected > 0,
-        "At least one transaction should have benn rejected due to insufficient liquidity"
-    );
-
+    // With immediate fee swaps (post hardfork removal), transactions that require swaps
+    // are included as long as there's any liquidity available.
+    // The pool has minimal liquidity (2000 validator tokens from MIN_LIQUIDITY),
+    // which is enough for small transfers.
     println!("Test completed: block building continued without stalling");
 
     Ok(())

@@ -80,10 +80,11 @@ fn subblocks_are_included() {
 
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
-            // Assert that block only contains our subblock transactions and 3 system transactions
+            // Assert that block only contains our subblock transactions and 2 system transactions
+            // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
-                3 + expected_transactions.len()
+                2 + expected_transactions.len()
             );
 
             // Assert that all expected transactions are included in the block.
@@ -189,10 +190,11 @@ fn subblocks_are_included_with_failing_txs() {
             };
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
-            // Assert that block only contains our subblock transactions and 3 system transactions
+            // Assert that block only contains our subblock transactions and 2 system transactions
+            // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
-                3 + expected_transactions.len()
+                2 + expected_transactions.len()
             );
 
             // Assert that all expected transactions are included in the block.

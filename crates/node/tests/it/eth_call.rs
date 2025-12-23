@@ -299,10 +299,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
-    // Use mintWithValidatorToken as mint is disabled post-Moderato
     let liquidity_amount = U256::from(u32::MAX);
     fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_fee_token.address(),
             validator_token_address,
             liquidity_amount,

@@ -17,10 +17,7 @@ use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    tip20::token_id_to_address,
-};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -73,7 +70,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .await?;
 
     let pending_tx = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_token.address(),
             *validator_token.address(),
             U256::from(1e8),
@@ -291,10 +288,9 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         );
     }
 
-    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
     assert!(
         fee_amm
-            .mintWithValidatorToken(
+            .mint(
                 *user_token.address(),
                 PATH_USD_ADDRESS,
                 U256::from(1e18),
@@ -364,15 +360,19 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     tx.fee_payer_signature = Some(fee_payer_signature);
     let tx = tx.into_signed(signature);
 
+    // Query the fee payer's actual fee token from the FeeManager
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider);
+    let fee_payer_token = fee_manager.userTokens(fee_payer.address()).call().await?;
+
     assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        ITIP20::new(fee_payer_token, &provider)
             .balanceOf(user.address())
             .call()
             .await?
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, provider.clone())
+    let balance_before = ITIP20::new(fee_payer_token, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -389,7 +389,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let balance_after = ITIP20::new(fee_payer_token, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;

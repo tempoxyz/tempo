@@ -14,8 +14,9 @@ use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+    TIP_FEE_MANAGER_ADDRESS,
     tip20::ITIP20::{self, transferCall},
 };
 
@@ -35,6 +36,7 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
+/// Returns the fee token address that was used for funding
 async fn fund_address_with_fee_tokens(
     setup: &mut SingleNodeSetup,
     provider: &impl Provider,
@@ -43,7 +45,10 @@ async fn fund_address_with_fee_tokens(
     recipient: Address,
     amount: U256,
     chain_id: u64,
-) -> eyre::Result<()> {
+) -> eyre::Result<Address> {
+    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
+    let fee_token = fee_manager.userTokens(funder_addr).call().await?;
+
     let transfer_calldata = transferCall {
         to: recipient,
         amount,
@@ -56,13 +61,13 @@ async fn fund_address_with_fee_tokens(
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 100_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
+            to: fee_token.into(),
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(fee_token),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         ..Default::default()
@@ -87,7 +92,7 @@ async fn fund_address_with_fee_tokens(
         funding_payload.block().inner.number
     );
 
-    Ok(())
+    Ok(fee_token)
 }
 
 /// Helper function to verify a transaction exists in the blockchain via eth_getTransactionByHash
@@ -476,7 +481,7 @@ fn verify_delegation_code(code: &Bytes, expected_delegate: Address, authority_na
 }
 
 /// Helper function to set up P256 test infrastructure with funded account
-/// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id)
+/// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id, fee_token)
 async fn setup_test_with_p256_funded_account(
     funding_amount: U256,
 ) -> eyre::Result<(
@@ -489,6 +494,7 @@ async fn setup_test_with_p256_funded_account(
     impl SignerSync,
     Address,
     u64,
+    Address,
 )> {
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
@@ -527,7 +533,7 @@ async fn setup_test_with_p256_funded_account(
     let chain_id = provider.get_chain_id().await?;
 
     // Fund the P256 signer with fee tokens
-    fund_address_with_fee_tokens(
+    let fee_token = fund_address_with_fee_tokens(
         &mut setup,
         &provider,
         &funder_signer,
@@ -548,6 +554,7 @@ async fn setup_test_with_p256_funded_account(
         funder_signer,
         funder_addr,
         chain_id,
+        fee_token,
     ))
 }
 
@@ -714,7 +721,7 @@ fn create_basic_aa_tx(
         nonce_key: U256::ZERO,
         nonce,
         // Use AlphaUSD to match fund_address_with_fee_tokens
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -1689,6 +1696,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
+        fee_token,
     ) = setup_test_with_p256_funded_account(transfer_amount).await?;
 
     println!("WebAuthn signer address: {signer_addr}");
@@ -1699,7 +1707,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Create AA transaction with WebAuthn signature
-    let tx = create_basic_aa_tx(
+    let mut tx = create_basic_aa_tx(
         chain_id,
         0, // First transaction
         vec![Call {
@@ -1709,6 +1717,8 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         }],
         200_000, // Higher gas limit for WebAuthn verification
     );
+    // Use the correct fee token that was used for funding
+    tx.fee_token = Some(fee_token);
 
     println!("Created AA transaction for WebAuthn signature");
 
@@ -2156,10 +2166,12 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
+        fee_token,
     ) = setup_test_with_p256_funded_account(initial_funding_amount).await?;
 
     println!("\n=== Testing P256 Call Batching ===\n");
     println!("P256 signer address: {signer_addr}");
+    println!("Fee token: {fee_token}");
 
     // Create multiple recipient addresses for batch transfers
     let num_recipients = 5;
@@ -2191,7 +2203,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .abi_encode();
 
         calls.push(Call {
-            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
+            to: fee_token.into(),
             value: U256::ZERO,
             input: calldata.into(),
         });
@@ -2203,7 +2215,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     // Create AA transaction with batched calls and P256 signature
-    // Use AlphaUSD (DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO) since that's what we funded with
+    // Use the fee token we funded with
     let batch_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
@@ -2212,7 +2224,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         calls,
         nonce_key: U256::ZERO,
         nonce: 0, // First transaction from P256 signer
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(fee_token),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -2256,7 +2268,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     println!("\nChecking initial recipient balances:");
     for (i, (recipient, _)) in recipients.iter().enumerate() {
-        let balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        let balance = ITIP20::new(fee_token, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -2330,7 +2342,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         recipients.iter().zip(initial_balances.iter()).enumerate()
     {
         let expected_amount = transfer_base_amount * U256::from(*multiplier);
-        let final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        let final_balance = ITIP20::new(fee_token, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -2357,7 +2369,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .map(|i| transfer_base_amount * U256::from(i))
         .fold(U256::ZERO, |acc, x| acc + x);
 
-    let signer_final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let signer_final_balance = ITIP20::new(fee_token, &provider)
         .balanceOf(signer_addr)
         .call()
         .await?;
@@ -2406,7 +2418,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User address: {user_addr} (unfunded)");
 
     // Verify user has ZERO balance (check AlphaUSD since that's what fees are paid in)
-    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -2418,7 +2430,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User token balance: {user_token_balance} (expected: 0)");
 
     // Get fee payer's balance before transaction (check AlphaUSD since that's what fees are paid in)
-    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
@@ -2504,7 +2516,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify user still has ZERO balance (fee payer paid)
-    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -2515,7 +2527,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify fee payer's balance decreased (check AlphaUSD since that's what fees are paid in)
-    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
