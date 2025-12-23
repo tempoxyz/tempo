@@ -1696,7 +1696,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
-        _fee_token,
+        fee_token,
     ) = setup_test_with_p256_funded_account(transfer_amount).await?;
 
     println!("WebAuthn signer address: {signer_addr}");
@@ -1707,7 +1707,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Create AA transaction with WebAuthn signature
-    let tx = create_basic_aa_tx(
+    let mut tx = create_basic_aa_tx(
         chain_id,
         0, // First transaction
         vec![Call {
@@ -1717,6 +1717,8 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         }],
         200_000, // Higher gas limit for WebAuthn verification
     );
+    // Use the correct fee token that was used for funding
+    tx.fee_token = Some(fee_token);
 
     println!("Created AA transaction for WebAuthn signature");
 
