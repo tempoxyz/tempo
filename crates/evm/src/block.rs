@@ -425,9 +425,7 @@ where
     ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if self.evm().ctx().cfg.spec.is_allegretto()
-            && let Some(validator) = tx.tx().subblock_proposer()
-        {
+        if let Some(validator) = tx.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -506,12 +504,6 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
-        let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        let _is_allegro_moderato = self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp);
-
         if self.section
             != (BlockSection::System {
                 seen_subblocks_signatures: true,
