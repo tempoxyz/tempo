@@ -163,7 +163,6 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
             pool_key.user_token,
             pool_key.validator_token,
             amount,
-            amount,
             caller,
         )
         .send()
@@ -441,7 +440,6 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
             pool_key.user_token,
             pool_key.validator_token,
             amount0,
-            amount1,
             alice,
         )
         .send()
@@ -522,7 +520,6 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
             pool_key.user_token,
             pool_key.validator_token,
             amount0,
-            amount1,
             alice,
         )
         .send()

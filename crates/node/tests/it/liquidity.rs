@@ -72,7 +72,6 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
             payment_token_addr,
             validator_token_addr,
             liquidity_amount,
-            liquidity_amount,
             sender_address,
         )
         .send()
