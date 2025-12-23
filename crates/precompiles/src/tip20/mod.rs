@@ -1008,7 +1008,7 @@ impl TIP20Token {
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, ITIP20Factory};
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
     use crate::{
@@ -1890,7 +1890,7 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(
-            &DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.as_slice()[..12],
+            &DEFAULT_FEE_TOKEN.as_slice()[..12],
             &TIP20_TOKEN_PREFIX
         );
     }

@@ -7,7 +7,7 @@ pub mod policy;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};
@@ -263,7 +263,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             .map_err(EVMError::<ProviderError, _>::from)?;
 
         let fee_token = db
-            .get_fee_token(tx_env, Address::ZERO, fee_payer, TempoHardfork::default())
+            .get_fee_token(tx_env, fee_payer, TempoHardfork::default())
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
             .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)

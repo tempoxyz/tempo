@@ -12,7 +12,7 @@ use reth_provider::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::{
         TipFeeManager,
         amm::{Pool, PoolKey, compute_amount_out},
@@ -178,7 +178,7 @@ impl AmmLiquidityCache {
         let fee_token = if preference.is_zero() {
             let chain_spec = state.chain_spec();
             if chain_spec.is_allegretto_active_at_timestamp(header.timestamp()) {
-                DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
+                DEFAULT_FEE_TOKEN
             } else {
                 DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO
             }

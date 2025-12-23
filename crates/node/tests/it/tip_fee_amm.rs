@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
@@ -362,7 +362,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
     // Transfer using predeployed TIP20
-    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone());
+    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     let transfer_receipt = transfer_token
         .transfer(Address::random(), U256::from(1))
