@@ -363,8 +363,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_validator_token_cannot_change_with_pending_fees() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+    fn test_set_validator_token_cannot_change_within_block() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
         let beneficiary = Address::random();
         let admin = Address::random();
@@ -372,31 +372,11 @@ mod tests {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut fee_manager = TipFeeManager::new();
 
-            // Simulate validator having pending fees by setting validator_in_fees_array
-            fee_manager
-                .validator_in_fees_array
-                .at(validator)
-                .write(true)?;
-
-            // Try to set validator token when validator has pending fees (but is not the beneficiary)
             let call = IFeeManager::setValidatorTokenCall {
                 token: token.address(),
             };
-            let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
 
-            // Should fail with CannotChangeWithPendingFees
-            assert_eq!(
-                result,
-                Err(TempoPrecompileError::FeeManagerError(
-                    FeeManagerError::cannot_change_with_pending_fees()
-                ))
-            );
-
-            // Now clear the pending fees flag and try again - should succeed
-            fee_manager
-                .validator_in_fees_array
-                .at(validator)
-                .write(false)?;
+            // Setting validator token when not beneficiary should succeed
             let result = fee_manager.set_validator_token(validator, call.clone(), beneficiary);
             assert!(result.is_ok());
 

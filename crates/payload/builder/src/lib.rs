@@ -48,9 +48,8 @@ use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
-    tip20_rewards_registry::ITIP20RewardsRegistry,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    stablecoin_exchange::IStablecoinExchange, tip20_rewards_registry::ITIP20RewardsRegistry,
 };
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,

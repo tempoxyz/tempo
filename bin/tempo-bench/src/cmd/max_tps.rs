@@ -61,8 +61,9 @@ use tempo_contracts::precompiles::{
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
+    tip_fee_manager::DEFAULT_FEE_TOKEN,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::{

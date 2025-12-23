@@ -7,7 +7,7 @@ pub mod policy;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::{Address, B256};
+use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use dex::{TempoDex, api::TempoDexApiServer};

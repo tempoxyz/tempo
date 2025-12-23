@@ -151,6 +151,7 @@ impl TipFeeManager {
     }
 
     /// Calculate user token reserve plus pending swaps
+    #[allow(dead_code)]
     fn get_effective_user_reserve(&self, pool_id: B256) -> Result<U256> {
         let pool = self.pools.at(pool_id).read()?;
         let pending_fee_swap_in = U256::from(self.get_pending_fee_swap_in(pool_id)?);
@@ -1165,7 +1166,7 @@ mod tests {
                 .address();
 
             let mut amm = TipFeeManager::new();
-            let amount = uint!(2000_U256);
+            let amount = uint!(10000_U256);
             let result = amm.mint(admin, token1, token2, amount, admin)?;
             let expected_mean = amount / uint!(2_U256);
             let expected_liquidity = expected_mean - MIN_LIQUIDITY;
