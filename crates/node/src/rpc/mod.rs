@@ -22,7 +22,7 @@ use reth_rpc_eth_api::{FromEthApiError, RpcTxReq};
 use reth_transaction_pool::PoolPooledTx;
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
+use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 pub use token::{TempoToken, TempoTokenApiServer};
@@ -255,7 +255,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     fn caller_gas_allowance(
         &self,
         mut db: impl Database<Error: Into<EthApiError>>,
-        evm_env: &EvmEnvFor<Self::Evm>,
+        _evm_env: &EvmEnvFor<Self::Evm>,
         tx_env: &TxEnvFor<Self::Evm>,
     ) -> Result<u64, Self::Error> {
         let fee_payer = tx_env
@@ -263,10 +263,10 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             .map_err(EVMError::<ProviderError, _>::from)?;
 
         let fee_token = db
-            .get_fee_token(tx_env, fee_payer, TempoHardfork::default())
+            .get_fee_token(tx_env, fee_payer)
             .map_err(ProviderError::other)?;
         let fee_token_balance = db
-            .get_token_balance(fee_token, fee_payer, evm_env.cfg_env.spec)
+            .get_token_balance(fee_token, fee_payer)
             .map_err(ProviderError::other)?;
 
         Ok(fee_token_balance
