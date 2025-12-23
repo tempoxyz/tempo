@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Handler, Mapping, Slot, StorageCtx},
+    storage::{Handler, Mapping, StorageCtx},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -148,31 +148,50 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
-    pub fn get_tick_level_handler(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
+    pub fn get_tick_level(&self, tick: i16, is_bid: bool) -> Result<TickLevel> {
         if is_bid {
-            self.bids[tick].clone()
+            self.bids[tick].read()
         } else {
-            self.asks[tick].clone()
+            self.asks[tick].read()
         }
     }
 
-    fn get_tick_bit_handler(&self, tick: i16, is_bid: bool) -> Result<Slot<U256>> {
+    fn handle_tick_level(&mut self, is_bid: bool) -> &mut Mapping<i16, TickLevel> {
+        if is_bid {
+            &mut self.bids
+        } else {
+            &mut self.asks
+        }
+    }
+
+    pub fn set_tick_level(&mut self, tick: i16, is_bid: bool, level: TickLevel) -> Result<()> {
+        self.handle_tick_level(is_bid)[tick].write(level)
+    }
+
+    pub fn delete_tick_level(&mut self, tick: i16, is_bid: bool) -> Result<()> {
+        self.handle_tick_level(is_bid)[tick].delete()
+    }
+
+    fn calc_tick_bit_index(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
-        let word_index = tick >> 8;
+        Ok(tick >> 8)
+    }
 
+    fn handle_bitmap(&mut self, is_bid: bool) -> &mut Mapping<i16, U256> {
         if is_bid {
-            Ok(self.bid_bitmap[word_index].clone())
+            &mut self.bid_bitmap
         } else {
-            Ok(self.ask_bitmap[word_index].clone())
+            &mut self.ask_bitmap
         }
     }
 
     /// Set bit in bitmap to mark tick as active
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_bit_index(tick)?;
+        let bitmap = &mut self.handle_bitmap(is_bid)[word_index];
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -187,7 +206,8 @@ impl OrderbookHandler {
 
     /// Clear bit in bitmap to mark tick as inactive
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_bit_index(tick)?;
+        let bitmap = &mut self.handle_bitmap(is_bid)[word_index];
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -202,10 +222,14 @@ impl OrderbookHandler {
 
     /// Check if a tick is initialized (has orders)
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
-        let bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_bit_index(tick)?;
 
         // Read current bitmap word
-        let word = bitmap.read()?;
+        let word = if is_bid {
+            &self.bid_bitmap[word_index].read()?
+        } else {
+            &self.ask_bitmap[word_index].read()?
+        };
 
         // Use bitwise AND to get lower 8 bits correctly for both positive and negative ticks
         let bit_index = (tick & 0xFF) as usize;

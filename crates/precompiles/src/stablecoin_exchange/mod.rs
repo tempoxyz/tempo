@@ -402,9 +402,7 @@ impl StablecoinExchange {
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
         let book_key = compute_book_key(base, quote);
-        self.books[book_key]
-            .get_tick_level_handler(tick, is_bid)
-            .read()
+        self.books[book_key].get_tick_level(tick, is_bid)
     }
 
     /// Get active order ID
@@ -692,10 +690,9 @@ impl StablecoinExchange {
             return Ok(());
         }
 
-        let mut level_handler =
-            self.books[order.book_key()].get_tick_level_handler(order.tick(), order.is_bid());
         let orderbook = self.books[order.book_key()].read()?;
-        let mut level = level_handler.read()?;
+        let mut level =
+            self.books[order.book_key()].get_tick_level(order.tick(), order.is_bid())?;
 
         let prev_tail = level.tail;
         if prev_tail == 0 {
@@ -727,7 +724,7 @@ impl StablecoinExchange {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        level_handler.write(level)
+        self.books[order.book_key()].set_tick_level(order.tick(), order.is_bid(), level)
     }
 
     /// Partially fill an order with the specified amount.
@@ -774,9 +771,7 @@ impl StablecoinExchange {
             .ok_or(TempoPrecompileError::under_overflow())?;
         level.total_liquidity = new_liquidity;
 
-        self.books[order.book_key()]
-            .get_tick_level_handler(order.tick(), order.is_bid())
-            .write(*level)?;
+        self.books[order.book_key()].set_tick_level(order.tick(), order.is_bid(), *level)?;
 
         // Emit OrderFilled event for partial fill
         self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
@@ -834,9 +829,7 @@ impl StablecoinExchange {
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
-            self.books[book_key]
-                .get_tick_level_handler(order.tick(), order.is_bid())
-                .delete()?;
+            self.books[book_key].delete_tick_level(order.tick(), order.is_bid())?;
             self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
@@ -857,9 +850,7 @@ impl StablecoinExchange {
                 // No more liquidity at better prices - return None to signal completion
                 None
             } else {
-                let new_level = self.books[book_key]
-                    .get_tick_level_handler(tick, order.is_bid())
-                    .read()?;
+                let new_level = self.books[book_key].get_tick_level(tick, order.is_bid())?;
                 let new_order = self.orders[new_level.head].read()?;
 
                 Some((new_level, new_order))
@@ -876,9 +867,7 @@ impl StablecoinExchange {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             level.total_liquidity = new_liquidity;
 
-            self.books[order.book_key()]
-                .get_tick_level_handler(order.tick(), order.is_bid())
-                .write(level)?;
+            self.books[order.book_key()].set_tick_level(order.tick(), order.is_bid(), level)?;
 
             let new_order = self.orders[order.next()].read()?;
             Some((level, new_order))
@@ -1184,9 +1173,7 @@ impl StablecoinExchange {
             orderbook.best_ask_tick
         };
 
-        self.books[book_key]
-            .get_tick_level_handler(current_tick, is_bid)
-            .read()
+        self.books[book_key].get_tick_level(current_tick, is_bid)
     }
 
     /// Cancel an order and refund tokens to maker
@@ -1251,9 +1238,8 @@ impl StablecoinExchange {
 
     /// Cancel an active order (already in the orderbook)
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
-        let mut level_handler =
-            self.books[order.book_key()].get_tick_level_handler(order.tick(), order.is_bid());
-        let mut level = level_handler.read()?;
+        let mut level =
+            self.books[order.book_key()].get_tick_level(order.tick(), order.is_bid())?;
 
         // Update linked list
         if order.prev() != 0 {
@@ -1303,7 +1289,7 @@ impl StablecoinExchange {
             }
         }
 
-        level_handler.write(level)?;
+        self.books[order.book_key()].set_tick_level(order.tick(), order.is_bid(), level)?;
 
         // Refund tokens to maker
         let orderbook = self.books[order.book_key()].read()?;
@@ -1363,9 +1349,7 @@ impl StablecoinExchange {
         }
 
         while remaining_out > 0 {
-            let level = self.books[book_key]
-                .get_tick_level_handler(current_tick, is_bid)
-                .read()?;
+            let level = self.books[book_key].get_tick_level(current_tick, is_bid)?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
@@ -1561,9 +1545,7 @@ impl StablecoinExchange {
         }
 
         while remaining_in > 0 {
-            let level = self.books[book_key]
-                .get_tick_level_handler(current_tick, is_bid)
-                .read()?;
+            let level = self.books[book_key].get_tick_level(current_tick, is_bid)?;
 
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
@@ -1990,9 +1972,7 @@ mod tests {
 
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
-            let level = exchange.books[book_key]
-                .get_tick_level_handler(tick, true)
-                .read()?;
+            let level = exchange.books[book_key].get_tick_level(tick, true)?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2053,9 +2033,7 @@ mod tests {
             assert_eq!(stored_order.next(), 0);
 
             let book_key = compute_book_key(base_token, quote_token);
-            let level = exchange.books[book_key]
-                .get_tick_level_handler(tick, false)
-                .read()?;
+            let level = exchange.books[book_key].get_tick_level(tick, false)?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2227,9 +2205,7 @@ mod tests {
 
             // Verify the order is not yet in the active orderbook
             let book_key = compute_book_key(base_token, quote_token);
-            let level = exchange.books[book_key]
-                .get_tick_level_handler(tick, true)
-                .read()?;
+            let level = exchange.books[book_key].get_tick_level(tick, true)?;
             assert_eq!(level.head, 0);
             assert_eq!(level.tail, 0);
             assert_eq!(level.total_liquidity, 0);
@@ -2362,8 +2338,8 @@ mod tests {
             // Verify tick level is empty before execute_block
             let book_key = compute_book_key(base_token, quote_token);
             let level_before = exchange.books[book_key]
-                .get_tick_level_handler(tick, true)
-                .read()?;
+                .get_tick_level(tick, true)
+                ?;
             assert_eq!(level_before.head, 0);
             assert_eq!(level_before.tail, 0);
             assert_eq!(level_before.total_liquidity, 0);
@@ -2385,8 +2361,8 @@ mod tests {
 
             // Assert tick level is updated
             let level_after = exchange.books[book_key]
-                .get_tick_level_handler(tick, true)
-                .read()?;
+                .get_tick_level(tick, true)
+                ?;
             assert_eq!(level_after.head, order_0.order_id());
             assert_eq!(level_after.tail, order_1.order_id());
             assert_eq!(level_after.total_liquidity, min_order_amount * 2);
