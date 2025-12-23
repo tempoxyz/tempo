@@ -154,22 +154,17 @@ impl Precompile for TipFeeManager {
 mod tests {
     use super::*;
     use crate::{
-        Precompile, TIP_FEE_MANAGER_ADDRESS, expect_precompile_revert,
+        Precompile, expect_precompile_revert,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip_fee_manager::{
-            FeeManagerError,
-            amm::{MIN_LIQUIDITY, PoolKey},
-        },
+        tip_fee_manager::{FeeManagerError, amm::PoolKey},
     };
     use alloy::{
-        primitives::{Address, B256, Bytes, U256},
-        sol_types::{SolCall, SolError, SolValue},
+        primitives::{Address, B256},
+        sol_types::{SolCall, SolValue},
     };
-    use revm::precompile::PrecompileError;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
-        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
+        IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
     };
 
     #[test]
