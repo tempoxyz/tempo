@@ -585,8 +585,8 @@ mod tests {
             // Simulate collected fees > actual balance by setting directly
             fee_manager.increment_collected_fees(validator, collected_fees)?;
 
-            // Execute block
-            let result = fee_manager.execute_block(Address::ZERO, validator);
+            // Distribute fees
+            let result = fee_manager.distribute_fees(validator);
             assert!(result.is_ok());
 
             // Verify collected fees are cleared
