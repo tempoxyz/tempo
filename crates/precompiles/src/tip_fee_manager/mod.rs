@@ -315,6 +315,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", user).apply()?;
 
+            // TODO: loop through and deploy and set user token for some range
+
             let mut fee_manager = TipFeeManager::new();
 
             let call = IFeeManager::setUserTokenCall {
@@ -325,46 +327,6 @@ mod tests {
 
             let call = IFeeManager::userTokensCall { user };
             assert_eq!(fee_manager.user_tokens(call)?, token.address());
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_user_token_cannot_be_path_usd_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let path_usd = TIP20Setup::path_usd(user).apply()?;
-            let mut fee_manager = TipFeeManager::new();
-
-            // Try to set PathUSD as user token - should fail post-Moderato
-            let call = IFeeManager::setUserTokenCall {
-                token: path_usd.address(),
-            };
-            let result = fee_manager.set_user_token(user, call);
-            assert!(result.is_err_and(|err| err.to_string().contains("InvalidToken")));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_user_token_allows_path_usd_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let path_usd = TIP20Setup::path_usd(user).apply()?;
-            let mut fee_manager = TipFeeManager::new();
-
-            // Try to set PathUSD as user token - should succeed pre-Moderato
-            let call = IFeeManager::setUserTokenCall {
-                token: path_usd.address(),
-            };
-
-            // Pre-Moderato: should be allowed to set PathUSD as user token
-            let result = fee_manager.set_user_token(user, call);
-            assert!(result.is_ok());
 
             Ok(())
         })

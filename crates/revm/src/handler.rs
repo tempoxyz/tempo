@@ -212,7 +212,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         self.fee_payer = ctx.tx.fee_payer()?;
         self.fee_token = ctx
             .journaled_state
-            .get_fee_token(&ctx.tx, ctx.block.beneficiary, self.fee_payer, ctx.cfg.spec)
+            .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
@@ -1482,7 +1482,8 @@ mod tests {
     };
     use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1539,10 +1540,10 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token =
-                ctx.journaled_state
-                    .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
-            assert_eq!(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, fee_token);
+            let fee_token = ctx
+                .journaled_state
+                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
+            assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
         // Set user token
@@ -1556,17 +1557,17 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token =
-                ctx.journaled_state
-                    .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
+            let fee_token = ctx
+                .journaled_state
+                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token =
-            ctx.journaled_state
-                .get_fee_token(&ctx.tx, validator, user, ctx.cfg.spec)?;
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

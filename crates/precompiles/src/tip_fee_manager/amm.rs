@@ -477,17 +477,6 @@ impl TipFeeManager {
             .and_then(|product| product.checked_div(total_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if !self.storage.spec().is_allegretto() {
-            if amount_user_token.is_zero() || amount_validator_token.is_zero() {
-                return Err(TIPFeeAMMError::insufficient_liquidity().into());
-            }
-
-            let available_user_token = self.get_effective_user_reserve(pool_id)?;
-            if amount_user_token > available_user_token {
-                return Err(TIPFeeAMMError::insufficient_reserves().into());
-            }
-        }
-
         // Check that withdrawal does not violate pending swaps
         let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
         if amount_validator_token > available_validator_token {
@@ -1181,10 +1170,7 @@ mod tests {
             let expected_mean = amount / uint!(2_U256);
             let expected_liquidity = expected_mean - MIN_LIQUIDITY;
 
-            assert_eq!(
-                result, expected_liquidity,
-                "Post-Moderato should use addition: mean = (a + b) / 2"
-            );
+            assert_eq!(result, expected_liquidity,);
 
             Ok(())
         })
@@ -1207,8 +1193,7 @@ mod tests {
             let liquidity = uint!(1_U256);
             let result = amm.calculate_burn_amounts(&pool, pool_id, liquidity);
 
-            // Post-Allegretto should allow zero amounts
-            assert!(result.is_ok(), "Post-Allegretto should allow zero amounts");
+            assert!(result.is_ok());
             let (amount_user, amount_validator) = result?;
             assert_eq!(amount_user, U256::ZERO);
             assert_eq!(amount_validator, U256::ZERO);

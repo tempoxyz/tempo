@@ -10,8 +10,8 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, IFeeManager,
-    IStablecoinExchange, ITIP403Registry, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
+    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinExchange, ITIP403Registry, PATH_USD_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -119,8 +119,8 @@ pub trait TempoStateAccess<M = ()> {
     fn get_fee_token(
         &mut self,
         tx: impl TempoTx,
-        validator: Address,
         fee_payer: Address,
+        // TODO: remove spec
         spec: TempoHardfork,
     ) -> TempoResult<Address>
     where
@@ -197,27 +197,7 @@ pub trait TempoStateAccess<M = ()> {
             }
         }
 
-        // Post-allegretto, if no fee token is found, default to the first deployed TIP20
-        if spec.is_allegretto() {
-            Ok(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO)
-        } else {
-            // Pre-allegretto fall back to the validator fee token preference or the default to the
-            // first TIP20 deployed after PathUSD
-            let validator_fee_token = self.with_read_only_storage_ctx(spec, || {
-                TipFeeManager::new().validator_tokens.at(validator).read()
-            })?;
-
-            // Only use validator's token preference if it's set and is a valid fee token.
-            // This prevents DoS when validators configure PATH_USD (LINKING_USD) which is
-            // invalid for user fee payments pre-Allegretto.
-            if !validator_fee_token.is_zero()
-                && self.is_valid_fee_token(validator_fee_token, spec)?
-            {
-                Ok(validator_fee_token)
-            } else {
-                Ok(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)
-            }
-        }
+        Ok(DEFAULT_FEE_TOKEN)
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -462,7 +442,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::default())?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::default())?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -485,8 +465,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -502,12 +481,8 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let result_token = db.get_fee_token(
-            TempoTxEnv::default(),
-            Address::ZERO,
-            caller,
-            TempoHardfork::default(),
-        )?;
+        let result_token =
+            db.get_fee_token(TempoTxEnv::default(), caller, TempoHardfork::default())?;
         assert_eq!(result_token, user_token);
         Ok(())
     }
@@ -529,9 +504,8 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
-        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
 
@@ -539,8 +513,7 @@ mod tests {
     fn test_get_fee_token_fallback_pre_allegretto() -> eyre::Result<()> {
         let caller = Address::random();
         let validator = Address::random();
-        // Use DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO as a valid fee token (it's a valid TIP20 with USD currency)
-        let validator_token = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
+        let validator_token = DEFAULT_FEE_TOKEN;
 
         let tx_env = TxEnv {
             caller,
@@ -573,8 +546,8 @@ mod tests {
 
         // Validator token is not set
         let mut db2 = EmptyDB::default();
-        let result_token2 = db2.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Adagio)?;
-        assert_eq!(result_token2, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO);
+        let result_token2 = db2.get_fee_token(tx, caller, TempoHardfork::Adagio)?;
+        assert_eq!(result_token2, DEFAULT_FEE_TOKEN);
 
         Ok(())
     }
@@ -618,7 +591,7 @@ mod tests {
             "get_fee_token should not return PATH_USD pre-Allegretto as it's invalid for fee payment"
         );
         assert_eq!(
-            result_token, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+            result_token, DEFAULT_FEE_TOKEN,
             "Should fall back to DEFAULT_FEE_TOKEN when validator token is invalid"
         );
 
@@ -638,10 +611,9 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token =
-            db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
-        assert_eq!(result_token, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO);
+        assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
 
@@ -649,8 +621,8 @@ mod tests {
     fn test_get_fee_token_stablecoin_exchange_post_allegretto() -> eyre::Result<()> {
         let caller = Address::random();
         // Use PathUSD as token_in since it's a known valid USD fee token
-        let token_in = DEFAULT_FEE_TOKEN_POST_ALLEGRETTO;
-        let token_out = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO;
+        let token_in = DEFAULT_FEE_TOKEN;
+        let token_out = DEFAULT_FEE_TOKEN;
 
         // Test swapExactAmountIn
         let call = IStablecoinExchange::swapExactAmountInCall {
@@ -673,7 +645,7 @@ mod tests {
 
         let mut db = EmptyDB::default();
         // Stablecoin exchange fee token inference requires Allegretto hardfork
-        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -696,7 +668,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -774,7 +746,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::Allegretto)?;
+        let result = db.get_fee_token(tx, caller, TempoHardfork::Allegretto)?;
         assert_eq!(
             result, tip20_token,
             "pre-AllegroModerato: any function should infer fee token"
@@ -818,7 +790,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        let result = db.get_fee_token(tx, caller, TempoHardfork::AllegroModerato)?;
         assert_eq!(result, tip20_token, "transfer should infer fee token");
 
         // Invalid selector (grantRole) → fallback to default
@@ -838,9 +810,9 @@ mod tests {
             },
             ..Default::default()
         };
-        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        let result = db.get_fee_token(tx, caller, TempoHardfork::AllegroModerato)?;
         assert_eq!(
-            result, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            result, DEFAULT_FEE_TOKEN,
             "grantRole should NOT infer fee token"
         );
 
@@ -862,7 +834,7 @@ mod tests {
             fee_payer: Some(Some(caller)), // fee_payer == caller
             ..Default::default()
         };
-        let result = db.get_fee_token(tx, Address::ZERO, caller, TempoHardfork::AllegroModerato)?;
+        let result = db.get_fee_token(tx, caller, TempoHardfork::AllegroModerato)?;
         assert_eq!(
             result, tip20_token,
             "AA with fee_payer == caller should infer fee token"
@@ -882,14 +854,9 @@ mod tests {
             fee_payer: Some(Some(other_payer)), // fee_payer != caller
             ..Default::default()
         };
-        let result = db.get_fee_token(
-            tx,
-            Address::ZERO,
-            other_payer,
-            TempoHardfork::AllegroModerato,
-        )?;
+        let result = db.get_fee_token(tx, other_payer, TempoHardfork::AllegroModerato)?;
         assert_eq!(
-            result, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            result, DEFAULT_FEE_TOKEN,
             "AA with fee_payer != caller should NOT infer fee token"
         );
 
