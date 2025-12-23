@@ -9,7 +9,7 @@
     "dev": "vocs dev",
     "extract-sdk-types": "tsx scripts/extract-sdk-types.ts",
     "gen:specs": "node scripts/gen-specs.ts",
-    "prepare": "test -d .git && simple-git-hooks || true",
+    "prepare": "simple-git-hooks",
     "preview": "vocs preview"
   },
   "dependencies": {
