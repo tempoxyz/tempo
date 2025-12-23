@@ -61,7 +61,7 @@ use tempo_contracts::precompiles::{
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
@@ -95,7 +95,7 @@ pub struct MaxTpsArgs {
     #[arg(short, long, default_value_t = 0)]
     from_mnemonic_index: u32,
 
-    #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
+    #[arg(long, default_value_t = DEFAULT_FEE_TOKEN)]
     fee_token: Address,
 
     /// Target URLs for network connections (comma-separated or multiple --target-urls)

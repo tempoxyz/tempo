@@ -788,7 +788,7 @@ fn mint_pairwise_liquidity(
 
         for b_token_address in b_tokens {
             fee_manager
-                .mint(admin, a_token, b_token_address, amount, amount, admin)
+                .mint(admin, a_token, b_token_address, amount, admin)
                 .expect("Could not mint A -> B Liquidity pool");
         }
     });
