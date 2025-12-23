@@ -77,18 +77,7 @@ where
             return Ok(Ok(()));
         };
 
-        let is_allegretto = self
-            .inner
-            .chain_spec()
-            .is_allegretto_active_at_timestamp(self.inner.fork_tracker().tip_timestamp());
-
         let auth = tx.tx().key_authorization.as_ref();
-
-        if (auth.is_some() || tx.signature().is_keychain()) && !is_allegretto {
-            return Ok(Err(
-                "keychain operations are only supported after Allegretto",
-            ));
-        }
 
         // Ensure that key auth is valid if present.
         if let Some(auth) = auth {
