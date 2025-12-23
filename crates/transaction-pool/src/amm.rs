@@ -12,9 +12,9 @@ use reth_provider::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::{
-        DEFAULT_FEE_TOKEN, TipFeeManager,
+        TipFeeManager,
         amm::{Pool, PoolKey, compute_amount_out},
     },
     tip20::{address_to_token_id_unchecked, token_id_to_address},

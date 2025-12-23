@@ -588,7 +588,6 @@ mod tests {
         })
     }
 
-
     /// Test collect_fee_pre_tx post-AllegroModerato with different tokens
     /// Verifies that liquidity is checked (not reserved) and no swap happens yet
     #[test]
