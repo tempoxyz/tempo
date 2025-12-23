@@ -1019,26 +1019,18 @@ pub(crate) mod tests {
     };
     use rand::{Rng, distributions::Alphanumeric, random, thread_rng};
 
-    /// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
-    /// For older specs, initializes directly.
+    /// Initialize PathUSD token using the factory flow.
     pub(crate) fn initialize_path_usd(admin: Address) -> Result<()> {
-        if !StorageCtx.spec().is_allegretto() {
-            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize(
-                "PathUSD",
-                "PUSD",
-                "USD",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )
-        } else {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
-            deploy_path_usd(&mut factory, admin)?;
-
-            Ok(())
+        // Check if PathUSD is already initialized
+        if StorageCtx.has_bytecode(PATH_USD_ADDRESS) {
+            return Ok(());
         }
+
+        let mut factory = TIP20Factory::new();
+        factory.initialize()?;
+        deploy_path_usd(&mut factory, admin)?;
+
+        Ok(())
     }
 
     /// Deploy PathUSD via the factory. Requires AllegroModerato+ spec and no tokens deployed yet.
@@ -1063,66 +1055,12 @@ pub(crate) mod tests {
         )
     }
 
-    /// Helper to setup a token with rewards for testing fee transfer functions
-    /// Returns (token_id, initial_opted_in_supply)
-    fn setup_token_with_rewards(
-        admin: Address,
-        user: Address,
-        mint_amount: U256,
-        reward_amount: U256,
-    ) -> Result<(u64, u128)> {
-        initialize_path_usd(admin)?;
-        let token_id = setup_factory_with_token(admin, "Test", "TST")?;
-
-        let mut token = TIP20Token::new(token_id);
-        token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-        // Mint tokens to admin (for reward stream)
-        token.mint(
-            admin,
-            ITIP20::mintCall {
-                to: admin,
-                amount: reward_amount,
-            },
-        )?;
-
-        // Mint tokens to user
-        token.mint(
-            admin,
-            ITIP20::mintCall {
-                to: user,
-                amount: mint_amount,
-            },
-        )?;
-
-        // User opts into rewards
-        token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
-
-        // Verify initial opted-in supply
-        let initial_opted_in = token.get_opted_in_supply()?;
-        assert_eq!(initial_opted_in, mint_amount.to::<u128>());
-
-        // Start a reward stream
-        token.start_reward(
-            admin,
-            ITIP20::startRewardCall {
-                amount: reward_amount,
-                secs: 100,
-            },
-        )?;
-
-        // Advance time to accrue rewards
-        let initial_time = StorageCtx.timestamp();
-        StorageCtx.set_timestamp(initial_time + U256::from(50));
-
-        Ok((token_id, initial_opted_in))
-    }
-
     /// Initialize a factory and create a single token
     fn setup_factory_with_token(admin: Address, name: &str, symbol: &str) -> Result<u64> {
         initialize_path_usd(admin)?;
 
         let mut factory = TIP20Factory::new();
+        factory.initialize()?;
         let token_address = factory.create_token(
             admin,
             ITIP20Factory::createTokenCall {
@@ -2251,193 +2189,6 @@ pub(crate) mod tests {
             assert!(is_tip20_prefix(PATH_USD_ADDRESS));
             assert!(is_tip20_prefix(created_tip20));
             assert!(!is_tip20_prefix(non_tip20));
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_transfer_fee_pre_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
-        // Test with Moderato hardfork (rewards should be handled)
-        // Note that we initially create storage at the Adagio hardfork so that scheduled rewards
-        // are enabled for the test setup
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Update the hardfork to Moderato to ensure rewards are handled post hardfork
-            StorageCtx.set_spec(TempoHardfork::Moderato);
-
-            // Transfer fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // After transfer_fee_pre_tx, the opted-in supply should be decreased
-            let final_opted_in = token.get_opted_in_supply()?;
-            assert_eq!(
-                final_opted_in,
-                initial_opted_in - fee_amount.to::<u128>(),
-                "opted-in supply should decrease by fee amount"
-            );
-
-            // User should have accumulated rewards (verify rewards were updated)
-            let user_info = token.get_user_reward_info(user)?;
-            assert!(
-                user_info.reward_balance > U256::ZERO,
-                "user should have accumulated rewards"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_transfer_fee_pre_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Transfer fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // Pre-Moderato: opted-in supply should NOT be decreased (rewards not handled)
-            let final_opted_in = token.get_opted_in_supply()?;
-            assert_eq!(
-                final_opted_in, initial_opted_in,
-                "opted-in supply should NOT change pre-Moderato"
-            );
-
-            // User should NOT have accumulated rewards (rewards not handled)
-            let user_info = token.get_user_reward_info(user)?;
-            assert_eq!(
-                user_info.reward_balance,
-                U256::ZERO,
-                "user should NOT have accumulated rewards pre-Moderato"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_transfer_fee_post_tx_handles_rewards_post_moderato() -> eyre::Result<()> {
-        // Test with Moderato hardfork (rewards should be handled)
-        // Note that we initially create storage at the Adagio hardfork so that scheduled rewards
-        // are enabled for the test setup
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, _initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Update the hardfork to Moderato to ensure rewards are handled post hardfork
-            StorageCtx.set_spec(TempoHardfork::Moderato);
-            // Simulate fee transfer: first take fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // Get opted-in supply after pre_tx
-            let opted_in_after_pre = token.get_opted_in_supply()?;
-
-            // Now refund part of it back
-            let refund_amount = U256::from(40e18);
-            let actual_used = U256::from(60e18);
-            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
-
-            // After transfer_fee_post_tx, the opted-in supply should increase by refund amount
-            let final_opted_in = token.get_opted_in_supply()?;
-
-            assert_eq!(
-                final_opted_in,
-                opted_in_after_pre + refund_amount.to::<u128>(),
-                "opted-in supply should increase by refund amount"
-            );
-
-            // User should have accumulated rewards
-            let user_info = token.get_user_reward_info(user)?;
-            assert!(
-                user_info.reward_balance > U256::ZERO,
-                "user should have accumulated rewards"
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_transfer_fee_post_tx_no_rewards_pre_moderato() -> eyre::Result<()> {
-        // Test with Adagio (pre-Moderato) - rewards should NOT be handled
-        let (mut storage, admin) = setup_storage();
-        storage.set_spec(TempoHardfork::Adagio);
-        let user = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mint_amount = U256::from(1000e18);
-            let reward_amount = U256::from(100e18);
-
-            // Setup token with rewards enabled
-            let (token_id, initial_opted_in) =
-                setup_token_with_rewards(admin, user, mint_amount, reward_amount)?;
-
-            // Simulate fee transfer: first take fee from user
-            let fee_amount = U256::from(100e18);
-            let mut token = TIP20Token::new(token_id);
-            token.transfer_fee_pre_tx(user, fee_amount)?;
-
-            // Get opted-in supply after pre_tx (should be unchanged pre-Moderato)
-            let opted_in_after_pre = token.get_opted_in_supply()?;
-            assert_eq!(
-                opted_in_after_pre, initial_opted_in,
-                "opted-in supply should be unchanged in pre_tx pre-Moderato"
-            );
-
-            // Now refund part of it back
-            let refund_amount = U256::from(40e18);
-            let actual_used = U256::from(60e18);
-            token.transfer_fee_post_tx(user, refund_amount, actual_used)?;
-
-            // After transfer_fee_post_tx, the opted-in supply should still be unchanged (rewards not handled)
-            let final_opted_in = token.get_opted_in_supply()?;
-
-            assert_eq!(
-                final_opted_in, initial_opted_in,
-                "opted-in supply should remain unchanged pre-Moderato"
-            );
-
-            // User should NOT have accumulated rewards
-            let user_info = token.get_user_reward_info(user)?;
-            assert_eq!(
-                user_info.reward_balance,
-                U256::ZERO,
-                "user should NOT have accumulated rewards pre-Moderato"
-            );
-
             Ok(())
         })
     }

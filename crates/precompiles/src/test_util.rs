@@ -245,30 +245,18 @@ impl TIP20Setup {
             .admin
             .expect("pathUSD is uninitialized and requires an admin");
 
-        // In Allegretto, PathUSD is token 0 created via factory with quoteToken=0
-        if StorageCtx.spec().is_allegretto() {
-            let mut factory = Self::factory()?;
-            factory.create_token(
+        // PathUSD is token 0 created via factory with quoteToken=0
+        let mut factory = Self::factory()?;
+        factory.create_token(
+            admin,
+            tip20_factory::ITIP20Factory::createTokenCall {
+                name: "PathUSD".to_string(),
+                symbol: "PUSD".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: Address::ZERO,
                 admin,
-                tip20_factory::ITIP20Factory::createTokenCall {
-                    name: "PathUSD".to_string(),
-                    symbol: "PUSD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: Address::ZERO,
-                    admin,
-                },
-            )?;
-        } else {
-            // Pre-Allegretto: direct initialization
-            TIP20Token::from_address(PATH_USD_ADDRESS)?.initialize(
-                "PathUSD",
-                "PUSD",
-                "USD",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )?;
-        }
+            },
+        )?;
 
         TIP20Token::from_address(PATH_USD_ADDRESS)
     }

@@ -207,7 +207,6 @@ mod tests {
         primitives::{Address, B256, Bytes, U256},
         sol_types::{SolCall, SolError, SolValue},
     };
-    use revm::precompile::PrecompileError;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls, UnknownFunctionSelector,
@@ -533,26 +532,6 @@ mod tests {
             let balance_result = fee_manager.call(&balance_call.abi_encode(), user)?;
             let balance = U256::abi_decode(&balance_result.bytes)?;
             assert_eq!(balance, liquidity);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_unknown_selector_error_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let sender = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut fee_manager = TipFeeManager::new();
-
-            // Call with an unknown selector
-            let unknown_selector = [0x12, 0x34, 0x56, 0x78];
-            let calldata = Bytes::from(unknown_selector);
-            let result = fee_manager.call(&calldata, sender);
-
-            // Before Moderato: should return Err(PrecompileError::Other)
-            assert!(result.is_err());
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
 
             Ok(())
         })

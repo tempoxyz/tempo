@@ -170,20 +170,9 @@ impl Precompile for TIP20Token {
                     self.set_reward_recipient(s, call)
                 })
             }
-            ITIP20::cancelRewardCall::SELECTOR => {
-                mutate::<ITIP20::cancelRewardCall>(calldata, msg_sender, |s, call| {
-                    self.cancel_reward(s, call)
-                })
-            }
             ITIP20::claimRewardsCall::SELECTOR => {
                 mutate::<ITIP20::claimRewardsCall>(calldata, msg_sender, |_, _| {
                     self.claim_rewards(msg_sender)
-                })
-            }
-
-            ITIP20::finalizeStreamsCall::SELECTOR => {
-                mutate_void::<ITIP20::finalizeStreamsCall>(calldata, msg_sender, |sender, call| {
-                    self.finalize_streams(sender, call.timestamp as u128)
                 })
             }
 
@@ -838,36 +827,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fee_recipient_pre_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize(
-                "Test",
-                "TST",
-                "USD",
-                PATH_USD_ADDRESS,
-                admin,
-                Address::from([0x11; 20]),
-            )?;
-
-            let call = ITIP20::feeRecipientCall {};
-            let calldata = call.abi_encode();
-            let result = token.call(&Bytes::from(calldata), admin);
-
-            assert!(matches!(
-                result,
-                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
-            ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_fee_recipient_post_allegretto() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
         let admin = Address::random();
@@ -885,31 +844,6 @@ mod tests {
             assert!(!result.reverted);
             let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
             assert_eq!(recipient, fee_recipient);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_fee_recipient_pre_allegretto() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, admin)?;
-
-            let call = ITIP20::setFeeRecipientCall {
-                newRecipient: Address::from([0x33; 20]),
-            };
-            let calldata = call.abi_encode();
-            let result = token.call(&Bytes::from(calldata), admin);
-
-            assert!(matches!(
-                result,
-                Err(revm::precompile::PrecompileError::Other(ref msg)) if msg.contains("Unknown function selector")
-            ));
-
             Ok(())
         })
     }
