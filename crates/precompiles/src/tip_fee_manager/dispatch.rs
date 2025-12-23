@@ -1,7 +1,5 @@
 use crate::{
-    Precompile,
-    error::TempoPrecompileError,
-    fill_precompile_output, input_cost, mutate, mutate_void,
+    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         IFeeManager, ITIPFeeAMM, TipFeeManager,
@@ -97,24 +95,14 @@ impl Precompile for TipFeeManager {
                 })
             }
             IFeeManager::distributeFeesCall::SELECTOR => {
-                if self.storage.spec().is_allegro_moderato() {
-                    mutate_void::<IFeeManager::distributeFeesCall>(
-                        calldata,
-                        msg_sender,
-                        |_s, call| self.distribute_fees(call.validator),
-                    )
-                } else {
-                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
-                }
+                mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
+                    self.distribute_fees(call.validator)
+                })
             }
             IFeeManager::collectedFeesByValidatorCall::SELECTOR => {
-                if self.storage.spec().is_allegro_moderato() {
-                    view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
-                        self.collected_fees.at(call.validator).read()
-                    })
-                } else {
-                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
-                }
+                view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
+                    self.collected_fees.at(call.validator).read()
+                })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {
                 mutate::<ITIPFeeAMM::mintCall>(calldata, msg_sender, |s, call| {
@@ -387,21 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_block() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut fee_manager = TipFeeManager::new();
-
-            // Call executeBlock (only system contract can call, so sender = Address::ZERO)
-            let call = IFeeManager::executeBlockCall {};
-            let result = fee_manager.call(&call.abi_encode(), Address::ZERO)?;
-            assert_eq!(result.gas_used, 0);
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_tip_fee_manager_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
@@ -425,85 +398,6 @@ mod tests {
             );
 
             assert_full_coverage([fee_manager_unsupported, amm_unsupported]);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_mint_with_validator_token() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let user = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .with_issuer(admin)
-                .with_mint(user, U256::from(1000000_u64))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .with_issuer(admin)
-                .with_mint(user, U256::from(1000000_u64))
-                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
-                .apply()?;
-
-            let mut fee_manager = TipFeeManager::new();
-
-            // Get pool ID first
-            let pool_id_call = ITIPFeeAMM::getPoolIdCall {
-                userToken: user_token.address(),
-                validatorToken: validator_token.address(),
-            };
-            let pool_id_result = fee_manager.call(&pool_id_call.abi_encode(), user)?;
-            let pool_id = B256::abi_decode(&pool_id_result.bytes)?;
-
-            // Check initial total supply
-            let initial_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-            let initial_supply_result =
-                fee_manager.call(&initial_supply_call.abi_encode(), user)?;
-            let initial_supply = U256::abi_decode(&initial_supply_result.bytes)?;
-            assert_eq!(initial_supply, U256::ZERO);
-
-            // Mint with validator token only
-            let amount_validator_token = U256::from(10000_u64);
-            let call = ITIPFeeAMM::mintWithValidatorTokenCall {
-                userToken: user_token.address(),
-                validatorToken: validator_token.address(),
-                amountValidatorToken: amount_validator_token,
-                to: user,
-            };
-            let result = fee_manager.call(&call.abi_encode(), user)?;
-
-            // For first mint with validator token only, liquidity should be (amount / 2) - MIN_LIQUIDITY
-            // MIN_LIQUIDITY = 1000, so (10000 / 2) - 1000 = 4000
-            let liquidity = U256::abi_decode(&result.bytes)?;
-            assert_eq!(liquidity, U256::from(4000_u64));
-
-            // Check total supply after mint = liquidity + MIN_LIQUIDITY
-            let final_supply_call = ITIPFeeAMM::totalSupplyCall { poolId: pool_id };
-            let final_supply_result = fee_manager.call(&final_supply_call.abi_encode(), user)?;
-            let final_supply = U256::abi_decode(&final_supply_result.bytes)?;
-            assert_eq!(final_supply, liquidity + MIN_LIQUIDITY);
-
-            // Verify pool state
-            let pool_call = ITIPFeeAMM::getPoolCall {
-                userToken: user_token.address(),
-                validatorToken: validator_token.address(),
-            };
-            let pool_result = fee_manager.call(&pool_call.abi_encode(), user)?;
-            let pool = ITIPFeeAMM::Pool::abi_decode(&pool_result.bytes)?;
-            assert_eq!(pool.reserveUserToken, 0);
-            assert_eq!(pool.reserveValidatorToken, 10000);
-
-            // Verify LP token balance
-            let balance_call = ITIPFeeAMM::liquidityBalancesCall {
-                poolId: pool_id,
-                user,
-            };
-            let balance_result = fee_manager.call(&balance_call.abi_encode(), user)?;
-            let balance = U256::abi_decode(&balance_result.bytes)?;
-            assert_eq!(balance, liquidity);
 
             Ok(())
         })

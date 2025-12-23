@@ -8,7 +8,6 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorableType, StorageKey},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -215,14 +214,6 @@ impl TipFeeManager {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        // Pre Allegro Moderato, add fees to be processed end of block
-        if !self.storage.spec().is_allegro_moderato() {
-            // If this is the first fee for the validator, record it in validators with fees
-            if collected_fees.is_zero() {
-                self.validator_in_fees_array.at(validator).write(true)?;
-                self.validators_with_fees.push(validator)?;
-            }
-        }
         Ok(())
     }
 
