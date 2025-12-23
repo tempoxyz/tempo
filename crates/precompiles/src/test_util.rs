@@ -142,7 +142,7 @@ pub struct TIP20Setup {
     approvals: Vec<(Address, Address, U256)>,
     reward_opt_ins: Vec<Address>,
     reward_streams: Vec<(U256, u32)>,
-    preserve_events: bool,
+    clear_events: bool,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -180,8 +180,10 @@ impl TIP20Setup {
     }
 
     /// Do not clear the emitted events of the token.
-    pub fn preserve_events(mut self) -> Self {
-        self.preserve_events = true;
+    ///
+    /// WARNING: requires `HashMapStorageProvider`.
+    pub fn clear_events(mut self) -> Self {
+        self.clear_events = true;
         self
     }
 
@@ -355,7 +357,7 @@ impl TIP20Setup {
             token.start_reward(admin, ITIP20::startRewardCall { amount, secs })?;
         }
 
-        if !self.preserve_events {
+        if self.clear_events {
             token.clear_emitted_events();
         }
 

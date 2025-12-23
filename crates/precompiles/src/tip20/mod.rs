@@ -957,6 +957,7 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(from, amount)
+                .clear_events()
                 .apply()?;
 
             token.transfer(from, ITIP20::transferCall { to, amount })?;
@@ -1043,6 +1044,7 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(admin, amount)
+                .clear_events()
                 .apply()?;
 
             token.burn_with_memo(admin, ITIP20::burnWithMemoCall { amount, memo })?;
@@ -1083,6 +1085,7 @@ pub(crate) mod tests {
                 .with_issuer(admin)
                 .with_mint(owner, amount)
                 .with_approval(owner, spender, amount)
+                .clear_events()
                 .apply()?;
 
             token.transfer_from_with_memo(
