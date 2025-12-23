@@ -30,7 +30,7 @@ impl Precompile for TIP20Factory {
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| self.is_tip20(call.token))
             }
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
