@@ -14,7 +14,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec};
+use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
