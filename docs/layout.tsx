@@ -6,7 +6,7 @@ import { Json } from 'ox'
 import type React from 'react'
 import { Toaster } from 'sonner'
 import { WagmiProvider } from 'wagmi'
-import { PostHogProvider as posthog_PostHogProvider } from 'posthog-js/react'
+import { PostHogProvider as PostHogProviderBase } from 'posthog-js/react'
 import { DemoContextProvider } from './components/DemoContext'
 import { PageViewTracker } from './components/PageViewTracker'
 import { PostHogSiteIdentifier } from './components/PostHogSiteIdentifier'
@@ -32,7 +32,7 @@ function PostHogProvider({ children }: React.PropsWithChildren) {
   if (!posthogKey || !posthogHost) return children
 
   return (
-    <posthog_PostHogProvider
+    <PostHogProviderBase
       apiKey={posthogKey}
       options={{
         api_host: posthogHost,
@@ -42,7 +42,7 @@ function PostHogProvider({ children }: React.PropsWithChildren) {
       }}
     >
       {children}
-    </posthog_PostHogProvider>
+    </PostHogProviderBase>
   )
 }
 
