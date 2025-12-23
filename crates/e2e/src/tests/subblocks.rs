@@ -36,73 +36,6 @@ fn subblocks_are_included() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        let how_many_signers = 5;
-
-        let setup = Setup::new()
-            .how_many_signers(how_many_signers)
-            .epoch_length(10);
-
-        // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
-
-        join_all(nodes.iter_mut().map(|node| {
-            // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
-            // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
-            node.start()
-        }))
-        .await;
-
-        let mut stream = nodes[0]
-            .execution()
-            .add_ons_handle
-            .engine_events
-            .new_listener();
-
-        let mut expected_transactions: Vec<TxHash> = Vec::new();
-        while let Some(update) = stream.next().await {
-            let block = match update {
-                ConsensusEngineEvent::BlockReceived(_)
-                | ConsensusEngineEvent::ForkchoiceUpdated(_, _)
-                | ConsensusEngineEvent::CanonicalChainCommitted(_, _) => continue,
-                ConsensusEngineEvent::ForkBlockAdded(_, _) => unreachable!("unexpected reorg"),
-                ConsensusEngineEvent::InvalidBlock(_) => unreachable!("unexpected invalid block"),
-                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
-            };
-
-            // Assert that all expected transactions are included in the block.
-            for tx in expected_transactions.drain(..) {
-                if !block
-                    .sealed_block()
-                    .body()
-                    .transactions
-                    .iter()
-                    .any(|t| *t.tx_hash() == *tx)
-                {
-                    panic!("transaction {tx} was not included");
-                }
-            }
-
-            // Exit once we reach height 20.
-            if block.block_number() == 20 {
-                break;
-            }
-
-            // Send subblock transactions to all nodes.
-            for node in nodes.iter() {
-                for _ in 0..5 {
-                    expected_transactions.push(submit_subblock_tx(node).await);
-                }
-            }
-        }
-    });
-}
-
-#[test_traced]
-fn subblocks_are_included_post_allegretto() {
-    let _ = tempo_eyre::install();
-
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
         let how_many_signers = 4;
 
         let setup = Setup::new()
@@ -208,7 +141,7 @@ fn subblocks_are_included_post_allegretto() {
 }
 
 #[test_traced]
-fn subblocks_are_included_post_allegretto_with_failing_txs() {
+fn subblocks_are_included_with_failing_txs() {
     let _ = tempo_eyre::install();
 
     Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
