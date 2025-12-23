@@ -337,8 +337,8 @@ impl StablecoinExchange {
         }
 
         let quote = TIP20Token::from_address(base)?.quote_token()?;
-        validate_usd_currency(base, self.storage)?;
-        validate_usd_currency(quote, self.storage)?;
+        validate_usd_currency(base)?;
+        validate_usd_currency(quote)?;
 
         let book_key = compute_book_key(base, quote);
 

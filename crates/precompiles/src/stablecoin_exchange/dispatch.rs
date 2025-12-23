@@ -77,7 +77,6 @@ impl Precompile for StablecoinExchange {
             IStablecoinExchange::nextOrderIdCall::SELECTOR => {
                 view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
             }
-
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
                     self.create_pair(call.base)
@@ -170,7 +169,7 @@ impl Precompile for StablecoinExchange {
                 })
             }
 
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))

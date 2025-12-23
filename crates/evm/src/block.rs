@@ -30,7 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::IFeeManager,
+    ACCOUNT_KEYCHAIN_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
@@ -52,7 +52,6 @@ enum BlockSection {
     GasIncentive,
     /// End of block system transactions.
     System {
-        seen_fee_manager: bool,
         seen_subblocks_signatures: bool,
     },
 }
@@ -144,36 +143,15 @@ where
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle end-of-block system transactions (fee manager, subblocks signatures)
-        let (mut seen_fee_manager, mut seen_subblocks_signatures) = match self.section {
+        // Handle end-of-block system transactions (subblocks signatures only)
+        let mut seen_subblocks_signatures = match self.section {
             BlockSection::System {
-                seen_fee_manager,
                 seen_subblocks_signatures,
-            } => (seen_fee_manager, seen_subblocks_signatures),
-            _ => (false, false),
+            } => seen_subblocks_signatures,
+            _ => false,
         };
 
-        if to == TIP_FEE_MANAGER_ADDRESS {
-            if seen_fee_manager {
-                return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
-                ));
-            }
-
-            let fee_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != fee_input {
-                return Err(BlockValidationError::msg(
-                    "invalid fee manager system transaction",
-                ));
-            }
-
-            seen_fee_manager = true;
-        } else if to.is_zero() {
+        if to.is_zero() {
             if seen_subblocks_signatures {
                 return Err(BlockValidationError::msg(
                     "duplicate subblocks metadata system transaction",
@@ -209,7 +187,6 @@ where
         }
 
         Ok(BlockSection::System {
-            seen_fee_manager,
             seen_subblocks_signatures,
         })
     }
@@ -554,12 +531,8 @@ where
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
 
-        // Post AllegroModerato, fee manager system tx is no longer required
-        let expected_seen_fee_manager = !is_allegro_moderato;
-
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: expected_seen_fee_manager,
                 seen_subblocks_signatures: true,
             })
         {

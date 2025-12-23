@@ -430,10 +430,8 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ISSUER_ROLE, tests::initialize_path_usd},
     };
     use alloy::primitives::{Address, U256};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -443,17 +441,14 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
-        let token_id = 1;
+        let amount = U256::random() % U256::from(u128::MAX);
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount)
+                .apply()?;
 
-            let mut token = TIP20Token::new(token_id);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            let amount = U256::random().min(U256::from(u128::MAX)) % token.supply_cap()?;
-            token.mint(admin, ITIP20::mintCall { to: alice, amount })?;
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
@@ -483,37 +478,19 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
-        let token_id = 1;
+        let amount = (U256::random() % U256::from(u128::MAX)).min(U256::from(10));
+        let reward_amount = amount / U256::from(10);
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-
-            let mut token = TIP20Token::new(token_id);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            let mint_amount = (U256::random().min(U256::from(u128::MAX)) % token.supply_cap()?)
-                .min(U256::from(10));
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: alice,
-                    amount: mint_amount,
-                },
-            )?;
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, amount)
+                // Mint reward tokens to admin
+                .with_mint(admin, reward_amount)
+                .apply()?;
 
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
-
-            // Mint reward tokens to admin
-            let reward_amount = mint_amount / U256::from(10);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: admin,
-                    amount: reward_amount,
-                },
-            )?;
 
             // Start immediate reward
             let id = token.start_reward(
@@ -534,13 +511,13 @@ mod tests {
     }
 
     #[test]
-    fn test_scheduled_rewards_disabled_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+    fn test_scheduled_rewards_disabled() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
+        let mint_amount = U256::from(1000e18);
 
         StorageCtx::enter(&mut storage, || {
             // Setup and start stream in a scope to release the borrow
-            let mint_amount = U256::from(1000e18);
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(admin, mint_amount)

@@ -254,10 +254,8 @@ mod tests {
             &ctx.cfg,
         );
         StorageCtx::enter(&mut storage, || {
-            TIP20Setup::create("USD", "USD", Address::ZERO)
-                .apply()
-                .unwrap();
-        });
+            TIP20Setup::create("USD", "USD", Address::ZERO).apply()
+        })?;
         drop(storage);
 
         let contract = Address::random();

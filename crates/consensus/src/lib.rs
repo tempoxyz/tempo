@@ -15,20 +15,17 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{hardfork::TempoHardforks, spec::TempoChainSpec};
-use tempo_contracts::precompiles::{STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
 // End-of-block system transactions (required)
-// Pre AllegroModerato: 3 txs (fee manager, stablecoin exchange, subblocks signatures)
+// Pre AllegroModerato: 2 txs (stablecoin exchange, subblocks signatures)
 // Post AllegroModerato: 1 tx (subblocks signatures)
-const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 3;
-const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] = [
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_EXCHANGE_ADDRESS,
-    Address::ZERO,
-];
+const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 2;
+const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] =
+    [STABLECOIN_EXCHANGE_ADDRESS, Address::ZERO];
 const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 1;
 const SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO] =
     [Address::ZERO];

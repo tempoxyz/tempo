@@ -15,7 +15,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
@@ -71,9 +71,9 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Mint liquidity (use mintWithValidatorToken as mint is disabled post-Moderato)
+    // Mint liquidity (use mint as mint is disabled post-Moderato)
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
             amount,
@@ -89,7 +89,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
 
-    // With mintWithValidatorToken, liquidity = (amount / 2) - MIN_LIQUIDITY (for first mint)
+    // With mint, liquidity = (amount / 2) - MIN_LIQUIDITY (for first mint)
     // Only validator tokens are transferred, creating a one-sided pool
     let half_amount = amount / U256::from(2);
     let expected_liquidity = half_amount - MIN_LIQUIDITY;
@@ -162,7 +162,6 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
         .mint(
             pool_key.user_token,
             pool_key.validator_token,
-            amount,
             amount,
             caller,
         )
@@ -305,7 +304,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let liquidity = U256::from(u16::MAX) + uint!(1_000_000_000_U256);
     pending.push(
         fee_amm
-            .mintWithValidatorToken(
+            .mint(
                 *user_token.address(),
                 *validator_token.address(),
                 liquidity,
@@ -362,7 +361,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let initial_user_balance = user_token.balanceOf(user_address).call().await?;
 
     // Transfer using predeployed TIP20
-    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone());
+    let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
 
     let transfer_receipt = transfer_token
         .transfer(Address::random(), U256::from(1))
@@ -395,14 +394,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 }
 
 /// Test the first liquidity provider creating a new pool.
-/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_first_liquidity_provider() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato to use balanced `mint` function
     let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
+        .with_genesis(include_str!("../assets/test-genesis.json").to_string())
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -435,13 +432,13 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Add liquidity which creates the pool using balanced `mint` (available pre-Moderato)
+    // Add liquidity using single-sided mint (only validator tokens)
+    // Note: Post hardfork removal, mint only takes validator tokens
     let mint_receipt = fee_amm
         .mint(
             pool_key.user_token,
             pool_key.validator_token,
             amount0,
-            amount1,
             alice,
         )
         .send()
@@ -450,9 +447,9 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
         .await?;
     assert!(mint_receipt.status());
 
-    // Pre-Moderato uses product formula: liquidity = (amount0 * amount1) / 2 - MIN_LIQUIDITY
-    let mean = (amount0 * amount1) / U256::from(2);
-    let expected_liquidity = mean - MIN_LIQUIDITY;
+    // Single-sided mint with validator token: liquidity = (amountValidatorToken / 2) - MIN_LIQUIDITY
+    let half_amount = amount0 / U256::from(2);
+    let expected_liquidity = half_amount - MIN_LIQUIDITY;
 
     // Check liquidity minted
     let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
@@ -462,20 +459,20 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let total_supply = fee_amm.totalSupply(pool_id).call().await?;
     assert_eq!(total_supply, expected_liquidity + MIN_LIQUIDITY);
 
-    // Check reserves updated
+    // Check reserves updated - only validator token is added (single-sided mint)
     let pool = fee_amm.pools(pool_id).call().await?;
-    assert_eq!(pool.reserveUserToken, amount0.to::<u128>());
-    assert_eq!(pool.reserveValidatorToken, amount1.to::<u128>());
+    assert_eq!(pool.reserveUserToken, 0);
+    assert_eq!(pool.reserveValidatorToken, amount0.to::<u128>());
 
-    // Verify tokens were transferred to fee manager
+    // Verify only validator tokens were transferred to fee manager (single-sided)
     let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    assert_eq!(fee_manager_balance0, amount0);
+    assert_eq!(fee_manager_balance0, U256::ZERO);
 
     let fee_manager_balance1 = validator_token
         .balanceOf(TIP_FEE_MANAGER_ADDRESS)
         .call()
         .await?;
-    assert_eq!(fee_manager_balance1, amount1);
+    assert_eq!(fee_manager_balance1, amount0);
 
     Ok(())
 }
@@ -522,7 +519,6 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
             pool_key.user_token,
             pool_key.validator_token,
             amount0,
-            amount1,
             alice,
         )
         .send()
@@ -630,7 +626,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
 
     // Add liquidity
     let mint_receipt = fee_amm
-        .mintWithValidatorToken(
+        .mint(
             pool_key.user_token,
             pool_key.validator_token,
             uint!(100000000_U256),
@@ -667,7 +663,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert!(!burn_receipt.status());
+    assert!(burn_receipt.status());
 
     Ok(())
 }

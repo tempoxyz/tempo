@@ -125,7 +125,6 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::tests::initialize_path_usd,
     };
     use alloy::primitives::Address;
 
@@ -338,10 +337,9 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             // initialize_path_usd deploys PathUSD via factory
             // which properly increments tokenIdCounter to 1
-            initialize_path_usd(sender)?;
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
+            let factory = TIP20Factory::new();
 
             // Verify tokenIdCounter was set by factory deployment
             assert_eq!(factory.token_id_counter()?, U256::from(1));
