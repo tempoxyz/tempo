@@ -10,8 +10,7 @@ use tempo_precompiles::{
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
-/// Initialize PathUSD token. For AllegroModerato+, uses the factory flow.
-/// For older specs, initializes directly.
+/// Initialize PathUSD token.
 fn initialize_path_usd(admin: Address) -> Result<()> {
     let mut factory = TIP20Factory::new();
     factory.initialize()?;
