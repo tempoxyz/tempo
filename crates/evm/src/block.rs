@@ -526,7 +526,7 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
         let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        let is_allegro_moderato = self
+        let _is_allegro_moderato = self
             .inner
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
