@@ -24,10 +24,8 @@ use tempo_primitives::{
 // Pre AllegroModerato: 2 txs (stablecoin exchange, subblocks signatures)
 // Post AllegroModerato: 1 tx (subblocks signatures)
 const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 2;
-const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] = [
-    STABLECOIN_EXCHANGE_ADDRESS,
-    Address::ZERO,
-];
+const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] =
+    [STABLECOIN_EXCHANGE_ADDRESS, Address::ZERO];
 const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 1;
 const SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO] =
     [Address::ZERO];

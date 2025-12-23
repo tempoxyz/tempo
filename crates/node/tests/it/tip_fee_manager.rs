@@ -14,14 +14,10 @@ use alloy_primitives::{Address, Signature, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
-    IFeeManager, ITIP20,
+    DEFAULT_FEE_TOKEN, IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    tip20::token_id_to_address,
-};
-use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]

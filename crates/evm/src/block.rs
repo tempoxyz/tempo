@@ -30,8 +30,7 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange,
+    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::IStablecoinExchange,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
