@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
+    DEFAULT_FEE_TOKEN, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorableType, StorageKey},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -72,7 +72,7 @@ impl TipFeeManager {
     /// Post-Allegretto returns PathUSD, pre-Allegretto returns the first TIP20 after PathUSD.
     fn default_fee_token(&self) -> Address {
         if self.storage.spec().is_allegretto() {
-            DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
+            DEFAULT_FEE_TOKEN
         } else {
             DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO
         }

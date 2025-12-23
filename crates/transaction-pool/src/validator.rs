@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_consensus::Transaction;
 
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_primitives_traits::{
     Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
@@ -14,7 +14,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
@@ -77,18 +77,7 @@ where
             return Ok(Ok(()));
         };
 
-        let is_allegretto = self
-            .inner
-            .chain_spec()
-            .is_allegretto_active_at_timestamp(self.inner.fork_tracker().tip_timestamp());
-
         let auth = tx.tx().key_authorization.as_ref();
-
-        if (auth.is_some() || tx.signature().is_keychain()) && !is_allegretto {
-            return Ok(Err(
-                "keychain operations are only supported after Allegretto",
-            ));
-        }
 
         // Ensure that key auth is valid if present.
         if let Some(auth) = auth {
@@ -258,22 +247,15 @@ where
             }
         };
 
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
-
-        let fee_token =
-            match state_provider.get_fee_token(transaction.inner(), Address::ZERO, fee_payer, spec)
-            {
-                Ok(fee_token) => fee_token,
-                Err(err) => {
-                    return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-                }
-            };
+        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer) {
+            Ok(fee_token) => fee_token,
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        };
 
         // Ensure that fee token is valid.
-        match state_provider.is_valid_fee_token(fee_token, spec) {
+        match state_provider.is_valid_fee_token(fee_token) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -290,7 +272,7 @@ where
         }
 
         // Ensure that the fee payer is not blacklisted
-        match state_provider.can_fee_payer_transfer(fee_token, fee_payer, spec) {
+        match state_provider.can_fee_payer_transfer(fee_token, fee_payer) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -309,7 +291,7 @@ where
             }
         }
 
-        let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -499,7 +481,7 @@ mod tests {
     use super::*;
     use alloy_consensus::{Block, Transaction};
     use alloy_eips::Decodable2718;
-    use alloy_primitives::{B256, U256, hex};
+    use alloy_primitives::{Address, B256, U256, hex};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
