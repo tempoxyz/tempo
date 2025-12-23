@@ -13,7 +13,6 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
-use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
@@ -29,9 +28,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
-use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-};
+use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
@@ -51,10 +48,7 @@ enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System {
-        seen_stablecoin_dex: bool,
-        seen_subblocks_signatures: bool,
-    },
+    System { seen_subblocks_signatures: bool },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -141,49 +135,18 @@ where
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
-        let block_timestamp = block.timestamp;
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        // Handle end-of-block system transactions (DEX, subblocks signatures)
-        let (mut seen_stablecoin_dex, mut seen_subblocks_signatures) = match self.section {
+        // Handle end-of-block system transactions (subblocks signatures only)
+        let mut seen_subblocks_signatures = match self.section {
             BlockSection::System {
-                seen_stablecoin_dex,
                 seen_subblocks_signatures,
-            } => (seen_stablecoin_dex, seen_subblocks_signatures),
-            _ => (false, false),
+            } => seen_subblocks_signatures,
+            _ => false,
         };
 
-        if to == STABLECOIN_EXCHANGE_ADDRESS {
-            // The stablecoin dex system tx is disabled post allegro moderato hardfork
-            if self
-                .inner
-                .spec
-                .is_allegro_moderato_active_at_timestamp(block_timestamp.saturating_to::<u64>())
-            {
-                return Err(BlockValidationError::msg("invalid system transaction"));
-            }
-
-            if seen_stablecoin_dex {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
-            }
-
-            let dex_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != dex_input {
-                return Err(BlockValidationError::msg(
-                    "invalid stablecoin DEX system transaction",
-                ));
-            }
-
-            seen_stablecoin_dex = true;
-        } else if to.is_zero() {
+        if to.is_zero() {
             if seen_subblocks_signatures {
                 return Err(BlockValidationError::msg(
                     "duplicate subblocks metadata system transaction",
@@ -219,7 +182,6 @@ where
         }
 
         Ok(BlockSection::System {
-            seen_stablecoin_dex,
             seen_subblocks_signatures,
         })
     }
@@ -559,17 +521,13 @@ where
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
         let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        let is_allegro_moderato = self
+        let _is_allegro_moderato = self
             .inner
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
 
-        // Post AllegroModerato, stablecoin DEX system tx is no longer required
-        let expected_seen_system_tx = !is_allegro_moderato;
-
         if self.section
             != (BlockSection::System {
-                seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })
         {

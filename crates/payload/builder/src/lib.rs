@@ -9,7 +9,6 @@ use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
-use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -43,11 +42,10 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
-use tempo_precompiles::{STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::IStablecoinExchange};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -108,43 +106,14 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// 1. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
-    /// 2. Subblocks signatures - validates subblock signatures
+    /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
         subblocks: &[RecoveredSubBlock],
-        timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
-        let mut txs = Vec::with_capacity(3);
-
-        // Build stablecoin dex system transaction (pre-AllegroModerato only)
-        if !chain_spec.is_allegro_moderato_active_at_timestamp(timestamp) {
-            let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_env.number.to_be_bytes_vec())
-                .collect();
-
-            let stablecoin_exchange_tx = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    TxLegacy {
-                        chain_id,
-                        nonce: 0,
-                        gas_price: 0,
-                        gas_limit: 0,
-                        to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: stablecoin_exchange_input,
-                    },
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                )),
-                TEMPO_SYSTEM_TX_SENDER,
-            );
-            txs.push(stablecoin_exchange_tx);
-        }
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -171,9 +140,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             )),
             TEMPO_SYSTEM_TX_SENDER,
         );
-        txs.push(subblocks_signatures_tx);
 
-        txs
+        vec![subblocks_signatures_tx]
     }
 }
 
@@ -373,8 +341,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs =
-            self.build_seal_block_txs(builder.evm().block(), &subblocks, attributes.timestamp());
+        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
