@@ -194,8 +194,8 @@ impl TipFeeManager {
         to: Address,
     ) -> Result<U256> {
         // Validate both tokens are USD currency
-        validate_usd_currency(user_token, self.storage)?;
-        validate_usd_currency(validator_token, self.storage)?;
+        validate_usd_currency(user_token)?;
+        validate_usd_currency(validator_token)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools.at(pool_id).read()?;
@@ -268,8 +268,8 @@ impl TipFeeManager {
         }
 
         // Validate both tokens are USD currency
-        validate_usd_currency(user_token, self.storage)?;
-        validate_usd_currency(validator_token, self.storage)?;
+        validate_usd_currency(user_token)?;
+        validate_usd_currency(validator_token)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools.at(pool_id).read()?;
@@ -381,8 +381,8 @@ impl TipFeeManager {
         }
 
         // Validate both tokens are USD currency
-        validate_usd_currency(user_token, self.storage)?;
-        validate_usd_currency(validator_token, self.storage)?;
+        validate_usd_currency(user_token)?;
+        validate_usd_currency(validator_token)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
