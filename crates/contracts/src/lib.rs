@@ -10,8 +10,6 @@ pub const MULTICALL_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2
 pub const CREATEX_ADDRESS: Address = address!("0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed");
 pub const SAFE_DEPLOYER_ADDRESS: Address = address!("0x914d7Fec6aaC8cd542e72Bca78B30650d45643d7");
 pub const PERMIT2_ADDRESS: Address = address!("0x000000000022d473030f116ddee9f6b43ac78ba3");
-pub const DEFAULT_7702_DELEGATE_ADDRESS: Address =
-    address!("0x7702c00000000000000000000000000000000000");
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
@@ -55,12 +53,6 @@ pub mod contracts {
 
     sol!(
         #[allow(missing_docs)]
-        IthacaAccount,
-        "abi/IthacaAccount.json",
-    );
-
-    sol!(
-        #[allow(missing_docs)]
         SafeDeployer,
         "abi/SafeDeployer.json",
     );
@@ -87,7 +79,7 @@ pub mod contracts {
         b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
 }
 
-pub use contracts::{CreateX, IthacaAccount, Multicall, Multicall3, Permit2, SafeDeployer};
+pub use contracts::{CreateX, Multicall, Multicall3, Permit2, SafeDeployer};
 
 pub mod precompiles;
 

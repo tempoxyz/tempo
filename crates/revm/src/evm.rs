@@ -199,7 +199,6 @@ mod tests {
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
-    use tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
         storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
