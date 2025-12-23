@@ -1078,12 +1078,8 @@ where
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
 
-            if aa_env.subblock_transaction {
-                if tx.max_fee_per_gas() > 0 {
-                    return Err(TempoInvalidTransaction::SubblockTransactionMustHaveZeroFee.into());
-                } else if has_keychain_fields {
-                    return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
-                }
+            if aa_env.subblock_transaction && has_keychain_fields {
+                return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
