@@ -2,13 +2,13 @@ pub mod amm;
 pub mod dispatch;
 
 use alloy::primitives::B256;
-use tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS;
+use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
 pub use tempo_contracts::precompiles::{
     FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent,
 };
 
 use crate::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS,
+    PATH_USD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping, StorableType, StorageKey},
     tip_fee_manager::amm::{Pool, compute_amount_out},
@@ -68,21 +68,11 @@ impl TipFeeManager {
         self.__initialize()
     }
 
-    /// Returns the default fee token based on the current hardfork.
-    /// Post-Allegretto returns PathUSD, pre-Allegretto returns the first TIP20 after PathUSD.
-    fn default_fee_token(&self) -> Address {
-        if self.storage.spec().is_allegretto() {
-            DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
-        } else {
-            DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO
-        }
-    }
-
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens.at(beneficiary).read()?;
 
         if token.is_zero() {
-            Ok(self.default_fee_token())
+            Ok(DEFAULT_FEE_TOKEN)
         } else {
             Ok(token)
         }
@@ -95,23 +85,13 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<()> {
         // Validate that the token is a valid deployed TIP20
-        if self.storage.spec().is_allegro_moderato() {
-            // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
-            if !TIP20Factory::new().is_tip20(call.token)? {
-                return Err(FeeManagerError::invalid_token().into());
-            }
-        } else if !is_tip20_prefix(call.token) {
-            // Pre-AllegroModerato: only check prefix
+        if !TIP20Factory::new().is_tip20(call.token)? {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // Pre Allego-Moderato but Post-Allegretto, prevent changing if validator already has collected fees
-        if !self.storage.spec().is_allegro_moderato()
-            && self.storage.spec().is_allegretto()
-            && self.validator_in_fees_array.at(sender).read()?
-        {
-            return Err(FeeManagerError::cannot_change_with_pending_fees().into());
-        }
+        // FIXME: Either ensure that there are no pending fees for a given
+        // validator before updating the fee token, or update the pending fees structure
+        // to a mapping so that a validator can have multiple fee balances for tokens
 
         // Prevent changing within the validator's own block
         if sender == beneficiary {
@@ -138,30 +118,12 @@ impl TipFeeManager {
         call: IFeeManager::setUserTokenCall,
     ) -> Result<()> {
         // Validate that the token is a valid deployed TIP20
-        if self.storage.spec().is_allegro_moderato() {
-            // Post-AllegroModerato: use factory's is_tip20 which checks both prefix and counter
-            if !TIP20Factory::new().is_tip20(call.token)? {
-                return Err(FeeManagerError::invalid_token().into());
-            }
-        } else if !is_tip20_prefix(call.token) {
-            // Pre-AllegroModerato: only check prefix
-            return Err(FeeManagerError::invalid_token().into());
-        }
-
-        // Depending on the hardfork, allow/disallow PathUSD to be set as the fee token
-        // Pre moderato: Allow
-        // Post moderato: Disallow
-        // Post allegro moderato: Allow
-        if self.storage.spec().is_moderato()
-            && !self.storage.spec().is_allegro_moderato()
-            && call.token == PATH_USD_ADDRESS
-        {
+        if !TIP20Factory::new().is_tip20(call.token)? {
             return Err(FeeManagerError::invalid_token().into());
         }
 
         // Validate that the fee token is USD
         validate_usd_currency(call.token, self.storage)?;
-
         self.user_tokens.at(sender).write(call.token)?;
 
         // Emit UserTokenSet event
@@ -195,13 +157,7 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if user_token != validator_token {
-            if self.storage.spec().is_allegro_moderato() {
-                // Post-AllegroModerato: ensure there is enough liquidity to swap `max_amount`
-                self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
-            } else {
-                // Pre-AllegroModerato: reserve liquidity for later swap in execute_block
-                self.reserve_liquidity(user_token, validator_token, max_amount)?;
-            }
+            self.check_sufficient_liquidity(user_token, validator_token, max_amount)?;
         }
 
         // Return the user's token preference
@@ -228,137 +184,21 @@ impl TipFeeManager {
         let validator_token = self.get_validator_token(beneficiary)?;
 
         if fee_token != validator_token {
-            // Pre-AllegroModerato: release reserved liquidity
-            // Post-AllegroModerato: no liquidity was reserved, skip release
-            if !self.storage.spec().is_allegro_moderato() {
-                self.release_liquidity(fee_token, validator_token, refund_amount)?;
-            }
-
             // Record the pool if there was a non-zero swap
             if !actual_spending.is_zero() {
-                if self.storage.spec().is_allegro_moderato() {
-                    // Execute fee swap immediately and accumulate fees
-                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-                } else if !self.storage.spec().is_allegretto() {
-                    // Pre-Allegretto: track in buggy token_in_fees_array
-                    if !self.token_in_fees_array.at(fee_token).read()? {
-                        self.tokens_with_fees.push(fee_token)?;
-                        self.token_in_fees_array.at(fee_token).write(true)?;
-                    }
-                } else {
-                    self.add_pair_to_fees_array(fee_token, validator_token)?;
-                }
+                // Execute fee swap immediately and accumulate fees
+                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
             }
         }
 
-        if !self.storage.spec().is_allegretto() {
-            // Pre-Allegretto: increment collected fees if no AMM swap
-            // Post-AllegroModerato: pending fees are removed, increment collected fees without
-            if fee_token == validator_token {
-                self.increment_collected_fees(beneficiary, actual_spending)?;
-            }
+        let amount = if fee_token == validator_token {
+            actual_spending
         } else {
-            // Post allegreto: calculate the actual fee amount and save it in per-validator collected fees
-            let amount = if fee_token == validator_token {
-                actual_spending
-            } else {
-                compute_amount_out(actual_spending)?
-            };
-
-            self.increment_collected_fees(beneficiary, amount)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn execute_block(&mut self, sender: Address, beneficiary: Address) -> Result<()> {
-        // Only protocol can call this
-        if sender != Address::ZERO {
-            return Err(FeeManagerError::only_system_contract().into());
-        }
-
-        let mut total_amount_out = U256::ZERO;
-        let pools = if !self.storage.spec().is_allegretto() {
-            let validator_token = self.get_validator_token(beneficiary)?;
-            self.drain_tokens_with_fees()?
-                .into_iter()
-                .map(|token| (token, validator_token))
-                .collect::<Vec<_>>()
-        } else {
-            self.drain_pools_with_fees()?
-                .into_iter()
-                .map(|pair| {
-                    (
-                        token_id_to_address(pair.user_token),
-                        token_id_to_address(pair.validator_token),
-                    )
-                })
-                .collect()
+            compute_amount_out(actual_spending)?
         };
-        for (user_token, validator_token) in pools {
-            total_amount_out += self.execute_pending_fee_swaps(user_token, validator_token)?;
-        }
 
-        // Pre-Allegretto: increment beneficiary's collected fees if there was a non-zero swap
-        if !self.storage.spec().is_allegretto() && !total_amount_out.is_zero() {
-            self.increment_collected_fees(beneficiary, total_amount_out)?;
-        }
+        self.increment_collected_fees(beneficiary, amount)?;
 
-        for validator in self.drain_validators_with_fees()? {
-            let collected_fees = self.collected_fees.at(validator).read()?;
-
-            if collected_fees.is_zero() {
-                continue;
-            }
-
-            let validator_token = self.get_validator_token(validator)?;
-            let mut token = TIP20Token::from_address(validator_token)?;
-
-            // If FeeManager or validator are blacklisted, we are not transferring any fees
-            if token.is_transfer_authorized(self.address, beneficiary)? {
-                // Bound fee transfer to contract balance
-                let balance = token.balance_of(ITIP20::balanceOfCall {
-                    account: self.address,
-                })?;
-
-                if !balance.is_zero() {
-                    token
-                        .transfer(
-                            self.address,
-                            ITIP20::transferCall {
-                                to: beneficiary,
-                                amount: collected_fees.min(balance),
-                            },
-                        )
-                        .map_err(|_| {
-                            IFeeManager::IFeeManagerErrors::InsufficientFeeTokenBalance(
-                                IFeeManager::InsufficientFeeTokenBalance {},
-                            )
-                        })?;
-                }
-            }
-
-            // Clear collected fees for the validator
-            self.collected_fees.at(validator).delete()?;
-        }
-
-        Ok(())
-    }
-
-    /// Add a token to the tokens with fees array
-    fn add_pair_to_fees_array(
-        &mut self,
-        user_token: Address,
-        validator_token: Address,
-    ) -> Result<()> {
-        let pair = TokenPair {
-            user_token: address_to_token_id_unchecked(user_token),
-            validator_token: address_to_token_id_unchecked(validator_token),
-        };
-        if !self.pool_in_fees_array.at(pair).read()? {
-            self.pool_in_fees_array.at(pair).write(true)?;
-            self.pools_with_fees.push(pair)?;
-        }
         Ok(())
     }
 
@@ -461,7 +301,7 @@ impl TipFeeManager {
         let token = self.validator_tokens.at(call.validator).read()?;
 
         if token.is_zero() {
-            Ok(self.default_fee_token())
+            Ok(DEFAULT_FEE_TOKEN)
         } else {
             Ok(token)
         }
