@@ -370,11 +370,13 @@ impl TIP20Setup {
         })
     }
 
+    /// Apply the configuration, and expect it to fail with the given error.
     pub fn expect_err(self, expected: TempoPrecompileError) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == expected));
     }
 
+    /// Apply the configuration, and expect it to fail with the given TIP20 error.
     pub fn expect_tip20_err(self, expected: TIP20Error) {
         let result = self.apply();
         assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
