@@ -160,7 +160,7 @@ To execute a swap, you need to approve the Stablecoin DEX contract to spend the 
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem' // [!code ++]
+import { Actions, Addresses } from 'viem/tempo' // [!code ++]
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code ++]
@@ -209,7 +209,7 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem' // [!code ++]
+import { Actions, Addresses } from 'viem/tempo' // [!code ++]
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code ++]
@@ -266,7 +266,7 @@ Batch the token approval with the swap in a single transaction for better UX.
 
 ```tsx twoslash [Buy.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
@@ -321,7 +321,7 @@ function Buy() {
 
 ```tsx twoslash [Sell.tsx]
 // @noErrors
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'

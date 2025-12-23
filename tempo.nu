@@ -1,6 +1,6 @@
 #!/usr/bin/env nu
 
-# Tempo local benchmarking utilities
+# Tempo local utilities
 
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
@@ -65,11 +65,11 @@ def find-tempo-pids [] {
 }
 
 # ============================================================================
-# Stack commands
+# Infra commands
 # ============================================================================
 
 # Start the observability stack (Grafana + Prometheus)
-def "main stack up" [] {
+def "main infra up" [] {
     print "Starting observability stack..."
     docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
     print "Grafana available at http://localhost:3000 (admin/admin)"
@@ -77,7 +77,7 @@ def "main stack up" [] {
 }
 
 # Stop the observability stack
-def "main stack down" [] {
+def "main infra down" [] {
     print "Stopping observability stack..."
     docker compose -f $"($BENCH_DIR)/docker-compose.yml" down
 }
@@ -133,14 +133,15 @@ def "main kill" [
 }
 
 # ============================================================================
-# Node command
+# Localnet command
 # ============================================================================
 
-# Run Tempo node(s) for benchmarking
-def "main node" [
+# Run Tempo localnet
+def "main localnet" [
     --mode: string = "dev"      # Mode: "dev" or "consensus"
     --nodes: int = 3            # Number of validators (consensus mode)
     --accounts: int = 1000      # Number of genesis accounts
+    --genesis: string = ""      # Custom genesis file path (skips generation)
     --samply                    # Enable samply profiling (foreground node only)
     --samply-args: string = ""  # Additional samply arguments (space-separated)
     --reset                     # Wipe and regenerate localnet data
@@ -174,9 +175,9 @@ def "main node" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $samply $samply_args_list $reset $profile $loud $extra_args
+        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
     } else {
-        run-consensus-nodes $nodes $accounts $samply $samply_args_list $reset $profile $loud $extra_args
+        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args
     }
 }
 
@@ -184,20 +185,25 @@ def "main node" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
-    let needs_generation = $reset or (not ($genesis_path | path exists))
+def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+    let genesis_path = if $genesis != "" {
+        $genesis
+    } else {
+        let default_genesis = $"($LOCALNET_DIR)/genesis.json"
+        let needs_generation = $reset or (not ($default_genesis | path exists))
 
-    if $needs_generation {
-        if $reset {
-            print "Resetting localnet data..."
-        } else {
-            print "Genesis not found, generating..."
+        if $needs_generation {
+            if $reset {
+                print "Resetting localnet data..."
+            } else {
+                print "Genesis not found, generating..."
+            }
+            rm -rf $LOCALNET_DIR
+            mkdir $LOCALNET_DIR
+            print $"Generating genesis with ($accounts) accounts..."
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
         }
-        rm -rf $LOCALNET_DIR
-        mkdir $LOCALNET_DIR
-        print $"Generating genesis with ($accounts) accounts..."
-        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
+        $default_genesis
     }
 
     let tempo_bin = if $profile == "dev" {
@@ -252,30 +258,32 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
-    # Check if we need to generate localnet
-    let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
-        (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
-    )
+def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>] {
+    # Check if we need to generate localnet (only if no custom genesis provided)
+    if $genesis == "" {
+        let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
+            (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' } | length) == 0
+        )
 
-    if $needs_generation {
-        if $reset {
-            print "Resetting localnet data..."
-        } else {
-            print "Localnet not found, generating..."
+        if $needs_generation {
+            if $reset {
+                print "Resetting localnet data..."
+            } else {
+                print "Localnet not found, generating..."
+            }
+            rm -rf $LOCALNET_DIR
+
+            # Generate validator addresses (port 8000, 8100, 8200, ...)
+            # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
+            let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
+
+            print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
         }
-        rm -rf $LOCALNET_DIR
-
-        # Generate validator addresses (port 8000, 8100, 8200, ...)
-        # Using 100-port gaps to avoid collisions with system services (e.g., Intuit on 8021)
-        let validators = (0..<$nodes | each { |i| $"127.0.0.1:($i * 100 + 8000)" } | str join ",")
-
-        print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
     }
 
     # Parse the generated node configs
-    let genesis_path = $"($LOCALNET_DIR)/genesis.json"
+    let genesis_path = if $genesis != "" { $genesis } else { $"($LOCALNET_DIR)/genesis.json" }
 
     # Build trusted peers from enode.identity files
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
@@ -384,7 +392,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 # Bench command
 # ============================================================================
 
-# Run a full benchmark: start stack, nodes, and tempo-bench
+# Run a full benchmark: start infra, localnet, and tempo-bench
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
     --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
@@ -392,6 +400,7 @@ def "main bench" [
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
     --nodes: int = 3                                # Number of consensus nodes (consensus mode only)
+    --genesis: string = ""                          # Custom genesis file path (skips generation)
     --samply                                        # Profile nodes with samply
     --samply-args: string = ""                      # Additional samply arguments (space-separated)
     --reset                                         # Reset localnet before starting
@@ -439,7 +448,7 @@ def "main bench" [
     let genesis_accounts = ([$accounts $num_nodes] | math max) + 1
 
     let node_cmd = [
-        "nu" "bench.nu" "node"
+        "nu" "tempo.nu" "localnet"
         "--mode" $mode
         "--accounts" $"($genesis_accounts)"
         "--skip-build"
@@ -448,6 +457,7 @@ def "main bench" [
         "--features" $features
     ]
     | append (if $mode == "consensus" { ["--nodes" $"($nodes)"] } else { [] })
+    | append (if $genesis != "" { ["--genesis" $genesis] } else { [] })
     | append (if $reset { ["--reset"] } else { [] })
     | append (if $samply { ["--samply"] } else { [] })
     | append (if $samply_args != "" { [$"--samply-args=\"($samply_args)\""] } else { [] })
@@ -561,14 +571,14 @@ def wait-for-rpc [url: string, max_attempts: int = 120] {
 
 # Show help
 def main [] {
-    print "Tempo local benchmarking utilities"
+    print "Tempo local utilities"
     print ""
     print "Usage:"
-    print "  nu bench.nu bench [flags]           Run full benchmark (stack + nodes + bench)"
-    print "  nu bench.nu stack up                Start Grafana + Prometheus"
-    print "  nu bench.nu stack down              Stop the observability stack"
-    print "  nu bench.nu kill                    Kill any running tempo processes"
-    print "  nu bench.nu node [flags]            Run Tempo node(s)"
+    print "  nu tempo.nu bench [flags]            Run full benchmark (infra + localnet + bench)"
+    print "  nu tempo.nu localnet [flags]         Run Tempo localnet"
+    print "  nu tempo.nu infra up                 Start Grafana + Prometheus"
+    print "  nu tempo.nu infra down               Stop the observability stack"
+    print "  nu tempo.nu kill                     Kill any running tempo processes"
     print ""
     print "Bench flags (either --preset or --bench-args required):"
     print "  --mode <M>               Mode: dev or consensus (default: consensus)"
@@ -586,7 +596,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
     print ""
-    print "Node flags:"
+    print "Localnet flags:"
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
@@ -599,11 +609,11 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
     print ""
     print "Examples:"
-    print "  nu bench.nu bench --preset tip20 --tps 20000 --duration 60"
-    print "  nu bench.nu bench --preset tempo-mix --tps 5000 --samply --reset"
-    print "  nu bench.nu stack up"
-    print "  nu bench.nu node --mode dev --samply --accounts 50000 --reset"
-    print "  nu bench.nu node --mode consensus --nodes 3"
+    print "  nu tempo.nu bench --preset tip20 --tps 20000 --duration 60"
+    print "  nu tempo.nu bench --preset tempo-mix --tps 5000 --samply --reset"
+    print "  nu tempo.nu infra up"
+    print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
+    print "  nu tempo.nu localnet --mode consensus --nodes 3"
     print ""
     print "Port assignments (consensus mode, per node N=0,1,2...):"
     print "  Consensus:     8000 + N*100"
