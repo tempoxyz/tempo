@@ -18,9 +18,10 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM::{self},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip20::token_id_to_address,
 };
+use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -365,14 +366,14 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let tx = tx.into_signed(signature);
 
     assert!(
-        ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
             .balanceOf(user.address())
             .call()
             .await?
             .is_zero()
     );
 
-    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, provider.clone())
+    let balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
         .balanceOf(fee_payer.address())
         .call()
         .await?;
@@ -389,7 +390,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 
     assert!(receipt.status());
 
-    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer.address())
         .call()
         .await?;

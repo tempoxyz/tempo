@@ -153,9 +153,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// 1. Fee manager executeBlock - processes collected fees (pre-AllegroModerato only)
-    /// 2. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
-    /// 3. Subblocks signatures - validates subblock signatures
+    /// 1. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
+    /// 2. Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
@@ -166,31 +165,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         let chain_id = Some(chain_spec.chain().id());
         let mut txs = Vec::with_capacity(3);
 
-        // Build fee manager and stablecoin dex system transaction (pre-AllegroModerato only)
+        // Build stablecoin dex system transaction (pre-AllegroModerato only)
         if !chain_spec.is_allegro_moderato_active_at_timestamp(timestamp) {
-            let fee_manager_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block_env.number.to_be_bytes_vec())
-                .collect();
-
-            let fee_manager_tx = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    TxLegacy {
-                        chain_id,
-                        nonce: 0,
-                        gas_price: 0,
-                        gas_limit: 0,
-                        to: TIP_FEE_MANAGER_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: fee_manager_input,
-                    },
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                )),
-                TEMPO_SYSTEM_TX_SENDER,
-            );
-            txs.push(fee_manager_tx);
-
             let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
                 .abi_encode()
                 .into_iter()
