@@ -21,7 +21,8 @@ alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
-commonware-consensus.workspace = true
+# fuzz features provides access to dkg fixtures
+commonware-consensus = { workspace = true, features = ["fuzz"] }
 commonware-cryptography.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
@@ -41,7 +42,6 @@ reth-rpc-builder.workspace = true
 tempo-chainspec.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
-tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 

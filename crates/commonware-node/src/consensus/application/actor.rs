@@ -15,7 +15,7 @@ use std::{sync::Arc, time::Duration};
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{DecodeExt as _, Encode as _};
+use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
     Block as _,
     marshal::SchemeProvider as _,
@@ -38,7 +38,7 @@ use futures::{
 use rand::{CryptoRng, Rng};
 use reth_node_builder::ConsensusEngineHandle;
 use reth_primitives_traits::SealedBlock;
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
 use reth_provider::BlockReader as _;
@@ -515,7 +515,7 @@ impl Inner<Init> {
             let outcome = self
                 .state
                 .dkg_manager
-                .get_public_ceremony_outcome((parent_view, parent_digest), round)
+                .get_dkg_outcome(parent_digest, parent.height())
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -532,25 +532,22 @@ impl Inner<Init> {
             outcome.encode().freeze().into()
         } else {
             // Regular block: try to include intermediate dealing
-            match self
-                .state
-                .dkg_manager
-                .get_intermediate_dealing(round.epoch())
-                .await
-            {
+            match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
                 Err(error) => {
                     warn!(
                         %error,
-                        "failed getting ceremony deal for current epoch because DKG manager went away",
+                        "failed getting signed dealer log for current epoch \
+                        because actor dropped response channel",
                     );
                     Bytes::default()
                 }
                 Ok(None) => Bytes::default(),
-                Ok(Some(deal_outcome)) => {
+                Ok(Some(log)) => {
                     info!(
-                        "found ceremony deal outcome; will include in payload builder attributes"
+                        "received signed dealer log; will include in payload \
+                        builder attributes"
                     );
-                    deal_outcome.encode().freeze().into()
+                    log.encode().freeze().into()
                 }
             }
         };
@@ -864,51 +861,47 @@ async fn verify_header_extra_data(
             contains the correct DKG outcome",
         );
         let our_outcome = dkg_manager
-            .get_public_ceremony_outcome(parent, round)
+            .get_dkg_outcome(parent.1, block.height() - 1)
             .await
             .wrap_err(
                 "failed getting public dkg ceremony outcome; cannot verify end \
                 of epoch block",
             )?;
-        let block_outcome = PublicOutcome::decode(block.header().extra_data().as_ref()).wrap_err(
-            "failed decoding extra data header as DKG ceremony \
+        let block_outcome = OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
+            .wrap_err(
+                "failed decoding extra data header as DKG ceremony \
                 outcome; cannot verify end of epoch block",
-        )?;
+            )?;
         if our_outcome != block_outcome {
             // Emit the log here so that it's structured. The error would be annoying to read.
             warn!(
                 our.epoch = %our_outcome.epoch,
-                our.participants = ?our_outcome.participants,
-                our.public = ?our_outcome.public,
+                our.players = ?our_outcome.players(),
+                our.next_players = ?our_outcome.next_players(),
+                our.public = ?our_outcome.public(),
                 block.epoch = %block_outcome.epoch,
-                block.participants = ?block_outcome.participants,
-                block.public = ?block_outcome.public,
-                "our public dkg ceremony outcome does not match what's stored \
+                block.players = ?block_outcome.players(),
+                block.next_players = ?block_outcome.next_players(),
+                block.public = ?block_outcome.public(),
+                "our public dkg outcome does not match what's stored \
                 in the block",
             );
             return Err(eyre!(
-                "our public dkg ceremony outcome does not match what's \
+                "our public dkg outcome does not match what's \
                 stored in the block header extra_data field; they must \
                 match so that the end-of-block is valid",
             ));
         }
-    } else if !block.header().extra_data().is_empty()
-        && let Ok(dealing) = block.try_read_ceremony_deal_outcome()
-    {
-        info!("block header extra_data header contained intermediate DKG dealing; verifying it");
+    } else if !block.header().extra_data().is_empty() {
+        let bytes = block.header().extra_data().to_vec();
+        let dealer = dkg_manager
+            .verify_dealer_log(round.epoch(), bytes)
+            .await
+            .wrap_err("failed request to verify DKG dealing")?;
         ensure!(
-            dealing.dealer() == proposer,
-            "proposer `{proposer}` is not the dealer `{}` recorded in the \
-            intermediate DKG dealing",
-            dealing.dealer(),
-        );
-
-        ensure!(
-            dkg_manager
-                .verify_intermediate_dealings(dealing)
-                .await
-                .wrap_err("failed request to verify DKG dealing")?,
-            "signature of intermediate DKG outcome could not be verified",
+            &dealer == proposer,
+            "proposer `{proposer}` is not the dealer `{dealer}` of the dealing \
+            in the block",
         );
     }
 
