@@ -13,7 +13,6 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, B256, Bytes, U256};
 use alloy_rlp::Decodable;
-use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
