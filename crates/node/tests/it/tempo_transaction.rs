@@ -16,7 +16,8 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, tip20::ITIP20::{self, transferCall},
+    TIP_FEE_MANAGER_ADDRESS,
+    tip20::ITIP20::{self, transferCall},
 };
 
 use tempo_primitives::{
