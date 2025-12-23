@@ -1889,10 +1889,7 @@ pub(crate) mod tests {
                 0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
             ]
         );
-        assert_eq!(
-            &DEFAULT_FEE_TOKEN.as_slice()[..12],
-            &TIP20_TOKEN_PREFIX
-        );
+        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
     }
 
     #[test]
