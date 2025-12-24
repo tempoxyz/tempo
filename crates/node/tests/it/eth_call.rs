@@ -365,11 +365,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Note: This test uses moderato genesis (without allegretto) to test older behavior
-    let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

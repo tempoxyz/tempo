@@ -73,17 +73,6 @@ where
     Ok(token)
 }
 
-/// Creates a test TIP20 token (same as setup_test_token, kept for compatibility)
-pub(crate) async fn setup_test_token_pre_allegretto<P>(
-    provider: P,
-    caller: Address,
-) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
-where
-    P: Provider + Clone,
-{
-    setup_test_token(provider, caller).await
-}
-
 /// Node source for integration testing
 pub(crate) enum NodeSource {
     ExternalRpc(Url),

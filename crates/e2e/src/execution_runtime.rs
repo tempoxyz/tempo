@@ -673,7 +673,7 @@ impl std::fmt::Debug for ExecutionNode {
 
 pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!(
-        "../../node/tests/assets/test-genesis-moderato.json"
+        "../../node/tests/assets/test-genesis.json"
     ))
     .unwrap()
 }
