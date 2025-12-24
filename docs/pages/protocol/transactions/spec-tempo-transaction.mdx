@@ -644,14 +644,16 @@ When an Access Key attempts to call `authorizeKey()`, `revokeKey()`, or `updateS
 
 The protocol tracks and enforces spending limits for TIP20 token transfers:
 
-**Scope:** Only TIP20 `transfer()` and `approve()` calls are tracked
+**Scope:** Only TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `startReward()` calls are tracked
+- Spending limits only apply when `msg.sender == tx.origin` (direct EOA calls)
+- When a contract makes transfers on behalf of the user, spending limits do NOT apply (e.g., `transferFrom()`)
 - Native value transfers are NOT limited
 - NFT transfers are NOT limited
 - Other asset types are NOT limited
 
-**Tracking:** During transaction execution, when an Access Key's transaction calls TIP20 methods:
-1. Protocol intercepts `transfer(to, amount)` and `approve(spender, amount)` calls
-2. For `transfer`, the full `amount` is checked against the remaining limit
+**Tracking:** During transaction execution, when an Access Key's transaction directly calls TIP20 methods:
+1. Protocol intercepts `transfer(to, amount)`, `transferWithMemo()`, `approve(spender, amount)`, and `startReward()` calls
+2. For `transfer`/`transferWithMemo`, the full `amount` is checked against the remaining limit
 3. For `approve`, only **increases** in approval (new approval minus previous allowance) are checked and counted against the limit
 4. Queries: `getRemainingLimit(account, keyId, token)`
 5. Checks: relevant amount (transfer amount or approval increase) `<= remaining_limit`

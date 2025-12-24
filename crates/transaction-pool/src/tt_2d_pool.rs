@@ -55,7 +55,9 @@ pub struct AA2dPool {
     /// ```
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
-    address_slots: HashMap<U256, (Address, U256)>,
+    slot_to_seq_id: HashMap<U256, AASequenceId>,
+    /// Reverse index for cleaning up `slots_to_seq_id`.
+    seq_id_to_slot: HashMap<AASequenceId, U256>,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -76,7 +78,8 @@ impl AA2dPool {
             independent_transactions: Default::default(),
             by_id: Default::default(),
             by_hash: Default::default(),
-            address_slots: Default::default(),
+            slot_to_seq_id: Default::default(),
+            seq_id_to_slot: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
         }
@@ -405,6 +408,14 @@ impl AA2dPool {
         id: &AA2dTransactionId,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
+
+        // Clean up cached nonce key slots if this was the last transaction of the sequence
+        if self.by_id.range(id.seq_id.range()).next().is_none()
+            && let Some(slot) = self.seq_id_to_slot.remove(&id.seq_id)
+        {
+            self.slot_to_seq_id.remove(&slot);
+        }
+
         self.remove_independent(id);
         self.by_hash.remove(tx.inner.transaction.hash());
         Some(tx.inner.transaction)
@@ -457,8 +468,7 @@ impl AA2dPool {
             .transaction
             .aa_transaction_id()
             .expect("is AA transaction");
-        self.by_id.remove(&id)?;
-        self.remove_independent(&id);
+        self.remove_transaction_by_id(&id)?;
         Some(tx)
     }
 
@@ -675,13 +685,11 @@ impl AA2dPool {
         };
 
         trace!(target: "txpool::2d", ?address, ?nonce_key, "recording 2d nonce slot");
+        let seq_id = AASequenceId::new(address, nonce_key);
 
-        if self
-            .address_slots
-            .insert(slot, (address, nonce_key))
-            .is_none()
-        {
+        if self.slot_to_seq_id.insert(slot, seq_id).is_none() {
             self.metrics.inc_nonce_key_count(1);
+            self.seq_id_to_slot.insert(seq_id, slot);
         }
     }
 
@@ -700,11 +708,8 @@ impl AA2dPool {
             if account == &NONCE_PRECOMPILE_ADDRESS {
                 // Process known 2D nonce slot changes.
                 for (slot, value) in state.storage.iter() {
-                    if let Some((address, nonce_key)) = self.address_slots.get(slot) {
-                        changes.insert(
-                            AASequenceId::new(*address, *nonce_key),
-                            value.present_value.saturating_to(),
-                        );
+                    if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
+                        changes.insert(*seq_id, value.present_value.saturating_to());
                     }
                 }
             }
@@ -955,6 +960,11 @@ impl AASequenceId {
 
     const fn start_bound(self) -> std::ops::Bound<AA2dTransactionId> {
         std::ops::Bound::Included(AA2dTransactionId::new(self, 0))
+    }
+
+    /// Returns a range of transactions for this sequence.
+    const fn range(self) -> std::ops::RangeInclusive<AA2dTransactionId> {
+        AA2dTransactionId::new(self, 0)..=AA2dTransactionId::new(self, u64::MAX)
     }
 }
 
