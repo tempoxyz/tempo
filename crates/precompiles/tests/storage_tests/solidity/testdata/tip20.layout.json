@@ -142,49 +142,25 @@
           {
             "astId": 74,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "lastUpdateTime",
+            "label": "optedInSupply",
             "offset": 0,
             "slot": "16",
-            "type": "t_uint64"
+            "type": "t_uint128"
           },
           {
             "astId": 76,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "totalRewardPerSecond",
-            "offset": 0,
-            "slot": "17",
-            "type": "t_uint256"
-          },
-          {
-            "astId": 78,
-            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "optedInSupply",
-            "offset": 0,
-            "slot": "18",
-            "type": "t_uint128"
-          },
-          {
-            "astId": 80,
-            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
             "label": "nextStreamId",
             "offset": 16,
-            "slot": "18",
+            "slot": "16",
             "type": "t_uint64"
           },
           {
-            "astId": 86,
-            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "streams",
-            "offset": 0,
-            "slot": "19",
-            "type": "t_mapping(t_uint64,t_struct(RewardStream)13_storage)"
-          },
-          {
-            "astId": 92,
+            "astId": 82,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
             "label": "userRewardInfo",
             "offset": 0,
-            "slot": "20",
+            "slot": "17",
             "type": "t_mapping(t_address,t_struct(UserRewardInfo)20_storage)"
           }
         ],
@@ -246,64 +222,10 @@
             "numberOfBytes": "32",
             "value": "t_bytes32"
           },
-          "t_mapping(t_uint64,t_struct(RewardStream)13_storage)": {
-            "encoding": "mapping",
-            "key": "t_uint64",
-            "label": "mapping(uint64 => struct TIP20.RewardStream)",
-            "numberOfBytes": "32",
-            "value": "t_struct(RewardStream)13_storage"
-          },
           "t_string_storage": {
             "encoding": "bytes",
             "label": "string",
             "numberOfBytes": "32"
-          },
-          "t_struct(RewardStream)13_storage": {
-            "encoding": "inplace",
-            "label": "struct TIP20.RewardStream",
-            "members": [
-              {
-                "astId": 4,
-                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-                "label": "funder",
-                "offset": 0,
-                "slot": "0",
-                "type": "t_address"
-              },
-              {
-                "astId": 6,
-                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-                "label": "startTime",
-                "offset": 20,
-                "slot": "0",
-                "type": "t_uint64"
-              },
-              {
-                "astId": 8,
-                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-                "label": "endTime",
-                "offset": 0,
-                "slot": "1",
-                "type": "t_uint64"
-              },
-              {
-                "astId": 10,
-                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-                "label": "ratePerSecondScaled",
-                "offset": 0,
-                "slot": "2",
-                "type": "t_uint256"
-              },
-              {
-                "astId": 12,
-                "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-                "label": "amountTotal",
-                "offset": 0,
-                "slot": "3",
-                "type": "t_uint256"
-              }
-            ],
-            "numberOfBytes": "128"
           },
           "t_struct(UserRewardInfo)20_storage": {
             "encoding": "inplace",

@@ -87,14 +87,6 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
-        struct RewardStream {
-            address funder;
-            uint64 startTime;
-            uint64 endTime;
-            uint256 ratePerSecondScaled;
-            uint256 amountTotal;
-        }
-
         struct UserRewardInfo {
             address rewardRecipient;
             uint256 rewardPerToken;
@@ -105,8 +97,6 @@ crate::sol! {
         function distributeReward(uint256 amount) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function claimRewards() external returns (uint256);
-        function getStream(uint64 id) external view returns (RewardStream memory);
-        function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
         function nextStreamId() external view returns (uint64);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);

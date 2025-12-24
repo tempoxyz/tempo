@@ -12,10 +12,7 @@ use crate::{
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20::{
-        rewards::{RewardStream, UserRewardInfo},
-        roles::DEFAULT_ADMIN_ROLE,
-    },
+    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -94,11 +91,8 @@ pub struct TIP20Token {
 
     // TIP20 Rewards
     global_reward_per_token: U256,
-    last_update_time: u64,
-    total_reward_per_second: U256,
     opted_in_supply: u128,
     next_stream_id: u64,
-    streams: Mapping<u64, RewardStream>,
     user_reward_info: Mapping<Address, UserRewardInfo>,
 
     // Fee recipient
@@ -390,9 +384,6 @@ impl TIP20Token {
         if new_supply > supply_cap {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
-
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
 
         self.handle_rewards_on_mint(to, amount)?;
 
@@ -767,10 +758,6 @@ impl TIP20Token {
             );
         }
 
-        // Accrue before balance changes
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
-
         self.handle_rewards_on_transfer(from, to, amount)?;
 
         // Adjust balances
@@ -803,10 +790,6 @@ impl TIP20Token {
         }
 
         self.check_spending_limit(from, amount)?;
-
-        // Accrue rewards up to current timestamp
-        let current_timestamp = self.storage.timestamp();
-        self.accrue(current_timestamp)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
@@ -859,7 +842,6 @@ impl TIP20Token {
             return Ok(());
         }
 
-        // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
         // Update rewards for the recipient and get their reward recipient
         let to_reward_recipient = self.update_rewards(to)?;
 

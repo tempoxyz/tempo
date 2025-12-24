@@ -170,19 +170,9 @@ impl Precompile for TIP20Token {
                 })
             }
 
-            ITIP20::totalRewardPerSecondCall::SELECTOR => {
-                view::<ITIP20::totalRewardPerSecondCall>(calldata, |_call| {
-                    self.get_total_reward_per_second()
-                })
-            }
-
             ITIP20::optedInSupplyCall::SELECTOR => {
                 view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
             }
-
-            ITIP20::getStreamCall::SELECTOR => view::<ITIP20::getStreamCall>(calldata, |call| {
-                self.get_stream(call.id).map(|stream| stream.into())
-            }),
 
             ITIP20::nextStreamIdCall::SELECTOR => {
                 view::<ITIP20::nextStreamIdCall>(calldata, |_call| self.get_next_stream_id())

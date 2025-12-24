@@ -10,10 +10,7 @@ use tempo_precompiles_macros::Storable;
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
-    /// Starts a new reward stream for the token contract.
-    ///
-    /// This function allows an authorized user to fund a reward stream that distributes
-    /// tokens to opted-in recipients.
+    /// Allows an authorized user to distribute reward tokens to opted-in recipients.
     pub fn distribute_reward(
         &mut self,
         msg_sender: Address,
@@ -55,45 +52,6 @@ impl TIP20Token {
         }))?;
 
         Ok(0)
-    }
-
-    /// Accrues rewards based on elapsed time since last update.
-    ///
-    /// This function calculates and updates the reward per token stored based on
-    /// the total reward rate and the time elapsed since the last update.
-    /// Only processes rewards if there is an opted-in supply.
-    pub fn accrue(&mut self, accrue_to_timestamp: U256) -> Result<()> {
-        let elapsed = accrue_to_timestamp
-            .checked_sub(U256::from(self.get_last_update_time()?))
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        if elapsed.is_zero() {
-            return Ok(());
-        }
-
-        // NOTE(rusowsky): first limb = u64, so it should be fine.
-        // however, it would be easier to always work with U256, since
-        // there is no possible slot packing in this slot (surrounded by U256)
-        self.set_last_update_time(accrue_to_timestamp.to::<u64>())?;
-
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
-        if opted_in_supply == U256::ZERO {
-            return Ok(());
-        }
-
-        let total_reward_per_second = self.get_total_reward_per_second()?;
-        if total_reward_per_second > U256::ZERO {
-            let delta_rpt = total_reward_per_second
-                .checked_mul(elapsed)
-                .and_then(|v| v.checked_div(opted_in_supply))
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            let current_rpt = self.get_global_reward_per_token()?;
-            let new_rpt = current_rpt
-                .checked_add(delta_rpt)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_global_reward_per_token(new_rpt)?;
-        }
-
-        Ok(())
     }
 
     /// Updates and accumulates accrued rewards for a specific token holder.
@@ -158,9 +116,6 @@ impl TIP20Token {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }
 
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
-
         let from_delegate = self.update_rewards(msg_sender)?;
 
         let holder_balance = self.get_balance(msg_sender)?;
@@ -208,8 +163,6 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(msg_sender, msg_sender)?;
 
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
         self.update_rewards(msg_sender)?;
 
         let mut info = self.user_reward_info.at(msg_sender).read()?;
@@ -272,16 +225,6 @@ impl TIP20Token {
         self.global_reward_per_token.write(value)
     }
 
-    /// Gets the timestamp of the last reward update from storage.
-    fn get_last_update_time(&self) -> Result<u64> {
-        self.last_update_time.read()
-    }
-
-    /// Sets the timestamp of the last reward update in storage.
-    fn set_last_update_time(&mut self, value: u64) -> Result<()> {
-        self.last_update_time.write(value)
-    }
-
     /// Gets the total supply of tokens opted into rewards from storage.
     pub fn get_opted_in_supply(&self) -> Result<u128> {
         self.opted_in_supply.read()
@@ -290,11 +233,6 @@ impl TIP20Token {
     /// Sets the total supply of tokens opted into rewards in storage.
     pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
         self.opted_in_supply.write(value)
-    }
-
-    /// Gets the total reward per second rate from storage.
-    pub fn get_total_reward_per_second(&self) -> Result<U256> {
-        self.total_reward_per_second.read()
     }
 
     /// Handles reward accounting for both sender and receiver during token transfers.
@@ -351,9 +289,6 @@ impl TIP20Token {
     }
 
     /// Retrieves a reward stream by its ID.
-    pub fn get_stream(&self, stream_id: u64) -> Result<RewardStream> {
-        self.streams.at(stream_id).read()
-    }
 
     /// Retrieves user reward information for a given account.
     pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
@@ -366,46 +301,6 @@ pub struct UserRewardInfo {
     pub reward_recipient: Address,
     pub reward_per_token: U256,
     pub reward_balance: U256,
-}
-
-#[derive(Debug, Clone, Storable)]
-pub struct RewardStream {
-    funder: Address,
-    start_time: u64,
-    end_time: u64,
-    rate_per_second_scaled: U256,
-    amount_total: U256,
-}
-
-impl RewardStream {
-    /// Creates a new RewardStream instance.
-    pub fn new(
-        funder: Address,
-        start_time: u64,
-        end_time: u64,
-        rate_per_second_scaled: U256,
-        amount_total: U256,
-    ) -> Self {
-        Self {
-            funder,
-            start_time,
-            end_time,
-            rate_per_second_scaled,
-            amount_total,
-        }
-    }
-}
-
-impl From<RewardStream> for ITIP20::RewardStream {
-    fn from(value: RewardStream) -> Self {
-        Self {
-            funder: value.funder,
-            startTime: value.start_time,
-            endTime: value.end_time,
-            ratePerSecondScaled: value.rate_per_second_scaled,
-            amountTotal: value.amount_total,
-        }
-    }
 }
 
 impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
@@ -493,9 +388,6 @@ mod tests {
             )?;
 
             assert_eq!(id, 0);
-
-            let total_reward_per_second = token.get_total_reward_per_second()?;
-            assert_eq!(total_reward_per_second, U256::ZERO);
 
             Ok(())
         })
