@@ -288,8 +288,6 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Retrieves a reward stream by its ID.
-
     /// Retrieves user reward information for a given account.
     pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
         self.user_reward_info.at(account).read()
