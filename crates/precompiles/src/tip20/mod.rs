@@ -94,9 +94,6 @@ pub struct TIP20Token {
     opted_in_supply: u128,
     next_stream_id: u64,
     user_reward_info: Mapping<Address, UserRewardInfo>,
-
-    // Fee recipient
-    fee_recipient: Address,
 }
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
@@ -310,26 +307,6 @@ impl TIP20Token {
             updater: msg_sender,
             newQuoteToken: next_quote_token,
         }))
-    }
-
-    /// Sets a new fee recipient
-    pub fn set_fee_recipient(&mut self, msg_sender: Address, new_recipient: Address) -> Result<()> {
-        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        self.fee_recipient.write(new_recipient)?;
-
-        self.emit_event(TIP20Event::FeeRecipientUpdated(
-            ITIP20::FeeRecipientUpdated {
-                updater: msg_sender,
-                newRecipient: new_recipient,
-            },
-        ))?;
-
-        Ok(())
-    }
-
-    /// Gets the current fee recipient
-    pub fn get_fee_recipient(&self, _msg_sender: Address) -> Result<Address> {
-        self.fee_recipient.read()
     }
 
     // Token operations
@@ -645,7 +622,6 @@ impl TIP20Token {
         currency: &str,
         quote_token: Address,
         admin: Address,
-        fee_recipient: Address,
     ) -> Result<()> {
         trace!(%name, address=%self.address, "Initializing token");
 
@@ -672,7 +648,6 @@ impl TIP20Token {
         // Set default values
         self.supply_cap.write(U256::from(u128::MAX))?;
         self.transfer_policy_id.write(1)?;
-        self.fee_recipient.write(fee_recipient)?;
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
@@ -1738,31 +1713,6 @@ pub(crate) mod tests {
                 account: STABLECOIN_EXCHANGE_ADDRESS,
             })?;
             assert_eq!(balance, amount);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_fee_recipient() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
-
-        storage.set_spec(TempoHardfork::Adagio);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            let fee_recipient = token.get_fee_recipient(admin)?;
-            assert_eq!(fee_recipient, Address::ZERO);
-
-            let expected_recipient = Address::random();
-            token.set_fee_recipient(admin, expected_recipient)?;
-
-            let fee_recipient = token.get_fee_recipient(admin)?;
-            assert_eq!(fee_recipient, expected_recipient);
-
-            let result = token.set_fee_recipient(Address::random(), expected_recipient);
-            assert!(result.is_err());
 
             Ok(())
         })

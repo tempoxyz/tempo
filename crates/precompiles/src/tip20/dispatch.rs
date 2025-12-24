@@ -1,7 +1,6 @@
 use super::ITIP20;
 use crate::{
     Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
-    storage::Handler,
     tip20::{IRolesAuth, TIP20Token},
     unknown_selector, view,
 };
@@ -114,15 +113,6 @@ impl Precompile for TIP20Token {
                 )
             }
 
-            ITIP20::feeRecipientCall::SELECTOR => {
-                view::<ITIP20::feeRecipientCall>(calldata, |_call| self.fee_recipient.read())
-            }
-            ITIP20::setFeeRecipientCall::SELECTOR => {
-                mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
-                    self.set_fee_recipient(s, call.newRecipient)
-                })
-            }
-
             ITIP20::mintCall::SELECTOR => {
                 mutate_void::<ITIP20::mintCall>(calldata, msg_sender, |s, call| self.mint(s, call))
             }
@@ -224,7 +214,7 @@ impl Precompile for TIP20Token {
 mod tests {
     use super::*;
     use crate::{
-        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        storage::StorageCtx,
         test_util::{TIP20Setup, setup_storage},
         tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
@@ -734,56 +724,6 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_fee_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let fee_recipient = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .fee_recipient(fee_recipient)
-                .apply()?;
-
-            let call = ITIP20::feeRecipientCall {};
-            let calldata = call.abi_encode();
-            let result = token.call(&Bytes::from(calldata), admin)?;
-
-            assert!(!result.reverted);
-            let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
-            assert_eq!(recipient, fee_recipient);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_fee_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let new_recipient = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            let call = ITIP20::setFeeRecipientCall {
-                newRecipient: new_recipient,
-            };
-            let calldata = call.abi_encode();
-            let result = token.call(&Bytes::from(calldata), admin)?;
-
-            assert!(!result.reverted);
-
-            let call = ITIP20::feeRecipientCall {};
-            let calldata = call.abi_encode();
-            let result = token.call(&Bytes::from(calldata), admin)?;
-
-            let recipient = ITIP20::feeRecipientCall::abi_decode_returns(&result.bytes)?;
-            assert_eq!(recipient, new_recipient);
-
             Ok(())
         })
     }

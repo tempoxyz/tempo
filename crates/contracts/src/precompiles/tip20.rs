@@ -60,8 +60,6 @@ crate::sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-        function feeRecipient() external view returns (address);
-        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -115,7 +113,6 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint64 indexed id, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
-        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);

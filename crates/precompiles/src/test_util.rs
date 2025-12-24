@@ -136,7 +136,6 @@ pub struct TIP20Setup {
     action: Action,
     quote_token: Option<Address>,
     admin: Option<Address>,
-    fee_recipient: Option<Address>,
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
@@ -158,7 +157,7 @@ impl TIP20Setup {
 
     /// Create a new token via factory. Ensures that `PathUSD` and `TIP20Factory` are initialized.
     ///
-    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`, `fee_recipient: Address::ZERO`
+    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`
     pub fn create(name: &'static str, symbol: &'static str, admin: Address) -> Self {
         Self {
             action: Action::CreateToken {
@@ -202,12 +201,6 @@ impl TIP20Setup {
     /// Set a custom quote token (default: PathUSD).
     pub fn quote_token(mut self, token: Address) -> Self {
         self.quote_token = Some(token);
-        self
-    }
-
-    /// Set the fee recipient address.
-    pub fn fee_recipient(mut self, recipient: Address) -> Self {
-        self.fee_recipient = Some(recipient);
         self
     }
 
@@ -317,14 +310,6 @@ impl TIP20Setup {
                 TIP20Token::from_address(address)?
             }
         };
-
-        // Apply fee recipient
-        if let Some(fee_recipient) = self.fee_recipient {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.set_fee_recipient(admin, fee_recipient)?;
-        }
 
         // Apply roles
         for (account, role) in self.roles {

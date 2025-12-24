@@ -44,14 +44,7 @@ fn tip20_metadata(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -69,14 +62,7 @@ fn tip20_metadata(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -94,14 +80,7 @@ fn tip20_metadata(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -119,14 +98,7 @@ fn tip20_metadata(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -145,14 +117,7 @@ fn tip20_metadata(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             token
@@ -183,14 +148,7 @@ fn tip20_view(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             token
@@ -221,14 +179,7 @@ fn tip20_view(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             token
                 .approve(
@@ -256,14 +207,7 @@ fn tip20_view(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -281,14 +225,7 @@ fn tip20_view(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -306,14 +243,7 @@ fn tip20_view(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             b.iter(|| {
@@ -334,14 +264,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
 
@@ -362,14 +285,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             // Pre-mint tokens for burning
@@ -402,14 +318,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
 
             let amount = U256::from(500);
@@ -432,14 +341,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             // Pre-mint tokens for transfers
@@ -474,14 +376,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             // Pre-mint tokens and set allowance
@@ -530,14 +425,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *ISSUER_ROLE);
             // Pre-mint tokens for transfers
@@ -568,14 +456,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *PAUSE_ROLE);
 
@@ -595,14 +476,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let _ = token.grant_role_internal(admin, *UNPAUSE_ROLE);
 
@@ -622,14 +496,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let counter = U256::from(10000);
 
@@ -651,14 +518,7 @@ fn tip20_mutate(c: &mut Criterion) {
             initialize_path_usd(admin).unwrap();
             let mut token = TIP20Token::new(1);
             token
-                .initialize(
-                    "TestToken",
-                    "T",
-                    "USD",
-                    PATH_USD_ADDRESS,
-                    admin,
-                    Address::ZERO,
-                )
+                .initialize("TestToken", "T", "USD", PATH_USD_ADDRESS, admin)
                 .unwrap();
             let policy_id = 2;
 
