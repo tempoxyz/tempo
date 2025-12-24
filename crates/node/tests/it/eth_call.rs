@@ -27,10 +27,7 @@ use tempo_precompiles::{
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -69,10 +66,7 @@ async fn test_eth_call() -> eyre::Result<()> {
 async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -160,10 +154,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -222,10 +213,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -257,10 +245,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

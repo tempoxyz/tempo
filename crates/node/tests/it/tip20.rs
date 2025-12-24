@@ -15,10 +15,7 @@ use crate::utils::{TestNodeBuilder, setup_test_token};
 async fn test_tip20_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -150,10 +147,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
 async fn test_tip20_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -233,10 +227,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
 async fn test_tip20_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let owner = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -345,10 +336,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -403,10 +391,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
 async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -532,10 +517,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 async fn test_tip20_whitelist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

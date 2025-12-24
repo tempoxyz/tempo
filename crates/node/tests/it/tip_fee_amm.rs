@@ -21,10 +21,7 @@ use tempo_precompiles::{
 async fn test_mint_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -252,10 +249,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Note: This test uses moderato genesis to test pre-allegretto behavior
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     // Setup user and validator wallets
@@ -586,10 +580,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
