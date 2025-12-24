@@ -5,7 +5,6 @@ pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
-pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
@@ -14,7 +13,6 @@ use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
 pub use stablecoin_exchange::*;
-pub use tip_account_registrar::*;
 pub use tip_fee_manager::*;
 pub use tip20::*;
 pub use tip20_factory::*;
