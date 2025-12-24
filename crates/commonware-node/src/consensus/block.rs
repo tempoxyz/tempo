@@ -86,19 +86,30 @@ impl Read for Block {
             commonware_codec::Error::Wrapped("reading RLP header", rlp_err.into())
         })?;
 
-        if header.length_with_payload() > buf.remaining() {
+        let payload_len = header.length_with_payload();
+        if payload_len > buf.remaining() {
             // TODO: it would be nice to report more information here, but commonware_codex::Error does not
             // have the fidelity for it (outside abusing Error::Wrapped).
             return Err(commonware_codec::Error::EndOfBuffer);
         }
-        let bytes = buf.copy_to_bytes(header.length_with_payload());
-
-        // TODO: decode straight to a reth SealedBlock once released:
-        // https://github.com/paradigmxyz/reth/pull/18003
-        // For now relies on `Decodable for alloy_consensus::Block`.
-        let inner = alloy_rlp::Decodable::decode(&mut bytes.as_ref()).map_err(|rlp_err| {
-            commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-        })?;
+        let decode_block = |input: &mut &[u8]| {
+            // TODO: decode straight to a reth SealedBlock once released:
+            // https://github.com/paradigmxyz/reth/pull/18003
+            // For now relies on `Decodable for alloy_consensus::Block`.
+            alloy_rlp::Decodable::decode(input).map_err(|rlp_err| {
+                commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+            })
+        };
+        let inner = if buf.chunk().len() >= payload_len {
+            let mut slice = &buf.chunk()[..payload_len];
+            let inner = decode_block(&mut slice)?;
+            buf.advance(payload_len);
+            inner
+        } else {
+            let bytes = buf.copy_to_bytes(payload_len);
+            let mut bytes_ref = bytes.as_ref();
+            decode_block(&mut bytes_ref)?
+        };
 
         Ok(Self::from_execution_block(inner))
     }
