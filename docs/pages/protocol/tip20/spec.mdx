@@ -376,9 +376,6 @@ interface ITIP20 {
     /// @notice The configured transfer policy denies authorization for the sender or recipient
     error PolicyForbids();
 
-    /// @notice Attempted to start a timed reward distribution; streaming is disabled
-    error ScheduledRewardsDisabled();
-
     /// @notice The attempted operation would cause total supply to exceed the configured supply cap
     error SupplyCapExceeded();
 

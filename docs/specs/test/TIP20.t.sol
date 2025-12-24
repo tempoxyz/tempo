@@ -1921,23 +1921,6 @@ contract TIP20Test is BaseTest {
         assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpected, 1000);
     }
 
-    /// @notice Fuzz test for scheduled rewards - should always revert with ScheduledRewardsDisabled
-    function testFuzz_scheduledRewards_AlwaysReverts(uint256 rewardAmount, uint32 duration) public {
-        rewardAmount = bound(rewardAmount, 1e18, 100e18);
-        duration = uint32(bound(duration, 1, 365 days)); // duration > 0
-
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-
-        // Should always revert with ScheduledRewardsDisabled for any non-zero duration
-        try token.distributeReward(rewardAmount) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ScheduledRewardsDisabled.selector));
-        }
-        vm.stopPrank();
-    }
-
     function testFuzz_optedInSupplyConsistency(
         uint256 aliceAmount,
         uint256 bobAmount,

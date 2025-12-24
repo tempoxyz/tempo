@@ -142,10 +142,8 @@ crate::sol! {
         error TransfersDisabled();
         error InvalidAmount();
         error NotStreamFunder();
-        error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
-        error RewardsDisabled();
         error ProtectedAddress();
         error InvalidToken();
         error InvalidTransferPolicyId();
@@ -234,11 +232,6 @@ impl TIP20Error {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
     }
 
-    /// Error for when stream does not exist
-    pub const fn stream_inactive() -> Self {
-        Self::StreamInactive(ITIP20::StreamInactive {})
-    }
-
     /// Error for when msg.sedner is not stream funder
     pub const fn not_stream_funder() -> Self {
         Self::NotStreamFunder(ITIP20::NotStreamFunder {})
@@ -247,11 +240,6 @@ impl TIP20Error {
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for when rewards are disabled
-    pub const fn rewards_disabled() -> Self {
-        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
     }
 
     /// Error for operations on protected addresses (like burning `FeeManager` tokens)
