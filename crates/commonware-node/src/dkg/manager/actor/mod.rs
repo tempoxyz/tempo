@@ -280,6 +280,11 @@ where
             return;
         }
 
+        // Handle pause-after-epoch if we've already processed the target epoch boundary.
+        if let Ok(Some(last_height)) = tx.get_last_processed_height().await {
+            self.handle_pause_after_epoch(last_height).await;
+        }
+
         self.register_previous_epoch_state(&mut tx).await;
         self.register_current_epoch_state(&mut tx).await;
 
@@ -630,6 +635,10 @@ where
         tx.commit()
             .await
             .expect("must be able to commit finalize tx");
+
+        // Handle pause-after-epoch if we've reached the target epoch boundary
+        self.handle_pause_after_epoch(block_height).await;
+
         acknowledgement.acknowledge();
     }
 
@@ -771,24 +780,34 @@ where
 
         tx.set_validators(epoch_state.epoch(), new_validator_state.clone());
 
-        self.config
-            .epoch_manager
-            .report(
-                epoch::Enter {
-                    epoch: epoch_state.epoch(),
-                    public: epoch_state.public_polynomial().clone(),
-                    share: epoch_state.private_share().clone(),
-                    participants: epoch_state.participants().clone(),
-                }
-                .into(),
-            )
-            .await;
-        info!(
-            epoch = epoch_state.epoch(),
-            participants = ?epoch_state.participants(),
-            public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
-            "reported epoch state to epoch manager",
-        );
+        // Skip entering the epoch if we're pausing at the previous epoch boundary
+        if let Some(pause_epoch) = self.config.pause.pause_after_epoch
+            && epoch_state.epoch() == pause_epoch + 1
+        {
+            info!(
+                epoch = epoch_state.epoch(),
+                pause_epoch, "skipping epoch entry due to pause-after-epoch configuration",
+            );
+        } else {
+            self.config
+                .epoch_manager
+                .report(
+                    epoch::Enter {
+                        epoch: epoch_state.epoch(),
+                        public: epoch_state.public_polynomial().clone(),
+                        share: epoch_state.private_share().clone(),
+                        participants: epoch_state.participants().clone(),
+                    }
+                    .into(),
+                )
+                .await;
+            info!(
+                epoch = epoch_state.epoch(),
+                participants = ?epoch_state.participants(),
+                public = alloy_primitives::hex::encode(epoch_state.public_polynomial().encode()),
+                "reported epoch state to epoch manager",
+            );
+        }
         self.register_validators(epoch_state.epoch(), new_validator_state)
             .await;
     }
@@ -881,6 +900,51 @@ where
             .chain_spec()
             .is_allegretto_active_at_timestamp(block.timestamp())
             && tx.has_post_allegretto_state().await
+    }
+
+    /// Handles pause-after-epoch logic if configured and we've reached the target
+    /// epoch boundary.
+    ///
+    /// Called after each finalized block. The node will naturally stop making progress
+    /// since we don't enter the next epoch when `pause_after_epoch` is configured.
+    async fn handle_pause_after_epoch(&mut self, block_height: u64) {
+        let Some(target_epoch) = self.config.pause.pause_after_epoch else {
+            return;
+        };
+        let Some(block_epoch) =
+            utils::is_last_block_in_epoch(self.config.epoch_length, block_height)
+        else {
+            return;
+        };
+        if block_epoch != target_epoch {
+            return;
+        }
+
+        if let Some(export_path) = &self.config.pause.pause_export_share {
+            let tx = DkgReadWriteTransaction::new(self.db.read_write());
+            let Ok(Some(epoch_state)) = tx.get_epoch::<post_allegretto::EpochState>().await else {
+                error!("failed to read epoch state for share export");
+                return;
+            };
+
+            if let Some(share) = &epoch_state.dkg_outcome.share {
+                if let Err(e) = super::export::write_share_to_file(share, export_path) {
+                    error!(?e, "failed to write signing share");
+                } else {
+                    info!(?export_path, "exported signing share");
+                }
+            } else {
+                info!("node has no signing share to export");
+            }
+        } else {
+            info!("no export path configured; skipping share export");
+        }
+
+        info!(
+            block_height,
+            epoch = target_epoch,
+            "pause-after-epoch complete; node will no longer progress"
+        );
     }
 
     /// Returns the previous epoch state.

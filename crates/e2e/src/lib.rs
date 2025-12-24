@@ -18,6 +18,8 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
+use std::path::PathBuf;
+use tempo_commonware_node::PauseArgs;
 
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
@@ -77,6 +79,9 @@ pub struct Setup {
 
     /// Whether validators should be written into the genesis block.
     pub no_validators_in_genesis: bool,
+
+    /// Pause configuration for coordinated shutdown testing.
+    pub pause_args: PauseArgs,
 }
 
 impl Setup {
@@ -95,6 +100,7 @@ impl Setup {
             allegretto_time: None,
             allegretto_in_seconds: None,
             no_validators_in_genesis: false,
+            pause_args: PauseArgs::default(),
         }
     }
 
@@ -163,6 +169,17 @@ impl Setup {
             ..self
         }
     }
+
+    /// Configure pause-after-epoch behavior for coordinated shutdown testing.
+    pub fn pause_after_epoch(self, epoch: u64, export_share: PathBuf) -> Self {
+        Self {
+            pause_args: PauseArgs {
+                pause_after_epoch: Some(epoch),
+                pause_export_share: Some(export_share),
+            },
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -189,6 +206,7 @@ pub async fn setup_validators(
         allegretto_in_seconds,
         allegretto_time,
         no_validators_in_genesis,
+        pause_args,
     }: Setup,
 ) -> (Vec<TestingNode>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
@@ -291,6 +309,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            pause: pause_args.clone(),
         };
 
         nodes.push(TestingNode::new(

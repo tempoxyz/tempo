@@ -136,9 +136,32 @@ pub struct Args {
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: jiff::SignedDuration,
 
+    /// Pause configuration for coordinated shutdown at epoch boundaries.
+    #[command(flatten)]
+    pub pause: PauseArgs,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,
+}
+
+/// Configuration for coordinated node pause at epoch boundaries.
+///
+/// Used for breaking storage migrations where nodes need to export their DKG state
+/// and stop progressing so operators can restart with a new binary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct PauseArgs {
+    /// Pause after processing the last finalized block of this epoch.
+    #[arg(long = "consensus.pause-after-epoch")]
+    pub pause_after_epoch: Option<u64>,
+
+    /// Path to export the BLS12-381 signing share before pausing. Requires
+    /// `--consensus.pause-after-epoch`. The exported file can be used as
+    /// `--consensus.signing-share` for a new node after a breaking storage migration.
+    ///
+    /// If the file already exists, it will be overwritten.
+    #[arg(long = "consensus.pause-export-share", requires = "pause_after_epoch")]
+    pub pause_export_share: Option<PathBuf>,
 }
 
 impl Args {

@@ -31,7 +31,7 @@ use crate::config::{
     RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
-pub use args::Args;
+pub use args::{Args, PauseArgs};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -136,6 +136,7 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+        pause: config.pause,
     }
     .try_init()
     .await
