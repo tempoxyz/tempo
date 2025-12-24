@@ -2,7 +2,7 @@
 
 use std::{cmp::Ordering, fmt::Debug};
 
-use alloy_primitives::{Address, B256, U256, b256};
+use alloy_primitives::{Address, U256};
 use reth_evm::EvmError;
 use revm::{
     Database,
@@ -27,11 +27,9 @@ use revm::{
         interpreter::EthInterpreter,
     },
     primitives::eip7702,
-    state::Bytecode,
 };
-use tempo_contracts::{
-    DEFAULT_7702_DELEGATE_ADDRESS,
-    precompiles::{IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError},
+use tempo_contracts::precompiles::{
+    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
     account_keychain::{AccountKeychain, TokenLimit, authorizeKeyCall},
@@ -73,10 +71,6 @@ const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
 /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
 const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
-
-/// Hashed account code of default 7702 delegate deployment
-const DEFAULT_7702_DELEGATE_CODE_HASH: B256 =
-    b256!("e7b3e4597bdbdd0cc4eb42f9b799b580f23068f54e472bb802cb71efb1570482");
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -613,13 +607,6 @@ where
 
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
-        if caller_account.info.has_no_code_and_nonce() {
-            caller_account.set_code(
-                DEFAULT_7702_DELEGATE_CODE_HASH,
-                Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS),
-            );
-        }
 
         let nonce_key = tx
             .tempo_tx_env
@@ -1430,18 +1417,18 @@ pub fn validate_time_window(
 mod tests {
     use super::*;
     use crate::{TempoBlockEnv, TempoTxEnv};
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::{Address, B256, U256};
     use revm::{
         Context, Journal, MainContext,
         context::CfgEnv,
         database::{CacheDB, EmptyDB},
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
-        state::Account,
     };
     use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_precompiles::{DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1523,15 +1510,6 @@ mod tests {
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())
-    }
-
-    #[test]
-    fn test_delegate_code_hash() {
-        let mut account = Account::default();
-        account
-            .info
-            .set_code(Bytecode::new_eip7702(DEFAULT_7702_DELEGATE_ADDRESS));
-        assert_eq!(account.info.code_hash, DEFAULT_7702_DELEGATE_CODE_HASH);
     }
 
     #[test]
