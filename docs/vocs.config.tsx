@@ -1,10 +1,10 @@
-import { Instance } from 'prool'
-import { ModuleResolutionKind } from 'typescript'
-import autoImport from 'unplugin-auto-import/vite'
-import iconsResolver from 'unplugin-icons/resolver'
-import icons from 'unplugin-icons/vite'
-import { loadEnv } from 'vite'
-import { defineConfig } from 'vocs'
+import { Instance } from "prool";
+import { ModuleResolutionKind } from "typescript";
+import autoImport from "unplugin-auto-import/vite";
+import iconsResolver from "unplugin-icons/resolver";
+import icons from "unplugin-icons/vite";
+import { loadEnv } from "vite";
+import { defineConfig } from "vocs";
 
 export default defineConfig({
   head() {
@@ -133,8 +133,8 @@ export default defineConfig({
             link: "/quickstart/predeployed-contracts",
           },
           {
-            text: 'Wallet Developers',
-            link: '/quickstart/wallet-developers',
+            text: "Wallet Developers",
+            link: "/quickstart/wallet-developers",
           },
         ],
       },
@@ -451,756 +451,756 @@ export default defineConfig({
             link: "/sdk",
           },
           {
-            text: 'TypeScript',
-            link: '/sdk/typescript',
+            text: "TypeScript",
+            link: "/sdk/typescript",
             collapsed: true,
             items: [
               {
-                text: 'Overview',
-                link: '/sdk/typescript',
+                text: "Overview",
+                link: "/sdk/typescript",
               },
               {
-                text: 'Viem Reference',
-                link: 'https://viem.sh/tempo'
+                text: "Viem Reference",
+                link: "https://viem.sh/tempo",
               },
               {
-                text: 'Wagmi Reference',
+                text: "Wagmi Reference",
                 items: [
                   {
-                    text: 'Setup',
-                    link: '/sdk/typescript/wagmi/setup',
+                    text: "Setup",
+                    link: "/sdk/typescript/wagmi/setup",
                   },
                   {
-                    text: 'Connectors',
+                    text: "Connectors",
                     collapsed: true,
                     items: [
                       {
-                        text: 'Overview',
-                        link: '/sdk/typescript/wagmi/connectors',
+                        text: "Overview",
+                        link: "/sdk/typescript/wagmi/connectors",
                       },
                       {
-                        text: 'dangerous_secp256k1',
-                        link: '/sdk/typescript/wagmi/connectors/dangerous_secp256k1',
+                        text: "dangerous_secp256k1",
+                        link: "/sdk/typescript/wagmi/connectors/dangerous_secp256k1",
                       },
                       {
-                        text: 'webAuthn',
-                        link: '/sdk/typescript/wagmi/connectors/webAuthn',
+                        text: "webAuthn",
+                        link: "/sdk/typescript/wagmi/connectors/webAuthn",
                       },
                     ],
                   },
                   {
-                    text: 'Actions',
+                    text: "Actions",
                     collapsed: true,
                     items: [
                       {
-                        text: 'Overview',
-                        link: '/sdk/typescript/wagmi/actions',
+                        text: "Overview",
+                        link: "/sdk/typescript/wagmi/actions",
                       },
                       {
-                        text: 'AMM',
+                        text: "AMM",
                         items: [
                           {
-                            text: 'burn',
-                            link: '/sdk/typescript/wagmi/actions/amm.burn',
+                            text: "burn",
+                            link: "/sdk/typescript/wagmi/actions/amm.burn",
                           },
                           {
-                            text: 'getLiquidityBalance',
-                            link: '/sdk/typescript/wagmi/actions/amm.getLiquidityBalance',
+                            text: "getLiquidityBalance",
+                            link: "/sdk/typescript/wagmi/actions/amm.getLiquidityBalance",
                           },
                           {
-                            text: 'getPool',
-                            link: '/sdk/typescript/wagmi/actions/amm.getPool',
+                            text: "getPool",
+                            link: "/sdk/typescript/wagmi/actions/amm.getPool",
                           },
                           {
-                            text: 'mint',
-                            link: '/sdk/typescript/wagmi/actions/amm.mint',
+                            text: "mint",
+                            link: "/sdk/typescript/wagmi/actions/amm.mint",
                           },
                           {
-                            text: 'rebalanceSwap',
-                            link: '/sdk/typescript/wagmi/actions/amm.rebalanceSwap',
+                            text: "rebalanceSwap",
+                            link: "/sdk/typescript/wagmi/actions/amm.rebalanceSwap",
                           },
                           {
-                            text: 'watchBurn',
-                            link: '/sdk/typescript/wagmi/actions/amm.watchBurn',
+                            text: "watchBurn",
+                            link: "/sdk/typescript/wagmi/actions/amm.watchBurn",
                           },
                           {
-                            text: 'watchFeeSwap',
-                            link: '/sdk/typescript/wagmi/actions/amm.watchFeeSwap',
+                            text: "watchFeeSwap",
+                            link: "/sdk/typescript/wagmi/actions/amm.watchFeeSwap",
                           },
                           {
-                            text: 'watchMint',
-                            link: '/sdk/typescript/wagmi/actions/amm.watchMint',
+                            text: "watchMint",
+                            link: "/sdk/typescript/wagmi/actions/amm.watchMint",
                           },
                           {
-                            text: 'watchRebalanceSwap',
-                            link: '/sdk/typescript/wagmi/actions/amm.watchRebalanceSwap',
+                            text: "watchRebalanceSwap",
+                            link: "/sdk/typescript/wagmi/actions/amm.watchRebalanceSwap",
                           },
                         ],
                       },
                       {
-                        text: 'Fee',
+                        text: "Fee",
                         items: [
                           {
-                            text: 'getUserToken',
-                            link: '/sdk/typescript/wagmi/actions/fee.getUserToken',
+                            text: "getUserToken",
+                            link: "/sdk/typescript/wagmi/actions/fee.getUserToken",
                           },
                           {
-                            text: 'setUserToken',
-                            link: '/sdk/typescript/wagmi/actions/fee.setUserToken',
+                            text: "setUserToken",
+                            link: "/sdk/typescript/wagmi/actions/fee.setUserToken",
                           },
                           {
-                            text: 'watchSetUserToken',
-                            link: '/sdk/typescript/wagmi/actions/fee.watchSetUserToken',
+                            text: "watchSetUserToken",
+                            link: "/sdk/typescript/wagmi/actions/fee.watchSetUserToken",
                           },
                         ],
                       },
                       {
-                        text: 'Nonce',
+                        text: "Nonce",
                         items: [
                           {
-                            text: 'getNonce',
-                            link: '/sdk/typescript/wagmi/actions/nonce.getNonce',
+                            text: "getNonce",
+                            link: "/sdk/typescript/wagmi/actions/nonce.getNonce",
                           },
                           {
-                            text: 'getNonceKeyCount',
-                            link: '/sdk/typescript/wagmi/actions/nonce.getNonceKeyCount',
+                            text: "getNonceKeyCount",
+                            link: "/sdk/typescript/wagmi/actions/nonce.getNonceKeyCount",
                           },
                           {
-                            text: 'watchActiveKeyCountChanged',
-                            link: '/sdk/typescript/wagmi/actions/nonce.watchActiveKeyCountChanged',
+                            text: "watchActiveKeyCountChanged",
+                            link: "/sdk/typescript/wagmi/actions/nonce.watchActiveKeyCountChanged",
                           },
                           {
-                            text: 'watchNonceIncremented',
-                            link: '/sdk/typescript/wagmi/actions/nonce.watchNonceIncremented',
+                            text: "watchNonceIncremented",
+                            link: "/sdk/typescript/wagmi/actions/nonce.watchNonceIncremented",
                           },
                         ],
                       },
                       {
-                        text: 'Policy',
+                        text: "Policy",
                         items: [
                           {
-                            text: 'create',
-                            link: '/sdk/typescript/wagmi/actions/policy.create',
+                            text: "create",
+                            link: "/sdk/typescript/wagmi/actions/policy.create",
                           },
                           {
-                            text: 'getData',
-                            link: '/sdk/typescript/wagmi/actions/policy.getData',
+                            text: "getData",
+                            link: "/sdk/typescript/wagmi/actions/policy.getData",
                           },
                           {
-                            text: 'isAuthorized',
-                            link: '/sdk/typescript/wagmi/actions/policy.isAuthorized',
+                            text: "isAuthorized",
+                            link: "/sdk/typescript/wagmi/actions/policy.isAuthorized",
                           },
                           {
-                            text: 'modifyBlacklist',
-                            link: '/sdk/typescript/wagmi/actions/policy.modifyBlacklist',
+                            text: "modifyBlacklist",
+                            link: "/sdk/typescript/wagmi/actions/policy.modifyBlacklist",
                           },
                           {
-                            text: 'modifyWhitelist',
-                            link: '/sdk/typescript/wagmi/actions/policy.modifyWhitelist',
+                            text: "modifyWhitelist",
+                            link: "/sdk/typescript/wagmi/actions/policy.modifyWhitelist",
                           },
                           {
-                            text: 'setAdmin',
-                            link: '/sdk/typescript/wagmi/actions/policy.setAdmin',
+                            text: "setAdmin",
+                            link: "/sdk/typescript/wagmi/actions/policy.setAdmin",
                           },
                           {
-                            text: 'watchAdminUpdated',
-                            link: '/sdk/typescript/wagmi/actions/policy.watchAdminUpdated',
+                            text: "watchAdminUpdated",
+                            link: "/sdk/typescript/wagmi/actions/policy.watchAdminUpdated",
                           },
                           {
-                            text: 'watchBlacklistUpdated',
-                            link: '/sdk/typescript/wagmi/actions/policy.watchBlacklistUpdated',
+                            text: "watchBlacklistUpdated",
+                            link: "/sdk/typescript/wagmi/actions/policy.watchBlacklistUpdated",
                           },
                           {
-                            text: 'watchCreate',
-                            link: '/sdk/typescript/wagmi/actions/policy.watchCreate',
+                            text: "watchCreate",
+                            link: "/sdk/typescript/wagmi/actions/policy.watchCreate",
                           },
                           {
-                            text: 'watchWhitelistUpdated',
-                            link: '/sdk/typescript/wagmi/actions/policy.watchWhitelistUpdated',
+                            text: "watchWhitelistUpdated",
+                            link: "/sdk/typescript/wagmi/actions/policy.watchWhitelistUpdated",
                           },
                         ],
                       },
                       {
-                        text: 'Faucet',
+                        text: "Faucet",
                         items: [
                           {
-                            text: 'fund',
-                            link: '/sdk/typescript/wagmi/actions/faucet.fund',
+                            text: "fund",
+                            link: "/sdk/typescript/wagmi/actions/faucet.fund",
                           },
                         ],
                       },
                       {
-                        text: 'Reward',
+                        text: "Reward",
                         items: [
                           {
-                            text: 'claim',
-                            link: '/sdk/typescript/wagmi/actions/reward.claim',
+                            text: "claim",
+                            link: "/sdk/typescript/wagmi/actions/reward.claim",
                           },
                           {
-                            text: 'getTotalPerSecond',
-                            link: '/sdk/typescript/wagmi/actions/reward.getTotalPerSecond',
+                            text: "getTotalPerSecond",
+                            link: "/sdk/typescript/wagmi/actions/reward.getTotalPerSecond",
                           },
                           {
-                            text: 'getUserRewardInfo',
-                            link: '/sdk/typescript/wagmi/actions/reward.getUserRewardInfo',
+                            text: "getUserRewardInfo",
+                            link: "/sdk/typescript/wagmi/actions/reward.getUserRewardInfo",
                           },
                           {
-                            text: 'setRecipient',
-                            link: '/sdk/typescript/wagmi/actions/reward.setRecipient',
+                            text: "setRecipient",
+                            link: "/sdk/typescript/wagmi/actions/reward.setRecipient",
                           },
                           {
-                            text: 'start',
-                            link: '/sdk/typescript/wagmi/actions/reward.start',
+                            text: "distribute",
+                            link: "/sdk/typescript/wagmi/actions/reward.distribute",
                           },
                           {
-                            text: 'watchRewardRecipientSet',
-                            link: '/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet',
+                            text: "watchRewardRecipientSet",
+                            link: "/sdk/typescript/wagmi/actions/reward.watchRewardRecipientSet",
                           },
                           {
-                            text: 'watchRewardScheduled',
-                            link: '/sdk/typescript/wagmi/actions/reward.watchRewardScheduled',
+                            text: "watchRewardDistributed",
+                            link: "/sdk/typescript/wagmi/actions/reward.watchRewardDistributed",
                           },
                         ],
                       },
                       {
-                        text: 'Stablecoin Exchange',
+                        text: "Stablecoin Exchange",
                         items: [
                           {
-                            text: 'buy',
-                            link: '/sdk/typescript/wagmi/actions/dex.buy',
+                            text: "buy",
+                            link: "/sdk/typescript/wagmi/actions/dex.buy",
                           },
                           {
-                            text: 'cancel',
-                            link: '/sdk/typescript/wagmi/actions/dex.cancel',
+                            text: "cancel",
+                            link: "/sdk/typescript/wagmi/actions/dex.cancel",
                           },
                           {
-                            text: 'createPair',
-                            link: '/sdk/typescript/wagmi/actions/dex.createPair',
+                            text: "createPair",
+                            link: "/sdk/typescript/wagmi/actions/dex.createPair",
                           },
                           {
-                            text: 'getBalance',
-                            link: '/sdk/typescript/wagmi/actions/dex.getBalance',
+                            text: "getBalance",
+                            link: "/sdk/typescript/wagmi/actions/dex.getBalance",
                           },
                           {
-                            text: 'getBuyQuote',
-                            link: '/sdk/typescript/wagmi/actions/dex.getBuyQuote',
+                            text: "getBuyQuote",
+                            link: "/sdk/typescript/wagmi/actions/dex.getBuyQuote",
                           },
                           {
-                            text: 'getOrder',
-                            link: '/sdk/typescript/wagmi/actions/dex.getOrder',
+                            text: "getOrder",
+                            link: "/sdk/typescript/wagmi/actions/dex.getOrder",
                           },
                           {
-                            text: 'getTickLevel',
-                            link: '/sdk/typescript/wagmi/actions/dex.getTickLevel',
+                            text: "getTickLevel",
+                            link: "/sdk/typescript/wagmi/actions/dex.getTickLevel",
                           },
                           {
-                            text: 'getSellQuote',
-                            link: '/sdk/typescript/wagmi/actions/dex.getSellQuote',
+                            text: "getSellQuote",
+                            link: "/sdk/typescript/wagmi/actions/dex.getSellQuote",
                           },
                           {
-                            text: 'place',
-                            link: '/sdk/typescript/wagmi/actions/dex.place',
+                            text: "place",
+                            link: "/sdk/typescript/wagmi/actions/dex.place",
                           },
                           {
-                            text: 'placeFlip',
-                            link: '/sdk/typescript/wagmi/actions/dex.placeFlip',
+                            text: "placeFlip",
+                            link: "/sdk/typescript/wagmi/actions/dex.placeFlip",
                           },
                           {
-                            text: 'sell',
-                            link: '/sdk/typescript/wagmi/actions/dex.sell',
+                            text: "sell",
+                            link: "/sdk/typescript/wagmi/actions/dex.sell",
                           },
                           {
-                            text: 'watchFlipOrderPlaced',
-                            link: '/sdk/typescript/wagmi/actions/dex.watchFlipOrderPlaced',
+                            text: "watchFlipOrderPlaced",
+                            link: "/sdk/typescript/wagmi/actions/dex.watchFlipOrderPlaced",
                           },
                           {
-                            text: 'watchOrderCancelled',
-                            link: '/sdk/typescript/wagmi/actions/dex.watchOrderCancelled',
+                            text: "watchOrderCancelled",
+                            link: "/sdk/typescript/wagmi/actions/dex.watchOrderCancelled",
                           },
                           {
-                            text: 'watchOrderFilled',
-                            link: '/sdk/typescript/wagmi/actions/dex.watchOrderFilled',
+                            text: "watchOrderFilled",
+                            link: "/sdk/typescript/wagmi/actions/dex.watchOrderFilled",
                           },
                           {
-                            text: 'watchOrderPlaced',
-                            link: '/sdk/typescript/wagmi/actions/dex.watchOrderPlaced',
+                            text: "watchOrderPlaced",
+                            link: "/sdk/typescript/wagmi/actions/dex.watchOrderPlaced",
                           },
                           {
-                            text: 'withdraw',
-                            link: '/sdk/typescript/wagmi/actions/dex.withdraw',
+                            text: "withdraw",
+                            link: "/sdk/typescript/wagmi/actions/dex.withdraw",
                           },
                         ],
                       },
                       {
-                        text: 'Token',
+                        text: "Token",
                         items: [
                           {
-                            text: 'approve',
-                            link: '/sdk/typescript/wagmi/actions/token.approve',
+                            text: "approve",
+                            link: "/sdk/typescript/wagmi/actions/token.approve",
                           },
                           {
-                            text: 'burn',
-                            link: '/sdk/typescript/wagmi/actions/token.burn',
+                            text: "burn",
+                            link: "/sdk/typescript/wagmi/actions/token.burn",
                           },
                           {
-                            text: 'burnBlocked',
-                            link: '/sdk/typescript/wagmi/actions/token.burnBlocked',
+                            text: "burnBlocked",
+                            link: "/sdk/typescript/wagmi/actions/token.burnBlocked",
                           },
                           {
-                            text: 'changeTransferPolicy',
-                            link: '/sdk/typescript/wagmi/actions/token.changeTransferPolicy',
+                            text: "changeTransferPolicy",
+                            link: "/sdk/typescript/wagmi/actions/token.changeTransferPolicy",
                           },
                           {
-                            text: 'create',
-                            link: '/sdk/typescript/wagmi/actions/token.create',
+                            text: "create",
+                            link: "/sdk/typescript/wagmi/actions/token.create",
                           },
                           {
-                            text: 'getAllowance',
-                            link: '/sdk/typescript/wagmi/actions/token.getAllowance',
+                            text: "getAllowance",
+                            link: "/sdk/typescript/wagmi/actions/token.getAllowance",
                           },
                           {
-                            text: 'getBalance',
-                            link: '/sdk/typescript/wagmi/actions/token.getBalance',
+                            text: "getBalance",
+                            link: "/sdk/typescript/wagmi/actions/token.getBalance",
                           },
                           {
-                            text: 'getMetadata',
-                            link: '/sdk/typescript/wagmi/actions/token.getMetadata',
+                            text: "getMetadata",
+                            link: "/sdk/typescript/wagmi/actions/token.getMetadata",
                           },
                           {
-                            text: 'grantRoles',
-                            link: '/sdk/typescript/wagmi/actions/token.grantRoles',
+                            text: "grantRoles",
+                            link: "/sdk/typescript/wagmi/actions/token.grantRoles",
                           },
                           {
-                            text: 'hasRole',
-                            link: '/sdk/typescript/wagmi/actions/token.hasRole',
+                            text: "hasRole",
+                            link: "/sdk/typescript/wagmi/actions/token.hasRole",
                           },
                           {
-                            text: 'mint',
-                            link: '/sdk/typescript/wagmi/actions/token.mint',
+                            text: "mint",
+                            link: "/sdk/typescript/wagmi/actions/token.mint",
                           },
                           {
-                            text: 'pause',
-                            link: '/sdk/typescript/wagmi/actions/token.pause',
+                            text: "pause",
+                            link: "/sdk/typescript/wagmi/actions/token.pause",
                           },
                           {
-                            text: 'renounceRoles',
-                            link: '/sdk/typescript/wagmi/actions/token.renounceRoles',
+                            text: "renounceRoles",
+                            link: "/sdk/typescript/wagmi/actions/token.renounceRoles",
                           },
                           {
-                            text: 'revokeRoles',
-                            link: '/sdk/typescript/wagmi/actions/token.revokeRoles',
+                            text: "revokeRoles",
+                            link: "/sdk/typescript/wagmi/actions/token.revokeRoles",
                           },
                           {
-                            text: 'setRoleAdmin',
-                            link: '/sdk/typescript/wagmi/actions/token.setRoleAdmin',
+                            text: "setRoleAdmin",
+                            link: "/sdk/typescript/wagmi/actions/token.setRoleAdmin",
                           },
                           {
-                            text: 'setSupplyCap',
-                            link: '/sdk/typescript/wagmi/actions/token.setSupplyCap',
+                            text: "setSupplyCap",
+                            link: "/sdk/typescript/wagmi/actions/token.setSupplyCap",
                           },
                           {
-                            text: 'transfer',
-                            link: '/sdk/typescript/wagmi/actions/token.transfer',
+                            text: "transfer",
+                            link: "/sdk/typescript/wagmi/actions/token.transfer",
                           },
                           {
-                            text: 'unpause',
-                            link: '/sdk/typescript/wagmi/actions/token.unpause',
+                            text: "unpause",
+                            link: "/sdk/typescript/wagmi/actions/token.unpause",
                           },
                           {
-                            text: 'watchAdminRole',
-                            link: '/sdk/typescript/wagmi/actions/token.watchAdminRole',
+                            text: "watchAdminRole",
+                            link: "/sdk/typescript/wagmi/actions/token.watchAdminRole",
                           },
                           {
-                            text: 'watchApprove',
-                            link: '/sdk/typescript/wagmi/actions/token.watchApprove',
+                            text: "watchApprove",
+                            link: "/sdk/typescript/wagmi/actions/token.watchApprove",
                           },
                           {
-                            text: 'watchBurn',
-                            link: '/sdk/typescript/wagmi/actions/token.watchBurn',
+                            text: "watchBurn",
+                            link: "/sdk/typescript/wagmi/actions/token.watchBurn",
                           },
                           {
-                            text: 'watchCreate',
-                            link: '/sdk/typescript/wagmi/actions/token.watchCreate',
+                            text: "watchCreate",
+                            link: "/sdk/typescript/wagmi/actions/token.watchCreate",
                           },
                           {
-                            text: 'watchMint',
-                            link: '/sdk/typescript/wagmi/actions/token.watchMint',
+                            text: "watchMint",
+                            link: "/sdk/typescript/wagmi/actions/token.watchMint",
                           },
                           {
-                            text: 'watchRole',
-                            link: '/sdk/typescript/wagmi/actions/token.watchRole',
+                            text: "watchRole",
+                            link: "/sdk/typescript/wagmi/actions/token.watchRole",
                           },
                           {
-                            text: 'watchTransfer',
-                            link: '/sdk/typescript/wagmi/actions/token.watchTransfer',
+                            text: "watchTransfer",
+                            link: "/sdk/typescript/wagmi/actions/token.watchTransfer",
                           },
                         ],
                       },
                     ],
                   },
                   {
-                    text: 'Key Managers',
+                    text: "Key Managers",
                     collapsed: true,
                     items: [
                       {
-                        text: 'Overview',
-                        link: '/sdk/typescript/wagmi/keyManagers',
+                        text: "Overview",
+                        link: "/sdk/typescript/wagmi/keyManagers",
                       },
                       {
-                        text: 'http',
-                        link: '/sdk/typescript/wagmi/keyManagers/http',
+                        text: "http",
+                        link: "/sdk/typescript/wagmi/keyManagers/http",
                       },
                       {
-                        text: 'localStorage',
-                        link: '/sdk/typescript/wagmi/keyManagers/localStorage',
+                        text: "localStorage",
+                        link: "/sdk/typescript/wagmi/keyManagers/localStorage",
                       },
                     ],
                   },
                   {
-                    text: 'Hooks',
+                    text: "Hooks",
                     collapsed: true,
                     items: [
                       {
-                        text: 'Overview',
-                        link: '/sdk/typescript/wagmi/hooks',
+                        text: "Overview",
+                        link: "/sdk/typescript/wagmi/hooks",
                       },
                       {
-                        text: 'AMM',
+                        text: "AMM",
                         items: [
                           {
-                            text: 'useBurn',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useBurn',
+                            text: "useBurn",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useBurn",
                           },
                           {
-                            text: 'useLiquidityBalance',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useLiquidityBalance',
+                            text: "useLiquidityBalance",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useLiquidityBalance",
                           },
                           {
-                            text: 'useMint',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useMint',
+                            text: "useMint",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useMint",
                           },
                           {
-                            text: 'usePool',
-                            link: '/sdk/typescript/wagmi/hooks/amm.usePool',
+                            text: "usePool",
+                            link: "/sdk/typescript/wagmi/hooks/amm.usePool",
                           },
                           {
-                            text: 'useRebalanceSwap',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useRebalanceSwap',
+                            text: "useRebalanceSwap",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useRebalanceSwap",
                           },
                           {
-                            text: 'useWatchBurn',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useWatchBurn',
+                            text: "useWatchBurn",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useWatchBurn",
                           },
                           {
-                            text: 'useWatchFeeSwap',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useWatchFeeSwap',
+                            text: "useWatchFeeSwap",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useWatchFeeSwap",
                           },
                           {
-                            text: 'useWatchMint',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useWatchMint',
+                            text: "useWatchMint",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useWatchMint",
                           },
                           {
-                            text: 'useWatchRebalanceSwap',
-                            link: '/sdk/typescript/wagmi/hooks/amm.useWatchRebalanceSwap',
+                            text: "useWatchRebalanceSwap",
+                            link: "/sdk/typescript/wagmi/hooks/amm.useWatchRebalanceSwap",
                           },
                         ],
                       },
                       {
-                        text: 'Fee',
+                        text: "Fee",
                         items: [
                           {
-                            text: 'useSetUserToken',
-                            link: '/sdk/typescript/wagmi/hooks/fee.useSetUserToken',
+                            text: "useSetUserToken",
+                            link: "/sdk/typescript/wagmi/hooks/fee.useSetUserToken",
                           },
                           {
-                            text: 'useUserToken',
-                            link: '/sdk/typescript/wagmi/hooks/fee.useUserToken',
+                            text: "useUserToken",
+                            link: "/sdk/typescript/wagmi/hooks/fee.useUserToken",
                           },
                           {
-                            text: 'useWatchSetUserToken',
-                            link: '/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken',
+                            text: "useWatchSetUserToken",
+                            link: "/sdk/typescript/wagmi/hooks/fee.useWatchSetUserToken",
                           },
                         ],
                       },
                       {
-                        text: 'Nonce',
+                        text: "Nonce",
                         items: [
                           {
-                            text: 'useNonce',
-                            link: '/sdk/typescript/wagmi/hooks/nonce.useNonce',
+                            text: "useNonce",
+                            link: "/sdk/typescript/wagmi/hooks/nonce.useNonce",
                           },
                           {
-                            text: 'useNonceKeyCount',
-                            link: '/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount',
+                            text: "useNonceKeyCount",
+                            link: "/sdk/typescript/wagmi/hooks/nonce.useNonceKeyCount",
                           },
                           {
-                            text: 'useWatchActiveKeyCountChanged',
-                            link: '/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged',
+                            text: "useWatchActiveKeyCountChanged",
+                            link: "/sdk/typescript/wagmi/hooks/nonce.useWatchActiveKeyCountChanged",
                           },
                           {
-                            text: 'useWatchNonceIncremented',
-                            link: '/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented',
+                            text: "useWatchNonceIncremented",
+                            link: "/sdk/typescript/wagmi/hooks/nonce.useWatchNonceIncremented",
                           },
                         ],
                       },
                       {
-                        text: 'Policy',
+                        text: "Policy",
                         items: [
                           {
-                            text: 'useCreate',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useCreate',
+                            text: "useCreate",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useCreate",
                           },
                           {
-                            text: 'useData',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useData',
+                            text: "useData",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useData",
                           },
                           {
-                            text: 'useIsAuthorized',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useIsAuthorized',
+                            text: "useIsAuthorized",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useIsAuthorized",
                           },
                           {
-                            text: 'useModifyBlacklist',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useModifyBlacklist',
+                            text: "useModifyBlacklist",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useModifyBlacklist",
                           },
                           {
-                            text: 'useModifyWhitelist',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useModifyWhitelist',
+                            text: "useModifyWhitelist",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useModifyWhitelist",
                           },
                           {
-                            text: 'useSetAdmin',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useSetAdmin',
+                            text: "useSetAdmin",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useSetAdmin",
                           },
                           {
-                            text: 'useWatchAdminUpdated',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useWatchAdminUpdated',
+                            text: "useWatchAdminUpdated",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useWatchAdminUpdated",
                           },
                           {
-                            text: 'useWatchBlacklistUpdated',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useWatchBlacklistUpdated',
+                            text: "useWatchBlacklistUpdated",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useWatchBlacklistUpdated",
                           },
                           {
-                            text: 'useWatchCreate',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useWatchCreate',
+                            text: "useWatchCreate",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useWatchCreate",
                           },
                           {
-                            text: 'useWatchWhitelistUpdated',
-                            link: '/sdk/typescript/wagmi/hooks/policy.useWatchWhitelistUpdated',
+                            text: "useWatchWhitelistUpdated",
+                            link: "/sdk/typescript/wagmi/hooks/policy.useWatchWhitelistUpdated",
                           },
                         ],
                       },
                       {
-                        text: 'Faucet',
+                        text: "Faucet",
                         items: [
                           {
-                            text: 'useFund',
-                            link: '/sdk/typescript/wagmi/hooks/faucet.useFund',
+                            text: "useFund",
+                            link: "/sdk/typescript/wagmi/hooks/faucet.useFund",
                           },
                         ],
                       },
                       {
-                        text: 'Reward',
+                        text: "Reward",
                         items: [
                           {
-                            text: 'useClaim',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useClaim',
+                            text: "useClaim",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useClaim",
                           },
                           {
-                            text: 'useGetTotalPerSecond',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond',
+                            text: "useGetTotalPerSecond",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useGetTotalPerSecond",
                           },
                           {
-                            text: 'useSetRecipient',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useSetRecipient',
+                            text: "useSetRecipient",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useSetRecipient",
                           },
                           {
-                            text: 'useStart',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useStart',
+                            text: "useStart",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useStart",
                           },
                           {
-                            text: 'useUserRewardInfo',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo',
+                            text: "useUserRewardInfo",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useUserRewardInfo",
                           },
                           {
-                            text: 'useWatchRewardRecipientSet',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet',
+                            text: "useWatchRewardRecipientSet",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useWatchRewardRecipientSet",
                           },
                           {
-                            text: 'useWatchRewardScheduled',
-                            link: '/sdk/typescript/wagmi/hooks/reward.useWatchRewardScheduled',
+                            text: "useWatchRewardDistributed",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useWatchRewardDistributed",
                           },
                         ],
                       },
                       {
-                        text: 'Stablecoin Exchange',
+                        text: "Stablecoin Exchange",
                         items: [
                           {
-                            text: 'useBalance',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useBalance',
+                            text: "useBalance",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useBalance",
                           },
                           {
-                            text: 'useBuy',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useBuy',
+                            text: "useBuy",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useBuy",
                           },
                           {
-                            text: 'useBuyQuote',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useBuyQuote',
+                            text: "useBuyQuote",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useBuyQuote",
                           },
                           {
-                            text: 'useCancel',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useCancel',
+                            text: "useCancel",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useCancel",
                           },
                           {
-                            text: 'useCreatePair',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useCreatePair',
+                            text: "useCreatePair",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useCreatePair",
                           },
                           {
-                            text: 'useOrder',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useOrder',
+                            text: "useOrder",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useOrder",
                           },
                           {
-                            text: 'usePlace',
-                            link: '/sdk/typescript/wagmi/hooks/dex.usePlace',
+                            text: "usePlace",
+                            link: "/sdk/typescript/wagmi/hooks/dex.usePlace",
                           },
                           {
-                            text: 'usePlaceFlip',
-                            link: '/sdk/typescript/wagmi/hooks/dex.usePlaceFlip',
+                            text: "usePlaceFlip",
+                            link: "/sdk/typescript/wagmi/hooks/dex.usePlaceFlip",
                           },
                           {
-                            text: 'useTickLevel',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useTickLevel',
+                            text: "useTickLevel",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useTickLevel",
                           },
                           {
-                            text: 'useSell',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useSell',
+                            text: "useSell",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useSell",
                           },
                           {
-                            text: 'useSellQuote',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useSellQuote',
+                            text: "useSellQuote",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useSellQuote",
                           },
                           {
-                            text: 'useWatchFlipOrderPlaced',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useWatchFlipOrderPlaced',
+                            text: "useWatchFlipOrderPlaced",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useWatchFlipOrderPlaced",
                           },
                           {
-                            text: 'useWatchOrderCancelled',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useWatchOrderCancelled',
+                            text: "useWatchOrderCancelled",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useWatchOrderCancelled",
                           },
                           {
-                            text: 'useWatchOrderFilled',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useWatchOrderFilled',
+                            text: "useWatchOrderFilled",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useWatchOrderFilled",
                           },
                           {
-                            text: 'useWatchOrderPlaced',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useWatchOrderPlaced',
+                            text: "useWatchOrderPlaced",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useWatchOrderPlaced",
                           },
                           {
-                            text: 'useWithdraw',
-                            link: '/sdk/typescript/wagmi/hooks/dex.useWithdraw',
+                            text: "useWithdraw",
+                            link: "/sdk/typescript/wagmi/hooks/dex.useWithdraw",
                           },
                         ],
                       },
                       {
-                        text: 'Token',
+                        text: "Token",
                         items: [
                           {
-                            text: 'useGetAllowance',
-                            link: '/sdk/typescript/wagmi/hooks/token.useGetAllowance',
+                            text: "useGetAllowance",
+                            link: "/sdk/typescript/wagmi/hooks/token.useGetAllowance",
                           },
                           {
-                            text: 'useApprove',
-                            link: '/sdk/typescript/wagmi/hooks/token.useApprove',
+                            text: "useApprove",
+                            link: "/sdk/typescript/wagmi/hooks/token.useApprove",
                           },
                           {
-                            text: 'useGetBalance',
-                            link: '/sdk/typescript/wagmi/hooks/token.useGetBalance',
+                            text: "useGetBalance",
+                            link: "/sdk/typescript/wagmi/hooks/token.useGetBalance",
                           },
                           {
-                            text: 'useBurn',
-                            link: '/sdk/typescript/wagmi/hooks/token.useBurn',
+                            text: "useBurn",
+                            link: "/sdk/typescript/wagmi/hooks/token.useBurn",
                           },
                           {
-                            text: 'useBurnBlocked',
-                            link: '/sdk/typescript/wagmi/hooks/token.useBurnBlocked',
+                            text: "useBurnBlocked",
+                            link: "/sdk/typescript/wagmi/hooks/token.useBurnBlocked",
                           },
                           {
-                            text: 'useChangeTransferPolicy',
-                            link: '/sdk/typescript/wagmi/hooks/token.useChangeTransferPolicy',
+                            text: "useChangeTransferPolicy",
+                            link: "/sdk/typescript/wagmi/hooks/token.useChangeTransferPolicy",
                           },
                           {
-                            text: 'useCreate',
-                            link: '/sdk/typescript/wagmi/hooks/token.useCreate',
+                            text: "useCreate",
+                            link: "/sdk/typescript/wagmi/hooks/token.useCreate",
                           },
                           {
-                            text: 'useGrantRoles',
-                            link: '/sdk/typescript/wagmi/hooks/token.useGrantRoles',
+                            text: "useGrantRoles",
+                            link: "/sdk/typescript/wagmi/hooks/token.useGrantRoles",
                           },
                           {
-                            text: 'useHasRole',
-                            link: '/sdk/typescript/wagmi/hooks/token.useHasRole',
+                            text: "useHasRole",
+                            link: "/sdk/typescript/wagmi/hooks/token.useHasRole",
                           },
                           {
-                            text: 'useGetMetadata',
-                            link: '/sdk/typescript/wagmi/hooks/token.useGetMetadata',
+                            text: "useGetMetadata",
+                            link: "/sdk/typescript/wagmi/hooks/token.useGetMetadata",
                           },
                           {
-                            text: 'useMint',
-                            link: '/sdk/typescript/wagmi/hooks/token.useMint',
+                            text: "useMint",
+                            link: "/sdk/typescript/wagmi/hooks/token.useMint",
                           },
                           {
-                            text: 'usePause',
-                            link: '/sdk/typescript/wagmi/hooks/token.usePause',
+                            text: "usePause",
+                            link: "/sdk/typescript/wagmi/hooks/token.usePause",
                           },
                           {
-                            text: 'useRenounceRoles',
-                            link: '/sdk/typescript/wagmi/hooks/token.useRenounceRoles',
+                            text: "useRenounceRoles",
+                            link: "/sdk/typescript/wagmi/hooks/token.useRenounceRoles",
                           },
                           {
-                            text: 'useRevokeRoles',
-                            link: '/sdk/typescript/wagmi/hooks/token.useRevokeRoles',
+                            text: "useRevokeRoles",
+                            link: "/sdk/typescript/wagmi/hooks/token.useRevokeRoles",
                           },
                           {
-                            text: 'useSetRoleAdmin',
-                            link: '/sdk/typescript/wagmi/hooks/token.useSetRoleAdmin',
+                            text: "useSetRoleAdmin",
+                            link: "/sdk/typescript/wagmi/hooks/token.useSetRoleAdmin",
                           },
                           {
-                            text: 'useSetSupplyCap',
-                            link: '/sdk/typescript/wagmi/hooks/token.useSetSupplyCap',
+                            text: "useSetSupplyCap",
+                            link: "/sdk/typescript/wagmi/hooks/token.useSetSupplyCap",
                           },
                           {
-                            text: 'useTransfer',
-                            link: '/sdk/typescript/wagmi/hooks/token.useTransfer',
+                            text: "useTransfer",
+                            link: "/sdk/typescript/wagmi/hooks/token.useTransfer",
                           },
                           {
-                            text: 'useUnpause',
-                            link: '/sdk/typescript/wagmi/hooks/token.useUnpause',
+                            text: "useUnpause",
+                            link: "/sdk/typescript/wagmi/hooks/token.useUnpause",
                           },
                           {
-                            text: 'useWatchAdminRole',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchAdminRole',
+                            text: "useWatchAdminRole",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchAdminRole",
                           },
                           {
-                            text: 'useWatchApprove',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchApprove',
+                            text: "useWatchApprove",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchApprove",
                           },
                           {
-                            text: 'useWatchBurn',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchBurn',
+                            text: "useWatchBurn",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchBurn",
                           },
                           {
-                            text: 'useWatchCreate',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchCreate',
+                            text: "useWatchCreate",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchCreate",
                           },
                           {
-                            text: 'useWatchMint',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchMint',
+                            text: "useWatchMint",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchMint",
                           },
                           {
-                            text: 'useWatchRole',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchRole',
+                            text: "useWatchRole",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchRole",
                           },
                           {
-                            text: 'useWatchTransfer',
-                            link: '/sdk/typescript/wagmi/hooks/token.useWatchTransfer',
+                            text: "useWatchTransfer",
+                            link: "/sdk/typescript/wagmi/hooks/token.useWatchTransfer",
                           },
                         ],
                       },
@@ -1209,37 +1209,37 @@ export default defineConfig({
                 ],
               },
               {
-                text: 'Server Reference',
+                text: "Server Reference",
                 items: [
                   {
-                    text: 'Handlers',
+                    text: "Handlers",
                     items: [
                       {
-                        text: 'Overview',
-                        link: '/sdk/typescript/server/handlers',
+                        text: "Overview",
+                        link: "/sdk/typescript/server/handlers",
                       },
                       {
-                        text: 'compose',
-                        link: '/sdk/typescript/server/handler.compose',
+                        text: "compose",
+                        link: "/sdk/typescript/server/handler.compose",
                       },
                       {
-                        text: 'feePayer',
-                        link: '/sdk/typescript/server/handler.feePayer',
+                        text: "feePayer",
+                        link: "/sdk/typescript/server/handler.feePayer",
                       },
                       {
-                        text: 'keyManager',
-                        link: '/sdk/typescript/server/handler.keyManager',
+                        text: "keyManager",
+                        link: "/sdk/typescript/server/handler.keyManager",
                       },
                     ],
                   },
                 ],
               },
               {
-                text: 'Prool Reference',
+                text: "Prool Reference",
                 items: [
                   {
-                    text: 'Setup',
-                    link: '/sdk/typescript/prool/setup',
+                    text: "Setup",
+                    link: "/sdk/typescript/prool/setup",
                   },
                 ],
               },
@@ -1412,8 +1412,8 @@ export default defineConfig({
         name: "tempo-node",
         async configureServer(_server) {
           if (
-            !('VITE_ENVIRONMENT' in process.env) ||
-            process.env['VITE_ENVIRONMENT'] !== 'local'
+            !("VITE_ENVIRONMENT" in process.env) ||
+            process.env["VITE_ENVIRONMENT"] !== "local"
           )
             return;
           const instance = Instance.tempo({

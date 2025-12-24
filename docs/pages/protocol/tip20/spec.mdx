@@ -279,12 +279,10 @@ interface ITIP20 {
     /// @param funder The account funding the reward distribution
     /// @param id The identifier of the reward (0 for instant distributions)
     /// @param amount The total amount of tokens allocated to the reward
-    /// @param durationSeconds The duration in seconds (must be 0 in current version)
-    event RewardScheduled(
+    event RewardDistributed(
         address indexed funder,
         uint64 indexed id,
         uint256 amount,
-        uint32 durationSeconds
     );
 
     /// @notice Emitted when the token's supply cap is updated
@@ -407,7 +405,7 @@ Internally, this is implemented via a `transferAuthorized` modifier that:
 - Calls `TIP403_REGISTRY.isAuthorized(transferPolicyId, to)` for the recipient.
 
 Both checks must return `true`, otherwise the call reverts with `PolicyForbids`.
-Reward operations (`startReward`, `setRewardRecipient`, `claimRewards`) also perform the same TIP-403 authorization checks before moving any funds.
+Reward operations (`distributeReward`, `setRewardRecipient`, `claimRewards`) also perform the same TIP-403 authorization checks before moving any funds.
 
 ## Invalid Recipient Protection
 TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The implementation uses a `validRecipient` guard that rejects recipients whose address is zero, or has the TIP-20 prefix (`0x20c000000000000000000000`).
@@ -541,6 +539,6 @@ interface ITIP20Factory {
 ## Invariants
 - `totalSupply()` must always equal to the sum of all `balanceOf(account)` over all accounts.
 - `totalSupply()` must always be `<= supplyCap` 
-- When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `startReward`, `setRewardRecipient`, `claimRewards`) can succeed.
+- When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `distributeReward`, `setRewardRecipient`, `claimRewards`) can succeed.
 - TIP20 tokens cannot be transferred to another TIP20 token contract address.
 - `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` never change `totalSupply()`.

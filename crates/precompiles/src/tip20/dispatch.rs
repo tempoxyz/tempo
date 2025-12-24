@@ -115,15 +115,9 @@ impl Precompile for TIP20Token {
             }
 
             ITIP20::feeRecipientCall::SELECTOR => {
-                if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(selector, self.storage.gas_used());
-                }
                 view::<ITIP20::feeRecipientCall>(calldata, |_call| self.fee_recipient.read())
             }
             ITIP20::setFeeRecipientCall::SELECTOR => {
-                if !self.storage.spec().is_allegretto() {
-                    return unknown_selector(selector, self.storage.gas_used());
-                }
                 mutate_void::<ITIP20::setFeeRecipientCall>(calldata, msg_sender, |s, call| {
                     self.set_fee_recipient(s, call.newRecipient)
                 })
@@ -160,9 +154,9 @@ impl Precompile for TIP20Token {
                     self.transfer_from_with_memo(sender, call)
                 })
             }
-            ITIP20::startRewardCall::SELECTOR => {
-                mutate::<ITIP20::startRewardCall>(calldata, msg_sender, |s, call| {
-                    self.start_reward(s, call)
+            ITIP20::distributeRewardCall::SELECTOR => {
+                mutate::<ITIP20::distributeRewardCall>(calldata, msg_sender, |s, call| {
+                    self.distribute_reward(s, call)
                 })
             }
             ITIP20::setRewardRecipientCall::SELECTOR => {

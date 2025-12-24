@@ -354,7 +354,7 @@ impl TIP20Setup {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.start_reward(admin, ITIP20::startRewardCall { amount })?;
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
         }
 
         if self.clear_events {

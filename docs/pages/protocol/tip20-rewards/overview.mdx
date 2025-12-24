@@ -16,7 +16,7 @@ Traditional reward mechanisms require tokens to be staked in separate contracts,
 - **Efficient at Scale**: Constant-time updates regardless of the number of token holders
 - **Policy Compliant**: All reward transfers respect TIP-403 transfer policies
 
-Note: Time-based streaming rewards are planned for a future upgrade. Until then, attempting to create a timed distribution will revert (calling `startReward(amount, seconds_)` with `seconds_ > 0` reverts with `ScheduledRewardsDisabled()`).
+Note: Time-based streaming rewards are planned for a future upgrade. Until then, attempting to create a timed distribution will revert (calling `distributeReward(amount, seconds_)` with `seconds_ > 0` reverts with `ScheduledRewardsDisabled()`).
 
 ## Links
 

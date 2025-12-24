@@ -26,7 +26,7 @@ use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningS
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
     SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_POST_ALLEGRO_MODERATO_BYTECODE},
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_BYTECODE},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -312,7 +312,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(CREATEX_POST_ALLEGRO_MODERATO_BYTECODE),
+                code: Some(CREATEX_BYTECODE),
                 nonce: Some(1),
                 ..Default::default()
             },

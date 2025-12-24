@@ -637,7 +637,7 @@ impl TIP20Token {
     }
 
     /// Create a TIP20Token from an address.
-    /// Returns an error if the address is not a valid TIP20 token (post-AllegroModerato).
+    /// Returns an error if the address is not a valid TIP20 token.
     pub fn from_address(address: Address) -> Result<Self> {
         if !is_tip20_prefix(address) {
             return Err(TIP20Error::invalid_token().into());

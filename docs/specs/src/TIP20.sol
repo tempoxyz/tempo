@@ -444,7 +444,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     /// @notice Starts a reward distribution.
-    function startReward(uint256 amount)
+    function distributeReward(uint256 amount)
         external
         virtual
         notPaused
@@ -464,7 +464,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
         uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
         globalRewardPerToken += deltaRPT;
-        emit RewardScheduled(msg.sender, 0, amount, 0);
+        emit RewardDistributed(msg.sender, 0, amount);
         return 0;
     }
 

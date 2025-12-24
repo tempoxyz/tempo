@@ -13,12 +13,11 @@ impl TIP20Token {
     /// Starts a new reward stream for the token contract.
     ///
     /// This function allows an authorized user to fund a reward stream that distributes
-    /// tokens to opted-in recipients either immediately if seconds=0, or over the specified
-    /// duration.
-    pub fn start_reward(
+    /// tokens to opted-in recipients.
+    pub fn distribute_reward(
         &mut self,
         msg_sender: Address,
-        call: ITIP20::startRewardCall,
+        call: ITIP20::distributeRewardCall,
     ) -> Result<u64> {
         self.check_not_paused()?;
         let token_address = self.address;
@@ -48,12 +47,11 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.set_global_reward_per_token(new_rpt)?;
 
-        // Emit reward scheduled event for immediate payout
-        self.emit_event(TIP20Event::RewardScheduled(ITIP20::RewardScheduled {
+        // Emit distributed reward event for immediate payout
+        self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
             id: 0,
             amount: call.amount,
-            durationSeconds: 0,
         }))?;
 
         Ok(0)
@@ -468,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_start_reward_duration_0() -> eyre::Result<()> {
+    fn test_distribute_reward() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
@@ -487,9 +485,9 @@ mod tests {
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
             // Start immediate reward
-            let id = token.start_reward(
+            let id = token.distribute_reward(
                 admin,
-                ITIP20::startRewardCall {
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
                 },
             )?;

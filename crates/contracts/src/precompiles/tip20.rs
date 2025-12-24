@@ -102,7 +102,7 @@ crate::sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount) external returns (uint64);
+        function distributeReward(uint256 amount) external returns (uint64);
         function setRewardRecipient(address recipient) external;
         function claimRewards() external returns (uint256);
         function getStream(uint64 id) external view returns (RewardStream memory);
@@ -123,7 +123,7 @@ crate::sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
-        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
+        event RewardDistributed(address indexed funder, uint64 indexed id, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
         event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
