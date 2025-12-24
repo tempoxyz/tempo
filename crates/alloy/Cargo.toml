@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-contracts.workspace = true
+tempo-contracts = { workspace = true, features = ["rpc"] }
 tempo-primitives = { workspace = true, features = ["serde"] }
 tempo-evm = { workspace = true, optional = true }
 tempo-revm = { workspace = true, optional = true }
@@ -52,5 +52,6 @@ tempo-compat = [
     "dep:reth-primitives-traits",
     "dep:reth-rpc-eth-types",
     "dep:tempo-evm",
-    "dep:tempo-revm"
+    "dep:tempo-revm",
+    "tempo-primitives/rpc",
 ]
