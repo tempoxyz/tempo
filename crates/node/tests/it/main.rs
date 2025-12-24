@@ -1,6 +1,7 @@
 mod backfill;
 mod base_fee;
 mod block_building;
+mod compliance_bypass_test;
 mod createx;
 mod eip7702_delegation;
 mod eth_call;
