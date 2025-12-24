@@ -20,15 +20,9 @@ use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
-// End-of-block system transactions (required)
-// Pre AllegroModerato: 2 txs (stablecoin exchange, subblocks signatures)
-// Post AllegroModerato: 1 tx (subblocks signatures)
-const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 2;
-const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] =
-    [STABLECOIN_EXCHANGE_ADDRESS, Address::ZERO];
-const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 1;
-const SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO] =
-    [Address::ZERO];
+// End-of-block system transactions
+const SYSTEM_TX_COUNT: usize = 1;
+const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
@@ -148,19 +142,9 @@ impl Consensus<Block> for TempoConsensus {
             )));
         }
 
-        let spec_is_allegro_moderato = self
-            .inner
-            .chain_spec()
-            .is_allegro_moderato_active_at_timestamp(block.timestamp());
-        let system_tx_count = if spec_is_allegro_moderato {
-            SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO
-        } else {
-            SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO
-        };
-
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(system_tx_count)..)
+            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
             .map(|slice| {
                 slice
                     .iter()
@@ -169,24 +153,15 @@ impl Consensus<Block> for TempoConsensus {
             })
             .unwrap_or_default();
 
-        if end_of_block_system_txs.len() != system_tx_count {
+        if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
             return Err(ConsensusError::Other(
                 "Block must contain end-of-block system txs".to_string(),
             ));
         }
 
-        let expected_system_tx_addresses = if spec_is_allegro_moderato {
-            SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO.iter()
-        } else {
-            SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO.iter()
-        };
-
         // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in end_of_block_system_txs
-            .into_iter()
-            .zip(expected_system_tx_addresses)
-        {
-            if tx.to().unwrap_or_default() != *expected_to {
+        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
+            if tx.to().unwrap_or_default() != expected_to {
                 return Err(ConsensusError::Other(
                     "Invalid end-of-block system tx order".to_string(),
                 ));

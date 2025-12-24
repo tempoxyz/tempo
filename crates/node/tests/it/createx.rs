@@ -12,7 +12,7 @@ async fn test_createx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
+        
         .build_http_only()
         .await?;
 

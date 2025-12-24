@@ -13,7 +13,7 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

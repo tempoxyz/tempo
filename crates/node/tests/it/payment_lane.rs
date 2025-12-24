@@ -15,7 +15,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -408,7 +408,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -544,7 +544,7 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

@@ -22,7 +22,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -253,7 +253,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
 
     // Note: This test uses moderato genesis to test pre-allegretto behavior
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -587,7 +587,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

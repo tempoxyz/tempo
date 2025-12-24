@@ -16,7 +16,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -151,7 +151,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -234,7 +234,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -346,7 +346,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -404,7 +404,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -533,7 +533,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

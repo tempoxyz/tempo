@@ -28,7 +28,7 @@ async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -70,7 +70,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -161,7 +161,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -223,7 +223,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -258,7 +258,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;

@@ -18,7 +18,7 @@ async fn test_bids() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -173,7 +173,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -336,7 +336,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -440,7 +440,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -620,7 +620,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -715,7 +715,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
 
     // Setup node
     let setup = TestNodeBuilder::new()
-        .allegretto_activated()
+        
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
