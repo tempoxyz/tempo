@@ -16,7 +16,7 @@ use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     tip20::ITIP20::{self, transferCall},
 };
 
@@ -2933,8 +2933,10 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
 
     println!("Transaction sender: {sender_addr}");
 
-    // The delegate address that all EOAs will delegate to (using default 7702 delegate)
-    let delegate_address = tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+    // The delegate address that all EOAs will delegate to (using AccountKeychain precompile)
+    // Note that this test simply asserts that the account has been delegated, rather than testing
+    // functionality of a the code that the account delegates to
+    let delegate_address = ACCOUNT_KEYCHAIN_ADDRESS;
     println!("Delegate address: {delegate_address}");
 
     // ========================================================================
