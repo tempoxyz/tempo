@@ -443,7 +443,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    /// @notice Starts a reward distribution.
+    /// @notice Distributes rewards to opted-in token holders.
     function distributeReward(uint256 amount)
         external
         virtual
