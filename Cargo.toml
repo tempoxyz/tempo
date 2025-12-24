@@ -122,7 +122,6 @@ reth-cli = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-cli-util = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-codecs = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
-reth-codecs-derive = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-consensus = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
@@ -225,7 +224,6 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.142"
 sha2 = "0.10"
 tempfile = "3.20.0"
-test-fuzz = "7"
 thiserror = "2.0.14"
 # TODO: restrict this to only the required features
 tokio = { version = "1.45.1", features = ["full"] }

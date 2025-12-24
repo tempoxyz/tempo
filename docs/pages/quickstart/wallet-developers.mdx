@@ -86,21 +86,21 @@ Use Tempo Transactions to
 Retrieve the user's configured fee token preference:
 
 ```ts
-import { getUserToken } from 'tempo.ts/viem'
+import { getUserToken } from 'viem/tempo'
 
 const feeToken = await client.fee.getUserToken({ 
   account: userAddress 
 })
 ```
 
-See [`getUserToken`](/sdk/typescript/viem/fee.getUserToken) for full documentation.
+See [`getUserToken`](https://viem.sh/tempo/actions/fee.getUserToken) for full documentation.
 
 ### Get token balance
 
 Check a user's balance for a specific token:
 
 ```ts
-import { getBalance } from 'tempo.ts/viem'
+import { getBalance } from 'viem/tempo'
 
 const balance = await client.token.getBalance({ 
   account: userAddress,
@@ -108,21 +108,21 @@ const balance = await client.token.getBalance({
 })
 ```
 
-See [`getBalance`](/sdk/typescript/viem/token.getBalance) for full documentation.
+See [`getBalance`](https://viem.sh/tempo/actions/token.getBalance) for full documentation.
 
 ### Set user fee token
 
 Set the user's default fee token preference. This will be used for all transactions unless a different fee token is specified at the transaction level. 
 
 ```ts
-import { setUserToken } from 'tempo.ts/viem'
+import { setUserToken } from 'viem/tempo'
 
 await client.fee.setUserTokenSync({ 
   token: '0x20c0000000000000000000000000000000000001', 
 })
 ```
 
-See [`setUserToken`](/sdk/typescript/viem/fee.setUserToken) for full documentation.
+See [`setUserToken`](https://viem.sh/tempo/actions/fee.setUserToken) for full documentation.
 
 ## Checklist
 

@@ -31,7 +31,7 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 
-rayon.workspace = true
+rayon = { workspace = true, optional = true }
 revm.workspace = true
 alloy-rlp.workspace = true
 alloy-evm.workspace = true
@@ -48,5 +48,5 @@ revm.workspace = true
 
 [features]
 default = ["rpc", "engine"]
-rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc"]
-engine = ["dep:tempo-payload-types"]
+rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
+engine = ["dep:tempo-payload-types", "dep:rayon"]
