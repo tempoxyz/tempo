@@ -25,8 +25,7 @@ use revm::{
     state::{Account, Bytecode},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
+use tempo_chainspec::TempoChainSpec;
 
 use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{
@@ -344,90 +343,32 @@ where
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         self.inner.apply_pre_execution_changes()?;
 
-        // Initialize keychain precompile if allegretto is active
-        let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        if self
-            .inner
-            .spec
-            .is_allegretto_active_at_timestamp(block_timestamp)
-        {
-            let evm = self.evm_mut();
-            let db = evm.ctx_mut().db_mut();
+        // Initialize keychain precompile
+        let evm = self.evm_mut();
+        let db = evm.ctx_mut().db_mut();
 
-            // Load the keychain account from the cache
-            let acc = db
-                .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
+        // Load the keychain account from the cache
+        let acc = db
+            .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
+            .map_err(BlockExecutionError::other)?;
 
-            // Get existing account info or create default
-            let mut acc_info = acc.account_info().unwrap_or_default();
+        // Get existing account info or create default
+        let mut acc_info = acc.account_info().unwrap_or_default();
 
-            // Only initialize if the account has no code
-            if acc_info.is_empty_code_hash() {
-                // Set the keychain code
-                let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
-                acc_info.code_hash = code.hash_slow();
-                acc_info.code = Some(code);
+        // Only initialize if the account has no code
+        if acc_info.is_empty_code_hash() {
+            // Set the keychain code
+            let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
+            acc_info.code_hash = code.hash_slow();
+            acc_info.code = Some(code);
 
-                // Convert to revm account and mark as touched
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
+            // Convert to revm account and mark as touched
+            let mut revm_acc: Account = acc_info.into();
+            revm_acc.mark_touch();
 
-                // Commit the account to the database to ensure it persists
-                // even if no transactions are executed in this block
-                db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
-            }
-        }
-
-        // Modify CreateX bytecode and upgrade Multicall to Multicall3 if AllegroModerato is active
-        if self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp)
-        {
-            let evm = self.evm_mut();
-            let db = evm.ctx_mut().db_mut();
-
-            // Update CreateX bytecode if outdated
-            let acc = db
-                .load_cache_account(CREATEX_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-
-            let mut acc_info = acc.account_info().unwrap_or_default();
-
-            let correct_code_hash =
-                tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
-            if acc_info.code_hash != correct_code_hash {
-                acc_info.code_hash = correct_code_hash;
-                acc_info.code = Some(Bytecode::new_legacy(
-                    tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE,
-                ));
-
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
-
-                db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
-            }
-
-            // Update Multicall to Multicall3 if outdated
-            let acc = db
-                .load_cache_account(MULTICALL_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-
-            let mut acc_info = acc.account_info().unwrap_or_default();
-
-            let correct_code_hash = tempo_contracts::contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
-            if acc_info.code_hash != correct_code_hash {
-                acc_info.code_hash = correct_code_hash;
-                acc_info.code = Some(Bytecode::new_legacy(
-                    tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone(),
-                ));
-
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
-
-                db.commit(HashMap::from_iter([(MULTICALL_ADDRESS, revm_acc)]));
-            }
+            // Commit the account to the database to ensure it persists
+            // even if no transactions are executed in this block
+            db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
         }
 
         Ok(())
@@ -439,9 +380,7 @@ where
     ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if self.evm().ctx().cfg.spec.is_allegretto()
-            && let Some(validator) = tx.tx().subblock_proposer()
-        {
+        if let Some(validator) = tx.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -520,12 +459,6 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
-        let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        let _is_allegro_moderato = self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp);
-
         if self.section
             != (BlockSection::System {
                 seen_subblocks_signatures: true,

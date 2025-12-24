@@ -48,11 +48,8 @@ contract StablecoinExchange {
     /// Nested mapping for user balances: user -> token -> balance
     mapping(address => mapping(address => uint128)) public balances;
 
-    /// Last processed order ID
-    uint128 public activeOrderId;
-
-    /// Latest pending order ID
-    uint128 public pendingOrderId;
+    /// Next order ID
+    uint128 public nextOrderId;
 
     /// Dynamic array of all book keys
     bytes32[] public bookKeys;
