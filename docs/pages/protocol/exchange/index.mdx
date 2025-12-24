@@ -16,11 +16,11 @@ The exchange supports three types of orders, each with different execution behav
 
 | Order Type | Description |
 |------------|-------------|
-| [**Limit Orders**](/protocol/exchange/providing-liquidity#limit-orders) | Place orders at specific price levels that wait in the book until matched or cancelled. New orders are queued and added to the book at the end of the block. |
-| [**Flip Orders**](/protocol/exchange/providing-liquidity#flip-orders) | Special orders that automatically reverse to the opposite side when completely filled, acting like a perpetual liquidity pool. Filled flip orders automatically create new orders on the opposite side during end-of-block settlement. |
+| [**Limit Orders**](/protocol/exchange/providing-liquidity#limit-orders) | Place orders at specific price levels that wait in the book until matched or cancelled. Orders are added to the book immediately when placed. |
+| [**Flip Orders**](/protocol/exchange/providing-liquidity#flip-orders) | Special orders that automatically reverse to the opposite side when completely filled, acting like a perpetual liquidity pool. When a flip order is fully filled, a new order is immediately created on the opposite side. |
 | [**Market Orders**](/protocol/exchange/executing-swaps#swap-functions) | Execute immediately against the best available orders in the book (via swap functions). Swaps and cancellations execute immediately within the transaction. |
 
-This execution model prevents MEV by making it impossible to backrun new orders or perform JIT liquidity attacks. For the complete execution mechanics, see the [Stablecoin DEX Specification](/protocol/exchange/spec).
+For the complete execution mechanics, see the [Stablecoin DEX Specification](/protocol/exchange/spec).
 
 To get started with the exchange, explore these guides:
 

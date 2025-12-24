@@ -74,7 +74,7 @@ The protocol checks for token preferences in five ways, with this order of prece
 
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
-3. TIP-20 contract (if the transaction is calling any function on a TIP-20 contract, the transaction uses that token as its fee token)
+3. TIP-20 contract (if the transaction is calling `transfer`, `transferWithMemo`, or `startReward` on a TIP-20 token contract, the transaction uses that token as its fee token)
 4. Stablecoin Exchange (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
 5. PathUSD (as a fallback)
 
@@ -106,7 +106,16 @@ At this step, the protocol does one more check:
 
 ### TIP-20 contracts
 
-If the top-level call of a transaction is to a TIP-20 contract for which the currency is USD, or _all_ of the top-level calls of a TempoTransaction are to the same TIP-20 contract for which the currency is USD, that token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+If the top-level call of a transaction is to one of the following functions on a TIP-20 token whose currency is USD:
+
+* `transfer(address to, uint256 amount)`
+* `transferWithMemo(address to, uint256 amount, bytes32 memo)`
+* `startReward(uint256 amount, uint32 seconds_)`
+
+then that TIP-20 token is used as the user's fee token for that transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+
+For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if _all_ top-level calls are to the same TIP-20 contract, and each such call is to one of the functions listed above, with `fee_payer == tx.origin`.
+
 
 ### Stablecoin Exchange contract
 
@@ -180,22 +189,13 @@ After execution, the `FeeManager`:
 - Refunds any unused tokens to the user
 - Queues the actual fee amount for conversion (if needed)
 
-#### 5. Fee swap queuing
+#### 5. Fee swap execution
 
-If the user's fee token differs from the validator's preferred token, the fee is added to a pending fee swap queue for that token pair. The swap doesn't execute immediately—it's batched with all other fees collected during the block.
+If the user's fee token differs from the validator's preferred token, the fee swap executes immediately during the post-transaction step at a fixed rate of **0.9970** (validator receives 0.9970 of their token per 1.0 user token paid).
 
-If the user's fee token matches the validator's preference, no conversion is needed and the fee goes directly to the validator.
+If the user's fee token matches the validator's preference, no conversion is needed.
 
-#### 6. End-of-block settlement
-
-At the end of each block, the protocol:
-
-1. Calls `executePendingFeeSwaps()` on the Fee AMM for each token pair
-2. Executes all pending fee swaps at a fixed rate of **0.9970** (validator receives 0.9970 of their token per 1.0 user token paid)
-3. Updates the AMM pool reserves
-4. Transfers the converted tokens to the validator's account
-
-This batched settlement prevents MEV attacks like sandwiching or backrunning individual fee payments.
+Fees accumulate in the FeeManager contract. Validators can claim their accumulated fees at any time by calling `distributeFees()`.
 
 ### Fee swap mechanics
 
@@ -220,9 +220,9 @@ Here's a complete example of the fee lifecycle:
 4. The FeeManager collects 1.0 USDC from Alice before execution
 5. Transaction executes and uses 0.8 USDC worth of gas
 6. The FeeManager refunds 0.2 USDC to Alice
-7. The remaining 0.8 USDC is queued for conversion
-8. At block end, the Fee AMM swaps 0.8 USDC → 0.7976 USDT (0.8 × 0.9970)
-9. Validator receives 0.7976 USDT
+7. The Fee AMM immediately swaps 0.8 USDC → 0.7976 USDT (0.8 × 0.9970)
+8. The 0.7976 USDT is added to the validator's accumulated fees
+9. Validator calls `distributeFees()` to claim their accumulated fees
 10. Liquidity providers earn 0.0024 USDT from the 0.3% fee
 
 ### Gas costs

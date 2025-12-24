@@ -1,7 +1,10 @@
 import * as React from 'react'
 import { Link } from 'react-router'
+import { usePostHogTracking } from '../lib/posthog'
 
 export function HomePage() {
+  const { trackCTAClick, trackExternalLinkClick } = usePostHogTracking()
+
   return (
     <div className="py-25 max-[470px]:py-14 px-6">
       <div className="fixed right-0 top-30 max-[1180px]:top-40 max-[970px]:top-60">
@@ -23,10 +26,26 @@ export function HomePage() {
         </div>
         <div className="h-[24px]" />
         <div className="flex gap-[12px]">
-          <Button variant="inverted" render={<Link to="/" />}>
+          <Button
+            variant="inverted"
+            render={
+              <Link
+                to="/"
+                onClick={() => trackCTAClick('Start Building', '/')}
+              />
+            }
+          >
             Start Building
           </Button>
-          <Button variant="inverted" render={<Link to="/documentation" />}>
+          <Button
+            variant="inverted"
+            render={
+              <Link
+                to="/documentation"
+                onClick={() => trackCTAClick('Learn Tempo', '/documentation')}
+              />
+            }
+          >
             Learn Tempo
           </Button>
           <Button
@@ -37,6 +56,7 @@ export function HomePage() {
                 href="https://tempo.xyz"
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={() => trackExternalLinkClick('https://tempo.xyz', 'Website')}
               />
             }
           >
