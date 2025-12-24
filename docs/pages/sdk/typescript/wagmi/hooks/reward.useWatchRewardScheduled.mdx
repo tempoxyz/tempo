@@ -19,7 +19,6 @@ import { Hooks } from 'tempo.ts/wagmi'
 
 Hooks.reward.useWatchRewardDistributed({
   onRewardDistributed: (args, log) => {
-    console.log('Stream ID:', args.id)
     console.log('Funder:', args.funder)
     console.log('Amount:', args.amount)
   },

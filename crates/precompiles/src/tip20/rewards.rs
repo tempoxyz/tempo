@@ -15,7 +15,7 @@ impl TIP20Token {
         &mut self,
         msg_sender: Address,
         call: ITIP20::distributeRewardCall,
-    ) -> Result<u64> {
+    ) -> Result<()> {
         self.check_not_paused()?;
         let token_address = self.address;
 
@@ -47,11 +47,10 @@ impl TIP20Token {
         // Emit distributed reward event for immediate payout
         self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
-            id: 0,
             amount: call.amount,
         }))?;
 
-        Ok(0)
+        Ok(())
     }
 
     /// Updates and accumulates accrued rewards for a specific token holder.
@@ -208,11 +207,6 @@ impl TIP20Token {
         }
 
         Ok(max_amount)
-    }
-
-    /// Gets the next available stream ID (minimum 1).
-    pub fn get_next_stream_id(&self) -> Result<u64> {
-        self.next_stream_id.read().map(|id| id.max(1))
     }
 
     /// Gets the accumulated global reward per token.
@@ -377,15 +371,13 @@ mod tests {
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-            // Start immediate reward
-            let id = token.distribute_reward(
+            // Distribute rewards
+            token.distribute_reward(
                 admin,
                 ITIP20::distributeRewardCall {
                     amount: reward_amount,
                 },
             )?;
-
-            assert_eq!(id, 0);
 
             Ok(())
         })

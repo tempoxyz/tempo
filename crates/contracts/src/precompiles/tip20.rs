@@ -92,11 +92,10 @@ crate::sol! {
         }
 
         // Reward Functions
-        function distributeReward(uint256 amount) external returns (uint64);
+        function distributeReward(uint256 amount) external;
         function setRewardRecipient(address recipient) external;
         function claimRewards() external returns (uint256);
         function optedInSupply() external view returns (uint128);
-        function nextStreamId() external view returns (uint64);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);
 
         // Events
@@ -111,7 +110,7 @@ crate::sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
-        event RewardDistributed(address indexed funder, uint64 indexed id, uint256 amount);
+        event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
 
         // Errors
@@ -128,7 +127,6 @@ crate::sol! {
         error InvalidQuoteToken();
         error TransfersDisabled();
         error InvalidAmount();
-        error NotStreamFunder();
         error NoOptedInSupply();
         error Unauthorized();
         error ProtectedAddress();
@@ -217,11 +215,6 @@ impl TIP20Error {
     /// Creates an error for invalid amount.
     pub const fn invalid_amount() -> Self {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
-    }
-
-    /// Error for when msg.sedner is not stream funder
-    pub const fn not_stream_funder() -> Self {
-        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
     }
 
     /// Error for when opted in supply is 0

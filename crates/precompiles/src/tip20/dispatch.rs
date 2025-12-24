@@ -145,7 +145,7 @@ impl Precompile for TIP20Token {
                 })
             }
             ITIP20::distributeRewardCall::SELECTOR => {
-                mutate::<ITIP20::distributeRewardCall>(calldata, msg_sender, |s, call| {
+                mutate_void::<ITIP20::distributeRewardCall>(calldata, msg_sender, |s, call| {
                     self.distribute_reward(s, call)
                 })
             }
@@ -162,10 +162,6 @@ impl Precompile for TIP20Token {
 
             ITIP20::optedInSupplyCall::SELECTOR => {
                 view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
-            }
-
-            ITIP20::nextStreamIdCall::SELECTOR => {
-                view::<ITIP20::nextStreamIdCall>(calldata, |_call| self.get_next_stream_id())
             }
 
             ITIP20::userRewardInfoCall::SELECTOR => {

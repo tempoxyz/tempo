@@ -277,11 +277,9 @@ interface ITIP20 {
 
     /// @notice Emitted when a reward distribution is scheduled
     /// @param funder The account funding the reward distribution
-    /// @param id The identifier of the reward (0 for instant distributions)
     /// @param amount The total amount of tokens allocated to the reward
     event RewardDistributed(
         address indexed funder,
-        uint64 indexed id,
         uint256 amount,
     );
 

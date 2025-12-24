@@ -140,7 +140,7 @@ pub struct TIP20Setup {
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
     reward_opt_ins: Vec<Address>,
-    reward_streams: Vec<U256>,
+    distribute_rewards: Vec<U256>,
     clear_events: bool,
 }
 
@@ -235,9 +235,9 @@ impl TIP20Setup {
         self
     }
 
-    /// Start a reward stream (requires tokens minted to admin first).
-    pub fn with_reward_stream(mut self, amount: U256) -> Self {
-        self.reward_streams.push(amount);
+    /// Distribute rewards (requires tokens minted to admin first).
+    pub fn with_reward(mut self, amount: U256) -> Self {
+        self.distribute_rewards.push(amount);
         self
     }
 
@@ -334,8 +334,8 @@ impl TIP20Setup {
             token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
         }
 
-        // Start reward streams
-        for amount in self.reward_streams {
+        // Distribute rewards
+        for amount in self.distribute_rewards {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });

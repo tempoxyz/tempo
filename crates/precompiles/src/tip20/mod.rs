@@ -92,7 +92,6 @@ pub struct TIP20Token {
     // TIP20 Rewards
     global_reward_per_token: U256,
     opted_in_supply: u128,
-    next_stream_id: u64,
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 

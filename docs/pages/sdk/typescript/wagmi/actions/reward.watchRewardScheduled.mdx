@@ -12,7 +12,6 @@ import { config } from './wagmi.config'
 
 const unwatch = Actions.reward.watchRewardDistributed(config, {
   onRewardDistributed: (args, log) => {
-    console.log('Stream ID:', args.id)
     console.log('Funder:', args.funder)
     console.log('Amount:', args.amount)
   },
@@ -52,8 +51,6 @@ type Args = {
   amount: bigint
   /** Address that funded the stream */
   funder: Address
-  /** Unique stream ID */
-  id: bigint
 }
 ```
 

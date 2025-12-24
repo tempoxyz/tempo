@@ -15,8 +15,7 @@ These functions are part of the [ITIP20](/protocol/tip20/spec) interface:
 ```solidity
 /// @notice Distribute rewards to opted-in token holders
 /// @param amount Amount of tokens to distribute
-/// @return Always returns 0 for an instant distribution
-function distributeReward(uint256 amount) external returns (uint64);
+function distributeReward(uint256 amount) external;
 
 /// @notice Set the reward recipient for the caller (opt in/out of rewards)
 /// @param newRewardRecipient Recipient address (address(0) to opt out)

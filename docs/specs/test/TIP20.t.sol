@@ -27,7 +27,7 @@ contract TIP20Test is BaseTest {
     event Burn(address indexed from, uint256 amount);
     event NextQuoteTokenSet(address indexed updater, TIP20 indexed nextQuoteToken);
     event QuoteTokenUpdate(address indexed updater, TIP20 indexed newQuoteToken);
-    event RewardDistributed(address indexed funder, uint64 indexed id, uint256 amount);
+    event RewardDistributed(address indexed funder, uint256 amount);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
 
     function setUp() public override {
@@ -1194,14 +1194,13 @@ contract TIP20Test is BaseTest {
             emit Transfer(admin, address(token), rewardAmount);
 
             vm.expectEmit(true, true, true);
-            emit RewardDistributed(admin, 0, rewardAmount);
+            emit RewardDistributed(admin, rewardAmount);
         }
 
-        uint64 id = token.distributeReward(rewardAmount);
+        token.distributeReward(rewardAmount);
 
         vm.stopPrank();
 
-        assertEq(id, 0); // Immediate payout returns 0
         assertEq(token.balanceOf(address(token)), rewardAmount);
 
         // Claim the rewards

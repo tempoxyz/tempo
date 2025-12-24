@@ -62,7 +62,7 @@ interface ITIP20 {
     event PauseStateUpdate(address indexed updater, bool isPaused);
     event QuoteTokenUpdate(address indexed updater, ITIP20 indexed newQuoteToken);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
-    event RewardDistributed(address indexed funder, uint64 indexed id, uint256 amount);
+    event RewardDistributed(address indexed funder, uint256 amount);
 
     /// @notice Emitted when the supply cap is updated.
     /// @param updater The address that initiated the supply cap update.
@@ -178,7 +178,7 @@ interface ITIP20 {
 
     function setSupplyCap(uint256 newSupplyCap) external;
 
-    function distributeReward(uint256 amount) external returns (uint64);
+    function distributeReward(uint256 amount) external;
 
     /// @notice Returns the maximum supply cap for the token.
     /// @return The supply cap amount.

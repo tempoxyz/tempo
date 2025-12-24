@@ -448,7 +448,6 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         external
         virtual
         notPaused
-        returns (uint64)
     {
         if (amount == 0) revert InvalidAmount();
         if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
@@ -464,8 +463,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
         uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
         globalRewardPerToken += deltaRPT;
-        emit RewardDistributed(msg.sender, 0, amount);
-        return 0;
+        emit RewardDistributed(msg.sender, amount);
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {

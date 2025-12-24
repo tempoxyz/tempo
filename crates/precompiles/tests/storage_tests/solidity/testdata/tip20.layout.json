@@ -148,15 +148,7 @@
             "type": "t_uint128"
           },
           {
-            "astId": 76,
-            "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "nextStreamId",
-            "offset": 16,
-            "slot": "16",
-            "type": "t_uint64"
-          },
-          {
-            "astId": 82,
+            "astId": 80,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
             "label": "userRewardInfo",
             "offset": 0,

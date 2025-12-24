@@ -52,7 +52,6 @@ contract TIP20 {
 
     uint256 public globalRewardPerToken;
     uint128 public optedInSupply;
-    uint64 public nextStreamId;
 
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;
