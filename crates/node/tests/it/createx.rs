@@ -11,7 +11,10 @@ use tempo_contracts::{CREATEX_ADDRESS, CreateX};
 async fn test_createx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .allegro_moderato_activated()
+        .build_http_only()
+        .await?;
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let provider = ProviderBuilder::new()
