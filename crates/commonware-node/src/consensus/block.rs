@@ -93,16 +93,16 @@ impl Read for Block {
             return Err(commonware_codec::Error::EndOfBuffer);
         }
         let decode_block = |input: &mut &[u8]| {
-            // TODO: decode straight to a reth SealedBlock once released:
-            // https://github.com/paradigmxyz/reth/pull/18003
-            // For now relies on `Decodable for alloy_consensus::Block`.
             alloy_rlp::Decodable::decode(input).map_err(|rlp_err| {
                 commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
             })
         };
         let inner = if buf.chunk().len() >= payload_len {
-            let mut slice = &buf.chunk()[..payload_len];
-            let inner = decode_block(&mut slice)?;
+            let inner = {
+                let chunk = buf.chunk();
+                let mut slice = &chunk[..payload_len];
+                decode_block(&mut slice)?
+            };
             buf.advance(payload_len);
             inner
         } else {
