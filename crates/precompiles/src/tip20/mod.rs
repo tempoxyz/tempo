@@ -959,6 +959,13 @@ impl TIP20Token {
             return Ok(());
         }
 
+        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+        if refund > from_balance {
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, refund, self.address).into(),
+            );
+        }
+
         // Handle rewards (only after Moderato hardfork)
         if self.storage.spec().is_moderato() {
             // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
@@ -976,13 +983,6 @@ impl TIP20Token {
                         .map_err(|_| TempoPrecompileError::under_overflow())?,
                 )?;
             }
-        }
-
-        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        if refund > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, refund, self.address).into(),
-            );
         }
 
         let new_from_balance =
