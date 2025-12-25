@@ -474,20 +474,10 @@ impl TipFeeManager {
         let mut token = self.user_tokens.at(call.sender).read()?;
 
         if token.is_zero() {
-            let validator_token = self.validator_tokens.at(call.validator).read()?;
-
-            if validator_token.is_zero() {
-                return Ok(IFeeManager::getFeeTokenBalanceReturn {
-                    _0: Address::ZERO,
-                    _1: U256::ZERO,
-                });
-            } else {
-                token = validator_token;
-            }
+            token = self.get_validator_token(call.validator)?;
         }
 
-        let tip20_token = TIP20Token::from_address(token)?;
-        let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
+        let token_balance = TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall {
             account: call.sender,
         })?;
 
@@ -1219,6 +1209,36 @@ mod tests {
             let fee_manager = TipFeeManager::new();
             let remaining = fee_manager.collected_fees.at(validator).read()?;
             assert_eq!(remaining, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_fee_token_balance_fallback() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let user = Address::random();
+        let validator = Address::random();
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let balance = U256::from(1000);
+            let path_usd = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(user, balance)
+                .apply()?;
+
+            // DO NOT set any user or validator tokens to the default fallback
+            let fee_manager = TipFeeManager::new();
+            let call = IFeeManager::getFeeTokenBalanceCall {
+                sender: user,
+                validator,
+            };
+            let result = fee_manager.get_fee_token_balance(call)?;
+
+            // returns PathUSD as a fallback
+            assert_eq!(result._0, path_usd.address());
+            assert_eq!(result._1, balance);
 
             Ok(())
         })
