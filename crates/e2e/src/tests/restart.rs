@@ -322,6 +322,17 @@ impl ShutdownAfterFinalizing {
     }
 }
 
+impl std::fmt::Display for ShutdownAfterFinalizing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::Boundary => "boundary",
+            Self::Ceremony => "ceremony",
+            Self::MiddleOfEpoch => "middle-of-epoch",
+        };
+        f.write_str(msg)
+    }
+}
+
 struct AssertNodeRecoversAfterFinalizingBlock {
     n_validators: u32,
     epoch_length: u64,
@@ -376,7 +387,8 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             tracing::debug!(
                 metric,
                 height,
-                "found a node that reached the pre-to-last height; restarting it"
+                target = %shutdown_after_finalizing,
+                "found a node that finalized the target height",
             );
             // Now restart the node for which we found the metric.
             let idx = validators

@@ -13,12 +13,10 @@ use tempo_node::TempoFullNode;
 
 mod actor;
 mod ingress;
-pub(super) mod read_write_transaction;
 mod validators;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
-pub(crate) use validators::ValidatorState;
 
 use ingress::{Command, Message};
 
@@ -73,9 +71,6 @@ pub(crate) struct Config<TPeerManager> {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
-
-    /// Whether to ignore the first signing share the node reads on startup.
-    pub(crate) delete_signing_share: bool,
 
     /// The peer manager on which the dkg actor will register new peers for a
     /// given epoch after reading them from the smart contract.

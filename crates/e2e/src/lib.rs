@@ -10,11 +10,16 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, iter::repeat_with, net::SocketAddr, time::Duration};
 
+use alloy::signers::k256::schnorr::CryptoRngCore;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _,
-    bls12381::{dkg::ops, primitives::variant::MinSig},
+    bls12381::{
+        dkg::{Dealer, Info, Player},
+        primitives::group::Share,
+    },
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
@@ -23,7 +28,7 @@ use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{TryFromIterator as _, ordered, quorum};
+use commonware_utils::{TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
@@ -33,6 +38,7 @@ pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
 
 #[cfg(test)]
@@ -134,10 +140,10 @@ pub async fn setup_validators(
     Setup {
         how_many_signers,
         how_many_verifiers,
-        seed,
         connect_execution_layer_nodes,
         linkage,
         epoch_length,
+        ..
     }: Setup,
 ) -> (Vec<TestingNode>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
@@ -150,60 +156,42 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let mut private_keys = Vec::new();
+    let (signers, initial_dkg_outcome) =
+        generate_initial_outcome(&mut context, how_many_signers as usize);
 
-    for i in 0..(how_many_signers + how_many_verifiers) {
-        let signer = PrivateKey::from_seed(seed + u64::from(i));
-        private_keys.push(signer);
-    }
-    private_keys.sort_by_key(|s| s.public_key());
+    let mut verifier_keys = repeat_with(|| PrivateKey::from_rng(&mut context))
+        .take(how_many_verifiers as usize)
+        .collect::<Vec<_>>();
+    verifier_keys.sort_by_key(|key| key.public_key());
 
-    let threshold = quorum(how_many_signers);
-    let (polynomial, shares) =
-        ops::generate_shares::<_, MinSig>(&mut context, None, how_many_signers, threshold);
-
-    let mut nodes = Vec::new();
-
-    // The actual port here does not matter because in the simulated p2p
-    // oracle it will be ignored. But it's nice because the nodes can be
-    // more easily identified in some logs..
-    let peers = ordered::Map::try_from_iter(
-        private_keys
-            .iter()
-            .take(how_many_signers as usize)
-            .cloned()
-            .enumerate()
-            .map(|(i, signer)| {
-                (
-                    signer.public_key(),
-                    SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
-                )
-            }),
-    )
-    .unwrap();
+    // The port here does not matter because it will be ignored in simulated p2p.
+    // Still nice, because sometimes nodes can be better identified in logs.
+    let validators =
+        ordered::Map::try_from_iter(signers.iter().enumerate().map(|(i, (signer, _))| {
+            (
+                signer.public_key(),
+                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
+            )
+        }))
+        .unwrap();
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
-        .with_public_polynomial(polynomial)
-        .with_validators(peers)
+        .with_initial_dkg_outcome(initial_dkg_outcome)
+        .with_validators(validators)
         .launch()
         .unwrap();
-
-    // Extend shares with None for verifiers
-    let shares: Vec<_> = shares
-        .into_iter()
-        .map(Some)
-        .chain(std::iter::repeat_n(None, how_many_verifiers as usize))
-        .collect();
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)
         .with_peers(connect_execution_layer_nodes)
         .generate();
 
-    for ((private_key, share), execution_config) in private_keys
+    let mut nodes = vec![];
+    for ((private_key, share), execution_config) in signers
         .into_iter()
-        .zip_eq(shares)
+        .map(|(key, share)| (key, Some(share)))
+        .chain(verifier_keys.into_iter().map(|key| (key, None)))
         .zip_eq(execution_configs)
     {
         let oracle = oracle.clone();
@@ -217,7 +205,6 @@ pub async fn setup_validators(
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
             share,
-            delete_signing_share: false,
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
@@ -349,4 +336,68 @@ pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
         .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
         .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
         .unwrap_or(0)
+}
+
+fn generate_initial_outcome(
+    rng: &mut impl CryptoRngCore,
+    participants: usize,
+) -> (Vec<(PrivateKey, Share)>, OnchainDkgOutcome) {
+    let dealer_key = PrivateKey::from_rng(rng);
+    let mut player_keys = repeat_with(|| PrivateKey::from_rng(rng))
+        .take(participants)
+        .collect::<Vec<_>>();
+    player_keys.sort_by_key(|key| key.public_key());
+    let info = Info::new(
+        b"test",
+        0,
+        None,
+        ordered::Set::try_from_iter(std::iter::once(dealer_key.public_key())).unwrap(),
+        ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
+    )
+    .unwrap();
+
+    let (mut dealer, pub_msg, priv_msgs) =
+        Dealer::start(rng, info.clone(), dealer_key.clone(), None).unwrap();
+    let priv_msgs = priv_msgs.into_iter().collect::<BTreeMap<_, _>>();
+    let mut players = player_keys
+        .iter()
+        .cloned()
+        .map(|key| Player::new(info.clone(), key).unwrap())
+        .collect::<Vec<_>>();
+
+    for (player, key) in players.iter_mut().zip(&player_keys) {
+        let ack = player
+            .dealer_message(
+                dealer_key.public_key(),
+                pub_msg.clone(),
+                priv_msgs.get(&key.public_key()).cloned().unwrap(),
+            )
+            .unwrap();
+        dealer.receive_player_ack(key.public_key(), ack).unwrap();
+    }
+    let signed_log = dealer.finalize();
+    let (_, log) = signed_log.check(&info).unwrap();
+    let logs = BTreeMap::from([(dealer_key.public_key(), log)]);
+
+    let outputs = players
+        .into_iter()
+        .map(|player| player.finalize(logs.clone(), 1).unwrap())
+        .collect::<Vec<_>>();
+    let output = outputs[0].0.clone();
+    assert!(outputs.iter().all(|(o, _)| &output == o));
+    let shares = outputs
+        .into_iter()
+        .map(|(_, share)| share)
+        .collect::<Vec<_>>();
+
+    let initial_outcome = OnchainDkgOutcome {
+        epoch: Epoch::zero(),
+        output,
+        next_players: ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key()))
+            .unwrap(),
+    };
+    (
+        player_keys.into_iter().zip(shares).collect(),
+        initial_outcome,
+    )
 }

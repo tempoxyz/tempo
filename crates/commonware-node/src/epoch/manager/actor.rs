@@ -65,13 +65,14 @@ use commonware_runtime::{
 };
 use eyre::{WrapErr as _, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
+use governor::{RateLimiter, middleware::RateLimitingMiddleware};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand::{CryptoRng, Rng};
 use tracing::{Level, Span, error, error_span, field::display, info, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
-    epoch::manager::ingress::{Enter, Exit},
+    epoch::manager::ingress::{EpochTransition, Exit},
 };
 
 use super::ingress::Message;
@@ -154,11 +155,11 @@ where
 
     pub(crate) fn start(
         mut self,
-        pending: (
+        votes: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        recovered: (
+        certificates: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -173,18 +174,18 @@ where
     ) -> Handle<()> {
         spawn_cell!(
             self.context,
-            self.run(pending, recovered, resolver, boundary_certificates)
+            self.run(votes, certificates, resolver, boundary_certificates)
                 .await
         )
     }
 
     async fn run(
         mut self,
-        (pending_sender, pending_receiver): (
+        (vote_sender, vote_receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        (recovered_sender, recovered_receiver): (
+        (certificate_sender, certificate_receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
@@ -192,25 +193,25 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        (mut boundary_certificates_sender, mut boundary_certificates_receiver): (
+        (mut boundary_certificate_sender, mut boundary_certificate_receiver): (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let (mux, mut pending_mux, mut pending_backup) = Muxer::builder(
-            self.context.with_label("pending_mux"),
-            pending_sender,
-            pending_receiver,
+        let (mux, mut vote_mux, mut vote_backup) = Muxer::builder(
+            self.context.with_label("vote_mux"),
+            vote_sender,
+            vote_receiver,
             self.config.mailbox_size,
         )
         .with_backup()
         .build();
         mux.start();
 
-        let (mux, mut recovered_mux, mut recovered_global_sender) = Muxer::builder(
-            self.context.with_label("recovered_mux"),
-            recovered_sender,
-            recovered_receiver,
+        let (mux, mut certificate_mux, mut certificate_global_sender) = Muxer::builder(
+            self.context.with_label("certificate_mux"),
+            certificate_sender,
+            certificate_receiver,
             self.config.mailbox_size,
         )
         .with_global_sender()
@@ -225,23 +226,28 @@ where
         );
         mux.start();
 
+        // Create rate limiter for orchestrators
+        let rate_limiter =
+            RateLimiter::hashmap_with_clock(self.config.rate_limit, self.context.clone());
+
         loop {
             select!(
-                message = pending_backup.next() => {
+                message = vote_backup.next() => {
                     let Some((their_epoch, (from, _))) = message else {
                         error_span!("mux channel closed").in_scope(||
-                            error!("pending p2p mux channel closed; exiting actor"
-                        ));
+                            error!("vote p2p mux channel closed; exiting actor")
+                        );
                         break;
                     };
                     let _: Result<_, _>  = self.handle_msg_for_unregistered_epoch(
-                        &mut boundary_certificates_sender,
+                        &mut boundary_certificate_sender,
                         Epoch::new(their_epoch),
                         from,
+                        &rate_limiter,
                     ).await;
                 },
 
-                message = boundary_certificates_receiver.recv() => {
+                message = boundary_certificate_receiver.recv() => {
                     let (from, payload) = match message {
                         Err(error) => {
                             error_span!("epoch channel closed").in_scope(||
@@ -256,7 +262,7 @@ where
                     let _: Result<_, _>  = self.handle_boundary_certificate_request(
                         from,
                         payload,
-                        &mut recovered_global_sender)
+                        &mut certificate_global_sender)
                     .await;
                 },
 
@@ -274,8 +280,8 @@ where
                                 .enter(
                                     cause,
                                     enter,
-                                    &mut pending_mux,
-                                    &mut recovered_mux,
+                                    &mut vote_mux,
+                                    &mut certificate_mux,
                                     &mut resolver_mux,
                                 )
                                 .await;
@@ -300,17 +306,17 @@ where
     async fn enter(
         &mut self,
         cause: Span,
-        Enter {
+        EpochTransition {
             epoch,
             public,
             share,
             participants,
-        }: Enter,
-        pending_mux: &mut MuxHandle<
+        }: EpochTransition,
+        vote_mux: &mut MuxHandle<
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
-        recovered_mux: &mut MuxHandle<
+        certificates_mux: &mut MuxHandle<
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         >,
@@ -375,13 +381,13 @@ where
             },
         );
 
-        let pending_sc = pending_mux.register(epoch.get()).await.unwrap();
-        let recovered_sc = recovered_mux.register(epoch.get()).await.unwrap();
-        let resolver_sc = resolver_mux.register(epoch.get()).await.unwrap();
+        let vote = vote_mux.register(epoch.get()).await.unwrap();
+        let certificate = certificates_mux.register(epoch.get()).await.unwrap();
+        let resolver = resolver_mux.register(epoch.get()).await.unwrap();
 
         assert!(
             self.active_epochs
-                .insert(epoch, engine.start(pending_sc, recovered_sc, resolver_sc))
+                .insert(epoch, engine.start(vote, certificate, resolver))
                 .is_none(),
             "there must be no other active engine running: this was ensured at \
             the beginning of this method",
@@ -432,20 +438,32 @@ where
     /// commonware p2p muxer will send the message to the backup channel, tagged
     /// with the unknown epoch.
     #[instrument(skip_all, fields(msg.epoch = %their_epoch, msg.from = %from), err(level = Level::INFO))]
-    async fn handle_msg_for_unregistered_epoch(
+    async fn handle_msg_for_unregistered_epoch<S, C, MW>(
         &mut self,
-        boundary_certificates_sender: &mut impl Sender<PublicKey = PublicKey>,
+        boundary_certificate_sender: &mut impl Sender<PublicKey = PublicKey>,
         their_epoch: Epoch,
         from: PublicKey,
-    ) -> eyre::Result<()> {
+        rate_limiter: &RateLimiter<PublicKey, S, C, MW>,
+    ) -> eyre::Result<()>
+    where
+        S: governor::state::keyed::KeyedStateStore<PublicKey>,
+        C: governor::clock::Clock,
+        MW: RateLimitingMiddleware<C::Instant>,
+    {
         let Some(our_epoch) = self.active_epochs.keys().last().copied() else {
             return Err(eyre!(
-                "received message over unregistered epoch channel, but we have no active epochs at all"
+                "received message over unregistered epoch channel, but we are \
+                not running simplex engines backing any epochs",
             ));
         };
         ensure!(
             their_epoch > our_epoch,
             "request epoch `{their_epoch}` is in our past, no action is necessary",
+        );
+
+        ensure!(
+            rate_limiter.check_key(&from).is_ok(),
+            "sender `{from}` is rate limited",
         );
 
         let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, our_epoch);
@@ -459,7 +477,7 @@ where
             height `{boundary_height}` is already known; no action necessary",
         );
 
-        boundary_certificates_sender
+        boundary_certificate_sender
             .send(Recipients::One(from), our_epoch.encode().freeze(), true)
             .await
             .wrap_err("failed request for finalization certificate of our epoch")?;

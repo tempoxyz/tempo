@@ -242,17 +242,17 @@ vergen = "9"
 vergen-git2 = "1"
 
 [patch.crates-io]
-# main branch, right after https://github.com/commonwarexyz/monorepo/pull/2433 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
+# main branch, right after https://github.com/commonwarexyz/monorepo/pull/2439 was merged
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
