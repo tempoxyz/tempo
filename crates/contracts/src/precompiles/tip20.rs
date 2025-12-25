@@ -104,9 +104,7 @@ crate::sol! {
         // Reward Functions
         function startReward(uint256 amount, uint32 secs) external returns (uint64);
         function setRewardRecipient(address recipient) external;
-        function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);
-        function finalizeStreams(uint64 timestamp) external;
         function getStream(uint64 id) external view returns (RewardStream memory);
         function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
@@ -126,7 +124,6 @@ crate::sol! {
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
-        event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
         event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 

@@ -27,13 +27,7 @@ impl Precompile for TIP403Registry {
                 })
             }
             ITIP403Registry::policyExistsCall::SELECTOR => {
-                if self.storage.spec().is_allegro_moderato() {
-                    view::<ITIP403Registry::policyExistsCall>(calldata, |call| {
-                        self.policy_exists(call)
-                    })
-                } else {
-                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
-                }
+                view::<ITIP403Registry::policyExistsCall>(calldata, |call| self.policy_exists(call))
             }
             ITIP403Registry::policyDataCall::SELECTOR => {
                 view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))
@@ -74,7 +68,7 @@ impl Precompile for TIP403Registry {
                     |s, call| self.modify_policy_blacklist(s, call),
                 )
             }
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))

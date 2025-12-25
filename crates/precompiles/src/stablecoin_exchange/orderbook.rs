@@ -69,19 +69,10 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     }
 }
 
-// Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
-//
-// i16::MIN as price
-pub(crate) const MIN_PRICE_PRE_MODERATO: u32 = 67_232;
-// i16::MAX as price
-pub(crate) const MAX_PRICE_PRE_MODERATO: u32 = 132_767;
-
-// Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
-//
 // PRICE_SCALE + MIN_TICK = 100_000 - 2000
-pub(crate) const MIN_PRICE_POST_MODERATO: u32 = 98_000;
+pub(crate) const MIN_PRICE: u32 = 98_000;
 // PRICE_SCALE + MAX_TICK = 100_000 + 2000
-pub(crate) const MAX_PRICE_POST_MODERATO: u32 = 102_000;
+pub(crate) const MAX_PRICE: u32 = 102_000;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
@@ -343,15 +334,9 @@ pub fn tick_to_price(tick: i16) -> u32 {
     (PRICE_SCALE as i32 + tick as i32) as u32
 }
 
-/// Convert scaled price to relative tick pre moderato hardfork
-pub fn price_to_tick_pre_moderato(price: u32) -> Result<i16> {
-    // Pre-Moderato: legacy behavior without validation
-    Ok((price as i32 - PRICE_SCALE as i32) as i16)
-}
-
-/// Convert scaled price to relative tick post moderato hardfork
-pub fn price_to_tick_post_moderato(price: u32) -> Result<i16> {
-    if !(MIN_PRICE_POST_MODERATO..=MAX_PRICE_POST_MODERATO).contains(&price) {
+/// Convert scaled price to relative tick
+pub fn price_to_tick(price: u32) -> Result<i16> {
+    if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
         return Err(StablecoinExchangeError::tick_out_of_bounds(invalid_tick).into());
     }
@@ -392,15 +377,15 @@ mod tests {
     fn test_tick_price_conversion() -> eyre::Result<()> {
         // Test at peg price (tick 0)
         assert_eq!(tick_to_price(0), PRICE_SCALE);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE)?, 0);
+        assert_eq!(price_to_tick(PRICE_SCALE)?, 0);
 
         // Test above peg
         assert_eq!(tick_to_price(100), PRICE_SCALE + 100);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE + 100)?, 100);
+        assert_eq!(price_to_tick(PRICE_SCALE + 100)?, 100);
 
         // Test below peg
         assert_eq!(tick_to_price(-100), PRICE_SCALE - 100);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE - 100)?, -100);
+        assert_eq!(price_to_tick(PRICE_SCALE - 100)?, -100);
 
         Ok(())
     }
@@ -408,7 +393,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_below_min() {
         // Price below MIN_PRICE should return an error
-        let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO - 1);
+        let result = price_to_tick(MIN_PRICE - 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -419,7 +404,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_above_max() {
         // Price above MAX_PRICE should return an error
-        let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO + 1);
+        let result = price_to_tick(MAX_PRICE + 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -428,51 +413,19 @@ mod tests {
     }
 
     #[test]
-    fn test_price_to_tick_at_min_boundary_pre_moderato() {
-        // MIN_PRICE should be valid and return i16::MIN (the minimum representable tick)
-        let result = price_to_tick_pre_moderato(MIN_PRICE_PRE_MODERATO);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), i16::MIN);
-        // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
-        assert_eq!(
-            MIN_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MIN as i32) as u32
-        );
-    }
-
-    #[test]
-    fn test_price_to_tick_at_max_boundary_pre_moderato() {
-        // MAX_PRICE should be valid and return i16::MAX (the maximum representable tick)
-        let result = price_to_tick_pre_moderato(MAX_PRICE_PRE_MODERATO);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), i16::MAX);
-        // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
-        assert_eq!(
-            MAX_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MAX as i32) as u32
-        );
-    }
-
-    #[test]
-    fn test_price_to_tick_at_min_boundary_post_moderato() {
-        let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO);
+    fn test_price_to_tick_at_min_boundary() {
+        let result = price_to_tick(MIN_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(
-            MIN_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MIN_TICK as i32) as u32
-        );
+        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
     }
 
     #[test]
-    fn test_price_to_tick_at_max_boundary_post_moderato() {
-        let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO);
+    fn test_price_to_tick_at_max_boundary() {
+        let result = price_to_tick(MAX_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(
-            MAX_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MAX_TICK as i32) as u32
-        );
+        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
     }
 
     #[test]

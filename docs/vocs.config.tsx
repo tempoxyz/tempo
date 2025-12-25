@@ -379,10 +379,6 @@ export default defineConfig({
                 link: "/protocol/transactions/AccountKeychain",
               },
               {
-                text: "Default Delegation Specification",
-                link: "/protocol/transactions/spec-default-delegation",
-              },
-              {
                 text: "Rust Implementation",
                 link: "https://github.com/tempoxyz/tempo/blob/main/crates/primitives/src/transaction/tempo_transaction.rs",
               },

@@ -15,22 +15,17 @@ use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
 use tempo_chainspec::{hardfork::TempoHardforks, spec::TempoChainSpec};
-use tempo_contracts::precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-};
+use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
 // End-of-block system transactions (required)
-// Pre AllegroModerato: 3 txs (fee manager, stablecoin exchange, subblocks signatures)
+// Pre AllegroModerato: 2 txs (stablecoin exchange, subblocks signatures)
 // Post AllegroModerato: 1 tx (subblocks signatures)
-const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 3;
-const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] = [
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_EXCHANGE_ADDRESS,
-    Address::ZERO,
-];
+const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 2;
+const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] =
+    [STABLECOIN_EXCHANGE_ADDRESS, Address::ZERO];
 const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 1;
 const SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO] =
     [Address::ZERO];
@@ -151,25 +146,6 @@ impl Consensus<Block> for TempoConsensus {
                 "Invalid system transaction: {}",
                 tx.tx_hash()
             )));
-        }
-
-        // If the moderator hardfork is not active, validate that the TIP20 Rewards Registry system
-        // tx is the first transaction in the block. If the block timestamp is post moderato, skip
-        // this step
-        if !self
-            .inner
-            .chain_spec()
-            .is_moderato_active_at_timestamp(block.timestamp())
-        {
-            // Check for optional rewards registry system transaction at the start
-            if let Some(first_tx) = transactions.first()
-                && first_tx.is_system_tx()
-                && first_tx.to().unwrap_or_default() != TIP20_REWARDS_REGISTRY_ADDRESS
-            {
-                return Err(ConsensusError::Other(
-                    "First transaction must be rewards registry if it's a system tx".to_string(),
-                ));
-            }
         }
 
         let spec_is_allegro_moderato = self

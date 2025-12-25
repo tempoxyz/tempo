@@ -19,7 +19,7 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip20::{self, TIP20Token},
 };
 
@@ -41,7 +41,6 @@ async fn test_eth_call() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
@@ -85,7 +84,6 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let token_id = tip20::address_to_token_id_unchecked(*token.address());
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
@@ -175,7 +173,6 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     let mint_receipt = token
         .mint(caller, mint_amount)
@@ -299,10 +296,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
-    // Use mintWithValidatorToken as mint is disabled post-Moderato
     let liquidity_amount = U256::from(u32::MAX);
     fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_fee_token.address(),
             validator_token_address,
             liquidity_amount,
@@ -386,7 +382,7 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     calldata.extend_from_slice(&[0u8; 64]);
 
     let tx = TransactionRequest::default()
-        .to(TIP_ACCOUNT_REGISTRAR)
+        .to(TIP20_FACTORY_ADDRESS)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
     // The call should fail with UnknownFunctionSelector error

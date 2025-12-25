@@ -8,7 +8,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_createx_post_allegro_moderato() -> eyre::Result<()> {
+async fn test_createx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new()
@@ -58,8 +58,8 @@ async fn test_createx_post_allegro_moderato() -> eyre::Result<()> {
     let hash_after = alloy::primitives::keccak256(&code_after);
     assert_eq!(
         hash_after,
-        tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH,
-        "CreateX bytecode should be fixed post-AllegroModerato"
+        tempo_contracts::contracts::CREATEX_BYTECODE_HASH,
+        "CreateX bytecode should be fixed"
     );
 
     Ok(())

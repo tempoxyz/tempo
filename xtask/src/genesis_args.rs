@@ -24,9 +24,9 @@ use std::{
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
 use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
-    MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_POST_ALLEGRO_MODERATO_BYTECODE},
+    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
+    SAFE_DEPLOYER_ADDRESS,
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_BYTECODE},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -39,7 +39,6 @@ use tempo_precompiles::{
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -228,9 +227,6 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
-        println!("Initializing TIP20RewardsRegistry");
-        initialize_tip20_rewards_registry(&mut evm)?;
-
         println!(
             "generating consensus config for validators: {:?}",
             self.validators
@@ -310,18 +306,9 @@ impl GenesisArgs {
         );
 
         genesis_alloc.insert(
-            DEFAULT_7702_DELEGATE_ADDRESS,
-            GenesisAccount {
-                code: Some(tempo_contracts::IthacaAccount::DEPLOYED_BYTECODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(CREATEX_POST_ALLEGRO_MODERATO_BYTECODE),
+                code: Some(CREATEX_BYTECODE),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -570,15 +557,6 @@ fn create_and_mint_token(
     })
 }
 
-fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20RewardsRegistry::new().initialize()
-    })?;
-
-    Ok(())
-}
-
 fn initialize_fee_manager(
     default_fee_address: Address,
     initial_accounts: Vec<Address>,
@@ -785,7 +763,7 @@ fn mint_pairwise_liquidity(
 
         for b_token_address in b_tokens {
             fee_manager
-                .mint(admin, a_token, b_token_address, amount, amount, admin)
+                .mint(admin, a_token, b_token_address, amount, admin)
                 .expect("Could not mint A -> B Liquidity pool");
         }
     });

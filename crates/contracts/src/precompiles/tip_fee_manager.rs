@@ -31,8 +31,6 @@ crate::sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
-        /// @dev Deprecated Post-AllegroModerato: This function is kept for backwards compatibility pre-AllegroModerato
-        function executeBlock() external;
         function distributeFees(address validator) external;
         function collectedFeesByValidator(address validator) external view returns (uint256);
         // NOTE: collectFeePreTx is a protocol-internal function called directly by the
@@ -90,8 +88,7 @@ sol! {
         function pools(bytes32 poolId) external view returns (Pool memory);
 
         // Liquidity Operations
-        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
-        function mintWithValidatorToken(address userToken, address validatorToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
+        function mint(address userToken, address validatorToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
         function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances

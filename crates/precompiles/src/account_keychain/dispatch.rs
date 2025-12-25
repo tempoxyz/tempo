@@ -58,7 +58,7 @@ impl Precompile for AccountKeychain {
                 })
             }
 
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))

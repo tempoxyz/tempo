@@ -42,11 +42,6 @@
       "permanent": false
     },
     {
-      "source": "/errors/tx/Keychain",
-      "destination": "/protocol/transactions/spec-default-delegation",
-      "permanent": false
-    },
-    {
       "source": "/errors/tx/SubblockNonceKey",
       "destination": "/protocol/blockspace/sub-block-specification#4-block-validity-rules",
       "permanent": false
