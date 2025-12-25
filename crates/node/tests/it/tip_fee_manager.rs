@@ -18,7 +18,15 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM::{self},
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
-use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    TempoTransaction,
+    transaction::{
+        calc_gas_balance_spending,
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+    },
+};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_set_user_token() -> eyre::Result<()> {
@@ -252,22 +260,28 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
     let fees = provider.estimate_eip1559_fees().await?;
 
     let send_fee_token_tx = || async {
-        let mut tx = TxFeeToken {
+        let tx = TempoTransaction {
             chain_id: provider.get_chain_id().await?,
             nonce: provider.get_transaction_count(user_address).await?,
             fee_token: Some(*user_token.address()),
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
             gas_limit: 21000,
-            to: Address::ZERO.into(),
+            calls: vec![Call {
+                to: Address::ZERO.into(),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }],
             ..Default::default()
         };
 
-        let signature = signers[0].sign_transaction_sync(&mut tx).unwrap();
+        let sig_hash = tx.signature_hash();
+        let signature = signers[0].sign_hash_sync(&sig_hash).unwrap();
+        let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+        let signed_tx = AASigned::new_unhashed(tx, aa_signature);
+        let envelope: tempo_primitives::TempoTxEnvelope = signed_tx.into();
 
-        let tx = tx.into_signed(signature);
-
-        provider.send_raw_transaction(&tx.encoded_2718()).await
+        provider.send_raw_transaction(&envelope.encoded_2718()).await
     };
 
     let res = send_fee_token_tx().await;
@@ -331,25 +345,26 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(http_url);
     let fees = provider.estimate_eip1559_fees().await?;
 
-    let mut tx = TxFeeToken {
+    let tx = TempoTransaction {
         chain_id: provider.get_chain_id().await?,
         nonce: provider.get_transaction_count(user.address()).await?,
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
         gas_limit: 21000,
-        to: Address::ZERO.into(),
-        fee_payer_signature: Some(Signature::new(
-            Default::default(),
-            Default::default(),
-            false,
-        )),
+        calls: vec![Call {
+            to: Address::ZERO.into(),
+            value: U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }],
+        fee_payer: Some(fee_payer.address()),
         ..Default::default()
     };
 
-    let signature = user.sign_transaction_sync(&mut tx).unwrap();
+    let sig_hash = tx.signature_hash();
+    let user_signature = user.sign_hash_sync(&sig_hash).unwrap();
     assert!(
-        signature
-            .recover_address_from_prehash(&tx.signature_hash())
+        user_signature
+            .recover_address_from_prehash(&sig_hash)
             .unwrap()
             == user.address()
     );
@@ -357,8 +372,11 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .sign_hash_sync(&tx.fee_payer_signature_hash(user.address()))
         .unwrap();
 
-    tx.fee_payer_signature = Some(fee_payer_signature);
-    let tx = tx.into_signed(signature);
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
+    let mut signed_tx = AASigned::new_unhashed(tx, aa_signature);
+    signed_tx.fee_payer_signature =
+        Some(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(fee_payer_signature)));
+    let tx: tempo_primitives::TempoTxEnvelope = signed_tx.into();
 
     // Query the fee payer's actual fee token from the FeeManager
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider);
