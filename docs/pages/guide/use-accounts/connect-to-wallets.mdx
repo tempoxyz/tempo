@@ -50,7 +50,7 @@ export const config = createConfig({
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
-    [tempo.id]: http(),
+    [tempoTestnet.id]: http(),
   },
 })
 ```
@@ -111,7 +111,7 @@ export const config = createConfig({
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
-    [tempo.id]: http(),
+    [tempoTestnet.id]: http(),
   },
 })
 ```
@@ -171,7 +171,7 @@ export const config = createConfig({
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
-    [tempo.id]: http(),
+    [tempoTestnet.id]: http(),
   },
 })
 ```
@@ -218,7 +218,7 @@ export function Account() {
       <button // [!code ++]
         onClick={() => // [!code ++]
           switchChain.switchChain({ // [!code ++]
-            chainId: tempo.id, // [!code ++]
+            chainId: tempoTestnet.id, // [!code ++]
             addEthereumChainParameter: { // [!code ++]
               nativeCurrency: { // [!code ++]
                 name: 'USD', // [!code ++]
@@ -248,7 +248,7 @@ export const config = createConfig({
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
-    [tempo.id]: http(),
+    [tempoTestnet.id]: http(),
   },
 })
 ```
