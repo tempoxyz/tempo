@@ -1003,19 +1003,27 @@ impl StablecoinExchange {
         let mut total_amount_in: u128 = 0;
 
         while amount_out > 0 {
-            let price = tick_to_price(order.tick());
+            let price = tick_to_price(order.tick()) as u128;
 
             let (fill_amount, amount_in) = if bid {
                 let base_needed = amount_out
                     .checked_mul(orderbook::PRICE_SCALE as u128)
-                    .and_then(|v| v.checked_div(price as u128))
+                    .and_then(|v| {
+                        if price == 0 {
+                            None
+                        } else if !self.storage.spec().is_allegro_moderato() {
+                            Some(v / price)
+                        } else {
+                            Some(v.div_ceil(price))
+                        }
+                    })
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
                 let fill_amount = amount_out.min(order.remaining());
                 let amount_in = fill_amount
-                    .checked_mul(price as u128)
+                    .checked_mul(price)
                     .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, amount_in)
@@ -1038,7 +1046,15 @@ impl StablecoinExchange {
                 if bid {
                     let base_needed = amount_out
                         .checked_mul(orderbook::PRICE_SCALE as u128)
-                        .and_then(|v| v.checked_div(price as u128))
+                        .and_then(|v| {
+                            if price == 0 {
+                                None
+                            } else if !self.storage.spec().is_allegro_moderato() {
+                                Some(v / price)
+                            } else {
+                                Some(v.div_ceil(price))
+                            }
+                        })
                         .ok_or(TempoPrecompileError::under_overflow())?;
                     if base_needed > order.remaining() {
                         amount_out = amount_out
@@ -4894,6 +4910,115 @@ mod tests {
                 "Expected PolicyForbids error, got: {err:?}"
             );
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_exact_out_bid_rounding_pre_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let bob = Address::random();
+
+            let tick = 460i16;
+            let bid_amount = 10_000_000u128; // base tokens Alice wants
+            let ask_amount = 10_046_001u128; // quote tokens Bob wants
+
+            // Calculate expected escrow
+            let price = orderbook::tick_to_price(tick) as u128; // 100460
+            let expected_escrow = (bid_amount * price) / orderbook::PRICE_SCALE as u128; // 10,046,000
+            assert_eq!(expected_escrow, ask_amount - 1);
+
+            // Setup tokens
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            // Mint extra quote tokens directly to the exchange to cover the bug's shortfall
+            TIP20Setup::config(quote_token)
+                .with_mint(exchange.address, U256::ONE)
+                .apply()?;
+
+            // Alice places bid order for 10,000,000 base tokens at tick 460
+            exchange.place(alice, base_token, bid_amount, true, tick)?;
+            exchange.execute_block(Address::ZERO)?;
+
+            // Give Bob base tokens via internal balance
+            exchange.set_balance(bob, base_token, bid_amount)?;
+
+            // Bob paid 10,000,000 base and received 10,046,001 quote
+            let amount_in = exchange.swap_exact_amount_out(
+                bob,
+                base_token,
+                quote_token,
+                ask_amount,
+                bid_amount,
+            )?;
+
+            let bob_quote_balance = TIP20Token::from_address(quote_token)?
+                .balances
+                .at(bob)
+                .read()?;
+
+            assert_eq!(amount_in, 10_000_000);
+            assert_eq!(bob_quote_balance, U256::from(ask_amount));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_exact_out_bid_rounding_post_allegro_moderato() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let admin = Address::random();
+            let alice = Address::random();
+            let bob = Address::random();
+
+            let tick = 460i16;
+            let bid_amount = 10_000_000u128; // base tokens Alice wants
+            let ask_amount = 10_046_001u128; // quote tokens Bob wants
+
+            // Calculate expected escrow
+            let price = orderbook::tick_to_price(tick) as u128; // 100460
+            let expected_escrow = (bid_amount * price) / orderbook::PRICE_SCALE as u128; // 10,046,000
+            assert_eq!(expected_escrow, ask_amount - 1);
+
+            // Setup tokens
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            // Mint extra quote tokens directly to the exchange to cover the bug's shortfall
+            TIP20Setup::config(quote_token)
+                .with_mint(exchange.address, U256::ONE)
+                .apply()?;
+
+            // Alice places bid order for 10,000,000 base tokens at tick 460
+            exchange.place(alice, base_token, bid_amount, true, tick)?;
+            exchange.execute_block(Address::ZERO)?;
+
+            // Give Bob base tokens via internal balance
+            exchange.set_balance(bob, base_token, bid_amount)?;
+
+            // Bob wanted to get 1 more token than the escrowed amount, so the call fails.
+            let result = exchange.swap_exact_amount_out(
+                bob,
+                base_token,
+                quote_token,
+                ask_amount,
+                bid_amount,
+            );
+            assert!(result.is_err_and(|err| err.to_string().contains("InsufficientLiquidity")));
 
             Ok(())
         })
