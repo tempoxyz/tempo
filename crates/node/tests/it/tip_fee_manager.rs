@@ -281,7 +281,9 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
         let signed_tx = AASigned::new_unhashed(tx, aa_signature);
         let envelope: tempo_primitives::TempoTxEnvelope = signed_tx.into();
 
-        provider.send_raw_transaction(&envelope.encoded_2718()).await
+        provider
+            .send_raw_transaction(&envelope.encoded_2718())
+            .await
     };
 
     let res = send_fee_token_tx().await;

@@ -1,7 +1,7 @@
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::{local::MnemonicBuilder, SignerSync},
+    signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
