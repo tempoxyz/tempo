@@ -7,7 +7,6 @@ use alloy::{
     },
 };
 use alloy_eips::Decodable2718;
-use alloy_network::TxSignerSync;
 use alloy_primitives::{Address, TxKind, U256};
 use reth_ethereum::{
     evm::revm::primitives::hex,

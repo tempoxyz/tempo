@@ -1,6 +1,6 @@
 use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
 use alloy::{
-    consensus::{SignableTransaction, Transaction},
+    consensus::Transaction,
     network::ReceiptResponse,
     providers::{Provider, ProviderBuilder, WalletProvider},
     signers::{
@@ -9,8 +9,8 @@ use alloy::{
     },
 };
 use alloy_eips::{BlockId, Encodable2718};
-use alloy_network::{AnyReceiptEnvelope, EthereumWallet, TxSignerSync};
-use alloy_primitives::{Address, Signature, U256};
+use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
+use alloy_primitives::{Address, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
@@ -345,7 +345,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().connect_http(http_url);
     let fees = provider.estimate_eip1559_fees().await?;
 
-    let tx = TempoTransaction {
+    let mut tx = TempoTransaction {
         chain_id: provider.get_chain_id().await?,
         nonce: provider.get_transaction_count(user.address()).await?,
         max_priority_fee_per_gas: fees.max_fee_per_gas,
@@ -356,7 +356,6 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: alloy_primitives::Bytes::new(),
         }],
-        fee_payer: Some(fee_payer.address()),
         ..Default::default()
     };
 
@@ -372,10 +371,10 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         .sign_hash_sync(&tx.fee_payer_signature_hash(user.address()))
         .unwrap();
 
+    tx.fee_payer_signature = Some(fee_payer_signature);
+
     let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
-    let mut signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    signed_tx.fee_payer_signature =
-        Some(TempoSignature::Primitive(PrimitiveSignature::Secp256k1(fee_payer_signature)));
+    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
     let tx: tempo_primitives::TempoTxEnvelope = signed_tx.into();
 
     // Query the fee payer's actual fee token from the FeeManager

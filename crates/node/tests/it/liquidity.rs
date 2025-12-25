@@ -1,11 +1,10 @@
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
+    signers::{local::MnemonicBuilder, SignerSync},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use alloy_network::TxSignerSync;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::{
