@@ -164,6 +164,10 @@ export default defineConfig({
             ],
           },
           {
+            text: "Tempo Transactions",
+            link: "/guide/tempo-transaction",
+          },
+          {
             text: "Make Payments",
             collapsed: true,
             items: [
