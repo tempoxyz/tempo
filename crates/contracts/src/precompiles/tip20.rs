@@ -112,6 +112,7 @@ crate::sol! {
         function optedInSupply() external view returns (uint128);
         function nextStreamId() external view returns (uint64);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);
+        function getPendingRewards(address account) external view returns (uint256);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);

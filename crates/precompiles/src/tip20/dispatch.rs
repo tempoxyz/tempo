@@ -220,6 +220,12 @@ impl Precompile for TIP20Token {
                 })
             }
 
+            ITIP20::getPendingRewardsCall::SELECTOR => {
+                view::<ITIP20::getPendingRewardsCall>(calldata, |call| {
+                    self.get_pending_rewards(call.account)
+                })
+            }
+
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
                 view::<IRolesAuth::hasRoleCall>(calldata, |call| self.has_role(call))
