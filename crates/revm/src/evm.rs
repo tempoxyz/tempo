@@ -214,7 +214,7 @@ mod tests {
         // HACK: initialize default fee token and pathUSD so that fee token validation passes
         let ctx = tempo_evm.ctx_mut();
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx),
             &ctx.cfg,
         );
         StorageCtx::enter(&mut storage, || {
@@ -250,7 +250,7 @@ mod tests {
         ctx.block.timestamp = U256::from(1000);
         ctx.block.timestamp_millis_part = 100;
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx),
             &ctx.cfg,
         );
         StorageCtx::enter(&mut storage, || {

@@ -88,12 +88,18 @@ pub(super) async fn read_from_contract(
             .wrap_err("failed instantiating evm for genesis block")?;
 
         let ctx = evm.ctx_mut();
-        StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-            let validator_config = ValidatorConfig::new();
-            validator_config
-                .get_validators()
-                .wrap_err("failed to query contract for validator config")
-        })
+        StorageCtx::enter_evm(
+            &mut ctx.journaled_state,
+            &ctx.block,
+            &ctx.cfg,
+            &ctx.tx,
+            || {
+                let validator_config = ValidatorConfig::new();
+                validator_config
+                    .get_validators()
+                    .wrap_err("failed to query contract for validator config")
+            },
+        )
     }?;
 
     info!(?raw_validators, "read validators from contract",);

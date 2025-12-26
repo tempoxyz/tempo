@@ -1,7 +1,7 @@
 use alloy::primitives::{Address, LogData, U256};
 use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{Block, CfgEnv, JournalTr},
+    context::{Block, CfgEnv, JournalTr, Transaction},
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
@@ -179,12 +179,13 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
         f: impl FnOnce() -> R,
     ) -> R
     where
         J: JournalTr<Database: Database> + Debug,
     {
-        let internals = EvmInternals::new(journal, block_env);
+        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
 
         // The core logic of setting up thread-local storage is here.
@@ -196,6 +197,7 @@ impl<'evm> StorageCtx {
         journal: &'evm mut J,
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
+        tx_env: &'evm impl Transaction,
         f: impl FnOnce(P) -> R,
     ) -> R
     where
@@ -204,7 +206,7 @@ impl<'evm> StorageCtx {
     {
         // Delegate all the setup logic to `enter_evm`.
         // We just need to provide a closure that `enter_evm` expects.
-        Self::enter_evm(journal, block_env, cfg, || f(P::default()))
+        Self::enter_evm(journal, block_env, cfg, tx_env, || f(P::default()))
     }
 }
 
