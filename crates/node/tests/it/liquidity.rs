@@ -10,17 +10,14 @@ use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
 use tempo_primitives::TxFeeToken;
 
-use crate::utils::setup_test_token_pre_allegretto;
+use crate::utils::setup_test_token;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
-/// Note: This test runs without Moderato to use the balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato to use the balanced `mint` function
     let setup = crate::utils::TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -33,8 +30,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token using pre-allegretto createToken_0
-    let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
+    // Setup payment token
+    let payment_token = setup_test_token(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (default fee token from genesis)

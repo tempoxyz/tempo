@@ -1,4 +1,4 @@
-use crate::utils::{TestNodeBuilder, setup_test_token, setup_test_token_pre_allegretto};
+use crate::utils::{TestNodeBuilder, setup_test_token};
 use alloy::{
     consensus::{SignableTransaction, Transaction},
     network::ReceiptResponse,
@@ -24,10 +24,7 @@ use tempo_primitives::{TxFeeToken, transaction::calc_gas_balance_spending};
 async fn test_set_user_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -35,7 +32,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Use pre-allegretto token creation since test uses moderato genesis
-    let user_token = setup_test_token_pre_allegretto(provider.clone(), user_address).await?;
+    let user_token = setup_test_token(provider.clone(), user_address).await?;
     let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
@@ -188,10 +185,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 async fn test_set_validator_token() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -229,10 +223,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
 async fn test_fee_token_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let signers = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
@@ -319,10 +310,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
 async fn test_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let fee_payer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

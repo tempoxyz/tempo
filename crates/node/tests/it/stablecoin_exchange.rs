@@ -17,10 +17,7 @@ async fn test_bids() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -172,10 +169,7 @@ async fn test_asks() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -335,10 +329,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -439,10 +430,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -619,10 +607,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -714,10 +699,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
