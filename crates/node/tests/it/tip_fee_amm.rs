@@ -1,6 +1,4 @@
-use crate::utils::{
-    TestNodeBuilder, await_receipts, setup_test_token, setup_test_token_pre_allegretto,
-};
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
@@ -23,10 +21,7 @@ use tempo_precompiles::{
 async fn test_mint_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -125,16 +120,11 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
 }
 
 /// Test burning liquidity from a FeeAMM pool.
-/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_burn_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -143,9 +133,9 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 
     let amount = U256::from(u64::MAX);
 
-    // Setup test token and fee AMM (use pre-allegretto token creation)
-    let token_0 = setup_test_token_pre_allegretto(provider.clone(), caller).await?;
-    let token_1 = setup_test_token_pre_allegretto(provider.clone(), caller).await?;
+    // Setup test token and fee AMM
+    let token_0 = setup_test_token(provider.clone(), caller).await?;
+    let token_1 = setup_test_token(provider.clone(), caller).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint tokens to caller
@@ -259,10 +249,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Note: This test uses moderato genesis to test pre-allegretto behavior
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     // Setup user and validator wallets
@@ -283,7 +270,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     assert!(!validator_address.is_zero());
 
     // Create different tokens for user and validator (use pre-allegretto version)
-    let user_token = setup_test_token_pre_allegretto(provider.clone(), user_address).await?;
+    let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
     let validator_token = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -409,8 +396,8 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Setup test tokens and fee AMM (use pre-allegretto token creation)
-    let user_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
-    let validator_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let validator_token = setup_test_token(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
@@ -478,25 +465,20 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
 }
 
 /// Test partial burn of liquidity from a FeeAMM pool.
-/// Note: This test runs without Moderato since balanced `mint` is disabled post-Moderato.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato to use balanced `mint` function
-    let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test tokens and fee AMM (use pre-allegretto token creation)
-    let user_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
-    let validator_token = setup_test_token_pre_allegretto(provider.clone(), alice).await?;
+    // Setup test tokens and fee AMM
+    let user_token = setup_test_token(provider.clone(), alice).await?;
+    let validator_token = setup_test_token(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
@@ -598,10 +580,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
 async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

@@ -1,26 +1,29 @@
 use alloy::{
     primitives::U256,
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
+    signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use alloy_network::TxSignerSync;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
-use tempo_primitives::TxFeeToken;
+use tempo_primitives::{
+    TempoTransaction,
+    transaction::{
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+    },
+};
 
-use crate::utils::setup_test_token_pre_allegretto;
+use crate::utils::setup_test_token;
 
 /// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
-/// Note: This test runs without Moderato to use the balanced `mint` function
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Run without Moderato to use the balanced `mint` function
     let setup = crate::utils::TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-pre-moderato.json").to_string())
         .build_http_only()
         .await?;
     let http_url = setup.http_url;
@@ -33,8 +36,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .wallet(wallet.clone())
         .connect_http(http_url);
 
-    // Setup payment token using pre-allegretto createToken_0
-    let payment_token = setup_test_token_pre_allegretto(provider.clone(), sender_address).await?;
+    // Setup payment token
+    let payment_token = setup_test_token(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
     // Get validator token address (default fee token from genesis)
@@ -125,14 +128,17 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     // Now set the user's fee token to our custom payment token (not USDC)
     // This ensures subsequent transactions will require a swap through the drained FeeAMM
     println!("Setting user's fee token preference...");
-    let mut tx = TxFeeToken {
+    let tx = TempoTransaction {
         fee_token: Some(DEFAULT_FEE_TOKEN),
-        to: TIP_FEE_MANAGER_ADDRESS.into(),
-        input: setUserTokenCall {
-            token: payment_token_addr,
-        }
-        .abi_encode()
-        .into(),
+        calls: vec![Call {
+            to: TIP_FEE_MANAGER_ADDRESS.into(),
+            value: U256::ZERO,
+            input: setUserTokenCall {
+                token: payment_token_addr,
+            }
+            .abi_encode()
+            .into(),
+        }],
         chain_id: provider.get_chain_id().await?,
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,
@@ -140,10 +146,13 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         gas_limit: 100000,
         ..Default::default()
     };
-    let signature = wallet.sign_transaction_sync(&mut tx).unwrap();
-    let tx = tx.into_signed(signature);
+    let sig_hash = tx.signature_hash();
+    let signature = wallet.sign_hash_sync(&sig_hash).unwrap();
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
+    let envelope: tempo_primitives::TempoTxEnvelope = signed_tx.into();
     provider
-        .send_raw_transaction(&tx.encoded_2718())
+        .send_raw_transaction(&envelope.encoded_2718())
         .await?
         .watch()
         .await?;

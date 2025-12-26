@@ -7,7 +7,6 @@ use alloy::{
     },
 };
 use alloy_eips::Decodable2718;
-use alloy_network::TxSignerSync;
 use alloy_primitives::{Address, TxKind, U256};
 use reth_ethereum::{
     evm::revm::primitives::hex,
@@ -28,7 +27,7 @@ use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope, TxFeeToken,
+    TempoTransaction, TempoTxEnvelope,
     transaction::{
         calc_gas_balance_spending,
         tempo_transaction::Call,
@@ -108,21 +107,27 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         .launch()
         .await?;
 
-    let mut tx = TxFeeToken {
+    let tx = TempoTransaction {
         chain_id: 1,
         nonce: U256::random().saturating_to(),
-        // Use AlphaUSD since PathUSD is only valid post-Allegretto
         fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,
         gas_limit: 1015288,
-        to: Address::random().into(),
+        calls: vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }],
         ..Default::default()
     };
     let signer = PrivateKeySigner::random();
 
-    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
-    let tx = TempoTxEnvelope::FeeToken(tx.into_signed(signature));
+    let sig_hash = tx.signature_hash();
+    let signature = signer.sign_hash_sync(&sig_hash).unwrap();
+    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
+    let signed_tx = AASigned::new_unhashed(tx.clone(), aa_signature);
+    let tx: TempoTxEnvelope = signed_tx.into();
 
     let res = node
         .pool

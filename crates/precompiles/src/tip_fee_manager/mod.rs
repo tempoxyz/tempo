@@ -130,11 +130,8 @@ impl TipFeeManager {
 
     /// Collects fees from user before transaction execution.
     ///
-    /// Pre-AllegroModerato: Reserves liquidity for swaps if needed, transfers max fee to fee manager.
-    /// Unused gas is later returned via collect_fee_post_tx.
-    ///
-    /// Post-AllegroModerato: Executes fee swap immediately and accumulates fees in collected_fees.
-    /// No refund mechanism - validators call distribute_fees() to collect accumulated fees.
+    /// Transfers max fee to fee manager and checks liquidity for swaps if user and validator tokens differ.
+    /// After tx execution, collect_fee_post_tx refunds unused gas and executes the swap immediately.
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -161,8 +158,8 @@ impl TipFeeManager {
 
     /// Finalizes fee collection after transaction execution.
     ///
-    /// Refunds unused tokens to user and tracks actual fee amount for swapping in `execute_block`
-    /// Called after transaction to settle the difference between max fee and actual usage.
+    /// Refunds unused tokens to user, executes fee swap if needed, and accumulates fees for the validator.
+    /// Validators call distribute_fees() to collect accumulated fees.
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -292,7 +289,6 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -538,8 +534,8 @@ mod tests {
     /// Test collect_fee_pre_tx with different tokens
     /// Verifies that liquidity is checked (not reserved) and no swap happens yet
     #[test]
-    fn test_collect_fee_pre_tx_different_tokens_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_collect_fee_pre_tx_different_tokens() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
         let validator = Address::random();
@@ -583,7 +579,7 @@ mod tests {
             // Call collect_fee_pre_tx
             fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
 
-            // Post-AllegroModerato with different tokens:
+            // With different tokens:
             // - Liquidity is checked (not reserved)
             // - No swap happens yet (swap happens in collect_fee_post_tx)
             // - collected_fees should be zero
@@ -594,9 +590,9 @@ mod tests {
                 "Different tokens: no fees accumulated in pre_tx (swap happens in post_tx)"
             );
 
-            // Pending fee swap should NOT be recorded (post-AllegroModerato doesn't reserve)
+            // Pending fee swap should NOT be recorded (liquidity is checked, not reserved)
             let pending = fee_manager.get_pending_fee_swap_in(pool_id)?;
-            assert_eq!(pending, 0, "Post-AllegroModerato: no liquidity reservation");
+            assert_eq!(pending, 0, "No liquidity reservation in pre_tx");
 
             // Pool reserves should NOT be updated yet
             let pool = fee_manager.pools.at(pool_id).read()?;
@@ -614,8 +610,8 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_fee_post_tx_immediate_swap_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_collect_fee_post_tx_immediate_swap() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
         let validator = Address::random();
@@ -656,10 +652,10 @@ mod tests {
             let actual_spending = U256::from(800);
             let refund_amount = U256::from(200);
 
-            // First call collect_fee_pre_tx (checks liquidity post-AllegroModerato)
+            // First call collect_fee_pre_tx (checks liquidity)
             fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
 
-            // Then call collect_fee_post_tx (executes swap post-AllegroModerato)
+            // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
                 user,
                 actual_spending,
@@ -687,10 +683,10 @@ mod tests {
         })
     }
 
-    /// Test collect_fee_pre_tx post-AllegroModerato: fails with insufficient liquidity
+    /// Test collect_fee_pre_tx fails with insufficient liquidity
     #[test]
-    fn test_collect_fee_pre_tx_insufficient_liquidity_post_allegro_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+    fn test_collect_fee_pre_tx_insufficient_liquidity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let user = Address::random();
         let validator = Address::random();

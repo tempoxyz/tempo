@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-primitives.workspace = true
-tempo-contracts.workspace = true
 
 reth-chainspec.workspace = true
 reth-consensus.workspace = true
