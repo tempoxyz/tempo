@@ -14,7 +14,7 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
 | Endpoint | Description |
 |----------|-------------|
 [`/list/{chain_id}`](https://tokenlist.tempo.xyz/list/42429) | Token list for a chain |
-[`/list/{chain_id}/{id}`](https://tokenlist.tempo.xyz/asset/42429/pathUSD) | Get a single token by symbol or address​
+[`/asset/{chain_id}/{id}`](https://tokenlist.tempo.xyz/asset/42429/pathUSD) | Get a single token by symbol or address​
 [`/icon/{chain_id}`](https://tokenlist.tempo.xyz/icon/42429) | Chain icon (SVG) |
 [`/icon/{chain_id}/{address}`](https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000) | Token icon (SVG) |
 
@@ -22,7 +22,7 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
 
 1. **Fork** [tempoxyz/tempo-apps](https://github.com/tempoxyz/tempo-apps)
 
-2. **Add token** to `apps/tokenlist/data/<chain_id>/tokenlist.json`:
+2. **Add token** to `data/<chain_id>/tokenlist.json` in `apps/tokenlist`:
    ```json
    {
      "name": "MyToken",
@@ -33,7 +33,7 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
    }
    ```
 
-3. **Add icon** to `apps/tokenlist/data/<chain_id>/icons/<address>.svg` (lowercase address)
+3. **Add icon** to `data/<chain_id>/icons/<address>.svg` (lowercase address) in `apps/tokenlist`
 
 4. **Submit PR**
 
