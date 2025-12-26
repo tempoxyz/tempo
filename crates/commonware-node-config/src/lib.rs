@@ -23,6 +23,8 @@ use serde::{
     ser::{SerializeMap as _, Serializer}, // codespell:ignore ser
 };
 
+pub mod encryption;
+
 #[cfg(test)]
 mod tests;
 
@@ -191,20 +193,49 @@ impl SigningKey {
         self.inner
     }
 
+    /// Read a signing key from file.
+    ///
+    /// If `TEMPO_SIGNING_KEY_SECRET` is set, the data will be decrypted.
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningKeyError> {
         let hex = std::fs::read_to_string(path).map_err(SigningKeyErrorKind::Read)?;
         Self::try_from_hex(&hex)
     }
 
+    /// Parse a signing key from hex string.
+    ///
+    /// If `TEMPO_SIGNING_KEY_SECRET` is set, the data will be decrypted.
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
-        let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
+        let hex = hex.trim();
+        let data = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
+
+        let bytes = if let Ok(secret) = encryption::get_signing_key_secret() {
+            encryption::decrypt(&data, &secret).map_err(SigningKeyErrorKind::Encryption)?
+        } else {
+            data
+        };
+
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
+    /// Write the signing key to file (encrypted).
+    ///
+    /// Requires `TEMPO_SIGNING_KEY_SECRET` to be set.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
-        std::fs::write(path, self.to_string()).map_err(SigningKeyErrorKind::Write)?;
+        std::fs::write(path, self.to_encrypted_string()?).map_err(SigningKeyErrorKind::Write)?;
         Ok(())
+    }
+
+    /// Convert to encrypted hex string.
+    ///
+    /// Requires `TEMPO_SIGNING_KEY_SECRET` to be set.
+    pub fn to_encrypted_string(&self) -> Result<String, SigningKeyError> {
+        let secret =
+            encryption::get_signing_key_secret().map_err(SigningKeyErrorKind::Encryption)?;
+        let plaintext = self.inner.encode();
+        let encrypted = encryption::encrypt(plaintext.as_ref(), &secret)
+            .map_err(SigningKeyErrorKind::Encryption)?;
+        Ok(const_hex::encode_prefixed(&encrypted))
     }
 
     pub fn public_key(&self) -> PublicKey {
@@ -241,6 +272,8 @@ enum SigningKeyErrorKind {
     Read(#[source] std::io::Error),
     #[error("failed writing to file")]
     Write(#[source] std::io::Error),
+    #[error(transparent)]
+    Encryption(#[from] eyre::Report),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,20 +286,49 @@ impl SigningShare {
         self.inner
     }
 
+    /// Read a signing share from file.
+    ///
+    /// If `TEMPO_SIGNING_SHARE_SECRET` is set, the data will be decrypted.
     pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningShareError> {
         let hex = std::fs::read_to_string(path).map_err(SigningShareErrorKind::Read)?;
         Self::try_from_hex(&hex)
     }
 
+    /// Parse a signing share from hex string.
+    ///
+    /// If `TEMPO_SIGNING_SHARE_SECRET` is set, the data will be decrypted.
     pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
-        let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
+        let hex = hex.trim();
+        let data = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
+
+        let bytes = if let Ok(secret) = encryption::get_signing_share_secret() {
+            encryption::decrypt(&data, &secret).map_err(SigningShareErrorKind::Encryption)?
+        } else {
+            data
+        };
+
         let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
         Ok(Self { inner })
     }
 
+    /// Write the signing share to file (encrypted).
+    ///
+    /// Requires `TEMPO_SIGNING_SHARE_SECRET` to be set.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+        std::fs::write(path, self.to_encrypted_string()?).map_err(SigningShareErrorKind::Write)?;
         Ok(())
+    }
+
+    /// Convert to encrypted hex string.
+    ///
+    /// Requires `TEMPO_SIGNING_SHARE_SECRET` to be set.
+    pub fn to_encrypted_string(&self) -> Result<String, SigningShareError> {
+        let secret =
+            encryption::get_signing_share_secret().map_err(SigningShareErrorKind::Encryption)?;
+        let plaintext = self.inner.encode();
+        let encrypted = encryption::encrypt(plaintext.as_ref(), &secret)
+            .map_err(SigningShareErrorKind::Encryption)?;
+        Ok(const_hex::encode_prefixed(&encrypted))
     }
 }
 
@@ -299,4 +361,6 @@ enum SigningShareErrorKind {
     Read(#[source] std::io::Error),
     #[error("failed writing to file")]
     Write(#[source] std::io::Error),
+    #[error(transparent)]
+    Encryption(#[from] eyre::Report),
 }

@@ -201,6 +201,7 @@ axum = "0.8.4"
 base64 = "0.22"
 blake3 = "1.8"
 bytes = "1.8"
+chacha20poly1305 = "0.10"
 clap = { version = "4.5.45", features = ["derive"] }
 const-hex = { version = "1.15.0" }
 derive_more = { version = "2.0.0" }

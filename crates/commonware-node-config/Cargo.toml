@@ -11,11 +11,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+blake3.workspace = true
+chacha20poly1305.workspace = true
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
 commonware-utils.workspace = true
 const-hex = { workspace = true, features = ["serde"] }
 derive_more = { workspace = true, features = ["debug"] }
+eyre.workspace = true
 indexmap = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
