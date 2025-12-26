@@ -58,6 +58,7 @@ interface IStablecoinExchange {
     error MaxInputExceeded();
     error BelowMinimumOrderSize(uint128 amount);
     error InvalidBaseToken();
+    error MaxOrderIterationsExceeded(uint32 limit);
 
     event FlipOrderPlaced(
         uint128 indexed orderId,

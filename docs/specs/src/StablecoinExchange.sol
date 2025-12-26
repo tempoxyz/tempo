@@ -33,6 +33,10 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Minimum order amount (10 units with 6 decimals)
     uint128 public constant MIN_ORDER_AMOUNT = 10_000_000;
 
+    /// @notice Maximum number of orders that can be iterated through in a single swap
+    /// @dev Prevents DoS attacks where an attacker places many small orders to force expensive iteration
+    uint32 public constant MAX_ORDER_ITERATIONS = 100;
+
     /// @notice TIP20 token address prefix (12 bytes)
     bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
 
@@ -684,6 +688,7 @@ contract StablecoinExchange is IStablecoinExchange {
         uint128 amountOut
     ) internal returns (uint128 amountIn) {
         uint128 remainingOut = amountOut;
+        uint32 iterations = 0;
 
         if (baseForQuote) {
             int16 currentTick = book.bestBidTick;
@@ -696,6 +701,11 @@ contract StablecoinExchange is IStablecoinExchange {
             uint128 orderId = level.head;
 
             while (remainingOut > 0) {
+                ++iterations;
+                if (iterations > MAX_ORDER_ITERATIONS) {
+                    revert IStablecoinExchange.MaxOrderIterationsExceeded(MAX_ORDER_ITERATIONS);
+                }
+
                 // Get the price at the current tick and fetch the current order from storage
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
@@ -746,6 +756,11 @@ contract StablecoinExchange is IStablecoinExchange {
             uint128 orderId = level.head;
 
             while (remainingOut > 0) {
+                ++iterations;
+                if (iterations > MAX_ORDER_ITERATIONS) {
+                    revert IStablecoinExchange.MaxOrderIterationsExceeded(MAX_ORDER_ITERATIONS);
+                }
+
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
@@ -799,6 +814,7 @@ contract StablecoinExchange is IStablecoinExchange {
         uint128 amountIn
     ) internal returns (uint128 amountOut) {
         uint128 remainingIn = amountIn;
+        uint32 iterations = 0;
 
         if (baseForQuote) {
             int16 currentTick = book.bestBidTick;
@@ -811,6 +827,11 @@ contract StablecoinExchange is IStablecoinExchange {
             uint128 orderId = level.head;
 
             while (remainingIn > 0) {
+                ++iterations;
+                if (iterations > MAX_ORDER_ITERATIONS) {
+                    revert IStablecoinExchange.MaxOrderIterationsExceeded(MAX_ORDER_ITERATIONS);
+                }
+
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
@@ -860,6 +881,11 @@ contract StablecoinExchange is IStablecoinExchange {
             uint128 orderId = level.head;
 
             while (remainingIn > 0) {
+                ++iterations;
+                if (iterations > MAX_ORDER_ITERATIONS) {
+                    revert IStablecoinExchange.MaxOrderIterationsExceeded(MAX_ORDER_ITERATIONS);
+                }
+
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
