@@ -25,6 +25,11 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::getValidatorsCall::SELECTOR => {
                 view::<IValidatorConfig::getValidatorsCall>(calldata, |_call| self.get_validators())
             }
+            IValidatorConfig::getNextDkgCeremonyCall::SELECTOR => {
+                view::<IValidatorConfig::getNextDkgCeremonyCall>(calldata, |_call| {
+                    self.get_next_dkg_ceremony()
+                })
+            }
 
             // Mutate functions
             IValidatorConfig::addValidatorCall::SELECTOR => {
@@ -52,6 +57,13 @@ impl Precompile for ValidatorConfig {
                 mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
                     self.change_owner(s, call)
                 })
+            }
+            IValidatorConfig::setNextDkgCeremonyCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::setNextDkgCeremonyCall>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_next_dkg_ceremony(s, call),
+                )
             }
 
             _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
