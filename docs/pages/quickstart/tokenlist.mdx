@@ -1,0 +1,50 @@
+---
+title: Tempo Token List Registry
+---
+import { Callout } from 'vocs/components'
+
+# Tempo Token List Registry
+
+A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadata and icons on Tempo.
+
+<img src="https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000" alt="pathUSD" width="64" height="64" />
+
+## Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+[`/list/{chain_id}`](https://tokenlist.tempo.xyz/list/42429) | Token list for a chain |
+[`/asset/{chain_id}/{id}`](https://tokenlist.tempo.xyz/asset/42429/pathUSD) | Get a single token by symbol or address​
+[`/icon/{chain_id}`](https://tokenlist.tempo.xyz/icon/42429) | Chain icon (SVG) |
+[`/icon/{chain_id}/{address}`](https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000) | Token icon (SVG) |
+
+## Adding a New Token
+
+1. **Fork** [tempoxyz/tempo-apps](https://github.com/tempoxyz/tempo-apps)
+
+2. **Add token** to `data/<chain_id>/tokenlist.json` in `apps/tokenlist`:
+   ```json
+   {
+     "name": "MyToken",
+     "symbol": "MTK",
+     "decimals": 18,
+     "chainId": 42429,
+     "address": "0x..."
+   }
+   ```
+
+3. **Add icon** to `data/<chain_id>/icons/<address>.svg` (lowercase address) in `apps/tokenlist`
+
+4. **Submit PR**
+
+### Icon Requirements
+
+- Format: SVG
+- Address filename must be lowercase (e.g., `0xabcd...1234.svg`)
+- Recommended: square aspect ratio, minimal whitespace
+
+<Callout type="info">
+A token that gets added to the tokenlist will atuomatically reflect in the Explorer in the next deployment.
+</Callout>
+
+[Full OpenAPI Spec →](https://tokenlist.tempo.xyz/docs)
