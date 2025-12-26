@@ -32,8 +32,8 @@ pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 pub const TICK_SPACING: i16 = 10;
 
 /// Calculate quote amount with specified rounding direction
-/// - `RoundingDirection::Down`: Pre-Moderato behavior (floor division)
-/// - `RoundingDirection::Up`: Post-Moderato behavior, favors protocol when user deposits funds
+/// - `RoundingDirection::Down`: Floor division, used for payouts (favors protocol)
+/// - `RoundingDirection::Up`: Ceiling division, used for deposits (favors protocol)
 fn calculate_quote_amount(amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
     base_to_quote(amount, tick, rounding)
 }
