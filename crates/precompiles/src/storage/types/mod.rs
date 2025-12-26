@@ -14,7 +14,7 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -149,6 +149,14 @@ pub trait StorableType {
     /// slots and need special cleanup. Non-dynamic types just zero their slots.
     const IS_DYNAMIC: bool = false;
 
+    /// Storage space identifier for exclusive mappings.
+    ///
+    /// - `0` = shared namespace (keccak256-based mappings, primitives, structs)
+    /// - `1+` = exclusive namespace (`DirectAddressMap`-based mappings)
+    ///
+    /// The `#[contract]` macro validates that all non-zero values are unique per contract.
+    const STORAGE_SPACE: u8 = 0;
+
     /// The handler type that provides storage access for this type.
     ///
     /// For primitives, this is `Slot<Self>`.
@@ -158,6 +166,49 @@ pub trait StorableType {
 
     /// Creates a handler for this type at the given storage location.
     fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler;
+}
+
+/// Trait for types that can be stored in a `DirectAddressMap`.
+///
+/// This trait enables per-field SPACE offset computation for struct values.
+/// Primitives use the default implementation which pre-computes the slot.
+/// Structs override this with a generated `SpaceHandler` type.
+pub trait StorableInSpace: StorableType {
+    /// The handler type for DirectAddressMap-based access.
+    ///
+    /// For primitives, this is `Self::Handler` (same as regular handler).
+    /// For structs, this is a generated handler (e.g., `MyStructSpaceHandler`)
+    /// that computes per-field slots using SPACE offsets.
+    type SpaceHandler;
+
+    /// Creates a handler for DirectAddressMap-based access.
+    ///
+    /// For primitives: pre-computes the slot as `[space][key][zeros]`.
+    /// For structs: creates a SpaceHandler with per-field SPACE offsets.
+    fn handle_in_space(
+        space: u8,
+        key: Address,
+        ctx: LayoutCtx,
+        address: Address,
+    ) -> Self::SpaceHandler;
+}
+
+/// Blanket implementation for all `Packable` types (primitives).
+///
+/// For primitives, the SpaceHandler is the same as Handler - we just pre-compute
+/// the slot and delegate to the regular `handle()` method.
+impl<T: Packable> StorableInSpace for T {
+    type SpaceHandler = Self::Handler;
+
+    #[inline]
+    fn handle_in_space(
+        space: u8,
+        key: Address,
+        ctx: LayoutCtx,
+        address: Address,
+    ) -> Self::SpaceHandler {
+        Self::handle(compute_direct_slot(space, key), ctx, address)
+    }
 }
 
 /// Abstracts reading, writing, and deleting values for [`Storable`] types.
@@ -283,30 +334,8 @@ impl<T: Packable> Storable for T {
 
 /// Trait for types that can be used as storage mapping keys.
 ///
-/// Keys are hashed using keccak256 along with the mapping's base slot
-/// to determine the final storage location. This trait provides the
-/// byte representation used in that hash.
+/// Provides the byte representation used by `HashStrategy` to compute storage slots.
 pub trait StorageKey {
     /// Returns a byte slice for this type.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
-
-    /// Compute storage slot for a mapping with this key.
-    ///
-    /// Left-pads the key to the nearest 32-byte multiple, concatenates
-    /// with the slot, and hashes.
-    fn mapping_slot(&self, slot: U256) -> U256 {
-        let key_bytes = self.as_storage_bytes();
-        let key_bytes = key_bytes.as_ref();
-
-        // Pad key to nearest multiple of 32 bytes
-        let padded_len = key_bytes.len().div_ceil(32) * 32;
-        let mut buf = vec![0u8; padded_len + 32];
-
-        // Left-pad the key bytes
-        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
-        // Append slot in big-endian
-        buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
-
-        U256::from_be_bytes(keccak256(&buf).0)
-    }
 }

@@ -11,7 +11,7 @@ use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, StorageCtx},
+    storage::{AddressMapping, Handler, Mapping, StorageCtx},
     tip20::{
         rewards::{RewardStream, UserRewardInfo},
         roles::DEFAULT_ADMIN_ROLE,
@@ -24,7 +24,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
 };
 use std::sync::LazyLock;
-use tempo_precompiles_macros::contract;
+use tempo_precompiles_macros::{Storable, StorableInSpace, contract};
 use tracing::trace;
 
 /// u128::MAX as U256
@@ -77,7 +77,11 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
-    balances: Mapping<Address, U256>,
+
+    // Migrated to `users` to leverage `AddressMapping` and avoid hashing. Used to be slot 9.
+    // balances: Mapping<Address, U256>,
+    users: AddressMapping<UserInfo>,
+
     allowances: Mapping<Address, Mapping<Address, U256>>,
     nonces: Mapping<Address, U256>,
     paused: bool,
@@ -92,10 +96,18 @@ pub struct TIP20Token {
     next_stream_id: u64,
     streams: Mapping<u64, RewardStream>,
     scheduled_rate_decrease: Mapping<u128, U256>,
-    user_reward_info: Mapping<Address, UserRewardInfo>,
+    // Migrated to `users` to leverage `AddressMapping` and avoid hashing. Used to be slot 21.
+    // user_reward_info: Mapping<Address, UserRewardInfo>,
 
     // Fee recipient
+    #[base_slot(22)]
     fee_recipient: Address,
+}
+
+#[derive(Debug, Clone, Storable, StorableInSpace)]
+pub struct UserInfo {
+    balance: U256,
+    rewards: UserRewardInfo,
 }
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
@@ -192,7 +204,7 @@ impl TIP20Token {
 
     // View functions
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances.at(call.account).read()
+        self.users.at(call.account).balance.read()
     }
 
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
@@ -779,11 +791,11 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances.at(account).read()
+        self.users.at(account).balance.read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances.at(account).write(amount)
+        self.users.at(account).balance.write(amount)
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {

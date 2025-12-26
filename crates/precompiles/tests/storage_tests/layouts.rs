@@ -4,7 +4,7 @@
 //! including auto-assignment, explicit slots, base_slot, and string literal slots.
 
 use super::*;
-use tempo_precompiles::storage::Mapping;
+use tempo_precompiles::storage::{AddressMapping, Mapping};
 
 #[test]
 fn test_mixed_slot_allocation() {
@@ -301,4 +301,265 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
     assert_eq!(slots::E_OFFSET, 16);
 
     assert_eq!(slots::D, U256::from(100));
+}
+
+// -- USER MAPPING TESTS -------------------------------------------------------
+
+#[test]
+fn test_user_mapping_in_contract() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub counter: U256,                  // slot 0
+        pub balances: AddressMapping<U256>, // slot 1 (occupies 1 slot in layout)
+        pub flag: bool,                     // slot 2
+    }
+
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let (counter, user, balance) = (U256::random(), Address::random(), U256::random());
+
+        // Write to regular fields
+        layout.counter.write(counter)?;
+        layout.flag.write(true)?;
+
+        // Write to AddressMapping
+        layout.balances.at(user).write(balance)?;
+
+        // Read back
+        assert_eq!(layout.counter.read()?, counter);
+        assert!(layout.flag.read()?);
+        assert_eq!(layout.balances.at(user).read()?, balance);
+
+        // Verify slot assignments
+        assert_eq!(layout.counter.slot(), U256::ZERO);
+        assert_eq!(layout.flag.slot(), U256::from(2));
+
+        // Verify slots module
+        assert_eq!(slots::COUNTER, U256::ZERO);
+        assert_eq!(slots::BALANCES, U256::ONE);
+        assert_eq!(slots::FLAG, U256::from(2));
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_slot_is_direct() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub balances: AddressMapping<U256>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let (user, balance) = (Address::random(), U256::random());
+        layout.balances.at(user).write(balance)?;
+
+        // Verify the slot is directly derived from address with STORAGE_SPACE prefix
+        // Format: [STORAGE_SPACE=1][address_bytes (20)][zeros (11)]
+        let handler = layout.balances.at(user);
+        let mut expected_bytes = [0u8; 32];
+        expected_bytes[0] = 1; // STORAGE_SPACE for AddressMapping (DirectAddressMap<1>)
+        expected_bytes[1..21].copy_from_slice(user.as_slice());
+        let expected_slot = U256::from_be_bytes(expected_bytes);
+        assert_eq!(handler.slot(), expected_slot);
+
+        // Verify read works with the direct slot
+        assert_eq!(handler.read()?, balance);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_with_struct_value() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub users: AddressMapping<UserProfile>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let (user, owner, balance) = (Address::random(), Address::random(), U256::random());
+
+        // Write struct fields
+        layout.users.at(user).owner.write(owner)?;
+        layout.users.at(user).active.write(true)?;
+        layout.users.at(user).balance.write(balance)?;
+
+        // Read back
+        assert_eq!(layout.users.at(user).owner.read()?, owner);
+        assert!(layout.users.at(user).active.read()?);
+        assert_eq!(layout.users.at(user).balance.read()?, balance);
+
+        // Different user has independent storage
+        let user2 = Address::random();
+        assert_eq!(layout.users.at(user2).owner.read()?, Address::ZERO);
+        assert!(!layout.users.at(user2).active.read()?);
+        assert_eq!(layout.users.at(user2).balance.read()?, U256::ZERO);
+
+        Ok(())
+    })
+}
+
+// -- SPACE-BASED STORAGE TESTS (DirectAddressMap with multi-slot structs) -------------------------
+
+#[test]
+fn test_user_mapping_with_test_block_space_offsets() -> eyre::Result<()> {
+    use tempo_precompiles::storage::compute_direct_slot;
+
+    #[contract]
+    pub struct Layout {
+        pub blocks: AddressMapping<TestBlock>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let user = Address::random();
+        let (field1, field2, field3) = (U256::random(), U256::random(), 42u64);
+
+        // Write to each field of the TestBlock
+        layout.blocks.at(user).field1.write(field1)?;
+        layout.blocks.at(user).field2.write(field2)?;
+        layout.blocks.at(user).field3.write(field3)?;
+
+        // Read back and verify
+        assert_eq!(layout.blocks.at(user).field1.read()?, field1);
+        assert_eq!(layout.blocks.at(user).field2.read()?, field2);
+        assert_eq!(layout.blocks.at(user).field3.read()?, field3);
+
+        // Verify each field gets a different SPACE-based slot
+        // AddressMapping uses SPACE=1, so:
+        // - field1 at slot offset 0 -> SPACE=1
+        // - field2 at slot offset 1 -> SPACE=2
+        // - field3 at slot offset 2 -> SPACE=3
+        let handler = layout.blocks.at(user);
+        assert_eq!(handler.field1.slot(), compute_direct_slot(1, user));
+        assert_eq!(handler.field2.slot(), compute_direct_slot(2, user));
+        assert_eq!(handler.field3.slot(), compute_direct_slot(3, user));
+
+        // Verify slots are different
+        assert_ne!(handler.field1.slot(), handler.field2.slot());
+        assert_ne!(handler.field2.slot(), handler.field3.slot());
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_multi_user_isolation() -> eyre::Result<()> {
+    use tempo_precompiles::storage::compute_direct_slot;
+
+    #[contract]
+    pub struct Layout {
+        pub blocks: AddressMapping<TestBlock>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let user1 = Address::random();
+        let user2 = Address::random();
+
+        // Write different values for each user
+        layout.blocks.at(user1).field1.write(U256::from(100))?;
+        layout.blocks.at(user1).field2.write(U256::from(200))?;
+
+        layout.blocks.at(user2).field1.write(U256::from(999))?;
+        layout.blocks.at(user2).field2.write(U256::from(888))?;
+
+        // Verify isolation - each user has independent storage
+        assert_eq!(layout.blocks.at(user1).field1.read()?, U256::from(100));
+        assert_eq!(layout.blocks.at(user1).field2.read()?, U256::from(200));
+        assert_eq!(layout.blocks.at(user2).field1.read()?, U256::from(999));
+        assert_eq!(layout.blocks.at(user2).field2.read()?, U256::from(888));
+
+        // Verify slots differ by user address, not just SPACE
+        let h1 = layout.blocks.at(user1);
+        let h2 = layout.blocks.at(user2);
+        assert_ne!(h1.field1.slot(), h2.field1.slot());
+        assert_ne!(h1.field2.slot(), h2.field2.slot());
+
+        // But same SPACE offset pattern for both users
+        assert_eq!(h1.field1.slot(), compute_direct_slot(1, user1));
+        assert_eq!(h2.field1.slot(), compute_direct_slot(1, user2));
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_user_mapping_space_handler_accessors() -> eyre::Result<()> {
+    #[contract]
+    pub struct Layout {
+        pub blocks: AddressMapping<TestBlock>,
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let user = Address::random();
+        let handler = layout.blocks.at(user);
+
+        // Verify SpaceHandler accessor methods
+        assert_eq!(handler.base_space(), 1); // AddressMapping uses SPACE=1
+        assert_eq!(handler.key(), user);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_multiple_address_mappings_in_different_spaces() -> eyre::Result<()> {
+    // Define a contract with multiple DirectAddressMap fields using different SPACE values
+    #[contract]
+    pub struct Layout {
+        pub balances: AddressMapping<U256>,    // SPACE: 1
+        pub info: AddressMapping<UserProfile>, // SPACE: 2-3
+        pub nonces: AddressMapping<u64>,       // SPACE: 4
+    }
+
+    let (mut storage, address) = setup_storage();
+    let layout = Layout::__new(address);
+
+    StorageCtx::enter(&mut storage, || {
+        let user = Address::random();
+        let owner = Address::random();
+        let balance = U256::random();
+
+        // Verify SPACE allocation
+        assert_eq!(slots::BALANCES_SPACE, 1);
+        assert_eq!(slots::INFO_SPACE, 2);
+        assert_eq!(slots::NONCES_SPACE, 4);
+
+        // Write to balances (SPACE=1)
+        layout.balances.at(user).write(balance)?;
+
+        // Write to info (SPACE=2,3)
+        layout.info.at(user).owner.write(owner)?;
+        layout.info.at(user).active.write(true)?;
+        layout.info.at(user).balance.write(balance + U256::ONE)?;
+
+        // Write to nonces (SPACE=4)
+        layout.nonces.at(user).write(1234)?;
+
+        // Read back and verify
+        assert_eq!(layout.balances.at(user).read()?, balance);
+        assert_eq!(layout.info.at(user).owner.read()?, owner);
+        assert!(layout.info.at(user).active.read()?);
+        assert_eq!(layout.info.at(user).balance.read()?, balance + U256::ONE);
+        assert_eq!(layout.nonces.at(user).read()?, 1234);
+
+        Ok(())
+    })
 }

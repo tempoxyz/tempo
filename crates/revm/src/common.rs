@@ -279,7 +279,11 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances.at(account).read()
+            TIP20Token::from_address(token)?
+                .users
+                .at(account)
+                .balance
+                .read()
         })
     }
 }
@@ -712,7 +716,7 @@ mod tests {
 
         // Set up CacheDB with balance
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::new(token_id).users.at(account).balance.slot();
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage

@@ -1,51 +1,131 @@
 //! Type-safe wrapper for EVM storage mappings (hash-based key-value storage).
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 use std::marker::PhantomData;
 
-use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey};
+use crate::storage::{Layout, LayoutCtx, Storable, StorableInSpace, StorableType, StorageKey};
 
-/// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
+// -- HASH STRATEGY TRAIT ------------------------------------------------------
+
+/// Strategy for computing mapping storage slots.
 ///
-/// This struct does not store data itself. Instead, it provides a zero-cost abstraction
-/// for accessing mapping storage slots using Solidity's hash-based layout. It wraps a
-/// base slot number and provides methods to compute the actual storage slots for keys.
+/// This trait defines how keys are mapped to storage slots. Different strategies
+/// can use different hashing algorithms (keccak256, blake3, or even direct byte encoding).
+/// Each strategy gets its own storage space identifier to prevent slot collisions.
+///
+/// The associated `Key` type constrains which key types can be used with each strategy.
+pub trait HashStrategy {
+    /// The key type this strategy accepts.
+    type Key: StorageKey;
+
+    /// Storage space identifier (first byte of the computed slot).
+    ///
+    /// Different values ensure that mappings using different strategies can't collide.
+    const STORAGE_SPACE: u8;
+
+    /// Compute the storage slot for a given key.
+    fn compute_slot(key: &Self::Key, base_slot: U256) -> U256;
+}
+
+/// Keccak256-based hashing (standard Solidity mapping behavior with storage space byte).
+///
+/// Slot computation: `keccak256(key || base_slot)` with first byte set to `STORAGE_SPACE`.
+///
+/// Generic over `K` to allow any key type that implements `StorageKey`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Keccak256<K: StorageKey>(PhantomData<K>);
+
+impl<K: StorageKey> HashStrategy for Keccak256<K> {
+    type Key = K;
+    const STORAGE_SPACE: u8 = 0;
+
+    #[inline]
+    fn compute_slot(key: &K, base_slot: U256) -> U256 {
+        let key_bytes = key.as_storage_bytes();
+        let key_bytes = key_bytes.as_ref();
+
+        // Pad key to nearest multiple of 32 bytes
+        let padded_len = key_bytes.len().div_ceil(32) * 32;
+        let mut buf = vec![0u8; padded_len + 32];
+
+        // Left-pad the key bytes
+        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
+        // Append slot in big-endian
+        buf[padded_len..].copy_from_slice(&base_slot.to_be_bytes::<32>());
+
+        // First byte is always reserved for the storage space
+        let mut hash = keccak256(&buf).0;
+        hash[0] = Self::STORAGE_SPACE;
+        U256::from_be_bytes(hash)
+    }
+}
+
+/// Sentinel value indicating the `#[contract]` macro should auto-allocate the SPACE.
+pub const AUTO_ALLOCATE_SPACE: u8 = 0;
+
+/// Direct bytes strategy, parameterized by storage space, for cheap address lookups.
+///
+/// Slot computation: `[SPACE][address][zeros]`
+///
+/// The const generic `SPACE` parameter allows multiple `DirectAddressMap`-based mappings
+/// to coexist without slot collisions. When `SPACE = 0` (default), the `#[contract]` macro
+/// automatically allocates non-overlapping SPACE values based on field order and value type sizes.
+pub struct DirectAddressMap<const SPACE: u8>;
+
+/// Compute a direct storage slot from space and key address.
+///
+/// Slot format: `[space][key (20 bytes)][11 zero bytes]`
+///
+/// This is a standalone helper for use in generated struct handlers.
+#[inline]
+pub fn compute_direct_slot(space: u8, key: Address) -> U256 {
+    debug_assert!(space != 0, "SPACE = 0 is reserved");
+
+    let mut slot = [0u8; 32];
+    slot[0] = space;
+    slot[1..21].copy_from_slice(key.as_slice());
+    U256::from_be_bytes(slot)
+}
+
+impl<const SPACE: u8> HashStrategy for DirectAddressMap<SPACE> {
+    type Key = Address;
+    const STORAGE_SPACE: u8 = SPACE;
+
+    #[inline]
+    fn compute_slot(key: &Address, _base_slot: U256) -> U256 {
+        debug_assert!(SPACE != 0, "SPACE = 0 is reserved");
+        compute_direct_slot(SPACE, *key)
+    }
+}
+
+// -- MAPPING INNER STRUCT -----------------------------------------------------
+
+/// Generic mapping implementation parameterized by hashing strategy.
+///
+/// This struct provides a zero-cost abstraction for accessing mapping storage slots.
+/// It wraps a base slot number and provides methods to compute actual storage slots
+/// for keys using the specified hash strategy.
 ///
 /// # Type Parameters
 ///
-/// - `K`: Key type (must implement `StorageKey`)
-/// - `V`: Value type (must implement `StorableType`)
-///
-/// `Mapping<K, V>` is essentially a slot computation helper. The `.at(key)` method
-/// performs the keccak256 hash to compute the actual storage slot and returns a
-/// `Handler` that can be used for read/write operations.
-///
-/// # Storage Layout
-///
-/// Mappings use Solidity's storage layout:
-/// - Base slot: stored in `base_slot` field (never accessed directly)
-/// - Actual slot for key `k`: `keccak256(k || base_slot)`
+/// - `S`: Hashing strategy that determines slot computation algorithm and key type `K`.
+/// - `V`: Value type with constraints depend on the hash strategy.
 ///
 /// # Usage Pattern
 ///
 /// The typical usage follows a composable pattern:
-/// 1. Create a `Mapping<K, V>` with a base slot (usually from generated constants)
+/// 1. Create a mapping with a base slot (usually from generated constants)
 /// 2. Call `.at(key)` to compute and obtain a `Handler` for that key
 /// 3. Use `.read()`, `.write()`, or `.delete()` on the resulting slot
-///
-/// # Accessing Mapping Fields Within Structs
-///
-/// When a mapping is a field within a struct stored in another mapping, use the static
-/// `at_offset` method to compute the slot without creating a `Mapping` instance:
 #[derive(Debug, Clone)]
-pub struct Mapping<K, V> {
+pub struct MappingInner<S: HashStrategy, V> {
     base_slot: U256,
     address: Address,
-    _phantom: PhantomData<(K, V)>,
+    _phantom: PhantomData<(V, S)>,
 }
 
-impl<K, V> Mapping<K, V> {
-    /// Creates a new `Mapping` with the given base slot number and address.
+impl<S: HashStrategy, V> MappingInner<S, V> {
+    /// Creates a new mapping with the given base slot number and contract address.
     ///
     /// This is typically called with slot constants generated by the `#[contract]` macro.
     #[inline]
@@ -62,55 +142,41 @@ impl<K, V> Mapping<K, V> {
     pub const fn slot(&self) -> U256 {
         self.base_slot
     }
-
-    /// Returns a `Handler` for the given key.
-    ///
-    /// This enables the composable pattern: `mapping.at(key).read()`
-    /// where the mapping slot computation happens once, and the resulting slot
-    /// can be used for multiple operations.
-    pub fn at(&self, key: K) -> V::Handler
-    where
-        K: StorageKey,
-        V: StorableType,
-    {
-        V::handle(
-            key.mapping_slot(self.base_slot),
-            LayoutCtx::FULL,
-            self.address,
-        )
-    }
-
-    /// Returns a `Handler` for a mapping field within a struct at a given base slot.
-    ///
-    /// This method enables accessing mapping fields within structs when you have
-    /// the struct's base slot at runtime and know the field's offset.
-    #[inline]
-    pub fn at_offset(
-        struct_base_slot: U256,
-        field_offset_slots: usize,
-        address: Address,
-        key: K,
-    ) -> V::Handler
-    where
-        K: StorageKey,
-        V: StorableType,
-    {
-        let field_slot = struct_base_slot + U256::from(field_offset_slots);
-        V::handle(key.mapping_slot(field_slot), LayoutCtx::FULL, address)
-    }
 }
 
-impl<K, V> Default for Mapping<K, V> {
+impl<S: HashStrategy, V> Default for MappingInner<S, V> {
     fn default() -> Self {
         Self::new(U256::ZERO, Address::ZERO)
     }
 }
 
+// -- MAPPING WITH KECCAK256 STRATEGY ------------------------------------------
+
+/// Standard keccak256-hashed mapping (Solidity-compatible).
+///
+/// Slot computation: `keccak256(key || base_slot)` with first byte = 0.
+///
+/// Can be arbitrarily nested: `Mapping<K, Mapping<K2, V>>`.
+pub type Mapping<K, V> = MappingInner<Keccak256<K>, V>;
+
+impl<K: StorageKey, V: StorableInMapping<0> + StorableType> MappingInner<Keccak256<K>, V> {
+    /// Returns a `Handler` for the given key.
+    ///
+    /// This enables the composable pattern: `mapping.at(key).read()`
+    /// where the mapping slot computation happens once, and the resulting slot
+    /// can be used for multiple operations.
+    pub fn at(&self, key: K) -> V::Handler {
+        V::handle(
+            Keccak256::<K>::compute_slot(&key, self.base_slot),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
+}
+
 // Mappings occupy a full 32-byte slot in the layout (used as a base for hashing),
 // even though they don't store data in that slot directly.
-//
-// **NOTE:** Necessary to allow it to participate in struct layout calculations.
-impl<K, V> StorableType for Mapping<K, V> {
+impl<K: StorageKey, V: StorableInMapping<0>> StorableType for MappingInner<Keccak256<K>, V> {
     const LAYOUT: Layout = Layout::Slots(1);
     type Handler = Self;
 
@@ -119,10 +185,79 @@ impl<K, V> StorableType for Mapping<K, V> {
     }
 }
 
+// -- MAPPING WITH DIRECT BYTES STRATEGY ---------------------------------------
+
+/// Direct bytes strategy, parameterized by storage space, for cheap address lookups.
+///
+/// Slot computation: `[SPACE][address][zeros]`
+///
+/// # Constraints
+///
+/// Enforced by the type system:
+/// - Cannot be nested inside other mappings (`Mapping<K, AddressMapping<V>>` is forbidden)
+/// - Value type cannot be a mapping (`AddressMapping<Mapping<K, V>>` is forbidden)
+/// - Key type must be `Address` (enforced by `DirectAddressMap::Key = Address`)
+///
+/// Enforced by `#[contract]` macro using automatic allocation:
+/// - Storage spaces must be unique per address and stored word
+pub type AddressMapping<V> = MappingInner<DirectAddressMap<AUTO_ALLOCATE_SPACE>, V>;
+
+impl<V: StorableInMapping<SPACE> + StorableInSpace, const SPACE: u8>
+    MappingInner<DirectAddressMap<SPACE>, V>
+{
+    /// Returns a `SpaceHandler` for the given user address.
+    ///
+    /// The storage slot is computed as `[SPACE][user][zeros]` without hashing.
+    /// For struct values, each field gets its own SPACE offset.
+    pub fn at(&self, user: Address) -> V::SpaceHandler {
+        V::handle_in_space(SPACE, user, LayoutCtx::FULL, self.address)
+    }
+}
+
+impl<V: StorableInMapping<SPACE>, const SPACE: u8> StorableType
+    for MappingInner<DirectAddressMap<SPACE>, V>
+{
+    const LAYOUT: Layout = Layout::Slots(1);
+    const STORAGE_SPACE: u8 = SPACE; // Propagate const generic to enable compile-time validation
+    type Handler = Self;
+
+    fn handle(_slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
+        // DirectAddressMap strategy ignores the slot parameter
+        Self::new(U256::ZERO, address)
+    }
+}
+
+// -- STORAGE SPACE CONSTRAINTS ------------------------------------------------
+
+/// Marker trait for types that can be stored as values in a mapping using the given storage space.
+///
+/// # Rules enforced by this trait
+///
+/// 1. `Storable` types can be stored in all storage spaces. Primitives and structs work everywhere.
+///
+/// 2. Mappings with `STORAGE_SPACE = 0` can be nested in other `STORAGE_SPACE = 0` mappings.
+///    Regular mapping nesting (`Mapping<K, Mapping<K2, V>>`) is allowed.
+///
+/// 3. Mappings with `STORAGE_SPACE != 0` cannot be nested in other mappings.
+///    `DirectAddressMap` mappings don't implement this trait, thus are cannot be nested.
+///
+/// 4. Storage spaces cannot interact. Mappings in space `X` can't contain a mapping from space `Y`.
+pub trait StorableInMapping<const SPACE: u8> {}
+
+// Rule 1: Storable types (primitives, structs) can be stored in any space
+impl<T: Storable, const SPACE: u8> StorableInMapping<SPACE> for T {}
+
+// Rule 2: Keccak256 mappings (space 0) can only be nested in space 0
+impl<K: StorageKey, V: StorableInMapping<0>> StorableInMapping<0>
+    for MappingInner<Keccak256<K>, V>
+{
+}
+
+// Rule 3 & 4 (implicit): `DirectAddressMap` mappings don't impl `StorableInMapping` --> can't be nested anywhere.
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::StorageKey;
     use alloy::primitives::{Address, B256, keccak256};
 
     // Backward compatibility helper to verify the trait impl.
@@ -139,46 +274,44 @@ mod tests {
         let key = Address::random();
         let base_slot = U256::random();
 
-        // Manual computation to validate
+        // Manual computation to validate (with storage space override)
         let mut buf = [0u8; 64];
         // Left-pad the address to 32 bytes
         buf[12..32].copy_from_slice(key.as_ref());
         // Slot in big-endian
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
-        let expected = U256::from_be_bytes(keccak256(buf).0);
-        let computed = key.mapping_slot(base_slot);
+        let mut expected_hash = keccak256(buf).0;
+        expected_hash[0] = Keccak256::<Address>::STORAGE_SPACE;
+        let expected = U256::from_be_bytes(expected_hash);
+        let computed = Keccak256::<Address>::compute_slot(&key, base_slot);
 
-        assert_eq!(computed, expected, "mapping_slot encoding mismatch");
+        assert_eq!(
+            computed, expected,
+            "Keccak256::compute_slot encoding mismatch"
+        );
     }
 
     #[test]
-    fn test_mapping_slot_matches_old_impl() {
+    fn test_mapping_slot_matches_old_impl_with_space() {
         let slot = U256::random();
 
+        // Note: old_mapping_slot doesn't set storage space, so we compare
+        // the hash computation logic (not the final slot value)
         let addr = Address::random();
-        assert_eq!(
-            addr.mapping_slot(slot),
-            old_mapping_slot(addr.as_slice(), slot),
-        );
+        let old_slot = old_mapping_slot(addr.as_slice(), slot);
+        let new_slot = Keccak256::<Address>::compute_slot(&addr, slot);
 
-        let b256 = B256::random();
-        assert_eq!(
-            b256.mapping_slot(slot),
-            old_mapping_slot(b256.as_slice(), slot),
-        );
-
-        let u256 = U256::random();
-        assert_eq!(
-            u256.mapping_slot(slot),
-            old_mapping_slot(u256.to_be_bytes::<32>(), slot),
-        );
+        // The hashes differ only in the first byte (storage space)
+        let mut old_bytes = old_slot.to_be_bytes::<32>();
+        old_bytes[0] = Keccak256::<Address>::STORAGE_SPACE;
+        assert_eq!(new_slot, U256::from_be_bytes(old_bytes));
     }
 
     #[test]
     fn test_mapping_size() {
         assert_eq!(std::mem::size_of::<Address>(), 20);
-        // Mapping contains: U256 (32) + Address (20 + 4 for 8-byte alignment) + PhantomData (0) = 56 bytes
+        // `MappingInner` contains: U256 (32) + Address (20 + 4 padding) + PhantomData (0) = 56 bytes
         assert_eq!(std::mem::size_of::<Mapping<Address, U256>>(), 56);
         assert_eq!(std::mem::size_of::<Mapping<U256, Address>>(), 56);
         // Nested mappings are just Mapping<K, Mapping<K2, V>>, same size
@@ -218,7 +351,7 @@ mod tests {
         // Property 3: Derived slot matches manual computation
         let test_key = Address::random();
         let derived_slot = mapping.at(test_key);
-        let expected_slot = test_key.mapping_slot(base_slot);
+        let expected_slot = Keccak256::<Address>::compute_slot(&test_key, base_slot);
         assert_eq!(
             derived_slot.slot(),
             expected_slot,
@@ -230,7 +363,6 @@ mod tests {
     fn test_nested_mapping_basic_properties() {
         let address = Address::random();
         let base_slot = U256::random();
-        // Nested mappings use recursive Mapping<K, Mapping<K2, V>> type
         let nested = Mapping::<Address, Mapping<B256, U256>>::new(base_slot, address);
 
         let key1 = Address::random();
@@ -238,7 +370,7 @@ mod tests {
 
         // Property 1: Chaining - first .at() returns intermediate Mapping with correct slot
         let intermediate = nested.at(key1);
-        let expected_intermediate_slot = key1.mapping_slot(base_slot);
+        let expected_intermediate_slot = Keccak256::<Address>::compute_slot(&key1, base_slot);
         assert_eq!(
             intermediate.slot(),
             expected_intermediate_slot,
@@ -247,7 +379,8 @@ mod tests {
 
         // Property 2: Double-hash - second .at() returns final Slot with correct double-derived slot
         let final_slot = intermediate.at(key2);
-        let expected_final_slot = key2.mapping_slot(expected_intermediate_slot);
+        let expected_final_slot =
+            Keccak256::<B256>::compute_slot(&key2, expected_intermediate_slot);
         assert_eq!(
             final_slot.slot(),
             expected_final_slot,
@@ -291,14 +424,20 @@ mod tests {
         assert_eq!(zero_mapping.slot(), U256::ZERO);
         let user = Address::random();
         let slot = zero_mapping.at(user);
-        assert_eq!(slot.slot(), user.mapping_slot(U256::ZERO));
+        assert_eq!(
+            slot.slot(),
+            Keccak256::<Address>::compute_slot(&user, U256::ZERO)
+        );
 
         // Test .slot() getter with MAX boundary
         let max_mapping = Mapping::<Address, U256>::new(U256::MAX, address);
         assert_eq!(max_mapping.slot(), U256::MAX);
         let user2 = Address::random();
         let slot2 = max_mapping.at(user2);
-        assert_eq!(slot2.slot(), user2.mapping_slot(U256::MAX));
+        assert_eq!(
+            slot2.slot(),
+            Keccak256::<Address>::compute_slot(&user2, U256::MAX)
+        );
 
         // Test .slot() getter with arbitrary values
         let random_slot = U256::random();
@@ -307,38 +446,11 @@ mod tests {
     }
 
     #[test]
-    fn test_mapping_at_offset() {
-        // Simulate: mapping(bytes32 => Orderbook) books
-        // where Orderbook has a mapping field `bids` at field offset 1
-        let pair_key = B256::random();
-        let books_base_slot = U256::random();
-        let orderbook_base_slot = pair_key.mapping_slot(books_base_slot);
-
-        // Test that Mapping::at_offset() computes the correct slot
-        let tick: i16 = 123;
-        let address = Address::random();
-
-        let slot = Mapping::<i16, U256>::at_offset(
-            orderbook_base_slot,
-            1, // bids field is at offset 1 in Orderbook
-            address,
-            tick,
-        );
-
-        // Verify the slot was computed correctly:
-        // 1. Field slot = orderbook_base_slot + 1
-        // 2. Mapping slot = keccak256(tick || field_slot)
-        let field_slot = orderbook_base_slot + U256::from(1);
-        let expected_slot = tick.mapping_slot(field_slot);
-        assert_eq!(slot.slot(), expected_slot);
-    }
-
-    #[test]
     fn test_nested_mapping_at_offset() {
         // Simulate a struct with nested mapping at field offset 3
         let struct_key = B256::random();
         let mapping_base_slot = U256::random();
-        let struct_base_slot = struct_key.mapping_slot(mapping_base_slot);
+        let struct_base_slot = Keccak256::<B256>::compute_slot(&struct_key, mapping_base_slot);
 
         let owner = Address::random();
         let spender = Address::random();
@@ -352,43 +464,123 @@ mod tests {
         let final_slot = nested_mapping.at(owner).at(spender);
 
         // Expected: keccak256(spender || keccak256(owner || field_slot))
-        let intermediate_slot = owner.mapping_slot(field_slot);
-        let expected_slot = spender.mapping_slot(intermediate_slot);
+        let intermediate_slot = Keccak256::<Address>::compute_slot(&owner, field_slot);
+        let expected_slot = Keccak256::<Address>::compute_slot(&spender, intermediate_slot);
         assert_eq!(final_slot.slot(), expected_slot);
     }
 
+    // --- DIRECT ADDRESS MAP TESTS --------------------------------------------
+
+    /// Type alias for testing with explicit SPACE=1
+    type TestAddressMapping<V> = MappingInner<DirectAddressMap<1>, V>;
+
     #[test]
-    fn test_multiple_fields_at_different_offsets() {
-        // Simulate Orderbook with multiple mapping fields at different offsets
-        let pair_key = B256::random();
-        let address = Address::random();
-        let books_base_slot = U256::random();
-        let orderbook_base = pair_key.mapping_slot(books_base_slot);
+    fn test_direct_address_map_slot_is_direct() {
+        let user = Address::random();
+        let contract_addr = Address::random();
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
 
-        // bids at offset 1
-        let tick1: i16 = 111;
-        let bids_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 1, address, tick1);
+        let handler = mapping.at(user);
 
-        // asks at offset 2
-        let tick2: i16 = 222;
-        let asks_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 2, address, tick2);
+        // Expected: [STORAGE_SPACE=1][address_bytes][zeros]
+        let mut expected_bytes = [0u8; 32];
+        expected_bytes[0] = DirectAddressMap::<1>::STORAGE_SPACE;
+        expected_bytes[1..21].copy_from_slice(user.as_slice());
+        let expected_slot = U256::from_be_bytes(expected_bytes);
 
-        // bidBitmap at offset 3
-        let bitmap_key: i16 = 333;
-        let bitmap_slot = Mapping::<i16, U256>::at_offset(orderbook_base, 3, address, bitmap_key);
+        assert_eq!(handler.slot(), expected_slot);
+    }
 
-        // Verify all fields compute different slots (they're independent)
-        let bids_expected = tick1.mapping_slot(orderbook_base + U256::from(1));
-        let asks_expected = tick2.mapping_slot(orderbook_base + U256::from(2));
-        let bitmap_expected = bitmap_key.mapping_slot(orderbook_base + U256::from(3));
+    #[test]
+    fn test_direct_address_map_different_addresses_different_slots() {
+        let contract_addr = Address::random();
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
 
-        assert_eq!(bids_slot.slot(), bids_expected);
-        assert_eq!(asks_slot.slot(), asks_expected);
-        assert_eq!(bitmap_slot.slot(), bitmap_expected);
+        let addr1 = Address::random();
+        let addr2 = Address::random();
 
-        // Verify they're all different
-        assert_ne!(bids_slot.slot(), asks_slot.slot());
-        assert_ne!(bids_slot.slot(), bitmap_slot.slot());
-        assert_ne!(asks_slot.slot(), bitmap_slot.slot());
+        assert_ne!(mapping.at(addr1).slot(), mapping.at(addr2).slot());
+    }
+
+    #[test]
+    fn test_direct_address_map_deterministic() {
+        let contract_addr = Address::random();
+        let mapping = TestAddressMapping::<U256>::new(U256::ZERO, contract_addr);
+        let user = Address::random();
+
+        // Same user always gets same slot
+        assert_eq!(mapping.at(user).slot(), mapping.at(user).slot());
+    }
+
+    #[test]
+    fn test_direct_address_map_storable_type() {
+        // Verify `StorableType` implementation
+        assert_eq!(
+            <TestAddressMapping<U256> as crate::storage::StorableType>::SLOTS,
+            1
+        );
+        assert_eq!(
+            <TestAddressMapping<U256> as crate::storage::StorableType>::LAYOUT,
+            crate::storage::Layout::Slots(1)
+        );
+    }
+
+    #[test]
+    fn test_hash_strategy_constants() {
+        assert_eq!(Keccak256::<Address>::STORAGE_SPACE, 0);
+        assert_eq!(DirectAddressMap::<1>::STORAGE_SPACE, 1);
+        assert_eq!(DirectAddressMap::<2>::STORAGE_SPACE, 2);
+        assert_eq!(DirectAddressMap::<255>::STORAGE_SPACE, 255);
+    }
+
+    #[test]
+    fn test_direct_bytes_different_spaces_different_slots() {
+        let user = Address::random();
+
+        // DirectAddressMap<1> and DirectAddressMap<2> should produce different slots for same key
+        let slot1 = DirectAddressMap::<1>::compute_slot(&user, U256::ZERO);
+        let slot2 = DirectAddressMap::<2>::compute_slot(&user, U256::ZERO);
+
+        assert_ne!(
+            slot1, slot2,
+            "different storage spaces should produce different slots"
+        );
+
+        // Verify first byte differs and the rest is the same
+        let bytes1 = slot1.to_be_bytes::<32>();
+        let bytes2 = slot2.to_be_bytes::<32>();
+        assert_eq!(bytes1[0], 1);
+        assert_eq!(bytes2[0], 2);
+        assert_eq!(bytes1[1..], bytes2[1..]);
+    }
+
+    // --- COMPUTE_DIRECT_SLOT TESTS ---------------------------------------------
+
+    #[test]
+    fn test_compute_direct_slot_space_offset() {
+        let addr = Address::random();
+
+        // Consecutive spaces should produce slots that differ only in first byte
+        let slot1 = compute_direct_slot(1, addr);
+        let slot2 = compute_direct_slot(2, addr);
+        let slot3 = compute_direct_slot(3, addr);
+
+        // Verify format: [space][address][11 zeros]
+        let bytes1 = slot1.to_be_bytes::<32>();
+        let bytes2 = slot2.to_be_bytes::<32>();
+        let bytes3 = slot3.to_be_bytes::<32>();
+
+        // All should have same address and zeros
+        assert_eq!(&bytes1[1..], &bytes2[1..]);
+        assert_eq!(&bytes2[1..], &bytes3[1..]);
+
+        // Verify address and zeroes
+        assert_eq!(&bytes1[1..21], addr.as_slice());
+        assert_eq!(&bytes1[21..], &[0u8; 11]);
+
+        // Only first byte differs
+        assert_eq!(bytes1[0], 1);
+        assert_eq!(bytes2[0], 2);
+        assert_eq!(bytes3[0], 3);
     }
 }

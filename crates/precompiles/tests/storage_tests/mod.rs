@@ -7,7 +7,7 @@ use crate::storage::{
 use alloy::primitives::{Address, U256, keccak256};
 use proptest::prelude::*;
 use tempo_precompiles::error;
-use tempo_precompiles_macros::{Storable, contract};
+use tempo_precompiles_macros::{Storable, StorableInSpace, contract};
 
 mod arrays;
 mod layouts;
@@ -25,7 +25,8 @@ fn setup_storage() -> (HashMapStorageProvider, Address) {
 }
 
 /// Test struct with 3 slots: U256, U256, u64
-#[derive(Default, Debug, Clone, PartialEq, Eq, Storable)]
+/// Derives both Storable (for Mapping) and StorableInSpace (for AddressMapping)
+#[derive(Default, Debug, Clone, PartialEq, Eq, Storable, StorableInSpace)]
 pub(crate) struct TestBlock {
     pub(crate) field1: U256,
     pub(crate) field2: U256,
@@ -33,7 +34,8 @@ pub(crate) struct TestBlock {
 }
 
 /// Test struct with 2 slots: Address + bool (packed), U256
-#[derive(Default, Debug, Clone, PartialEq, Eq, Storable)]
+/// Derives both Storable (for Mapping) and StorableInSpace (for AddressMapping)
+#[derive(Default, Debug, Clone, PartialEq, Eq, Storable, StorableInSpace)]
 pub(crate) struct UserProfile {
     pub(crate) owner: Address,
     pub(crate) active: bool,

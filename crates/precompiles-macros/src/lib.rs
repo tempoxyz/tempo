@@ -252,6 +252,24 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derives the `StorableInSpace` trait for structs used in `AddressMapping<T>`.
+///
+/// This is an ADD-ON to `#[derive(Storable)]`, which must also be derived.
+///
+/// # Generated Code
+///
+/// - `SpaceHandler` struct with per-field space-offset slot computation
+/// - `impl StorableInSpace` with the `SpaceHandler`
+#[proc_macro_derive(StorableInSpace, attributes(storable_arrays))]
+pub fn derive_space_storable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match storable::derive_space_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 // -- STORAGE PRIMITIVES TRAIT IMPLEMENTATIONS -------------------------------------------
 
 /// Generate `StorableType` and `Storable` implementations for all standard integer types.

@@ -220,6 +220,37 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
     Ok(None)
 }
 
+/// Extracts the value type from an `AddressMapping<V>` type.
+///
+/// Returns `Some(&Type)` with the value type if the field is `AddressMapping<V>`.
+/// Returns `None` for regular `Mapping<K, V>` or other types.
+///
+/// Note: Only `AddressMapping<V>` is supported. The more verbose
+/// `MappingInner<DirectAddressMap<SPACE>, V>` syntax is not recognized,
+/// enforcing auto-allocation of storage spaces.
+pub(crate) fn extract_address_mapping_value_ty(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+
+    let last_segment = type_path.path.segments.last()?;
+    if last_segment.ident != "AddressMapping" {
+        return None;
+    }
+
+    // Extract generic argument (the value type)
+    let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments else {
+        return None;
+    };
+
+    // First (and only) argument: value type
+    if let Some(syn::GenericArgument::Type(value_ty)) = args.args.first() {
+        Some(value_ty)
+    } else {
+        None
+    }
+}
+
 /// Extracts the type parameters from Mapping<K, V>.
 ///
 /// Returns Some((key_type, value_type)) if the type is a Mapping, None otherwise.
