@@ -15,9 +15,7 @@ These functions are part of the [ITIP20](/protocol/tip20/spec) interface:
 ```solidity
 /// @notice Distribute rewards to opted-in token holders
 /// @param amount Amount of tokens to distribute
-/// @param seconds_ Must be 0; passing > 0 reverts with ScheduledRewardsDisabled()
-/// @return Always returns 0 for an instant distribution
-function startReward(uint256 amount, uint32 seconds_) external returns (uint64);
+function distributeReward(uint256 amount) external;
 
 /// @notice Set the reward recipient for the caller (opt in/out of rewards)
 /// @param newRewardRecipient Recipient address (address(0) to opt out)
@@ -57,7 +55,7 @@ Setting recipient to `address(0)` opts out.
 
 ## TIP-403 Integration
 All token movements must pass TIP-403 policy checks:
-- `startReward`: Validates funder authorization
+- `distributeReward`: Validates funder authorization
 - `setRewardRecipient`: Validates holder and recipient
 - `claimRewards`: Validates msg.sender
 
@@ -65,4 +63,3 @@ All token movements must pass TIP-403 policy checks:
 - `globalRewardPerToken` must monotonically increase
 - `optedInSupply` must equal the sum of balances for all opted-in users
 - All token movements must comply with TIP-403 policies
-

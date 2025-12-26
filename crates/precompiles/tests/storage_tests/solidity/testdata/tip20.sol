@@ -51,16 +51,7 @@ contract TIP20 {
     // ========== Rewards Storage ==========
 
     uint256 public globalRewardPerToken;
-    uint64 public lastUpdateTime;
-    uint256 public totalRewardPerSecond;
     uint128 public optedInSupply;
-    uint64 public nextStreamId;
-
-    /// Mapping of stream ID to reward stream data
-    mapping(uint64 => RewardStream) public streams;
-
-    /// Mapping of timestamp to scheduled rate decrease
-    mapping(uint128 => uint256) public scheduledRateDecrease;
 
     /// Mapping of user address to their reward info
     mapping(address => UserRewardInfo) public userRewardInfo;

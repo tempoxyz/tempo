@@ -1,4 +1,4 @@
-# `reward.useWatchRewardScheduled`
+# `reward.useWatchRewardDistributed`
 
 Watches for reward scheduled events when new reward streams are started.
 
@@ -17,12 +17,10 @@ declare module 'wagmi' {
 // ---cut---
 import { Hooks } from 'tempo.ts/wagmi'
 
-Hooks.reward.useWatchRewardScheduled({
-  onRewardScheduled: (args, log) => {
-    console.log('Stream ID:', args.id)
+Hooks.reward.useWatchRewardDistributed({
+  onRewardDistributed: (args, log) => {
     console.log('Funder:', args.funder)
     console.log('Amount:', args.amount)
-    console.log('Duration:', args.durationSeconds, 'seconds')
   },
   token: '0x20c0000000000000000000000000000000000000',
 })
@@ -37,7 +35,7 @@ Hooks.reward.useWatchRewardScheduled({
 
 ## Parameters
 
-See [Wagmi Action `reward.watchRewardScheduled` Parameters](/sdk/typescript/wagmi/actions/reward.watchRewardScheduled#parameters)
+See [Wagmi Action `reward.watchRewardDistributed` Parameters](/sdk/typescript/wagmi/actions/reward.watchRewardDistributed#parameters)
 
 ### config
 
