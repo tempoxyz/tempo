@@ -533,7 +533,6 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        // Stablecoin exchange fee token inference requires Allegretto hardfork
         let token = db.get_fee_token(tx, caller)?;
         assert_eq!(token, token_in);
 
