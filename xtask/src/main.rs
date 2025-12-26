@@ -121,3 +121,17 @@ fn generate_config_to_add_peer(
     );
     Ok(())
 }
+mod generate_docs;
+
+fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("generate-docs") => generate_docs::generate(),
+        // existing commands...
+        _ => {
+            eprintln!("Unknown command. Available commands: generate-docs");
+            Ok(())
+        }
+    }
+}
+
