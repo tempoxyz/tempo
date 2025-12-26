@@ -1,10 +1,10 @@
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write, varint::UInt};
+use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt as _, Write};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::{quorum, set::Ordered};
+use commonware_utils::{NZU32, ordered, quorum};
 
 use crate::dkg::manager::ValidatorState;
 
@@ -26,7 +26,7 @@ impl State {
         self.dkg_outcome.epoch
     }
 
-    pub(crate) fn participants(&self) -> &Ordered<PublicKey> {
+    pub(crate) fn participants(&self) -> &ordered::Set<PublicKey> {
         &self.dkg_outcome.participants
     }
 
@@ -38,11 +38,11 @@ impl State {
         &self.dkg_outcome.share
     }
 
-    pub(crate) fn dealer_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn dealer_pubkeys(&self) -> ordered::Set<PublicKey> {
         self.validator_state.dealer_pubkeys()
     }
 
-    pub(crate) fn player_pubkeys(&self) -> Ordered<PublicKey> {
+    pub(crate) fn player_pubkeys(&self) -> ordered::Set<PublicKey> {
         self.validator_state.player_pubkeys()
     }
 }
@@ -85,7 +85,7 @@ pub(super) struct DkgOutcome {
     pub(super) epoch: Epoch,
 
     /// The participants in the next epoch as determined by the DKG.
-    pub(super) participants: Ordered<PublicKey>,
+    pub(super) participants: ordered::Set<PublicKey>,
 
     /// The public polynomial in the next epoch as determined by the DKG.
     pub(super) public: Public<MinSig>,
@@ -97,7 +97,7 @@ pub(super) struct DkgOutcome {
 impl Write for DkgOutcome {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.dkg_successful.write(buf);
-        UInt(self.epoch).write(buf);
+        self.epoch.write(buf);
         self.participants.write(buf);
         self.public.write(buf);
         self.share.write(buf);
@@ -107,7 +107,7 @@ impl Write for DkgOutcome {
 impl EncodeSize for DkgOutcome {
     fn encode_size(&self) -> usize {
         self.dkg_successful.encode_size()
-            + UInt(self.epoch).encode_size()
+            + self.epoch.encode_size()
             + self.participants.encode_size()
             + self.public.encode_size()
             + self.share.encode_size()
@@ -122,10 +122,12 @@ impl Read for DkgOutcome {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let dkg_successful = bool::read(buf)?;
-        let epoch = UInt::read(buf)?.into();
-        let participants = Ordered::read_cfg(buf, &(RangeCfg::from(0..=usize::MAX), ()))?;
+        let epoch = Epoch::read(buf)?;
+        let participants =
+            ordered::Set::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), ()))?;
+        let quorum = quorum(participants.len() as u32);
         let public =
-            Public::<MinSig>::read_cfg(buf, &(quorum(participants.len() as u32) as usize))?;
+            Public::<MinSig>::read_cfg(buf, &RangeCfg::from(NZU32!(quorum)..=NZU32!(quorum)))?;
         let share = Option::<Share>::read_cfg(buf, &())?;
         Ok(Self {
             dkg_successful,

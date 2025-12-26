@@ -22,6 +22,7 @@ import { cva, cx } from '../../cva.config'
 import { Container as ParentContainer } from '../Container'
 import { usePostHogTracking } from '../../lib/posthog'
 import { alphaUsd } from './tokens'
+export { alphaUsd, betaUsd, thetaUsd, pathUsd } from './tokens'
 
 export const FAKE_RECIPIENT = '0xbeefcafe54750903ac1c8909323af7beb21ea2cb'
 export const FAKE_RECIPIENT_2 = '0xdeadbeef54750903ac1c8909323af7beb21ea2cb'

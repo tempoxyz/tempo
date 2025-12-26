@@ -14,7 +14,7 @@ use commonware_consensus::{
         },
         types::Activity,
     },
-    types::Round,
+    types::{Round, View},
     utils,
 };
 use commonware_cryptography::{
@@ -239,7 +239,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     }
 
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
-    #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
+    #[instrument(skip_all, fields(event.epoch = %event.epoch(), event.view = %event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
         let (new_tip, new_round, new_cert) = match event {
             Activity::Notarization(n) => {
@@ -289,17 +289,17 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
         // Can't proceed without knowing a validator set for the current epoch.
         let Some(scheme) = self.scheme_provider.scheme(epoch_of_next_block) else {
-            debug!(epoch_of_next_block, "scheme not found for epoch");
+            debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
         };
 
         let next_round = if round.epoch() == epoch_of_next_block {
-            Round::new(round.epoch(), round.view() + 1)
+            Round::new(round.epoch(), round.view().next())
         } else {
-            Round::new(epoch_of_next_block, 1)
+            Round::new(epoch_of_next_block, View::new(1))
         };
 
-        let seed = if next_round.view() == 1 {
+        let seed = if next_round.view() == View::new(1) {
             // First view does not have a seed.
             None
         } else {
@@ -732,7 +732,8 @@ async fn build_subblock(
         transactions,
     };
 
-    let signature = signer.sign(None, subblock.signature_hash().as_slice());
+    // TODO: Use a namespace for these signatures?
+    let signature = signer.sign(&[], subblock.signature_hash().as_slice());
     let signed_subblock = SignedSubBlock {
         inner: subblock,
         signature: Bytes::copy_from_slice(signature.as_ref()),
@@ -767,7 +768,8 @@ async fn validate_subblock(
         return Err(eyre::eyre!("invalid signature"));
     };
 
-    if !sender.verify(None, subblock.signature_hash().as_slice(), &signature) {
+    // TODO: use a namespace for these signatures?
+    if !sender.verify(&[], subblock.signature_hash().as_slice(), &signature) {
         return Err(eyre::eyre!("invalid signature"));
     }
 

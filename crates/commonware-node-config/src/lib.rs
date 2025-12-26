@@ -5,17 +5,16 @@
 
 use std::{fmt::Display, net::SocketAddr, path::Path};
 
-use commonware_codec::{DecodeExt as _, Encode as _, FixedSize, Read};
+use commonware_codec::{DecodeExt as _, Encode as _, RangeCfg, Read};
 use commonware_cryptography::{
     Signer,
-    bls12381::primitives::{
-        group::Share,
-        poly::Public,
-        variant::{MinSig, Variant},
-    },
+    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_utils::set::{Ordered, OrderedAssociated};
+use commonware_utils::{
+    NZU32, TryFromIterator,
+    ordered::{Map, Set},
+};
 use indexmap::IndexMap;
 use serde::{
     Deserialize,
@@ -29,21 +28,21 @@ mod tests;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peers {
-    inner: OrderedAssociated<PublicKey, SocketAddr>,
+    inner: Map<PublicKey, SocketAddr>,
 }
 
 impl Peers {
     pub fn empty() -> Self {
         Self {
-            inner: OrderedAssociated::from(vec![]),
+            inner: Map::from_iter_dedup(vec![]),
         }
     }
 
-    pub fn into_inner(self) -> OrderedAssociated<PublicKey, SocketAddr> {
+    pub fn into_inner(self) -> Map<PublicKey, SocketAddr> {
         self.inner
     }
 
-    pub fn public_keys(&self) -> &Ordered<PublicKey> {
+    pub fn public_keys(&self) -> &Set<PublicKey> {
         self.inner.keys()
     }
 
@@ -52,8 +51,8 @@ impl Peers {
     }
 }
 
-impl From<OrderedAssociated<PublicKey, SocketAddr>> for Peers {
-    fn from(inner: OrderedAssociated<PublicKey, SocketAddr>) -> Self {
+impl From<Map<PublicKey, SocketAddr>> for Peers {
+    fn from(inner: Map<PublicKey, SocketAddr>) -> Self {
         Self { inner }
     }
 }
@@ -134,7 +133,7 @@ impl<'de> Deserialize<'de> for Peers {
 
         let peers = deserializer.deserialize_map(PeersVisitor)?;
         Ok(Self {
-            inner: peers.into_iter().collect(),
+            inner: Map::try_from_iter(peers).expect("peers was deduped"),
         })
     }
 }
@@ -172,9 +171,11 @@ impl<'de> Deserialize<'de> for PublicPolynomial {
         D: Deserializer<'de>,
     {
         let bytes: Vec<u8> = const_hex::serde::deserialize(deserializer)?;
-        let degree_of_public_polynomial = degree_of_public_polynomial_from_bytes(&bytes);
-        let inner = Public::<MinSig>::read_cfg(&mut &bytes[..], &degree_of_public_polynomial)
-            .map_err(serde::de::Error::custom)?;
+        let inner = Public::<MinSig>::read_cfg(
+            &mut &bytes[..],
+            &RangeCfg::from(NZU32!(1)..NZU32!(u16::MAX as u32)),
+        )
+        .map_err(serde::de::Error::custom)?;
         Ok(Self { inner })
     }
 }
@@ -298,10 +299,4 @@ enum SigningShareErrorKind {
     Read(#[source] std::io::Error),
     #[error("failed writing to file")]
     Write(#[source] std::io::Error),
-}
-
-// Reverses the operation C::SIZE * self.0.len() from
-// <Public<Minsig> as EncodeSize>::encode_size.
-fn degree_of_public_polynomial_from_bytes(bytes: &[u8]) -> usize {
-    bytes.len() / <<MinSig as Variant>::Public as FixedSize>::SIZE
 }

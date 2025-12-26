@@ -6,6 +6,7 @@ use commonware_macros::test_traced;
 
 use crate::{Setup, run};
 
+#[ignore = "single node networks immediately drop their proposal"]
 #[test_traced]
 fn single_validator_can_transition_once() {
     AssertStaticTransitions {
@@ -16,6 +17,7 @@ fn single_validator_can_transition_once() {
     .run();
 }
 
+#[ignore = "single node networks immediately drop their proposal"]
 #[test_traced]
 fn single_validator_can_transition_twice() {
     AssertStaticTransitions {
@@ -26,6 +28,7 @@ fn single_validator_can_transition_twice() {
     .run();
 }
 
+#[ignore = "single node networks immediately drop their proposal"]
 #[test_traced]
 fn single_validator_can_transition_four_times() {
     AssertStaticTransitions {

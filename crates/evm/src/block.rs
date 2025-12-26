@@ -345,7 +345,8 @@ where
                 ));
             };
 
-            if !validator.verify(None, signature_hash.as_slice(), &signature) {
+            // TODO: Add namespace?
+            if !validator.verify(&[], signature_hash.as_slice(), &signature) {
                 return Err(BlockValidationError::msg("invalid subblock signature"));
             }
 
