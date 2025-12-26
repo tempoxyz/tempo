@@ -29,8 +29,6 @@ use alloy::primitives::{Address, U256};
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
-    /// Deprecated post-AllegroModerato: tracks number of active nonce keys per account
-    active_key_count: Mapping<Address, U256>,
 }
 
 impl NonceManager {
