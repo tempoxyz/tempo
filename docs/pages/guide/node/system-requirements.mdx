@@ -4,6 +4,22 @@ These are the minimum and recommended system requirements for running a validato
 It is likely, that the nodes will not require as much resources at the beginning of the chain,
 but we still highly recommend to follow the recommended specifications. This will allow for future growth and scalability.
 
+### Linux
+
+The current prebuilt `tempo` Linux binaries (≥v0.8.0) are dynamically linked against glibc ≥ 2.38.
+
+You can check your glibc version with:
+
+```bash
+ldd --version
+```
+
+This means:
+- Ubuntu 22.04 (glibc 2.35) is **not supported** for the prebuilt binaries Ubuntu 24.04+ is required
+- Or optionally use any of the following Installation way 
+  -  `Docker` 
+  -  `Build from source on older distributions`
+
 ## RPC Node
 
 | Component | Minimum | Recommended |
