@@ -305,10 +305,7 @@ impl Eq for AASigned {}
 #[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for AASigned {
     fn size(&self) -> usize {
-        core::mem::size_of::<Self>()
-            + self.tx.size()
-            + self.signature.encoded_length()
-            + core::mem::size_of::<B256>()
+        size_of::<Self>() + self.tx.size() + self.signature.size()
     }
 }
 

@@ -252,9 +252,9 @@ mod tests {
     #[test]
     fn test_slot_size() {
         // slot (U256) 32 bytes + LayoutCtx (usize) 8 bytes + Address 20 bytes (+4 for byte alignment)
-        assert_eq!(std::mem::size_of::<Slot<U256>>(), 64);
-        assert_eq!(std::mem::size_of::<Slot<Address>>(), 64);
-        assert_eq!(std::mem::size_of::<Slot<bool>>(), 64);
+        assert_eq!(size_of::<Slot<U256>>(), 64);
+        assert_eq!(size_of::<Slot<Address>>(), 64);
+        assert_eq!(size_of::<Slot<bool>>(), 64);
     }
 
     #[test]
