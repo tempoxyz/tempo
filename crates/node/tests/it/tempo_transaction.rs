@@ -225,10 +225,7 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     Address,
 )> {
     // Setup test node with direct access
-    let setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -499,10 +496,7 @@ async fn setup_test_with_p256_funded_account(
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -1801,10 +1795,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -2393,10 +2384,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -3231,10 +3219,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("\n=== Testing AA Transaction with Key Authorization and P256 Spending Limits ===\n");
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -3684,10 +3669,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new()
@@ -4002,10 +3984,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
 
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -4282,10 +4261,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
 
     println!("\n=== Testing enforce_limits Flag Behavior ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -4554,10 +4530,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
 
     println!("\n=== Testing Key Expiry Functionality ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -4899,10 +4872,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     println!("\n=== Testing RPC Validation of Keychain Signatures ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let http_url = setup.node.rpc_url();
 
     // Generate TWO P256 access keys
@@ -5366,10 +5336,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     use tempo_primitives::transaction::TokenLimit;
 
-    let mut setup = TestNodeBuilder::new()
-        .allegro_moderato_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
