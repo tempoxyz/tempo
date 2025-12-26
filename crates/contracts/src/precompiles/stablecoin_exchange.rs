@@ -110,6 +110,7 @@ crate::sol! {
         error MaxInputExceeded();
         error BelowMinimumOrderSize(uint128 amount);
         error InvalidBaseToken();
+        error MaxOrderIterationsExceeded(uint32 maxIterations);
     }
 }
 
@@ -187,5 +188,12 @@ impl StablecoinExchangeError {
     /// Creates an error for invalid base token.
     pub const fn invalid_base_token() -> Self {
         Self::InvalidBaseToken(IStablecoinExchange::InvalidBaseToken {})
+    }
+
+    /// Creates an error when max order iterations exceeded during swap.
+    pub const fn max_order_iterations_exceeded(max_iterations: u32) -> Self {
+        Self::MaxOrderIterationsExceeded(IStablecoinExchange::MaxOrderIterationsExceeded {
+            maxIterations: max_iterations,
+        })
     }
 }

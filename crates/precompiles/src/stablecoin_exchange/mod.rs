@@ -35,6 +35,11 @@ pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
 
+/// Maximum number of orders that can be iterated through in a single swap.
+/// This prevents DoS attacks where an attacker places many small orders to force
+/// expensive iteration through the orderbook.
+pub const MAX_ORDER_ITERATIONS: u32 = 100;
+
 #[contract(addr = STABLECOIN_EXCHANGE_ADDRESS)]
 pub struct StablecoinExchange {
     books: Mapping<B256, Orderbook>,
@@ -994,8 +999,20 @@ impl StablecoinExchange {
         let mut order = self.orders.at(level.head).read()?;
 
         let mut total_amount_in: u128 = 0;
+        let mut iterations: u32 = 0;
 
         while amount_out > 0 {
+            iterations = iterations
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            if iterations > MAX_ORDER_ITERATIONS {
+                return Err(StablecoinExchangeError::max_order_iterations_exceeded(
+                    MAX_ORDER_ITERATIONS,
+                )
+                .into());
+            }
+
             let tick = order.tick();
 
             let (fill_amount, amount_in) = if bid {
@@ -1137,8 +1154,20 @@ impl StablecoinExchange {
         let mut order = self.orders.at(level.head).read()?;
 
         let mut total_amount_out: u128 = 0;
+        let mut iterations: u32 = 0;
 
         while amount_in > 0 {
+            iterations = iterations
+                .checked_add(1)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            if iterations > MAX_ORDER_ITERATIONS {
+                return Err(StablecoinExchangeError::max_order_iterations_exceeded(
+                    MAX_ORDER_ITERATIONS,
+                )
+                .into());
+            }
+
             let tick = order.tick();
 
             let fill_amount = if bid {
@@ -4876,6 +4905,114 @@ mod tests {
                 "Expected PolicyForbids error, got: {err:?}"
             );
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_swap_exact_in_max_order_iterations_exceeded() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let attacker = Address::random();
+            let victim = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, attacker, exchange.address, 10_000_000_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            let tick = 0i16;
+            let num_orders = MAX_ORDER_ITERATIONS + 10;
+            for i in 0..num_orders {
+                exchange.increment_balance(attacker, base_token, MIN_ORDER_AMOUNT)?;
+                exchange.place(attacker, base_token, MIN_ORDER_AMOUNT, false, tick)?;
+                if i == 0 {
+                    let book_key = exchange.pair_key(base_token, quote_token);
+                    let book = exchange.books(book_key)?;
+                    assert_eq!(
+                        book.best_ask_tick, tick,
+                        "Order should be active immediately on AllegroModerato"
+                    );
+                }
+            }
+
+            let victim_amount = MIN_ORDER_AMOUNT * num_orders as u128;
+            exchange.set_balance(victim, quote_token, victim_amount)?;
+
+            let result =
+                exchange.swap_exact_amount_in(victim, quote_token, base_token, victim_amount, 0);
+
+            assert!(
+                result.is_err(),
+                "Swap should fail due to max order iterations exceeded"
+            );
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TempoPrecompileError::StablecoinExchange(
+                        StablecoinExchangeError::MaxOrderIterationsExceeded(_)
+                    )
+                ),
+                "Expected MaxOrderIterationsExceeded error, got: {err:?}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_swap_exact_out_max_order_iterations_exceeded() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let attacker = Address::random();
+            let victim = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, attacker, exchange.address, 10_000_000_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            let tick = 0i16;
+            let num_orders = MAX_ORDER_ITERATIONS + 10;
+            for _ in 0..num_orders {
+                exchange.increment_balance(attacker, base_token, MIN_ORDER_AMOUNT)?;
+                exchange.place(attacker, base_token, MIN_ORDER_AMOUNT, false, tick)?;
+            }
+
+            let victim_amount_out = MIN_ORDER_AMOUNT * num_orders as u128;
+            let max_amount_in = victim_amount_out * 2;
+            exchange.set_balance(victim, quote_token, max_amount_in)?;
+
+            let result = exchange.swap_exact_amount_out(
+                victim,
+                quote_token,
+                base_token,
+                victim_amount_out,
+                max_amount_in,
+            );
+
+            assert!(
+                result.is_err(),
+                "Swap should fail due to max order iterations exceeded"
+            );
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TempoPrecompileError::StablecoinExchange(
+                        StablecoinExchangeError::MaxOrderIterationsExceeded(_)
+                    )
+                ),
+                "Expected MaxOrderIterationsExceeded error, got: {err:?}"
+            );
 
             Ok(())
         })
