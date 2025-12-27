@@ -2,7 +2,10 @@ use crate::{
     Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     path_usd::PathUSD,
     storage::ContractStorage,
-    tip20::{IRolesAuth, ITIP20},
+    tip20::{
+        IRolesAuth::{self, Interface},
+        ITIP20,
+    },
     view,
 };
 
@@ -187,31 +190,34 @@ impl Precompile for PathUSD {
 
             // RolesAuth functions
             IRolesAuth::hasRoleCall::SELECTOR => {
-                view::<IRolesAuth::hasRoleCall>(calldata, |call| self.token.has_role(call))
+                view::<IRolesAuth::hasRoleCall>(calldata, |call| {
+                    self.token.has_role(call.account, call.role)
+                })
             }
             IRolesAuth::getRoleAdminCall::SELECTOR => {
                 view::<IRolesAuth::getRoleAdminCall>(calldata, |call| {
-                    self.token.get_role_admin(call)
+                    self.token.get_role_admin(call.role)
                 })
             }
             IRolesAuth::grantRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::grantRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.token.grant_role(sender, call)
+                    self.token.grant_role(sender, call.role, call.account)
                 })
             }
             IRolesAuth::revokeRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::revokeRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.token.revoke_role(sender, call)
+                    self.token.revoke_role(sender, call.role, call.account)
                 })
             }
             IRolesAuth::renounceRoleCall::SELECTOR => {
                 mutate_void::<IRolesAuth::renounceRoleCall>(calldata, msg_sender, |sender, call| {
-                    self.token.renounce_role(sender, call)
+                    self.token.renounce_role(sender, call.role)
                 })
             }
             IRolesAuth::setRoleAdminCall::SELECTOR => {
                 mutate_void::<IRolesAuth::setRoleAdminCall>(calldata, msg_sender, |sender, call| {
-                    self.token.set_role_admin(sender, call)
+                    self.token
+                        .set_role_admin(sender, call.role, call.admin_role)
                 })
             }
 
@@ -235,9 +241,7 @@ mod tests {
         sol_types::SolInterface,
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{
-        IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error,
-    };
+    use tempo_contracts::precompiles::{ITIP20::ITIP20Calls, TIP20Error};
 
     #[test]
     fn path_usd_test_selector_coverage_pre_allegretto() -> eyre::Result<()> {
@@ -254,9 +258,9 @@ mod tests {
 
             let roles_unsupported = check_selector_coverage(
                 &mut path_usd,
-                IRolesAuthCalls::SELECTORS,
+                IRolesAuth::Calls::SELECTORS,
                 "IRolesAuth",
-                IRolesAuthCalls::name_by_selector,
+                IRolesAuth::Calls::name_by_selector,
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
@@ -280,9 +284,9 @@ mod tests {
 
             let roles_unsupported = check_selector_coverage(
                 &mut path_usd,
-                IRolesAuthCalls::SELECTORS,
+                IRolesAuth::Calls::SELECTORS,
                 "IRolesAuth",
-                IRolesAuthCalls::name_by_selector,
+                IRolesAuth::Calls::name_by_selector,
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);

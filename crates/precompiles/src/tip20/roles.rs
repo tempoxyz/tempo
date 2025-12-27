@@ -1,13 +1,111 @@
 use alloy::primitives::{Address, B256};
+use tempo_precompiles_macros::solidity;
 
-use crate::{
-    error::Result,
-    storage::Handler,
-    tip20::{IRolesAuth, RolesAuthError, RolesAuthEvent, TIP20Token},
+use crate::{error::Result, storage::Handler, tip20::TIP20Token};
+
+#[solidity]
+pub mod roles_auth {
+    use super::*;
+
+    pub enum Error {
+        Unauthorized,
+    }
+
+    pub enum Event {
+        RoleMembershipUpdated {
+            #[indexed]
+            role: B256,
+            #[indexed]
+            account: Address,
+            #[indexed]
+            sender: Address,
+            has_role: bool,
+        },
+        RoleAdminUpdated {
+            #[indexed]
+            role: B256,
+            #[indexed]
+            new_admin_role: B256,
+            #[indexed]
+            sender: Address,
+        },
+    }
+
+    pub trait Interface {
+        fn has_role(&self, account: Address, role: B256) -> Result<bool>;
+        fn get_role_admin(&self, role: B256) -> Result<B256>;
+        fn grant_role(&mut self, role: B256, account: Address) -> Result<()>;
+        fn revoke_role(&mut self, role: B256, account: Address) -> Result<()>;
+        fn renounce_role(&mut self, role: B256) -> Result<()>;
+        fn set_role_admin(&mut self, role: B256, admin_role: B256) -> Result<()>;
+    }
+}
+
+pub use roles_auth::{
+    Error as RolesAuthError, Event as RolesAuthEvent, RoleAdminUpdated, RoleMembershipUpdated,
+    Unauthorized,
 };
+
+#[allow(non_snake_case)]
+pub mod IRolesAuth {
+    pub use super::roles_auth::{
+        Interface, InterfaceCalls as Calls, getRoleAdminCall, getRoleAdminReturn, grantRoleCall,
+        grantRoleReturn, hasRoleCall, hasRoleReturn, renounceRoleCall, renounceRoleReturn,
+        revokeRoleCall, revokeRoleReturn, setRoleAdminCall, setRoleAdminReturn,
+    };
+}
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
+
+impl roles_auth::Interface for TIP20Token {
+    fn has_role(&self, account: Address, role: B256) -> Result<bool> {
+        self.has_role_internal(account, role)
+    }
+
+    fn get_role_admin(&self, role: B256) -> Result<B256> {
+        self.get_role_admin_internal(role)
+    }
+
+    fn grant_role(&mut self, msg_sender: Address, role: B256, account: Address) -> Result<()> {
+        let admin_role = self.get_role_admin_internal(role)?;
+        self.check_role_internal(msg_sender, admin_role)?;
+        self.grant_role_internal(account, role)?;
+
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            role, account, msg_sender, true,
+        ))
+    }
+
+    fn revoke_role(&mut self, msg_sender: Address, role: B256, account: Address) -> Result<()> {
+        let admin_role = self.get_role_admin_internal(role)?;
+        self.check_role_internal(msg_sender, admin_role)?;
+        self.revoke_role_internal(account, role)?;
+
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            role, account, msg_sender, false,
+        ))
+    }
+
+    fn renounce_role(&mut self, msg_sender: Address, role: B256) -> Result<()> {
+        self.check_role_internal(msg_sender, role)?;
+        self.revoke_role_internal(msg_sender, role)?;
+
+        self.emit_event(RolesAuthEvent::role_membership_updated(
+            role, msg_sender, msg_sender, false,
+        ))
+    }
+
+    fn set_role_admin(&mut self, msg_sender: Address, role: B256, admin_role: B256) -> Result<()> {
+        let current_admin_role = self.get_role_admin_internal(role)?;
+        self.check_role_internal(msg_sender, current_admin_role)?;
+        self.set_role_admin_internal(role, admin_role)?;
+
+        self.emit_event(RolesAuthEvent::role_admin_updated(
+            role, admin_role, msg_sender,
+        ))
+    }
+}
 
 impl TIP20Token {
     /// Initialize the UNGRANTABLE_ROLE to be self-administered
@@ -18,90 +116,6 @@ impl TIP20Token {
     /// Grant the default admin role to an account
     pub fn grant_default_admin(&mut self, admin: Address) -> Result<()> {
         self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)
-    }
-
-    // Public functions that handle calldata and emit events
-    pub fn has_role(&self, call: IRolesAuth::hasRoleCall) -> Result<bool> {
-        self.has_role_internal(call.account, call.role)
-    }
-
-    pub fn get_role_admin(&self, call: IRolesAuth::getRoleAdminCall) -> Result<B256> {
-        self.get_role_admin_internal(call.role)
-    }
-
-    pub fn grant_role(
-        &mut self,
-        msg_sender: Address,
-        call: IRolesAuth::grantRoleCall,
-    ) -> Result<()> {
-        let admin_role = self.get_role_admin_internal(call.role)?;
-        self.check_role_internal(msg_sender, admin_role)?;
-        self.grant_role_internal(call.account, call.role)?;
-
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: msg_sender,
-                hasRole: true,
-            },
-        ))
-    }
-
-    pub fn revoke_role(
-        &mut self,
-        msg_sender: Address,
-        call: IRolesAuth::revokeRoleCall,
-    ) -> Result<()> {
-        let admin_role = self.get_role_admin_internal(call.role)?;
-        self.check_role_internal(msg_sender, admin_role)?;
-        self.revoke_role_internal(call.account, call.role)?;
-
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: call.account,
-                sender: msg_sender,
-                hasRole: false,
-            },
-        ))
-    }
-
-    pub fn renounce_role(
-        &mut self,
-        msg_sender: Address,
-        call: IRolesAuth::renounceRoleCall,
-    ) -> Result<()> {
-        self.check_role_internal(msg_sender, call.role)?;
-        self.revoke_role_internal(msg_sender, call.role)?;
-
-        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
-            IRolesAuth::RoleMembershipUpdated {
-                role: call.role,
-                account: msg_sender,
-                sender: msg_sender,
-                hasRole: false,
-            },
-        ))
-    }
-
-    pub fn set_role_admin(
-        &mut self,
-        msg_sender: Address,
-        call: IRolesAuth::setRoleAdminCall,
-    ) -> Result<()> {
-        let current_admin_role = self.get_role_admin_internal(call.role)?;
-        self.check_role_internal(msg_sender, current_admin_role)?;
-
-        self.set_role_admin_internal(call.role, call.adminRole)?;
-
-        self.emit_event(RolesAuthEvent::RoleAdminUpdated(
-            IRolesAuth::RoleAdminUpdated {
-                role: call.role,
-                newAdminRole: call.adminRole,
-                sender: msg_sender,
-            },
-        ))
     }
 
     // Utility functions for checking roles without calldata
@@ -145,6 +159,7 @@ mod tests {
 
     use super::*;
     use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::setup_storage};
+    use roles_auth::Interface;
 
     #[test]
     fn test_role_contract_grant_and_check() -> eyre::Result<()> {
@@ -167,26 +182,14 @@ mod tests {
             )?;
 
             // Test hasRole
-            let has_admin = token.has_role(IRolesAuth::hasRoleCall {
-                account: admin,
-                role: DEFAULT_ADMIN_ROLE,
-            })?;
+            let has_admin = token.has_role(admin, DEFAULT_ADMIN_ROLE)?;
             assert!(has_admin);
 
             // Grant custom role
-            token.grant_role(
-                admin,
-                IRolesAuth::grantRoleCall {
-                    role: custom_role,
-                    account: user,
-                },
-            )?;
+            token.grant_role(admin, custom_role, user)?;
 
             // Check custom role
-            let has_custom = token.has_role(IRolesAuth::hasRoleCall {
-                account: user,
-                role: custom_role,
-            })?;
+            let has_custom = token.has_role(user, custom_role)?;
             assert!(has_custom);
 
             // Verify events were emitted
@@ -216,17 +219,10 @@ mod tests {
             )?;
 
             // Set custom admin for role
-            token.set_role_admin(
-                admin,
-                IRolesAuth::setRoleAdminCall {
-                    role: custom_role,
-                    adminRole: admin_role,
-                },
-            )?;
+            token.set_role_admin(admin, custom_role, admin_role)?;
 
             // Check role admin
-            let retrieved_admin =
-                token.get_role_admin(IRolesAuth::getRoleAdminCall { role: custom_role })?;
+            let retrieved_admin = token.get_role_admin(custom_role)?;
             assert_eq!(retrieved_admin, admin_role);
 
             Ok(())
@@ -252,7 +248,7 @@ mod tests {
             token.grant_role_internal(user, custom_role).unwrap();
 
             // Renounce role
-            token.renounce_role(user, IRolesAuth::renounceRoleCall { role: custom_role })?;
+            token.renounce_role(user, custom_role)?;
 
             // Check role is removed
             assert!(!token.has_role_internal(user, custom_role)?);
@@ -280,18 +276,12 @@ mod tests {
             )?;
 
             // Try to grant role without permission
-            let result = token.grant_role(
-                user,
-                IRolesAuth::grantRoleCall {
-                    role: custom_role,
-                    account: other,
-                },
-            );
+            let result = token.grant_role(user, custom_role, other);
 
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::RolesAuthError(
-                    RolesAuthError::Unauthorized(IRolesAuth::Unauthorized {})
+                    RolesAuthError::Unauthorized(Unauthorized)
                 ))
             ));
 

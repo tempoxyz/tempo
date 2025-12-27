@@ -3,14 +3,14 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::tip20::TIP20Error;
+use crate::tip20::{RolesAuthError, TIP20Error};
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
+    AccountKeychainError, FeeManagerError, NonceError, StablecoinExchangeError,
     TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
     UnknownFunctionSelector, ValidatorConfigError,
 };

@@ -2,10 +2,12 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::{FeeManagerError, STABLECOIN_EXCHANGE_ADDRESS};
-pub use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
+pub use roles::{
+    IRolesAuth, RoleAdminUpdated, RoleMembershipUpdated, RolesAuthError, RolesAuthEvent,
+    Unauthorized,
 };
+use tempo_contracts::precompiles::{FeeManagerError, STABLECOIN_EXCHANGE_ADDRESS};
+pub use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,

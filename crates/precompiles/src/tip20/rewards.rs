@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
-use tempo_precompiles_macros::Storable;
+use tempo_precompiles_macros::{SolStruct, Storable};
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
@@ -583,20 +583,20 @@ impl TIP20Token {
     }
 }
 
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone, Storable, SolStruct)]
 pub struct UserRewardInfo {
     pub reward_recipient: Address,
     pub reward_per_token: U256,
     pub reward_balance: U256,
 }
 
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone, Storable, SolStruct)]
 pub struct RewardStream {
-    funder: Address,
-    start_time: u64,
-    end_time: u64,
-    rate_per_second_scaled: U256,
-    amount_total: U256,
+    pub funder: Address,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub rate_per_second_scaled: U256,
+    pub amount_total: U256,
 }
 
 impl RewardStream {

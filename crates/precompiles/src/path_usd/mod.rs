@@ -274,14 +274,13 @@ impl PathUSD {
 mod tests {
     use alloy_primitives::uint;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::RolesAuthError;
 
     use super::*;
     use crate::{
         error::TempoPrecompileError,
         storage::hashmap::HashMapStorageProvider,
         test_util::setup_storage,
-        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip20::{IRolesAuth::Interface, ISSUER_ROLE, PAUSE_ROLE, RolesAuthError, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
@@ -1056,34 +1055,16 @@ mod tests {
             path_usd.initialize(admin)?;
 
             // Grant ISSUER_ROLE to user
-            path_usd.token.grant_role(
-                admin,
-                IRolesAuth::grantRoleCall {
-                    role: *ISSUER_ROLE,
-                    account: user,
-                },
-            )?;
+            path_usd.token.grant_role(admin, *ISSUER_ROLE, user)?;
 
             // Check that user has the role
-            assert!(path_usd.token.has_role(IRolesAuth::hasRoleCall {
-                role: *ISSUER_ROLE,
-                account: user,
-            })?);
+            assert!(path_usd.token.has_role(user, *ISSUER_ROLE)?);
 
             // Revoke the role
-            path_usd.token.revoke_role(
-                admin,
-                IRolesAuth::revokeRoleCall {
-                    role: *ISSUER_ROLE,
-                    account: user,
-                },
-            )?;
+            path_usd.token.revoke_role(admin, *ISSUER_ROLE, user)?;
 
             // Check that user no longer has the role
-            assert!(!path_usd.token.has_role(IRolesAuth::hasRoleCall {
-                role: *ISSUER_ROLE,
-                account: user,
-            })?);
+            assert!(!path_usd.token.has_role(user, *ISSUER_ROLE)?);
             Ok(())
         })
     }

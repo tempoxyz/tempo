@@ -3,12 +3,16 @@
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
 //! - `#[derive(Storable)]` macro for multi-slot storage structs
+//! - `#[derive(SolStruct)]` macro for generating Alloy-compatible struct types
+//! - `#[solidity]` macro for unified module-level Solidity type generation
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
 
 mod layout;
 mod packing;
+mod sol_struct;
+mod solidity;
 mod storable;
 mod storable_primitives;
 mod storable_tests;
@@ -94,6 +98,106 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
 
     match gen_contract_output(input, config.address.as_ref()) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Unified module macro for generating Solidity-compatible types.
+///
+/// This macro processes an entire module containing Solidity type definitions,
+/// enabling correct selector computation for functions with struct parameters
+/// and proper EIP-712 component tracking for nested structs.
+///
+/// # Naming Conventions
+///
+/// | Item Type | Required Name | Cardinality |
+/// |-----------|---------------|-------------|
+/// | Interface trait | `Interface` | 0 or 1 |
+/// | Error enum | `Error` | 0 or 1 |
+/// | Event enum | `Event` | 0 or 1 |
+/// | Structs | Any valid identifier | 0 or more |
+/// | Other enums | Any valid identifier | 0 or more (unit variants only) |
+///
+/// # Generated Types
+///
+/// For each struct:
+/// - `SolStruct`, `SolType`, `SolValue`, `EventTopic` implementations
+/// - `SolTupleSignature` with `ABI_TUPLE` constant
+///
+/// For unit enums (non-Error/Event):
+/// - `#[repr(u8)]` with explicit discriminants
+/// - `From<Enum> for u8` and `TryFrom<u8> for Enum`
+/// - `SolType` implementation (encodes as uint8)
+///
+/// For Error enum:
+/// - Individual error structs with `SolError` implementations
+/// - Container `Error` enum with `SolInterface` implementation
+/// - Snake_case constructor methods
+///
+/// For Event enum:
+/// - Individual event structs with `SolEvent` implementations
+/// - Container `Event` enum with `IntoLogData` implementation
+/// - Use `#[indexed]` on fields to mark them as indexed topics
+///
+/// For Interface trait:
+/// - `{camelCaseName}Call` structs with `SolCall` implementations
+/// - `InterfaceCalls` enum with `SolInterface` implementation
+/// - Trait with `msg_sender: Address` auto-injected for `&mut self` methods
+///
+/// # Example
+///
+/// ```ignore
+/// #[solidity]
+/// pub mod roles_auth {
+///     use super::*;
+///
+///     #[derive(Clone, Debug)]
+///     pub struct Transfer {
+///         pub from: Address,
+///         pub to: Address,
+///         pub amount: U256,
+///     }
+///
+///     pub enum PolicyType {
+///         Whitelist,  // = 0
+///         Blacklist,  // = 1
+///     }
+///
+///     pub enum Error {
+///         Unauthorized,
+///         InsufficientBalance { available: U256, required: U256 },
+///     }
+///
+///     pub enum Event {
+///         RoleMembershipUpdated {
+///             #[indexed] role: B256,
+///             #[indexed] account: Address,
+///             sender: Address,
+///             has_role: bool,
+///         },
+///     }
+///
+///     pub trait Interface {
+///         fn has_role(&self, account: Address, role: B256) -> Result<bool>;
+///         fn grant_role(&mut self, role: B256, account: Address) -> Result<()>;
+///     }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn solidity(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::from(attr),
+            "#[solidity] does not accept any arguments",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let input = parse_macro_input!(item as syn::ItemMod);
+
+    match solidity::expand(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
@@ -247,6 +351,53 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match storable::derive_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derives `SolType`, `SolValue`, `SolStruct`, and `EventTopic` for structs.
+///
+/// This macro generates the same trait implementations that Alloy's `sol!` macro
+/// generates for Solidity structs, allowing you to define ABI-compatible structs
+/// in pure Rust syntax.
+///
+/// # Generated Traits
+///
+/// - `SolValue` - Marker trait for Solidity values
+/// - `SolType` - ABI encoding/decoding capabilities
+/// - `SolStruct` - EIP-712 typed data support
+/// - `EventTopic` - Event topic encoding for indexed parameters
+///
+/// # Requirements
+///
+/// - The struct must have named fields (not tuple structs or unit structs)
+/// - All field types must implement the corresponding Alloy traits
+/// - Field names are converted from `snake_case` to `camelCase` in EIP-712 signatures
+///
+/// # Example
+///
+/// ```ignore
+/// use precompiles_macros::SolStruct;
+/// use alloy_primitives::{Address, U256};
+///
+/// #[derive(SolStruct, Clone, Debug, PartialEq)]
+/// pub struct RewardStream {
+///     pub funder: Address,
+///     pub start_time: u64,
+///     pub end_time: u64,
+///     pub rate_per_second_scaled: U256,
+///     pub amount_total: U256,
+/// }
+/// ```
+///
+/// This generates EIP-712 signature:
+/// `RewardStream(address funder,uint64 startTime,uint64 endTime,uint256 ratePerSecondScaled,uint256 amountTotal)`
+#[proc_macro_derive(SolStruct)]
+pub fn derive_sol_struct(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match sol_struct::derive_impl(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

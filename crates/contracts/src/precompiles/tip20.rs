@@ -1,7 +1,8 @@
-pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::{Address, U256};
 
+// IRolesAuth interface for external contract interaction (RPC calls)
+// Internal precompile types are defined in tempo_precompiles::tip20::roles
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
@@ -12,9 +13,6 @@ crate::sol! {
         function revokeRole(bytes32 role, address account) external;
         function renounceRole(bytes32 role) external;
         function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
-
-        event RoleMembershipUpdated(bytes32 indexed role, address indexed account, address indexed sender, bool hasRole);
-        event RoleAdminUpdated(bytes32 indexed role, bytes32 indexed newAdminRole, address indexed sender);
 
         error Unauthorized();
     }
@@ -155,6 +153,8 @@ crate::sol! {
         error InvalidTransferPolicyId();
     }
 }
+
+pub use IRolesAuth::IRolesAuthErrors as RolesAuthError;
 
 impl RolesAuthError {
     /// Creates an error for unauthorized access.

@@ -19,6 +19,8 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 alloy = { workspace = true }
+alloy-sol-macro-expander = { workspace = true }
+hex = "0.4"
 
 [dev-dependencies]
 alloy = { workspace = true }
