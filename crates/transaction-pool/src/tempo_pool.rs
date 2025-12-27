@@ -357,16 +357,18 @@ where
         tx_hashes: Vec<B256>,
         limit: GetPooledTransactionLimit,
     ) -> Vec<<Self::Transaction as PoolTransaction>::Pooled> {
+        let tx_hashes_for_aa = tx_hashes.clone();
+        let protocol_txs = self
+            .protocol_pool
+            .get_pooled_transaction_elements(tx_hashes, limit);
         let mut txs =
-            Vec::with_capacity(tx_hashes.len().min(GET_POOLED_TX_HASHES_SOFT_LIMIT));
-        for tx in self.aa_2d_pool.read().get_all_iter(&tx_hashes) {
+            Vec::with_capacity(tx_hashes_for_aa.len().min(GET_POOLED_TX_HASHES_SOFT_LIMIT));
+        for tx in self.aa_2d_pool.read().get_all_iter(&tx_hashes_for_aa) {
+            // Safe unwrap: TryFromConsensusError is Infallible for TempoPooledTransaction.
             let pooled = tx.transaction.clone_into_pooled().unwrap();
             txs.push(pooled.into_inner());
         }
-        txs.extend(
-            self.protocol_pool
-                .get_pooled_transaction_elements(tx_hashes, limit),
-        );
+        txs.extend(protocol_txs);
 
         txs
     }
