@@ -28,9 +28,6 @@ use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
 
-// Soft limit follows reth's GetPooledTransactions request size (256 hashes).
-const GET_POOLED_TX_HASHES_SOFT_LIMIT: usize = 256;
-
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -357,17 +354,20 @@ where
         tx_hashes: Vec<B256>,
         limit: GetPooledTransactionLimit,
     ) -> Vec<<Self::Transaction as PoolTransaction>::Pooled> {
-        let mut aa_txs =
-            Vec::with_capacity(tx_hashes.len().min(GET_POOLED_TX_HASHES_SOFT_LIMIT));
-        for tx in self.aa_2d_pool.read().get_all_iter(&tx_hashes) {
-            // Safe unwrap: TryFromConsensusError is Infallible for TempoPooledTransaction.
-            let pooled = tx.transaction.clone_into_pooled().unwrap();
-            aa_txs.push(pooled.into_inner());
-        }
+        let aa_tx_hashes = tx_hashes.clone();
         let mut txs = self
             .protocol_pool
             .get_pooled_transaction_elements(tx_hashes, limit);
-        txs.extend(aa_txs);
+
+        let aa_pool = self.aa_2d_pool.read();
+        let aa_count = aa_pool.get_all_iter(&aa_tx_hashes).count();
+        txs.reserve_exact(aa_count);
+        
+        for tx in aa_pool.get_all_iter(&aa_tx_hashes) {
+            // Safe unwrap: TryFromConsensusError is Infallible for TempoPooledTransaction.
+            let pooled = tx.transaction.clone_into_pooled().unwrap();
+            txs.push(pooled.into_inner());
+        }
 
         txs
     }
