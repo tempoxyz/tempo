@@ -61,7 +61,7 @@ crate::sol! {
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
         function feeRecipient() external view returns (address);
-        function setFeeRecipient(address newRecipient) external view returns (address);
+        function setFeeRecipient(address newRecipient) external;
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
