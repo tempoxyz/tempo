@@ -245,8 +245,8 @@ fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResu
 #[inline]
 fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     let Ok(call) = T::abi_decode(calldata) else {
-        // TODO refactor
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
+        let selector = extract_selector(calldata);
+        return unknown_selector(selector, 0, StorageCtx.spec());
     };
     f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
@@ -264,7 +264,8 @@ pub fn mutate<T: SolCall>(
         ));
     }
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
+        let selector = extract_selector(calldata);
+        return unknown_selector(selector, 0, StorageCtx.spec());
     };
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
@@ -282,7 +283,8 @@ fn mutate_void<T: SolCall>(
         ));
     }
     let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
+        let selector = extract_selector(calldata);
+        return unknown_selector(selector, 0, StorageCtx.spec());
     };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
@@ -299,6 +301,15 @@ fn fill_precompile_output(
         output.gas_refunded = storage.gas_refunded();
     }
     output
+}
+
+/// Helper function to extract the function selector from calldata
+#[inline]
+fn extract_selector(calldata: &[u8]) -> [u8; 4] {
+    calldata
+        .get(..4)
+        .and_then(|s| s.try_into().ok())
+        .unwrap_or_default()
 }
 
 /// Helper function to return an unknown function selector error
