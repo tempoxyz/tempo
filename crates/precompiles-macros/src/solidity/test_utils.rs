@@ -1,7 +1,5 @@
 //! Shared test utilities for the solidity module.
 
-#![cfg(test)]
-
 use proc_macro2::Span;
 use quote::format_ident;
 use syn::{Type, Visibility};

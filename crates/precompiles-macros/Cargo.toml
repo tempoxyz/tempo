@@ -23,4 +23,5 @@ alloy-sol-macro-expander = { workspace = true }
 hex = "0.4"
 
 [dev-dependencies]
-alloy = { workspace = true }
+alloy = { workspace = true, features = ["sol-types", "rand"] }
+alloy-sol-types = { workspace = true }

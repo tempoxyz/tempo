@@ -11907,6 +11907,7 @@ version = "0.8.0"
 dependencies = [
  "alloy",
  "alloy-sol-macro-expander",
+ "alloy-sol-types",
  "hex",
  "proc-macro2",
  "quote",

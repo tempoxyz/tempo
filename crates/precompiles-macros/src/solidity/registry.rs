@@ -100,7 +100,7 @@ impl TypeRegistry {
         for (name, def) in struct_map {
             let mut deps = HashSet::new();
             for field in &def.fields {
-                self.collect_type_dependencies(&field.ty, struct_map, &mut deps);
+                Self::collect_type_dependencies(&field.ty, struct_map, &mut deps);
             }
             self.struct_deps
                 .insert(name.clone(), deps.into_iter().collect());
@@ -110,7 +110,6 @@ impl TypeRegistry {
 
     /// Recursively collect struct type dependencies from a type.
     fn collect_type_dependencies(
-        &self,
         ty: &Type,
         struct_map: &HashMap<String, &SolStructDef>,
         deps: &mut HashSet<String>,
@@ -127,18 +126,18 @@ impl TypeRegistry {
                     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
                         for arg in &args.args {
                             if let syn::GenericArgument::Type(inner_ty) = arg {
-                                self.collect_type_dependencies(inner_ty, struct_map, deps);
+                                Self::collect_type_dependencies(inner_ty, struct_map, deps);
                             }
                         }
                     }
                 }
             }
             Type::Array(arr) => {
-                self.collect_type_dependencies(&arr.elem, struct_map, deps);
+                Self::collect_type_dependencies(&arr.elem, struct_map, deps);
             }
             Type::Tuple(tuple) => {
                 for elem in &tuple.elems {
-                    self.collect_type_dependencies(elem, struct_map, deps);
+                    Self::collect_type_dependencies(elem, struct_map, deps);
                 }
             }
             _ => {}
@@ -157,13 +156,12 @@ impl TypeRegistry {
 
         for (name, deps) in &self.struct_deps {
             for dep in deps {
-                if struct_map.contains_key(dep) {
-                    if let (Some(deg), Some(rdeps)) =
+                if struct_map.contains_key(dep)
+                    && let (Some(deg), Some(rdeps)) =
                         (in_degree.get_mut(name), reverse_deps.get_mut(dep))
-                    {
-                        *deg += 1;
-                        rdeps.push(name.clone());
-                    }
+                {
+                    *deg += 1;
+                    rdeps.push(name.clone());
                 }
             }
         }
@@ -203,10 +201,7 @@ impl TypeRegistry {
             let cycle_members = remaining.join(", ");
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!(
-                    "circular dependency detected among structs: {}",
-                    cycle_members
-                ),
+                format!("circular dependency detected among structs: {cycle_members}"),
             ));
         }
 
@@ -250,13 +245,12 @@ impl TypeRegistry {
                         return Ok(abi_tuple.clone());
                     }
 
-                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                        if seg.ident == "Vec" {
-                            if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                                let inner_abi = self.resolve_abi(inner)?;
-                                return Ok(format!("{}[]", inner_abi));
-                            }
-                        }
+                    if let syn::PathArguments::AngleBracketed(args) = &seg.arguments
+                        && seg.ident == "Vec"
+                        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        let inner_abi = self.resolve_abi(inner)?;
+                        return Ok(format!("{inner_abi}[]"));
                     }
                 }
                 let sol_type = SolType::from_syn(ty)?;
@@ -269,9 +263,9 @@ impl TypeRegistry {
                     ..
                 }) = &arr.len
                 {
-                    Ok(format!("{}[{}]", inner_abi, len))
+                    Ok(format!("{inner_abi}[{len}]"))
                 } else {
-                    Ok(format!("{}[]", inner_abi))
+                    Ok(format!("{inner_abi}[]"))
                 }
             }
             Type::Tuple(tuple) => {
@@ -313,10 +307,10 @@ impl TypeRegistry {
     /// Check if a type is a registered struct.
     #[cfg(test)]
     pub(super) fn is_struct(&self, ty: &Type) -> bool {
-        if let Type::Path(type_path) = ty {
-            if let Some(seg) = type_path.path.segments.last() {
-                return self.abi_tuples.contains_key(&seg.ident.to_string());
-            }
+        if let Type::Path(type_path) = ty
+            && let Some(seg) = type_path.path.segments.last()
+        {
+            return self.abi_tuples.contains_key(&seg.ident.to_string());
         }
         false
     }
@@ -324,10 +318,10 @@ impl TypeRegistry {
     /// Check if a type is a registered unit enum.
     #[cfg(test)]
     pub(super) fn is_unit_enum(&self, ty: &Type) -> bool {
-        if let Type::Path(type_path) = ty {
-            if let Some(seg) = type_path.path.segments.last() {
-                return self.unit_enums.contains(&seg.ident.to_string());
-            }
+        if let Type::Path(type_path) = ty
+            && let Some(seg) = type_path.path.segments.last()
+        {
+            return self.unit_enums.contains(&seg.ident.to_string());
         }
         false
     }

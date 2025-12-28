@@ -5,7 +5,6 @@
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
 
-
 pub mod storage;
 
 pub mod account_keychain;
@@ -507,8 +506,7 @@ mod macro_tests {
             outer_components
                 .iter()
                 .any(|c| c.contains("Inner(uint256 value,address owner)")),
-            "Outer should have Inner as a component, got: {:?}",
-            outer_components
+            "Outer should have Inner as a component, got: {outer_components:?}",
         );
     }
 

@@ -634,19 +634,16 @@ fn extract_result_inner_type(return_type: &ReturnType) -> syn::Result<Option<Typ
             "interface methods must return Result<T, _>",
         )),
         ReturnType::Type(_, ty) => {
-            if let Type::Path(type_path) = ty.as_ref() {
-                if let Some(seg) = type_path.path.segments.last() {
-                    if seg.ident == "Result" {
-                        if let PathArguments::AngleBracketed(args) = &seg.arguments {
-                            if let Some(GenericArgument::Type(inner)) = args.args.first() {
-                                if is_unit_type(inner) {
-                                    return Ok(None);
-                                }
-                                return Ok(Some(inner.clone()));
-                            }
-                        }
-                    }
+            if let Type::Path(type_path) = ty.as_ref()
+                && let Some(seg) = type_path.path.segments.last()
+                && seg.ident == "Result"
+                && let PathArguments::AngleBracketed(args) = &seg.arguments
+                && let Some(GenericArgument::Type(inner)) = args.args.first()
+            {
+                if is_unit_type(inner) {
+                    return Ok(None);
                 }
+                return Ok(Some(inner.clone()));
             }
             Err(syn::Error::new_spanned(
                 ty,

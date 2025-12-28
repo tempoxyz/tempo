@@ -31,7 +31,7 @@ pub(super) fn generate_struct(
         .is_empty();
 
     let sol_struct_impl = SolStructData {
-        field_names: field_names.clone(),
+        field_names,
         rust_types,
         sol_types,
         eip712: Eip712Options {
@@ -94,4 +94,3 @@ fn build_eip712_signature(name: &Ident, def: &SolStructDef) -> syn::Result<Strin
     sig.push(')');
     Ok(sig)
 }
-

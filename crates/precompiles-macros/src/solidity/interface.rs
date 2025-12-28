@@ -185,4 +185,3 @@ fn generate_calls_enum(methods: &[MethodDef], registry: &TypeRegistry) -> syn::R
         SolInterfaceKind::Call,
     ))
 }
-

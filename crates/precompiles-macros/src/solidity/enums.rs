@@ -112,13 +112,13 @@ fn expand_unit_enum_traits(
 
             #[inline]
             fn valid_token(token: &Self::Token<'_>) -> bool {
-                let value: u8 = token.0.to();
+                let value: u8 = alloy::primitives::U256::from_be_bytes(token.0.0).to::<u8>();
                 value < #variant_count
             }
 
             #[inline]
             fn detokenize(token: Self::Token<'_>) -> Self::RustType {
-                let value: u8 = token.0.to();
+                let value: u8 = alloy::primitives::U256::from_be_bytes(token.0.0).to::<u8>();
                 debug_assert!(
                     value < #variant_count,
                     "invalid {} discriminant: {}",
@@ -135,7 +135,7 @@ fn expand_unit_enum_traits(
         impl alloy_sol_types::private::SolTypeValue<#enum_name> for #enum_name {
             #[inline]
             fn stv_to_tokens(&self) -> <#enum_name as alloy_sol_types::SolType>::Token<'_> {
-                alloy_sol_types::Word::from(alloy::primitives::U256::from(*self as u8))
+                <alloy_sol_types::sol_data::Uint<8> as alloy_sol_types::SolType>::tokenize(&(*self as u8))
             }
 
             #[inline]
@@ -330,4 +330,3 @@ fn generate_constructors(container: &Ident, variants: &[EnumVariantDef]) -> Toke
         }
     }
 }
-

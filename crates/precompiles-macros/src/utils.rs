@@ -125,16 +125,14 @@ fn extract_fixed_bytes_size(type_path: &TypePath) -> Option<usize> {
         return None;
     }
 
-    if let PathArguments::AngleBracketed(args) = &seg.arguments {
-        if let Some(GenericArgument::Const(expr)) = args.args.first() {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Int(int),
-                ..
-            }) = expr
-            {
-                return int.base10_parse().ok();
-            }
-        }
+    if let PathArguments::AngleBracketed(args) = &seg.arguments
+        && let Some(GenericArgument::Const(expr)) = args.args.first()
+        && let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(int),
+            ..
+        }) = expr
+    {
+        return int.base10_parse().ok();
     }
     Some(32) // default
 }
@@ -287,19 +285,21 @@ impl SolType {
                 if let Some(bits) = lower
                     .strip_prefix('u')
                     .and_then(|s| s.parse::<usize>().ok())
+                    && bits > 0
+                    && bits <= 256
+                    && bits % 8 == 0
                 {
-                    if bits > 0 && bits <= 256 && bits % 8 == 0 {
-                        return Self::Uint(bits);
-                    }
+                    return Self::Uint(bits);
                 }
                 // I8..I256, i8..i256
                 if let Some(bits) = lower
                     .strip_prefix('i')
                     .and_then(|s| s.parse::<usize>().ok())
+                    && bits > 0
+                    && bits <= 256
+                    && bits % 8 == 0
                 {
-                    if bits > 0 && bits <= 256 && bits % 8 == 0 {
-                        return Self::Int(bits);
-                    }
+                    return Self::Int(bits);
                 }
                 // B8..B256 (FixedBytes)
                 if let Some(bits) = lower
