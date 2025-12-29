@@ -3,7 +3,8 @@
 pub(crate) mod marshal {
     use commonware_consensus::{
         marshal,
-        simplex::{signing_scheme::bls12381_threshold::Scheme, types::Finalization},
+        simplex::{scheme::bls12381_threshold::Scheme, types::Finalization},
+        types::FixedEpocher,
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
     use commonware_storage::archive::immutable;
@@ -15,9 +16,9 @@ pub(crate) mod marshal {
         TContext,
         Block,
         crate::epoch::SchemeProvider,
-        Scheme<PublicKey, MinSig>,
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
         immutable::Archive<TContext, Digest, Block>,
+        FixedEpocher,
         Exact,
     >;
 

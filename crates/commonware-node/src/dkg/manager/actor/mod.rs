@@ -5,12 +5,11 @@ use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Block as _, Reporter as _, marshal,
-    simplex::signing_scheme::bls12381_threshold::Scheme,
-    types::Epoch,
-    utils::{self, epoch, is_last_block_in_epoch},
+    simplex::scheme::bls12381_threshold::Scheme,
+    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher},
 };
 use commonware_cryptography::{
-    Digest as _, Signer as _,
+    Signer as _,
     bls12381::{
         dkg::{self, DealerLog, DealerPrivMsg, DealerPubMsg, PlayerAck, SignedDealerLog, observe},
         primitives::{group::Share, variant::MinSig},
@@ -18,14 +17,15 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
     transcript::Summary,
 };
+use commonware_math::algebra::Random as _;
 use commonware_p2p::{
-    Receiver, Recipients, Sender,
+    Address, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, NZU32, ordered};
 
-use eyre::{OptionExt as _, WrapErr as _, eyre};
+use eyre::{OptionExt as _, WrapErr as _, bail, eyre};
 use futures::{
     FutureExt as _, Stream, StreamExt as _, channel::mpsc, select_biased, stream::FusedStream,
 };
@@ -43,9 +43,7 @@ use crate::{
         ingress::{Finalized, GetDkgOutcome, VerifyDealerLog},
         validators::{self, DecodedValidator},
     },
-    epoch::{
-        self, EpochTransition, RelativePosition, first_block_in_epoch, is_first_block_in_epoch,
-    },
+    epoch::{self, EpochTransition},
 };
 
 mod state;
@@ -127,7 +125,7 @@ impl<TContext, TPeerManager> Actor<TContext, TPeerManager>
 where
     TContext:
         Clock + CryptoRngCore + commonware_runtime::Metrics + Spawner + commonware_runtime::Storage,
-    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = ordered::Map<PublicKey, SocketAddr>>
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = ordered::Map<PublicKey, Address>>
         + Sync,
 {
     pub(super) async fn new(
@@ -169,13 +167,13 @@ where
             .initial_state({
                 let mut context = self.context.clone();
                 let execution_node = self.config.execution_node.clone();
-                let epoch_length = self.config.epoch_length;
+                let epoch_strategy = self.config.epoch_strategy.clone();
                 let initial_share = self.config.initial_share.clone();
                 async move {
                     read_initial_state_from_genesis(
                         &mut context,
                         &execution_node,
-                        epoch_length,
+                        &epoch_strategy,
                         initial_share.clone(),
                     )
                     .await
@@ -230,6 +228,29 @@ where
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
         let state = storage.current();
+
+        if storage
+            .get_latest_finalized_block_for_epoch(&state.epoch)
+            .is_none()
+            && let Some(previous) = storage.previous().await
+        {
+            // On restarts:
+            // If there is no finalized block for this epoch, then we must not
+            // have observed the first one. Therefore we need to start a
+            // consensus engine to ensure we register peers, schemes, etc.
+            self.config
+                .epoch_manager
+                .report(
+                    EpochTransition {
+                        epoch: previous.epoch,
+                        public: previous.output.public().clone(),
+                        share: previous.share.clone(),
+                        participants: previous.dealers.keys().clone(),
+                    }
+                    .into(),
+                )
+                .await;
+        }
 
         self.metrics.reset();
 
@@ -515,7 +536,6 @@ where
         fields(
             dkg.epoch = %round.epoch(),
             block.height = block.height(),
-            block.epoch = %utils::epoch(self.config.epoch_length, block.height()),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -540,13 +560,20 @@ where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let block_epoch = utils::epoch(self.config.epoch_length, block.height());
+        let bounds = self
+            .config
+            .epoch_strategy
+            .containing(block.height())
+            .expect("epoch strategy is covering all block heights");
+
+        let block_epoch = bounds.epoch();
+
         if block_epoch != round.epoch() {
             info!("block was not for this epoch");
             return Ok(None);
         }
 
-        if is_first_block_in_epoch(self.config.epoch_length, block.height()).is_some()
+        if block.height() == bounds.first()
             && let Some(epoch) = round.epoch().previous()
         {
             self.config
@@ -555,8 +582,8 @@ where
                 .await;
         }
 
-        match epoch::relative_position(self.config.epoch_length, block.height()) {
-            RelativePosition::FirstHalf => {
+        match bounds.phase() {
+            EpochPhase::Early => {
                 if let Some(dealer_state) = dealer_state {
                     self.distribute_shares(
                         storage,
@@ -568,14 +595,14 @@ where
                     .await;
                 }
             }
-            RelativePosition::Middle | RelativePosition::SecondHalf => {
+            EpochPhase::Midpoint | EpochPhase::Late => {
                 if let Some(dealer_state) = dealer_state {
                     dealer_state.finalize();
                 }
             }
         }
 
-        if is_last_block_in_epoch(self.config.epoch_length, block.height()).is_none() {
+        if block.height() != bounds.last() {
             if !block.header().extra_data().is_empty() {
                 'handle_log: {
                     let (dealer, log) =
@@ -626,7 +653,7 @@ where
             &self.context,
             &self.config.execution_node,
             round.epoch(),
-            self.config.epoch_length,
+            &self.config.epoch_strategy,
         )
         .await;
 
@@ -733,13 +760,6 @@ where
     {
         let me = self.config.me.public_key();
         for (player, pub_msg, priv_msg) in dealer_state.shares_to_distribute().collect::<Vec<_>>() {
-            // TODO(janis): bring in rate limits.
-            // // Rate limit sends
-            // if rate_limiter.check_key(&player).is_err() {
-            //     debug!(?epoch, ?player, "rate limited; skipping share send");
-            //     continue;
-            // }
-
             if player == me {
                 if let Some(player_state) = player_state
                     && let Ok(ack) = player_state
@@ -797,10 +817,10 @@ where
         reason = "easiest way to express this for now"
     )]
     // TODO(janis): replace this by a struct?
-    async fn handle_network_msg<TStorageContext, TSender>(
+    async fn handle_network_msg<TStorageContext>(
         &self,
         round: &state::Round,
-        round_channel: &mut TSender,
+        round_channel: &mut impl Sender<PublicKey = PublicKey>,
         storage: &mut state::Storage<TStorageContext>,
         dealer_state: Option<&mut state::Dealer>,
         player_state: Option<&mut state::Player>,
@@ -809,7 +829,6 @@ where
     ) -> eyre::Result<()>
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
-        TSender: Sender<PublicKey = PublicKey>,
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
@@ -823,14 +842,25 @@ where
                         .receive_dealing(storage, round.epoch(), from.clone(), pub_msg, priv_msg)
                         .await
                         .wrap_err("failed storing dealing")?;
-                    round_channel
+
+                    if let Err(error) = round_channel
                         .send(
                             Recipients::One(from.clone()),
                             Message::Ack(ack).encode().freeze(),
                             true,
                         )
                         .await
-                        .wrap_err("failed returning ACK to dealer")?;
+                    {
+                        // FIXME(janis): the GATs in the Sender (and LimitedSender)
+                        // lead to `borrowed data escapes outside of method` errors.
+                        // `wrap_err` with early return does not work, and neither
+                        // does `Report::new` nor `&error as &dyn std::error::Error`.
+                        warn!(
+                            reason = ?error,
+                            "failed returning ACK to dealer",
+                        );
+                        bail!("failed returning ACK to dealer");
+                    }
                     info!("returned ACK to dealer");
                     self.metrics.acks_sent.inc();
                 } else {
@@ -871,7 +901,6 @@ where
         fields(
             as_player = player_state.is_some(),
             our.epoch = %round.epoch(),
-            request.epoch = %epoch(self.config.epoch_length, request.height),
         ),
     )]
     fn handle_get_dkg_outcome<TStorageContext>(
@@ -886,8 +915,16 @@ where
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
     {
-        if round.epoch() != epoch(self.config.epoch_length, request.height) {
-            warn!("request is not for our epoch");
+        let epoch_info = self
+            .config
+            .epoch_strategy
+            .containing(request.height)
+            .expect("our strategy covers all epochs");
+        if round.epoch() != epoch_info.epoch() {
+            warn!(
+                request.epoch = %epoch_info.epoch(),
+                "request is not for our epoch"
+            );
             return None;
         }
 
@@ -913,7 +950,7 @@ where
                     logs read from notarized blocks and concluding DKG that way",
                 );
                 let (mut height, mut digest) = (request.height, request.digest);
-                while height >= first_block_in_epoch(self.config.epoch_length, round.epoch())
+                while height >= epoch_info.first()
                     && Some(height)
                         >= storage
                             .get_latest_finalized_block_for_epoch(&round.epoch())
@@ -994,7 +1031,7 @@ where
 async fn read_initial_state_from_genesis<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
-    epoch_length: u64,
+    epoch_strategy: &FixedEpocher,
     share: Option<Share>,
 ) -> eyre::Result<State>
 where
@@ -1007,7 +1044,7 @@ where
     .wrap_err("the genesis header did not contain the initial DKG outcome")?;
 
     let all_validators =
-        validators::read_from_contract_on_epoch_boundary(0, node, None, epoch_length)
+        validators::read_from_contract_on_epoch_boundary(0, node, None, epoch_strategy)
             .await
             .wrap_err("the genesis block did not contain a validator config")?;
 
@@ -1183,7 +1220,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     context: &C,
     node: &TempoFullNode,
     epoch: Epoch,
-    epoch_length: u64,
+    epoch_strategy: &FixedEpocher,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut attempts = 1;
     let retry_after = Duration::from_secs(1);
@@ -1192,7 +1229,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
             attempts,
             node,
             Some(epoch),
-            epoch_length,
+            epoch_strategy,
         )
         .await
         {

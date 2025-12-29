@@ -8,7 +8,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::Output,
-        primitives::{poly::Public, variant::MinSig},
+        primitives::{sharing::Sharing, variant::MinSig},
     },
     ed25519::PublicKey,
 };
@@ -45,7 +45,7 @@ impl OnchainDkgOutcome {
         &self.next_players
     }
 
-    pub fn public(&self) -> &Public<MinSig> {
+    pub fn public(&self) -> &Sharing<MinSig> {
         self.output.public()
     }
 }
@@ -84,18 +84,12 @@ impl EncodeSize for OnchainDkgOutcome {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, iter::repeat_with};
+    use std::iter::repeat_with;
 
     use commonware_codec::{Encode as _, ReadExt as _};
     use commonware_consensus::types::Epoch;
-    use commonware_cryptography::{
-        PrivateKeyExt as _, Signer as _,
-        bls12381::{
-            dkg::{Dealer, Info, Player},
-            primitives::variant::MinSig,
-        },
-        ed25519::{PrivateKey, PublicKey},
-    };
+    use commonware_cryptography::{Signer as _, bls12381::dkg, ed25519::PrivateKey};
+    use commonware_math::algebra::Random as _;
     use commonware_utils::{TryFromIterator as _, ordered};
     use rand::SeedableRng as _;
 
@@ -105,52 +99,16 @@ mod tests {
     fn onchain_dkg_outcome_roundtrip() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
-        let dealer_key = PrivateKey::from_rng(&mut rng);
-
-        let mut player_keys = repeat_with(|| PrivateKey::from_rng(&mut rng))
+        let mut player_keys = repeat_with(|| PrivateKey::random(&mut rng))
             .take(10)
             .collect::<Vec<_>>();
         player_keys.sort_by_key(|key| key.public_key());
-
-        let info = Info::<MinSig, PublicKey>::new(
-            b"test",
-            42,
-            None,
-            ordered::Set::try_from_iter(std::iter::once(dealer_key.public_key())).unwrap(),
+        let (output, _shares) = dkg::deal(
+            &mut rng,
+            Default::default(),
             ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
         )
         .unwrap();
-
-        let (mut dealer, pub_msg, priv_msgs) =
-            Dealer::start(rng, info.clone(), dealer_key.clone(), None).unwrap();
-
-        let priv_msgs = priv_msgs.into_iter().collect::<BTreeMap<_, _>>();
-        let mut players = player_keys
-            .iter()
-            .cloned()
-            .map(|key| Player::new(info.clone(), key).unwrap())
-            .collect::<Vec<_>>();
-
-        for (player, key) in players.iter_mut().zip(&player_keys) {
-            let ack = player
-                .dealer_message(
-                    dealer_key.public_key(),
-                    pub_msg.clone(),
-                    priv_msgs.get(&key.public_key()).cloned().unwrap(),
-                )
-                .unwrap();
-            dealer.receive_player_ack(key.public_key(), ack).unwrap();
-        }
-        let signed_log = dealer.finalize();
-        let (_, log) = signed_log.check(&info).unwrap();
-        let logs = BTreeMap::from([(dealer_key.public_key(), log)]);
-
-        let outputs = players
-            .into_iter()
-            .map(|player| player.finalize(logs.clone(), 1).unwrap())
-            .collect::<Vec<_>>();
-        let output = outputs[0].0.clone();
-        assert!(outputs.iter().all(|(o, _)| &output == o));
 
         let on_chain = OnchainDkgOutcome {
             epoch: Epoch::new(42),

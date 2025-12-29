@@ -1,6 +1,6 @@
 use commonware_consensus::{Reporter, types::Epoch};
 use commonware_cryptography::{
-    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
+    bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::PublicKey,
 };
 use commonware_utils::ordered;
@@ -55,7 +55,7 @@ impl From<Exit> for Activity {
 #[derive(Debug)]
 pub(crate) struct EpochTransition {
     pub(crate) epoch: Epoch,
-    pub(crate) public: Public<MinSig>,
+    pub(crate) public: Sharing<MinSig>,
     pub(crate) share: Option<Share>,
     pub(crate) participants: ordered::Set<PublicKey>,
 }
