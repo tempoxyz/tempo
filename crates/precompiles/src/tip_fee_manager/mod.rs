@@ -3,7 +3,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping, StorableType, StorageKey},
+    storage::{Handler, Mapping},
     tip_fee_manager::amm::{Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -15,38 +15,16 @@ pub use tempo_contracts::precompiles::{
 };
 // Re-export PoolKey for backward compatibility with tests
 use alloy::primitives::{Address, U256, uint};
-use tempo_precompiles_macros::{Storable, contract};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Storable)]
-pub struct TokenPair {
-    pub user_token: u64,
-    pub validator_token: u64,
-}
-
-impl StorageKey for TokenPair {
-    fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
-        let mut bytes = Vec::with_capacity(Self::BYTES);
-        bytes.extend_from_slice(self.user_token.as_storage_bytes().as_ref());
-        bytes.extend_from_slice(self.validator_token.as_storage_bytes().as_ref());
-        bytes
-    }
-}
+use tempo_precompiles_macros::contract;
 
 #[contract(addr = TIP_FEE_MANAGER_ADDRESS)]
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
     collected_fees: Mapping<Address, U256>,
-    tokens_with_fees: Vec<Address>,
-    token_in_fees_array: Mapping<Address, bool>,
     pools: Mapping<B256, Pool>,
-    pending_fee_swap_in: Mapping<B256, u128>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
-    pools_with_fees: Vec<TokenPair>,
-    pool_in_fees_array: Mapping<TokenPair, bool>,
-    validators_with_fees: Vec<Address>,
-    validator_in_fees_array: Mapping<Address, bool>,
 }
 
 impl TipFeeManager {
@@ -589,10 +567,6 @@ mod tests {
                 U256::ZERO,
                 "Different tokens: no fees accumulated in pre_tx (swap happens in post_tx)"
             );
-
-            // Pending fee swap should NOT be recorded (liquidity is checked, not reserved)
-            let pending = fee_manager.get_pending_fee_swap_in(pool_id)?;
-            assert_eq!(pending, 0, "No liquidity reservation in pre_tx");
 
             // Pool reserves should NOT be updated yet
             let pool = fee_manager.pools.at(pool_id).read()?;
