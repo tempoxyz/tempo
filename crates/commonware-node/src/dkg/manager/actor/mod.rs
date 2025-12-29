@@ -25,7 +25,7 @@ use commonware_p2p::{
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, NZU32, ordered};
 
-use eyre::{OptionExt as _, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, WrapErr as _, eyre};
 use futures::{
     FutureExt as _, Stream, StreamExt as _, channel::mpsc, select_biased, stream::FusedStream,
 };
@@ -630,7 +630,7 @@ where
         )
         .await;
 
-        let (local_output, share) = if let Some((outcome, share)) =
+        let (local_output, mut share) = if let Some((outcome, share)) =
             storage.get_dkg_outcome(&state.epoch, &block.parent_digest())
         {
             debug!("using cached DKG outcome");
@@ -678,12 +678,21 @@ where
             }
         };
 
-        ensure!(
-            local_output == onchain_outcome.output,
-            "the output of the local DKG ceremony does not match what is on chain;
-            something is terribly wrong; cannot recover from that; delete this
-            node and spin up a new identity",
-        );
+        if local_output != onchain_outcome.output {
+            let am_player = onchain_outcome
+                .next_players
+                .position(&self.config.me.public_key())
+                .is_some();
+            warn!(
+                am_player,
+                "the output of the local DKG ceremony does not match what is \
+                on chain; something is terribly wrong; will try and participate \
+                in the next round (if a player), but if we are misbehaving and \
+                other nodes are blocking us it might be time to delete this node \
+                and spin up a new identity",
+            );
+            share.take();
+        }
 
         // Because we use cached data we, need to check for DKG success here:
         // if the on-chain output is the input output (the output of the previous
