@@ -11906,6 +11906,7 @@ name = "tempo-precompiles-macros"
 version = "0.8.0"
 dependencies = [
  "alloy",
+ "alloy-sol-macro",
  "alloy-sol-macro-expander",
  "alloy-sol-types",
  "hex",

@@ -150,14 +150,10 @@ fn extract_array_len(expr: &syn::Expr) -> Option<usize> {
     }
 }
 
-// ============================================================================
-// SolType - Solidity Type Representation for Codegen
-// ============================================================================
-
 /// Represents a Solidity type for code generation purposes.
 ///
-/// Unlike `alloy::dyn_abi::DynSolType`, this is designed specifically for
-/// proc-macro codegen and with custom structs.
+/// NOTE: unlike `alloy::dyn_abi::DynSolType`, this type designed specifically for (compile-time)
+/// proc-macro codegen. Custom structs are supported, but functions are not.
 #[derive(Debug, Clone)]
 pub(crate) enum SolType {
     // Primitives
