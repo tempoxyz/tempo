@@ -34,7 +34,8 @@ use tempo_contracts::{
 use tempo_dkg_onchain_artifacts::PublicOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, PATH_USD_ADDRESS,
+    PATH_USD_ADDRESS,
+    account_keychain::AccountKeychain,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, StorageCtx},
@@ -261,6 +262,9 @@ impl GenesisArgs {
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
 
+        println!("Initializing account keychain");
+        initialize_account_keychain(&mut evm)?;
+
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
@@ -338,16 +342,6 @@ impl GenesisArgs {
             ARACHNID_CREATE2_FACTORY_ADDRESS,
             GenesisAccount {
                 code: Some(ARACHNID_CREATE2_FACTORY_BYTECODE),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        // Account Keychain precompile - uses 0xef as marker code
-        genesis_alloc.insert(
-            ACCOUNT_KEYCHAIN_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&[0xef])),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -632,6 +626,16 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         NonceManager::new().initialize()
+    })?;
+
+    Ok(())
+}
+
+/// Initializes the [`AccountKeychain`] contract.
+fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        AccountKeychain::new().initialize()
     })?;
 
     Ok(())
