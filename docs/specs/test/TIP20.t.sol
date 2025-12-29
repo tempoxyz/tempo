@@ -27,9 +27,7 @@ contract TIP20Test is BaseTest {
     event Burn(address indexed from, uint256 amount);
     event NextQuoteTokenSet(address indexed updater, TIP20 indexed nextQuoteToken);
     event QuoteTokenUpdate(address indexed updater, TIP20 indexed newQuoteToken);
-    event RewardScheduled(
-        address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds
-    );
+    event RewardDistributed(address indexed funder, uint256 amount);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
 
     function setUp() public override {
@@ -545,9 +543,9 @@ contract TIP20Test is BaseTest {
             }
         }
 
-        // 7. startReward - blocked sender
+        // 7. distributeReward - blocked sender
         vm.prank(alice);
-        try token.startReward(100e18, 0) {
+        try token.distributeReward(100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
@@ -1173,7 +1171,7 @@ contract TIP20Test is BaseTest {
         token.mint(admin, 1000e18);
 
         // Should revert with `NoOptedInSupply` if trying to start a timed reward
-        try token.startReward(100e18, 0) {
+        try token.distributeReward(100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.NoOptedInSupply.selector));
@@ -1195,15 +1193,14 @@ contract TIP20Test is BaseTest {
             vm.expectEmit(true, true, true, true);
             emit Transfer(admin, address(token), rewardAmount);
 
-            vm.expectEmit(true, true, true, true);
-            emit RewardScheduled(admin, 0, rewardAmount, 0);
+            vm.expectEmit(true, true, true);
+            emit RewardDistributed(admin, rewardAmount);
         }
 
-        uint64 id = token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
 
         vm.stopPrank();
 
-        assertEq(id, 0); // Immediate payout returns 0
         assertEq(token.balanceOf(address(token)), rewardAmount);
 
         // Claim the rewards
@@ -1250,7 +1247,7 @@ contract TIP20Test is BaseTest {
         // Admin injects 300e18 rewards (immediate)
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(300e18, 0);
+        token.distributeReward(300e18);
         vm.stopPrank();
 
         // Claim rewards for Alice and Bob
@@ -1277,7 +1274,7 @@ contract TIP20Test is BaseTest {
         // Admin injects rewards (immediate)
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Trigger reward accumulation by alice doing a balance-changing operation
@@ -1302,7 +1299,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(150e18, 0);
+        token.distributeReward(150e18);
         vm.stopPrank();
 
         // Alice transfers 200e18 to Bob
@@ -1334,7 +1331,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Mint more tokens to Alice - this accumulates pending rewards
@@ -1365,7 +1362,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Alice burns some tokens - this accumulates pending rewards
@@ -1393,9 +1390,9 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
 
-        token.startReward(50e18, 0);
-        token.startReward(30e18, 0);
-        token.startReward(20e18, 0);
+        token.distributeReward(50e18);
+        token.distributeReward(30e18);
+        token.distributeReward(20e18);
 
         vm.stopPrank();
 
@@ -1414,7 +1411,7 @@ contract TIP20Test is BaseTest {
         // Inject some rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Alice changes recipient to Bob
@@ -1444,7 +1441,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Alice transfers to Bob - rewards are accumulated
@@ -1472,7 +1469,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(50e18, 0);
+        token.distributeReward(50e18);
         vm.stopPrank();
 
         // Alice transfers to Bob - rewards accumulated to Bob
@@ -1501,7 +1498,7 @@ contract TIP20Test is BaseTest {
         token.pause();
 
         token.mint(admin, 1000e18);
-        try token.startReward(100e18, 0) {
+        try token.distributeReward(100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.ContractPaused.selector));
@@ -1518,7 +1515,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
 
         // Pause the contract
         token.grantRole(_PAUSE_ROLE, admin);
@@ -1601,7 +1598,7 @@ contract TIP20Test is BaseTest {
 
         // Inject rewards
         vm.prank(admin);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
 
         // Calculate expected rewards
         uint256 aliceExpectedReward = (rewardAmount * aliceBalance) / totalOptedIn;
@@ -1619,29 +1616,10 @@ contract TIP20Test is BaseTest {
         assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpectedReward, 1000);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                    SCHEDULED REWARDS DISABLED (POST-MODERATO)
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Scheduled/streaming rewards (duration > 0) are disabled post-Moderato.
-    /// The startReward function should revert with ScheduledRewardsDisabled when duration > 0.
-    function test_ScheduledRewards_RevertsWithNonZeroDuration() public {
-        vm.startPrank(admin);
-        token.mint(admin, 1000e18);
-
-        // Try to create a stream with non-zero duration - should revert
-        try token.startReward(100e18, 100) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ScheduledRewardsDisabled.selector));
-        }
-        vm.stopPrank();
-    }
-
-    /// @notice Zero amount should still revert with InvalidAmount before checking duration
+    /// @notice Zero amount should revert with InvalidAmount before checking duration
     function test_Reward_RevertsWithZeroAmount() public {
         vm.prank(admin);
-        try token.startReward(0, 100) {
+        try token.distributeReward(0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20.InvalidAmount.selector));
@@ -1658,7 +1636,7 @@ contract TIP20Test is BaseTest {
         // Admin injects rewards (immediate)
         vm.startPrank(admin);
         token.mint(admin, 1000e18);
-        token.startReward(100e18, 0);
+        token.distributeReward(100e18);
         vm.stopPrank();
 
         // Claim rewards - Alice receives 100e18 rewards
@@ -1926,7 +1904,7 @@ contract TIP20Test is BaseTest {
 
         // Distribute rewards
         vm.prank(admin);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
 
         uint256 aliceExpected = (rewardAmount * aliceBalance) / totalOptedIn;
         uint256 bobExpected = (rewardAmount * bobBalance) / totalOptedIn;
@@ -1940,23 +1918,6 @@ contract TIP20Test is BaseTest {
         // Allow for rounding errors
         assertApproxEqAbs(token.balanceOf(alice), aliceBalance + aliceExpected, 1000);
         assertApproxEqAbs(token.balanceOf(bob), bobBalance + bobExpected, 1000);
-    }
-
-    /// @notice Fuzz test for scheduled rewards - should always revert with ScheduledRewardsDisabled
-    function testFuzz_scheduledRewards_AlwaysReverts(uint256 rewardAmount, uint32 duration) public {
-        rewardAmount = bound(rewardAmount, 1e18, 100e18);
-        duration = uint32(bound(duration, 1, 365 days)); // duration > 0
-
-        vm.startPrank(admin);
-        token.mint(admin, rewardAmount);
-
-        // Should always revert with ScheduledRewardsDisabled for any non-zero duration
-        try token.startReward(rewardAmount, duration) {
-            revert CallShouldHaveReverted();
-        } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(ITIP20.ScheduledRewardsDisabled.selector));
-        }
-        vm.stopPrank();
     }
 
     function testFuzz_optedInSupplyConsistency(

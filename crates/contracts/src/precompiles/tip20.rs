@@ -60,8 +60,6 @@ crate::sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-        function feeRecipient() external view returns (address);
-        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -87,14 +85,6 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
-        struct RewardStream {
-            address funder;
-            uint64 startTime;
-            uint64 endTime;
-            uint256 ratePerSecondScaled;
-            uint256 amountTotal;
-        }
-
         struct UserRewardInfo {
             address rewardRecipient;
             uint256 rewardPerToken;
@@ -102,13 +92,11 @@ crate::sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint32 secs) external returns (uint64);
+        function distributeReward(uint256 amount) external;
         function setRewardRecipient(address recipient) external;
         function claimRewards() external returns (uint256);
-        function getStream(uint64 id) external view returns (RewardStream memory);
-        function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
-        function nextStreamId() external view returns (uint64);
+        function globalRewardPerToken() external view returns (uint256);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);
 
         // Events
@@ -123,9 +111,8 @@ crate::sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
-        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
+        event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
-        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -141,12 +128,8 @@ crate::sol! {
         error InvalidQuoteToken();
         error TransfersDisabled();
         error InvalidAmount();
-        error NotStreamFunder();
-        error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
-        error RewardsDisabled();
-        error ScheduledRewardsDisabled();
         error ProtectedAddress();
         error InvalidToken();
         error InvalidTransferPolicyId();
@@ -235,29 +218,9 @@ impl TIP20Error {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
     }
 
-    /// Error for when stream does not exist
-    pub const fn stream_inactive() -> Self {
-        Self::StreamInactive(ITIP20::StreamInactive {})
-    }
-
-    /// Error for when msg.sedner is not stream funder
-    pub const fn not_stream_funder() -> Self {
-        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
-    }
-
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for when rewards are disabled
-    pub const fn rewards_disabled() -> Self {
-        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
-    }
-
-    /// Error for when scheduled rewards are disabled post-moderato
-    pub const fn scheduled_rewards_disabled() -> Self {
-        Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
     }
 
     /// Error for operations on protected addresses (like burning `FeeManager` tokens)

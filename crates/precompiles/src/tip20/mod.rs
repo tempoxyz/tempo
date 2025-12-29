@@ -12,10 +12,7 @@ use crate::{
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20::{
-        rewards::{RewardStream, UserRewardInfo},
-        roles::DEFAULT_ADMIN_ROLE,
-    },
+    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -94,16 +91,8 @@ pub struct TIP20Token {
 
     // TIP20 Rewards
     global_reward_per_token: U256,
-    last_update_time: u64,
-    total_reward_per_second: U256,
     opted_in_supply: u128,
-    next_stream_id: u64,
-    streams: Mapping<u64, RewardStream>,
-    scheduled_rate_decrease: Mapping<u128, U256>,
     user_reward_info: Mapping<Address, UserRewardInfo>,
-
-    // Fee recipient
-    fee_recipient: Address,
 }
 
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
@@ -319,26 +308,6 @@ impl TIP20Token {
         }))
     }
 
-    /// Sets a new fee recipient
-    pub fn set_fee_recipient(&mut self, msg_sender: Address, new_recipient: Address) -> Result<()> {
-        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-        self.fee_recipient.write(new_recipient)?;
-
-        self.emit_event(TIP20Event::FeeRecipientUpdated(
-            ITIP20::FeeRecipientUpdated {
-                updater: msg_sender,
-                newRecipient: new_recipient,
-            },
-        ))?;
-
-        Ok(())
-    }
-
-    /// Gets the current fee recipient
-    pub fn get_fee_recipient(&self, _msg_sender: Address) -> Result<Address> {
-        self.fee_recipient.read()
-    }
-
     // Token operations
     /// Mints new tokens to specified address
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
@@ -391,9 +360,6 @@ impl TIP20Token {
         if new_supply > supply_cap {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
-
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
 
         self.handle_rewards_on_mint(to, amount)?;
 
@@ -655,7 +621,6 @@ impl TIP20Token {
         currency: &str,
         quote_token: Address,
         admin: Address,
-        fee_recipient: Address,
     ) -> Result<()> {
         trace!(%name, address=%self.address, "Initializing token");
 
@@ -682,7 +647,6 @@ impl TIP20Token {
         // Set default values
         self.supply_cap.write(U256::from(u128::MAX))?;
         self.transfer_policy_id.write(1)?;
-        self.fee_recipient.write(fee_recipient)?;
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
@@ -768,10 +732,6 @@ impl TIP20Token {
             );
         }
 
-        // Accrue before balance changes
-        let timestamp = self.storage.timestamp();
-        self.accrue(timestamp)?;
-
         self.handle_rewards_on_transfer(from, to, amount)?;
 
         // Adjust balances
@@ -804,10 +764,6 @@ impl TIP20Token {
         }
 
         self.check_spending_limit(from, amount)?;
-
-        // Accrue rewards up to current timestamp
-        let current_timestamp = self.storage.timestamp();
-        self.accrue(current_timestamp)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
@@ -860,7 +816,6 @@ impl TIP20Token {
             return Ok(());
         }
 
-        // Note: We assume that transferFeePreTx is always called first, so _accrue has already been called
         // Update rewards for the recipient and get their reward recipient
         let to_reward_recipient = self.update_rewards(to)?;
 
@@ -1757,31 +1712,6 @@ pub(crate) mod tests {
                 account: STABLECOIN_EXCHANGE_ADDRESS,
             })?;
             assert_eq!(balance, amount);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_set_fee_recipient() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
-
-        storage.set_spec(TempoHardfork::Adagio);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-
-            let fee_recipient = token.get_fee_recipient(admin)?;
-            assert_eq!(fee_recipient, Address::ZERO);
-
-            let expected_recipient = Address::random();
-            token.set_fee_recipient(admin, expected_recipient)?;
-
-            let fee_recipient = token.get_fee_recipient(admin)?;
-            assert_eq!(fee_recipient, expected_recipient);
-
-            let result = token.set_fee_recipient(Address::random(), expected_recipient);
-            assert!(result.is_err());
 
             Ok(())
         })
