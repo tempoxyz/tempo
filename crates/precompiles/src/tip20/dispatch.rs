@@ -159,11 +159,14 @@ impl Precompile for TIP20Token {
                     self.claim_rewards(msg_sender)
                 })
             }
-
+            ITIP20::globalRewardPerTokenCall::SELECTOR => {
+                view::<ITIP20::globalRewardPerTokenCall>(calldata, |_call| {
+                    self.get_global_reward_per_token()
+                })
+            }
             ITIP20::optedInSupplyCall::SELECTOR => {
                 view::<ITIP20::optedInSupplyCall>(calldata, |_call| self.get_opted_in_supply())
             }
-
             ITIP20::userRewardInfoCall::SELECTOR => {
                 view::<ITIP20::userRewardInfoCall>(calldata, |call| {
                     self.get_user_reward_info(call.account)

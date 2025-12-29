@@ -210,7 +210,7 @@ impl TIP20Token {
     }
 
     /// Gets the accumulated global reward per token.
-    fn get_global_reward_per_token(&self) -> Result<U256> {
+    pub fn get_global_reward_per_token(&self) -> Result<U256> {
         self.global_reward_per_token.read()
     }
 
