@@ -126,10 +126,7 @@ fn test_stablecoin_exchange_layout() {
 
 #[test]
 fn test_tip20_layout() {
-    use tempo_precompiles::tip20::{
-        rewards::{__packing_reward_stream::*, __packing_user_reward_info::*},
-        slots,
-    };
+    use tempo_precompiles::tip20::{rewards::__packing_user_reward_info::*, slots};
 
     let sol_path = testdata("tip20.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -157,30 +154,11 @@ fn test_tip20_layout() {
         salts,
         // TIP20 Rewards
         global_reward_per_token,
-        last_update_time,
-        total_reward_per_second,
         opted_in_supply,
-        next_stream_id,
-        streams,
-        scheduled_rate_decrease,
         user_reward_info
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
-    }
-
-    // Verify `RewardStream` struct members
-    let stream_base_slot = slots::STREAMS;
-    let rust_stream = struct_fields!(
-        stream_base_slot,
-        funder,
-        start_time,
-        end_time,
-        rate_per_second_scaled,
-        amount_total
-    );
-    if let Err(errors) = compare_struct_members(&solc_layout, "streams", &rust_stream) {
-        panic_layout_mismatch("RewardStream struct member layout", errors, &sol_path);
     }
 
     // Verify `UserRewardInfo` struct members
@@ -331,10 +309,7 @@ fn export_all_storage_constants() {
 
     // TIP20 Token
     {
-        use tempo_precompiles::tip20::{
-            rewards::{__packing_reward_stream::*, __packing_user_reward_info::*},
-            slots,
-        };
+        use tempo_precompiles::tip20::{rewards::__packing_user_reward_info::*, slots};
 
         let fields = layout_fields!(
             // RolesAuth
@@ -358,23 +333,8 @@ fn export_all_storage_constants() {
             salts,
             // TIP20 Rewards
             global_reward_per_token,
-            last_update_time,
-            total_reward_per_second,
             opted_in_supply,
-            next_stream_id,
-            streams,
-            scheduled_rate_decrease,
             user_reward_info
-        );
-
-        let stream_base_slot = slots::STREAMS;
-        let stream_struct = struct_fields!(
-            stream_base_slot,
-            funder,
-            start_time,
-            end_time,
-            rate_per_second_scaled,
-            amount_total
         );
 
         let user_info_base_slot = slots::USER_REWARD_INFO;
@@ -390,7 +350,6 @@ fn export_all_storage_constants() {
             json!({
                 "fields": fields.iter().map(field_to_json).collect::<Vec<_>>(),
                 "structs": {
-                    "streams": stream_struct.iter().map(field_to_json).collect::<Vec<_>>(),
                     "userRewardInfo": user_info_struct.iter().map(field_to_json).collect::<Vec<_>>()
                 }
             }),

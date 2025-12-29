@@ -24,14 +24,14 @@ use tempo_precompiles::{
 use tempo_primitives::TempoTxEnvelope;
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
-/// Only `transfer`, `transferWithMemo`, and `startReward` qualify.
+/// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
 fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
     input.first_chunk::<4>().is_some_and(|&s| {
         matches!(
             s,
             ITIP20::transferCall::SELECTOR
                 | ITIP20::transferWithMemoCall::SELECTOR
-                | ITIP20::startRewardCall::SELECTOR
+                | ITIP20::distributeRewardCall::SELECTOR
         )
     })
 }
@@ -155,7 +155,7 @@ pub trait TempoStateAccess<M = ()> {
                 if tx.is_aa() && fee_payer != tx.caller() {
                     false
                 }
-                // Otherwise, restricted to transfer/transferWithMemo/startReward,
+                // Otherwise, restricted to transfer/transferWithMemo/distributeReward,
                 else {
                     tx.calls().all(|(kind, input)| {
                         kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
@@ -589,7 +589,7 @@ mod tests {
         // Allowed selectors
         assert!(is_tip20_fee_inference_call(&transferCall::SELECTOR));
         assert!(is_tip20_fee_inference_call(&transferWithMemoCall::SELECTOR));
-        assert!(is_tip20_fee_inference_call(&startRewardCall::SELECTOR));
+        assert!(is_tip20_fee_inference_call(&distributeRewardCall::SELECTOR));
 
         // Disallowed selectors
         assert!(!is_tip20_fee_inference_call(&grantRoleCall::SELECTOR));

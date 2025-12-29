@@ -136,12 +136,11 @@ pub struct TIP20Setup {
     action: Action,
     quote_token: Option<Address>,
     admin: Option<Address>,
-    fee_recipient: Option<Address>,
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
     reward_opt_ins: Vec<Address>,
-    reward_streams: Vec<(U256, u32)>,
+    distribute_rewards: Vec<U256>,
     clear_events: bool,
 }
 
@@ -158,7 +157,7 @@ impl TIP20Setup {
 
     /// Create a new token via factory. Ensures that `PathUSD` and `TIP20Factory` are initialized.
     ///
-    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`, `fee_recipient: Address::ZERO`
+    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`
     pub fn create(name: &'static str, symbol: &'static str, admin: Address) -> Self {
         Self {
             action: Action::CreateToken {
@@ -205,12 +204,6 @@ impl TIP20Setup {
         self
     }
 
-    /// Set the fee recipient address.
-    pub fn fee_recipient(mut self, recipient: Address) -> Self {
-        self.fee_recipient = Some(recipient);
-        self
-    }
-
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
         self.with_role(account, *tip20::ISSUER_ROLE)
@@ -242,9 +235,9 @@ impl TIP20Setup {
         self
     }
 
-    /// Start a reward stream (requires tokens minted to admin first).
-    pub fn with_reward_stream(mut self, amount: U256, duration_secs: u32) -> Self {
-        self.reward_streams.push((amount, duration_secs));
+    /// Distribute rewards (requires tokens minted to admin first).
+    pub fn with_reward(mut self, amount: U256) -> Self {
+        self.distribute_rewards.push(amount);
         self
     }
 
@@ -318,14 +311,6 @@ impl TIP20Setup {
             }
         };
 
-        // Apply fee recipient
-        if let Some(fee_recipient) = self.fee_recipient {
-            let admin = self.admin.unwrap_or_else(|| {
-                get_tip20_admin(token.address()).expect("unable to get token admin")
-            });
-            token.set_fee_recipient(admin, fee_recipient)?;
-        }
-
         // Apply roles
         for (account, role) in self.roles {
             token.grant_role_internal(account, role)?;
@@ -349,12 +334,12 @@ impl TIP20Setup {
             token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
         }
 
-        // Start reward streams
-        for (amount, secs) in self.reward_streams {
+        // Distribute rewards
+        for amount in self.distribute_rewards {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.start_reward(admin, ITIP20::startRewardCall { amount, secs })?;
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
         }
 
         if self.clear_events {
