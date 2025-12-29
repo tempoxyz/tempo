@@ -991,7 +991,7 @@ mod tests {
         let tx_hash = B256::ZERO;
         let client_data = b"{\"type\":\"webauthn.get\",\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}";
 
-        // Create valid authenticatorData without UV not UP flag
+        // Create valid authenticatorData without UV nor UP flag
         let mut auth_data = vec![0u8; 37];
         auth_data[32] = 0x00;
         let mut webauthn_data = auth_data;
