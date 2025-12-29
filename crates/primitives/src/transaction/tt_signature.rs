@@ -45,6 +45,12 @@ pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
 
+/// WebAuthn authenticator data flags (byte 32)
+/// ref: https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data
+const FLAG_UP: u8 = 0x01; // User Presence (bit 0)
+const FLAG_AT: u8 = 0x40; // Attested credential data (bit 6)
+const FLAG_ED: u8 = 0x80; // Extension data present (bit 7)
+
 /// P256 signature with pre-hash flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -737,9 +743,9 @@ fn verify_webauthn_data_internal(
         return Err("WebAuthn data too short");
     }
 
-    // Check flags (byte 32): UP (bit 0), AT (bit 6), ED (bit 7)
+    // Check flags (byte 32)
     let flags = webauthn_data[32];
-    let (up_flag, at_flag, ed_flag) = (flags & 0x01, flags & 0x40, flags & 0x80);
+    let (up_flag, at_flag, ed_flag) = (flags & FLAG_UP, flags & FLAG_AT, flags & FLAG_ED);
 
     // UP flag MUST be set
     if up_flag == 0 {
