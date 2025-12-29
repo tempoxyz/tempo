@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

@@ -1657,7 +1657,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
@@ -1832,7 +1832,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_transfer_invalid_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
         let bob = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
@@ -1869,7 +1869,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

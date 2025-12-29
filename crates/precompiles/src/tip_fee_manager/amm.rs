@@ -1149,7 +1149,7 @@ mod tests {
 
     #[test]
     fn test_add_liquidity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn test_calculate_burn_amounts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
 
         StorageCtx::enter(&mut storage, || {
             let mut amm = TipFeeManager::new();
@@ -1207,7 +1207,7 @@ mod tests {
     fn test_reserve_liquidity_checks_total_pending() -> eyre::Result<()> {
         let reserve_validator_token = 627;
 
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

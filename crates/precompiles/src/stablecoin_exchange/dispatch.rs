@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
 

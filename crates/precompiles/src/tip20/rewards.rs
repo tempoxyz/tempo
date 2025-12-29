@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
         let alice = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_distribute_reward() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
         let admin = Address::random();
         let alice = Address::random();
         let amount = U256::from(1000);
