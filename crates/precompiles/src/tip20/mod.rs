@@ -860,7 +860,6 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
@@ -968,7 +967,7 @@ pub(crate) mod tests {
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
 
-            // TransferWithMemo event should have Address::ZERO as from for post-Moderato
+            // TransferWithMemo event should have Address::ZERO as from for mint
             token.assert_emitted_events(vec![
                 TIP20Event::Transfer(ITIP20::Transfer {
                     from: Address::ZERO,
@@ -1657,7 +1656,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
@@ -1812,7 +1811,7 @@ pub(crate) mod tests {
             let mut registry = TIP403Registry::new();
             registry.initialize()?;
 
-            // Try to change to a non-existent policy ID (should fail with Allegretto hardfork)
+            // Try to change to a non-existent policy ID (should fail)
             let invalid_policy_id = 999u64;
             let result = token.change_transfer_policy_id(
                 admin,
@@ -1832,7 +1831,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_transfer_invalid_recipient() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let bob = Address::random();
         let amount = U256::random() % U256::from(u128::MAX);
@@ -1869,7 +1868,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_change_transfer_policy_id() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {

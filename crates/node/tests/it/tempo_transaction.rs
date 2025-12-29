@@ -3336,7 +3336,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         }],
         300_000, // Higher gas for key authorization verification
     );
-    // Use PathUSD (DEFAULT_FEE_TOKEN) as fee token since we're post-AllegroModerato
+    // Use PathUSD (DEFAULT_FEE_TOKEN) as fee token
     // and our spending limit is set for PathUSD
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     tx.key_authorization = Some(key_authorization);

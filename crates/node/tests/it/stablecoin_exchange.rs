@@ -627,7 +627,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     // Mint and approve tokens
@@ -719,7 +719,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     // Mint and approve tokens

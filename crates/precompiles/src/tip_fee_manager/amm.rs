@@ -499,7 +499,6 @@ pub fn sqrt(x: U256) -> U256 {
 
 #[cfg(test)]
 mod tests {
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -759,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_add_liquidity() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -789,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_calculate_burn_amounts() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
 
         StorageCtx::enter(&mut storage, || {
             let mut amm = TipFeeManager::new();
