@@ -27,6 +27,11 @@
       "permanent": true
     },
     {
+      "source": "/guide/node/usage",
+      "destination": "/guide/node/rpc",
+      "permanent": true
+    },
+    {
       "source": "/errors/tx/MissingFeeToken",
       "destination": "/guide/payments/pay-fees-in-any-stablecoin#add-pay-with-fee-token-logic",
       "permanent": false
