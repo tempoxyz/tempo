@@ -644,9 +644,9 @@ impl Read for State {
             seed: ReadExt::read(buf)?,
             output: Read::read_cfg(buf, cfg)?,
             share: ReadExt::read(buf)?,
-            dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=usize::MAX), (), ()))?,
-            players: Read::read_cfg(buf, &(RangeCfg::from(1..=usize::MAX), (), ()))?,
-            syncers: Read::read_cfg(buf, &(RangeCfg::from(1..=usize::MAX), (), ()))?,
+            dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
+            players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
+            syncers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
         })
     }
 }
