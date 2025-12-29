@@ -265,7 +265,7 @@ where
             .await;
 
         // TODO: emit an event with round info
-        let round = state::Round::from_previous_state(&state, &self.config.namespace);
+        let round = state::Round::from_state(&state, &self.config.namespace);
 
         let mut dealer_state = storage
             .create_dealer_for_round(

@@ -943,7 +943,7 @@ pub(super) struct Round {
 }
 
 impl Round {
-    pub(super) fn from_previous_state(state: &State, namespace: &[u8]) -> Self {
+    pub(super) fn from_state(state: &State, namespace: &[u8]) -> Self {
         Self {
             epoch: state.epoch,
             dealers: state.dealers.keys().clone(),
