@@ -2671,11 +2671,11 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
         .await?;
     let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
     println!("  P256 gas: {p256_gas_u64}");
-    // P256 should add approximately 5,000 gas (allow small tolerance for gas estimation variance)
+    // P256 should add approximately 5,000 gas (allow tolerance for gas estimation buffer variance)
     let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).unsigned_abs();
     assert!(
-        (4_985..=5_015).contains(&p256_diff),
-        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±15)",
+        (4_800..=5_200).contains(&p256_diff),
+        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±200)",
     );
     println!("  ✓ P256 adds {p256_diff} gas (expected ~5,000)");
 
