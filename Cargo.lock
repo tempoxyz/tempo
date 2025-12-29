@@ -11962,6 +11962,7 @@ dependencies = [
  "futures",
  "metrics",
  "parking_lot",
+ "rayon",
  "reth-chainspec",
  "reth-eth-wire-types",
  "reth-ethereum-primitives",
