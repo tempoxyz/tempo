@@ -238,14 +238,12 @@ fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::To
     let mut generated = proc_macro2::TokenStream::new();
     let mut check_fn_calls = Vec::new();
 
-    // Generate collision detection check functions
+    // Generate collision detection check functions for all fields
     for (idx, allocated) in allocated_fields.iter().enumerate() {
-        if let Some((check_fn_name, check_fn)) =
-            packing::gen_collision_check_fn(idx, allocated, allocated_fields)
-        {
-            generated.extend(check_fn);
-            check_fn_calls.push(check_fn_name);
-        }
+        let (check_fn_name, check_fn) =
+            packing::gen_collision_check_fn(idx, allocated, allocated_fields);
+        generated.extend(check_fn);
+        check_fn_calls.push(check_fn_name);
     }
 
     // Generate a module initializer that calls all check functions
