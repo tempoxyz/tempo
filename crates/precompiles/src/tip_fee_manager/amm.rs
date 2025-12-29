@@ -966,13 +966,8 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let initial = uint!(100000_U256) * uint!(10_U256).pow(U256::from(6));
-            let pool_id = setup_pool_with_liquidity(
-                &mut amm,
-                user_token,
-                validator_token,
-                initial,
-                initial,
-            )?;
+            let pool_id =
+                setup_pool_with_liquidity(&mut amm, user_token, validator_token, initial, initial)?;
 
             let swap1 = uint!(1000_U256) * uint!(10_U256).pow(U256::from(6));
             let swap2 = uint!(2000_U256) * uint!(10_U256).pow(U256::from(6));
@@ -992,7 +987,10 @@ mod tests {
 
             let pool = amm.pools.at(pool_id).read()?;
             assert_eq!(U256::from(pool.reserve_user_token), initial + total_in);
-            assert_eq!(U256::from(pool.reserve_validator_token), initial - total_out);
+            assert_eq!(
+                U256::from(pool.reserve_validator_token),
+                initial - total_out
+            );
 
             Ok(())
         })
