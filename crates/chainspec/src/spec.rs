@@ -301,6 +301,9 @@ mod tests {
         // Should always return Genesis
         assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::Genesis);
         assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::Genesis);
-        assert_eq!(chainspec.tempo_hardfork_at(u64::MAX), TempoHardfork::Genesis);
+        assert_eq!(
+            chainspec.tempo_hardfork_at(u64::MAX),
+            TempoHardfork::Genesis
+        );
     }
 }
