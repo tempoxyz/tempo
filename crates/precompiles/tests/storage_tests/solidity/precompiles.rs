@@ -45,9 +45,7 @@ fn test_tip403_registry_layout() {
 
 #[test]
 fn test_fee_manager_layout() {
-    use tempo_precompiles::tip_fee_manager::{
-        __packing_token_pair::*, amm::__packing_pool::*, slots,
-    };
+    use tempo_precompiles::tip_fee_manager::{amm::__packing_pool::*, slots};
 
     let sol_path = testdata("fee_manager.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -57,16 +55,10 @@ fn test_fee_manager_layout() {
         validator_tokens,
         user_tokens,
         collected_fees,
-        tokens_with_fees,
-        token_in_fees_array,
         pools,
         pending_fee_swap_in,
         total_supply,
-        liquidity_balances,
-        pools_with_fees,
-        pool_in_fees_array,
-        validators_with_fees,
-        validator_in_fees_array
+        liquidity_balances
     );
     if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
         panic_layout_mismatch("Layout", errors, &sol_path);
@@ -77,13 +69,6 @@ fn test_fee_manager_layout() {
     let rust_pool = struct_fields!(pool_base_slot, reserve_user_token, reserve_validator_token);
     if let Err(errors) = compare_struct_members(&solc_layout, "pools", &rust_pool) {
         panic_layout_mismatch("Pool struct member layout", errors, &sol_path);
-    }
-
-    // Verify `TokenPair` struct members
-    let token_pair_base_slot = slots::POOLS_WITH_FEES;
-    let rust_token_pair = struct_fields!(token_pair_base_slot, user_token, validator_token);
-    if let Err(errors) = compare_struct_members(&solc_layout, "poolsWithFees", &rust_token_pair) {
-        panic_layout_mismatch("TokenPair struct member layout", errors, &sol_path);
     }
 }
 
@@ -278,8 +263,6 @@ fn export_all_storage_constants() {
             validator_tokens,
             user_tokens,
             collected_fees,
-            tokens_with_fees,
-            token_in_fees_array,
             pools,
             pending_fee_swap_in,
             total_supply,
