@@ -475,7 +475,8 @@ mod tests {
     mod bitmap_tests {
         use super::*;
         use crate::{
-            stablecoin_exchange::StablecoinExchange, storage::hashmap::HashMapStorageProvider,
+            stablecoin_exchange::StablecoinExchange,
+            storage::{StorageCtx, hashmap::HashMapStorageProvider},
         };
         const BOOK_KEY: B256 = B256::ZERO;
 

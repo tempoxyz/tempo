@@ -73,14 +73,13 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::SolValue,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {

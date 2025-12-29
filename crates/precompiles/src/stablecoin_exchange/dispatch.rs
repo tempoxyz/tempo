@@ -189,7 +189,6 @@ mod tests {
         primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -541,7 +540,7 @@ mod tests {
 
     #[test]
     fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Genesis);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
 

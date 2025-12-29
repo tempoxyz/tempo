@@ -69,7 +69,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .await?;
 
     // Create pool by minting liquidity with both tokens (balanced pool)
-    // This requires pre-Moderato spec since mint is disabled post-Moderato
+    // Use mint_pairwise instead of deprecated mint function
     fee_amm
         .mint(
             payment_token_addr,
