@@ -357,14 +357,13 @@ mod tests {
         let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
         let admin = Address::random();
         let alice = Address::random();
-        let amount = (U256::random() % U256::from(u128::MAX)).min(U256::from(10));
+        let amount = U256::from(1000);
         let reward_amount = amount / U256::from(10);
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(alice, amount)
-                // Mint reward tokens to admin
                 .with_mint(admin, reward_amount)
                 .apply()?;
 
@@ -378,6 +377,37 @@ mod tests {
                     amount: reward_amount,
                 },
             )?;
+
+            // Verify global_reward_per_token increased correctly
+            let expected_rpt = reward_amount * ACC_PRECISION / amount;
+            assert_eq!(token.get_global_reward_per_token()?, expected_rpt);
+
+            // Verify contract balance increased (rewards transferred from admin to contract)
+            assert_eq!(token.get_balance(token.address)?, reward_amount);
+            assert_eq!(token.get_balance(admin)?, U256::ZERO);
+
+            // Update rewards to accrue alice's share
+            token.update_rewards(alice)?;
+            let info = token.get_user_reward_info(alice)?;
+            assert_eq!(info.reward_balance, reward_amount);
+
+            // Alice claims the full reward
+            let claimed = token.claim_rewards(alice)?;
+            assert_eq!(claimed, reward_amount);
+            assert_eq!(token.get_balance(alice)?, amount + reward_amount);
+            assert_eq!(token.get_balance(token.address)?, U256::ZERO);
+
+            // Distributing zero amount should fail
+            token.mint(
+                admin,
+                ITIP20::mintCall {
+                    to: admin,
+                    amount: U256::from(1),
+                },
+            )?;
+            let result =
+                token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO });
+            assert!(result.is_err());
 
             Ok(())
         })
