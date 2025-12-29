@@ -11,7 +11,6 @@ interface ITIP20Factory {
 
     /// @notice Emitted when a new TIP-20 token is created
     /// @param token The address of the newly created token contract
-    /// @param tokenId The unique identifier assigned to the token
     /// @param name The name of the created token
     /// @param symbol The symbol of the created token
     /// @param currency The currency identifier of the created token
@@ -19,7 +18,6 @@ interface ITIP20Factory {
     /// @param admin The address assigned as the admin of the new token
     event TokenCreated(
         address indexed token,
-        uint256 indexed tokenId,
         string name,
         string symbol,
         string currency,
