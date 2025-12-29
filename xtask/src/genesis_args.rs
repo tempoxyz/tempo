@@ -5,7 +5,9 @@ use alloy::{
 };
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::ed25519::PublicKey;
+use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use rayon::prelude::*;
@@ -103,14 +105,9 @@ pub(crate) struct GenesisArgs {
         long,
         value_name = "<ip>:<port>",
         value_delimiter = ',',
-        required_if_eq("allegretto_time", "0")
+        required_unless_present_all(["no_dkg_in_genesis"]),
     )]
     validators: Vec<SocketAddr>,
-
-    /// Will not write the validators into the validator config contract of
-    /// the genesis block.
-    #[arg(long)]
-    no_validators_in_genesis: bool,
 
     /// Will not write the initial DKG outcome into the extra_data field of
     /// the genesis header.
@@ -132,7 +129,7 @@ pub(crate) struct ConsensusConfig {
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
         PublicOutcome {
-            epoch: 0,
+            epoch: Epoch::zero(),
             participants: self.peers.public_keys().clone(),
             public: self.public_polynomial.clone().into_inner(),
         }
@@ -236,7 +233,8 @@ impl GenesisArgs {
             "generating consensus config for validators: {:?}",
             self.validators
         );
-        let consensus_config = generate_consensus_config(&self.validators, self.seed);
+        let consensus_config =
+            generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
         println!("Initializing validator config");
         initialize_validator_config(
@@ -245,7 +243,7 @@ impl GenesisArgs {
             &consensus_config,
             // Skip admin
             &addresses[1..],
-            self.no_validators_in_genesis,
+            self.no_dkg_in_genesis,
         )?;
 
         println!("Initializing fee manager");
@@ -393,14 +391,6 @@ impl GenesisArgs {
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
-            chain_config
-                .extra_fields
-                .insert_value("validators".to_string(), consensus_config.peers.clone())?;
-            chain_config.extra_fields.insert_value(
-                "publicPolynomial".to_string(),
-                consensus_config.public_polynomial.clone(),
-            )?;
-
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
@@ -646,7 +636,7 @@ fn initialize_validator_config(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
     consensus_config: &Option<ConsensusConfig>,
     addresses: &[Address],
-    no_validators_in_genesis: bool,
+    no_dkg_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
@@ -655,8 +645,8 @@ fn initialize_validator_config(
             .initialize(admin)
             .wrap_err("failed to initialize validator config contract")?;
 
-        if no_validators_in_genesis {
-            println!("no-validators-genesis passed; not writing validators to genesis block");
+        if no_dkg_in_genesis {
+            println!("no-dkg-in-genesis passed; not writing validators to genesis block");
             return Ok(());
         }
 
@@ -709,13 +699,22 @@ fn initialize_validator_config(
 fn generate_consensus_config(
     validators: &[SocketAddr],
     seed: Option<u64>,
+    no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
     use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
     use rand::SeedableRng as _;
 
-    if validators.is_empty() {
-        println!("no validator socket addresses provided; not generating consensus config");
-        return None;
+    match (validators.is_empty(), no_dkg_in_genesis) {
+        (_, true) => {
+            println!(
+                "no-dkg-in-genesis passed; not generating any consensus config because I can't write it to the genesis block"
+            );
+            return None;
+        }
+        (true, false) => {
+            panic!("no validators provided and no-dkg-in-genesis not set");
+        }
+        _ => {}
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
@@ -731,11 +730,13 @@ fn generate_consensus_config(
     >(&mut rng, None, validators.len() as u32, threshold);
 
     signers.sort_by_key(|signer| signer.public_key());
-    let peers = validators
-        .iter()
-        .zip(signers.iter())
-        .map(|(addr, private_key)| (private_key.public_key(), *addr))
-        .collect::<commonware_utils::set::OrderedAssociated<_, _>>();
+    let peers = ordered::Map::try_from_iter(
+        validators
+            .iter()
+            .zip(signers.iter())
+            .map(|(addr, private_key)| (private_key.public_key(), *addr)),
+    )
+    .expect("must not contain duplicate keys");
 
     let mut validators = vec![];
     for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {

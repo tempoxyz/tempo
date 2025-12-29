@@ -17,7 +17,7 @@ use commonware_p2p::{
     utils::mux::{MuxHandle, SubReceiver, SubSender},
 };
 use commonware_runtime::{Clock, Metrics as RuntimeMetrics, Storage};
-use commonware_utils::{max_faults, set::Ordered, union};
+use commonware_utils::{NZU32, max_faults, ordered, union};
 use eyre::{WrapErr as _, bail, ensure};
 use futures::FutureExt as _;
 use indexmap::IndexSet;
@@ -30,8 +30,7 @@ use tempo_dkg_onchain_artifacts::{Ack, IntermediateOutcome, PublicOutcome};
 use crate::{
     consensus::{Digest, block::Block},
     dkg::{
-        HardforkRegime, ceremony::tree::TreeOfDealings,
-        manager::read_write_transaction::DkgReadWriteTransaction,
+        ceremony::tree::TreeOfDealings, manager::read_write_transaction::DkgReadWriteTransaction,
     },
 };
 
@@ -71,14 +70,11 @@ pub(super) struct Config {
     /// The epoch length set at genesis.
     pub(super) epoch_length: u64,
 
-    /// The hardfork regime this ceremony runs under.
-    pub(super) hardfork_regime: HardforkRegime,
-
     /// The dealers in the round.
-    pub(super) dealers: Ordered<PublicKey>,
+    pub(super) dealers: ordered::Set<PublicKey>,
 
     /// The players in the round.
-    pub(super) players: Ordered<PublicKey>,
+    pub(super) players: ordered::Set<PublicKey>,
 }
 
 pub(super) struct Ceremony<TReceiver, TSender>
@@ -121,7 +117,7 @@ where
     TSender: Sender<PublicKey = PublicKey>,
 {
     /// Initialize a DKG ceremony.
-    #[instrument(skip_all, fields(for_epoch = config.epoch), err)]
+    #[instrument(skip_all, fields(for_epoch = %config.epoch), err)]
     pub(super) async fn init<TContext>(
         context: &mut TContext,
         mux: &mut MuxHandle<TSender, TReceiver>,
@@ -141,7 +137,7 @@ where
         metrics.players.set(config.players.len() as i64);
 
         let (sender, receiver) = mux
-            .register(config.epoch)
+            .register(config.epoch.get())
             .await
             .wrap_err("mux subchannel already running for epoch; this is a problem")?;
 
@@ -262,7 +258,6 @@ where
             config.public.clone(),
             config.dealers.clone(),
             config.players.clone(),
-            config.hardfork_regime,
             config.namespace.clone(),
         );
         Ok(Self {
@@ -280,7 +275,7 @@ where
 
     #[instrument(
         skip_all,
-        fields(epoch = self.config.epoch, block.height = block.height()),
+        fields(epoch = %self.config.epoch, block.height = block.height()),
     )]
     pub(super) async fn add_finalized_block<TContext>(
         &mut self,
@@ -309,7 +304,7 @@ where
 
     #[instrument(
         skip_all,
-        fields(epoch = self.config.epoch, block.height = block.height()),
+        fields(epoch = %self.config.epoch, block.height = block.height()),
     )]
     pub(super) fn add_notarized_block(&mut self, block: Block) {
         self.tree_of_dealings.add_notarized(block);
@@ -325,7 +320,7 @@ where
     ///
     /// If we are both a dealer and a player, then we acknowledge our shares
     /// immediately without going over the p2p network.
-    #[instrument(skip_all, fields(epoch = self.config.epoch), err)]
+    #[instrument(skip_all, fields(epoch = %self.config.epoch), err)]
     pub(super) async fn distribute_shares<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
@@ -444,7 +439,7 @@ where
     /// to the sender.
     ///
     /// If we receive an ack and are a dealer: track the ack.
-    #[instrument(skip_all, fields(epoch = self.epoch()), err)]
+    #[instrument(skip_all, fields(epoch = %self.epoch()), err)]
     pub(super) async fn process_messages<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
@@ -456,12 +451,12 @@ where
             let (peer, mut msg) = msg.wrap_err("receiver p2p channel was closed")?;
 
             debug!(%peer, "received message from");
-            let msg = Message::decode_cfg(&mut msg, &(self.config.players.len() as u32))
+            let msg = Message::decode_cfg(&mut msg, &NZU32!(self.config.players.len() as u32))
                 .wrap_err("unable to decode message")?;
             if msg.epoch != self.epoch() {
                 warn!(
-                    ceremony.epoch = self.epoch(),
-                    msg.epoch = msg.epoch,
+                    ceremony.epoch = %self.epoch(),
+                    %msg.epoch,
                     "ignoring message for different round"
                 );
                 continue;
@@ -615,11 +610,10 @@ where
     /// Constructs and stores the intermediate ceremony outcome.
     ///
     /// If the node is not a dealer, then this is a no-op.
-    #[instrument(skip_all, fields(epoch = self.epoch()), err)]
+    #[instrument(skip_all, fields(epoch = %self.epoch()), err)]
     pub(super) async fn construct_intermediate_outcome<TContext>(
         &mut self,
         tx: &mut DkgReadWriteTransaction<TContext>,
-        hardfork_regime: HardforkRegime,
     ) -> eyre::Result<()>
     where
         TContext: Clock + RuntimeMetrics + Storage,
@@ -644,42 +638,27 @@ where
             "too many reveals; skipping deal outcome construction",
         );
 
-        let dealing_outcome = match hardfork_regime {
-            HardforkRegime::PostAllegretto => Some(IntermediateOutcome::new(
-                self.config
-                    .players
-                    .len()
-                    .try_into()
-                    .expect("we should never have more than u16::MAX validators/players"),
-                &self.config.me,
-                &union(&self.config.namespace, OUTCOME_NAMESPACE),
-                self.config.epoch,
-                dealer_me.commitment.clone(),
-                dealer_me.acks.values().cloned().collect(),
-                reveals,
-            )),
-            HardforkRegime::PreAllegretto => Some(IntermediateOutcome::new_pre_allegretto(
-                self.config
-                    .players
-                    .len()
-                    .try_into()
-                    .expect("we should never have more than u16::MAX validators/players"),
-                &self.config.me,
-                &union(&self.config.namespace, OUTCOME_NAMESPACE),
-                self.config.epoch,
-                dealer_me.commitment.clone(),
-                dealer_me.acks.values().cloned().collect(),
-                reveals,
-            )),
-        };
+        let dealing_outcome = IntermediateOutcome::new(
+            self.config
+                .players
+                .len()
+                .try_into()
+                .expect("we should never have more than u16::MAX validators/players"),
+            &self.config.me,
+            &union(&self.config.namespace, OUTCOME_NAMESPACE),
+            self.config.epoch,
+            dealer_me.commitment.clone(),
+            dealer_me.acks.values().cloned().collect(),
+            reveals,
+        );
 
         tx.update_ceremony(self.config.epoch, |info| {
-            info.dealing_outcome = dealing_outcome.clone();
+            info.dealing_outcome.replace(dealing_outcome.clone());
         })
         .await
         .expect("must persist local outcome");
 
-        dealer_me.outcome = dealing_outcome;
+        dealer_me.outcome.replace(dealing_outcome);
 
         Ok(())
     }
@@ -691,14 +670,14 @@ where
     ///
     /// If the DKG ceremony did not contain all blocks leading up to the target,
     /// the missing ... will be in error position.
-    #[instrument(skip_all, fields(epoch = self.epoch()))]
+    #[instrument(skip_all, fields(epoch = %self.epoch()))]
     pub(super) fn finalize(
         &self,
         digest: Digest,
     ) -> Result<Result<PrivateOutcome, PrivateOutcome>, HasHoles> {
         let (result, disqualified) = self.tree_of_dealings.finalize_up_to_digest(digest)?;
 
-        let new_epoch = self.epoch() + 1;
+        let new_epoch = self.epoch().next();
 
         let arbiter::Output {
             public,
@@ -782,7 +761,7 @@ where
         dealer_me.outcome.as_ref()
     }
 
-    pub(super) fn dealers(&self) -> &Ordered<PublicKey> {
+    pub(super) fn dealers(&self) -> &ordered::Set<PublicKey> {
         &self.config.dealers
     }
 
@@ -822,7 +801,7 @@ pub(super) struct PrivateOutcome {
 
     /// The participants of the new epoch. If successful, this will the players
     /// in the ceremony. If not successful, these are the dealers.
-    pub(super) participants: Ordered<PublicKey>,
+    pub(super) participants: ordered::Set<PublicKey>,
 
     /// The role the node will have in the next epoch.
     pub(super) role: Role,

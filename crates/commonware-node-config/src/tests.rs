@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use commonware_cryptography::{
     PrivateKeyExt as _, Signer as _, bls12381::primitives::variant::MinSig, ed25519::PrivateKey,
 };
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::{TryFromIterator as _, ordered::Map};
 use rand::SeedableRng as _;
 
 use crate::{Peers, PublicPolynomial, SigningKey, SigningShare};
@@ -24,7 +24,7 @@ fn peers_snapshot() {
 
 #[test]
 fn peers_roundtrip() {
-    let peers: Peers = OrderedAssociated::from_iter([
+    let peers: Peers = Map::try_from_iter([
         (
             PrivateKey::from_seed(0).public_key(),
             "127.0.0.1:8000".parse::<SocketAddr>().unwrap(),
@@ -42,6 +42,7 @@ fn peers_roundtrip() {
             "172.3.2.4:42".parse::<SocketAddr>().unwrap(),
         ),
     ])
+    .unwrap()
     .into();
     assert_eq!(
         peers,

@@ -12,17 +12,14 @@ use commonware_cryptography::{
     },
     ed25519::PublicKey,
 };
-use commonware_utils::{set::Ordered, union};
+use commonware_utils::{ordered, union};
 use eyre::Report;
 use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 use tracing::{info, instrument, warn};
 
 use crate::{
     consensus::Digest,
-    dkg::{
-        HardforkRegime,
-        ceremony::{ACK_NAMESPACE, OUTCOME_NAMESPACE, WEIGHT_RECOVERY_CONCURRENCY},
-    },
+    dkg::ceremony::{ACK_NAMESPACE, OUTCOME_NAMESPACE, WEIGHT_RECOVERY_CONCURRENCY},
     epoch::{self, first_block_in_epoch},
 };
 
@@ -45,10 +42,9 @@ pub(in crate::dkg) struct TreeOfDealings {
     epoch_length: u64,
 
     input_polynomial: Public<MinSig>,
-    dealers: Ordered<PublicKey>,
-    players: Ordered<PublicKey>,
+    dealers: ordered::Set<PublicKey>,
+    players: ordered::Set<PublicKey>,
 
-    hardfork_regime: HardforkRegime,
     namespace: Vec<u8>,
 }
 
@@ -57,9 +53,8 @@ impl TreeOfDealings {
         epoch: Epoch,
         epoch_length: u64,
         input_polynomial: Public<MinSig>,
-        dealers: Ordered<PublicKey>,
-        players: Ordered<PublicKey>,
-        hardfork_regime: HardforkRegime,
+        dealers: ordered::Set<PublicKey>,
+        players: ordered::Set<PublicKey>,
         namespace: Vec<u8>,
     ) -> Self {
         Self {
@@ -73,7 +68,6 @@ impl TreeOfDealings {
             input_polynomial,
             dealers,
             players,
-            hardfork_regime,
             namespace,
         }
     }
@@ -258,7 +252,9 @@ impl TreeOfDealings {
                 }
                 Err(reason) => {
                     warn!(reason = %Report::new(reason), "disqualifiying dealer");
-                    arbiter.disqualify(dealing.dealer().clone());
+                    if let Err(reason) = arbiter.disqualify(dealing.dealer().clone()) {
+                        warn!(reason = %Report::new(reason), "failed disqualifiying dealer");
+                    }
                 }
                 Ok(ack_indices) => {
                     if let Err(reason) = arbiter.commitment(
@@ -285,15 +281,7 @@ impl TreeOfDealings {
             })?;
         }
 
-        // Verify the dealer's signature before considering processing the outcome.
-        if !match self.hardfork_regime {
-            HardforkRegime::PostAllegretto => {
-                dealing.verify(&union(&self.namespace, OUTCOME_NAMESPACE))
-            }
-            HardforkRegime::PreAllegretto => {
-                dealing.verify_pre_allegretto(&union(&self.namespace, OUTCOME_NAMESPACE))
-            }
-        } {
+        if !dealing.verify(&union(&self.namespace, OUTCOME_NAMESPACE)) {
             Err(VerificationErrorKind::BadDealingSignature)?;
         }
 

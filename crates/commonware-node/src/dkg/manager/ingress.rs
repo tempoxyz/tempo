@@ -64,14 +64,7 @@ impl Mailbox {
     /// Verifies the `dealing` based on the current status of the DKG actor.
     ///
     /// This method is intended to be called by the application when verifying
-    /// the dealing placed in a proposal. Because pre- and post-allegretto
-    /// dealings require different verification, this verification relies on two
-    /// assumptions:
-    ///
-    /// 1. only propoosals from the currently running and latest epoch will have
-    ///    to be verified except for the last height.
-    /// 2. DKG dealings are only written into a block up to and excluding the
-    ///    last height of an epoch.
+    /// the dealing found in a proposal.
     pub(crate) async fn verify_intermediate_dealings(
         &self,
         dealing: IntermediateOutcome,

@@ -1,6 +1,6 @@
 //! Information about a ceremony that is persisted to disk.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, num::NonZeroU32};
 
 use bytes::Buf;
 use commonware_codec::{EncodeSize, RangeCfg, Read, Write, varint::UInt};
@@ -8,7 +8,7 @@ use commonware_cryptography::{
     bls12381::primitives::{group, poly::Public, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::quorum;
+use commonware_utils::{NZU32, quorum};
 
 use super::IntermediateOutcome;
 
@@ -57,12 +57,18 @@ impl Read for State {
         _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let num_players = UInt::read_cfg(buf, &())?.into();
-        let dealing = Option::<Dealing>::read_cfg(buf, &(quorum(num_players as u32) as usize))?;
+        if num_players == 0 {
+            return Err(commonware_codec::Error::Invalid("num_players", "is zero"));
+        }
+
+        let quorum = NZU32!(quorum(num_players as u32));
+
+        let dealing = Option::<Dealing>::read_cfg(buf, &quorum)?;
         let received_shares = Vec::<(PublicKey, Public<MinSig>, group::Share)>::read_cfg(
             buf,
             &(
                 RangeCfg::from(0..usize::MAX),
-                ((), quorum(num_players as u32) as usize, ()),
+                ((), RangeCfg::new(quorum..=quorum), ()),
             ),
         )?;
         let dealing_outcome = Option::<IntermediateOutcome>::read_cfg(buf, &())?;
@@ -96,10 +102,10 @@ impl EncodeSize for Dealing {
 }
 
 impl Read for Dealing {
-    type Cfg = usize;
+    type Cfg = NonZeroU32;
 
     fn read_cfg(buf: &mut impl Buf, cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
-        let commitment = Public::<MinSig>::read_cfg(buf, cfg)?;
+        let commitment = Public::<MinSig>::read_cfg(buf, &RangeCfg::from(*cfg..=*cfg))?;
         let shares = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
         let acks = BTreeMap::read_cfg(buf, &(RangeCfg::from(0..usize::MAX), ((), ())))?;
         Ok(Self {
@@ -126,33 +132,34 @@ mod tests {
 
     use super::{Dealing, State};
     use commonware_codec::{DecodeExt as _, Encode as _, Read as _};
+    use commonware_consensus::types::Epoch;
     use commonware_cryptography::{
         PrivateKeyExt as _, Signer,
         bls12381::{dkg, primitives::variant::MinSig},
         ed25519::{PrivateKey, PublicKey},
     };
-    use commonware_utils::{quorum, set::Ordered, union};
+    use commonware_utils::{NZU32, TryFromIterator, ordered, quorum, union};
     use rand::{SeedableRng as _, rngs::StdRng};
     use tempo_dkg_onchain_artifacts::IntermediateOutcome;
 
-    fn four_private_keys() -> Ordered<PrivateKey> {
-        vec![
+    fn four_private_keys() -> ordered::Set<PrivateKey> {
+        ordered::Set::try_from_iter(vec![
             PrivateKey::from_seed(0),
             PrivateKey::from_seed(1),
             PrivateKey::from_seed(2),
             PrivateKey::from_seed(3),
-        ]
-        .into()
+        ])
+        .unwrap()
     }
 
-    fn four_public_keys() -> Ordered<PublicKey> {
-        vec![
+    fn four_public_keys() -> ordered::Set<PublicKey> {
+        ordered::Set::try_from_iter(vec![
             PrivateKey::from_seed(0).public_key(),
             PrivateKey::from_seed(1).public_key(),
             PrivateKey::from_seed(2).public_key(),
             PrivateKey::from_seed(3).public_key(),
-        ]
-        .into()
+        ])
+        .unwrap()
     }
 
     fn dealing(dealer_index: usize) -> Dealing {
@@ -170,7 +177,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[0].clone(),
                 four_public_keys()[0].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -181,7 +188,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[1].clone(),
                 four_public_keys()[1].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -192,7 +199,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[2].clone(),
                 four_public_keys()[2].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -203,7 +210,7 @@ mod tests {
                 &union(b"test", ACK_NAMESPACE),
                 four_private_keys()[3].clone(),
                 four_public_keys()[3].clone(),
-                42,
+                Epoch::new(42),
                 &four_public_keys()[dealer_index],
                 &commitment,
             ),
@@ -222,7 +229,7 @@ mod tests {
             4,
             &four_private_keys()[0],
             &union(b"test", OUTCOME_NAMESPACE),
-            42,
+            Epoch::new(42),
             dealing.commitment,
             dealing.acks.values().cloned().collect(),
             vec![dealing.shares.pop_last().unwrap().1],
@@ -234,7 +241,7 @@ mod tests {
         let bytes = dealing(0).encode();
 
         assert_eq!(
-            Dealing::read_cfg(&mut bytes.as_ref(), &(quorum(4) as usize)).unwrap(),
+            Dealing::read_cfg(&mut bytes.as_ref(), &NZU32!(quorum(4))).unwrap(),
             dealing(0),
         )
     }
