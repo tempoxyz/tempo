@@ -1750,6 +1750,11 @@
       "balance": "0x0",
       "code": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
     },
+    "0xaaaaaaaa00000000000000000000000000000000": {
+      "nonce": "0x0",
+      "balance": "0x0",
+      "code": "0xef"
+    },
     "0xba5ed099633d3b313e4d5f7bdc1305d3c28ba5ed": {
       "nonce": "0x1",
       "balance": "0x0",
@@ -1889,11 +1894,6 @@
         "0xfb51215e9e4472944d69317da0c509c5c1072d1ec9d98ec67d7e4239b5c7e155": "0x00000000000000000000000020c0000000000000000000000000000000000001",
         "0xfe633b6163d7bf175a6233c4f7d969256cc56da043f669e78fb737e991f68999": "0x00000000000000000000000020c0000000000000000000000000000000000000"
       }
-    },
-    "0xAAAAAAAA00000000000000000000000000000000": {
-      "nonce": "0x1",
-      "balance": "0x0",
-      "code": "0xef"
     }
   },
   "baseFeePerGas": "0x2540be400"
