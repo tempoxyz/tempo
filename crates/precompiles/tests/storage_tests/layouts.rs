@@ -302,3 +302,22 @@ fn test_no_collision_when_using_manual_slot_with_packing() {
 
     assert_eq!(slots::D, U256::from(100));
 }
+
+#[test]
+#[should_panic(
+    expected = "Storage slot collision: field `c` (slot 1, offset 0) overlaps with field `d` (slot 1, offset 0)"
+)]
+fn test_collision_when_using_base_slot() {
+    #[contract]
+    pub struct Layout {
+        a: u128, // assigned to slot 0 with 0 offset
+        b: u128, // assigned to slot 0 with 16 offset
+        c: u128, // assigned to slot 1 with 0 offset
+        #[base_slot(1)]
+        d: u128, // manually assigned to slot 1
+        e: u128, // assigned to slot 1 with 16 offset.
+    }
+
+    let (_, address) = setup_storage();
+    let _layout = Layout::__new(address);
+}
