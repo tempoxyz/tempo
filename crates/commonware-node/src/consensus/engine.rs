@@ -5,14 +5,18 @@
 use std::{
     net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal};
+use commonware_consensus::{
+    Reporters, marshal,
+    simplex::signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
+    types::ViewDelta,
+};
 use commonware_cryptography::{
     Signer as _,
-    bls12381::primitives::group::Share,
+    bls12381::primitives::{group::Share, variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Blocker, Receiver, Sender};
@@ -20,7 +24,8 @@ use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
     spawn_cell,
 };
-use commonware_utils::set::OrderedAssociated;
+use commonware_storage::archive::immutable;
+use commonware_utils::ordered::Map;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -53,7 +58,7 @@ const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("v
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
 const BUFFER_POOL_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4_096).expect("value is not zero"); // 4KB
 const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
-const MAX_REPAIR: NonZeroU64 = NonZeroU64::new(20).expect("value is not zero");
+const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
 
 /// Settings for [`Engine`].
 ///
@@ -102,10 +107,8 @@ where
         + Storage
         + Metrics
         + Network,
-    TPeerManager: commonware_p2p::Manager<
-            PublicKey = PublicKey,
-            Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        > + Sync,
+    TPeerManager:
+        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>> + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -162,19 +165,33 @@ where
             priority_responses: false,
         };
         let scheme_provider = SchemeProvider::new();
-        let (marshal, marshal_mailbox) = marshal::Actor::init(
-            self.context.with_label("marshal"),
-            marshal::Config {
-                scheme_provider: scheme_provider.clone(),
-                epoch_length,
-                partition_prefix: self.partition_prefix.clone(),
-                mailbox_size: self.mailbox_size,
-                view_retention_timeout: self
-                    .views_to_track
-                    .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
-                namespace: crate::config::NAMESPACE.to_vec(),
-                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
-                immutable_items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+
+        const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
+        let start = Instant::now();
+        let finalizations_by_height = immutable::Archive::init(
+            self.context.with_label("finalizations_by_height"),
+            immutable::Config {
+                metadata_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-metadata",
+                    self.partition_prefix,
+                ),
+
+                freezer_table_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-table",
+                    self.partition_prefix,
+                ),
+
+                freezer_journal_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-journal",
+                    self.partition_prefix,
+                ),
+
+                ordinal_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-ordinal",
+                    self.partition_prefix,
+                ),
+
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
                 freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                 freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
@@ -183,10 +200,77 @@ where
 
                 freezer_journal_buffer_pool: buffer_pool.clone(),
 
+                write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
+                codec_config: Scheme::<PublicKey, MinSig>::certificate_codec_config_unbounded(),
+            },
+        )
+        .await
+        .wrap_err("failed to initialize finalizations by height archive")?;
+        info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
+
+        const FINALIZED_BLOCKS: &str = "finalized_blocks";
+        let start = Instant::now();
+        let finalized_blocks = immutable::Archive::init(
+            self.context.with_label("finalized_blocks"),
+            immutable::Config {
+                metadata_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-metadata",
+                    self.partition_prefix,
+                ),
+
+                freezer_table_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-freezer-table",
+                    self.partition_prefix,
+                ),
+
+                freezer_journal_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-freezer-journal",
+                    self.partition_prefix,
+                ),
+
+                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", self.partition_prefix,),
+
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
+                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
+                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
+
+                freezer_journal_buffer_pool: buffer_pool.clone(),
+
+                write_buffer: WRITE_BUFFER,
+                replay_buffer: REPLAY_BUFFER,
+                codec_config: (),
+            },
+        )
+        .await
+        .wrap_err("failed to initialize finalizations by height archive")?;
+        info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
+
+        let (marshal, marshal_mailbox) = marshal::Actor::init(
+            self.context.with_label("marshal"),
+            finalizations_by_height,
+            finalized_blocks,
+            marshal::Config {
+                scheme_provider: scheme_provider.clone(),
+                epoch_length,
+                partition_prefix: self.partition_prefix.clone(),
+                mailbox_size: self.mailbox_size,
+                view_retention_timeout: ViewDelta::new(
+                    self.views_to_track
+                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                ),
+                namespace: crate::config::NAMESPACE.to_vec(),
+                prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
+
+                buffer_pool: buffer_pool.clone(),
+
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
-                block_codec_config: (),
                 max_repair: MAX_REPAIR,
+                block_codec_config: (),
                 _marker: std::marker::PhantomData,
             },
         )
@@ -233,8 +317,8 @@ where
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
-                views_to_track: self.views_to_track,
-                views_until_leader_skip: self.views_until_leader_skip,
+                views_to_track: ViewDelta::new(self.views_to_track),
+                views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
             },
             self.context.with_label("epoch_manager"),
         );
@@ -292,10 +376,8 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<
-            PublicKey = PublicKey,
-            Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        >,
+    TPeerManager:
+        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>>,
 {
     context: ContextCell<TContext>,
 
@@ -335,10 +417,8 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager: commonware_p2p::Manager<
-            PublicKey = PublicKey,
-            Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        > + Sync,
+    TPeerManager:
+        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>> + Sync,
 {
     #[expect(
         clippy::too_many_arguments,

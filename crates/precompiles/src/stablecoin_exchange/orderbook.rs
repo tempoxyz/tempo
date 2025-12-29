@@ -27,6 +27,15 @@ pub enum RoundingDirection {
     Up,
 }
 
+/// Checked ceiling division for u128.
+/// Returns None if divisor is zero.
+fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
+    if divisor == 0 {
+        return None;
+    }
+    Some(numerator.div_ceil(divisor))
+}
+
 /// Convert base token amount to quote token amount at a given tick.
 ///
 /// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
@@ -44,7 +53,7 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
 
     match rounding {
         RoundingDirection::Down => numerator.checked_div(PRICE_SCALE as u128),
-        RoundingDirection::Up => Some(numerator.div_ceil(PRICE_SCALE as u128)),
+        RoundingDirection::Up => checked_div_ceil(numerator, PRICE_SCALE as u128),
     }
 }
 
@@ -65,7 +74,7 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
 
     match rounding {
         RoundingDirection::Down => numerator.checked_div(price),
-        RoundingDirection::Up => Some(numerator.div_ceil(price)),
+        RoundingDirection::Up => checked_div_ceil(numerator, price),
     }
 }
 

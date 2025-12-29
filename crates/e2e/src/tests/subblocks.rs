@@ -40,7 +40,6 @@ fn subblocks_are_included() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .allegretto_in_seconds(0)
             .epoch_length(10);
 
         // Setup and start all nodes.
@@ -150,7 +149,6 @@ fn subblocks_are_included_with_failing_txs() {
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
-            .allegretto_in_seconds(0)
             .epoch_length(10);
 
         // Setup and start all nodes.

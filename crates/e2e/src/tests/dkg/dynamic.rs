@@ -7,66 +7,32 @@ use commonware_runtime::{
     deterministic::{Config, Runner},
 };
 use futures::future::join_all;
-use tracing::info;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, execution_runtime::validator, setup_validators};
 
 #[test_traced]
-fn after_hardfork_validator_is_added_to_a_set_of_three() {
+fn validator_is_added_to_a_set_of_three() {
     AssertValidatorIsAdded {
         how_many_initial: 3,
         epoch_length: 30,
-        allegretto_at_genesis: false,
     }
     .run();
 }
 
 #[test_traced]
-fn after_hardfork_validator_is_removed_from_set_of_two() {
+fn validator_is_removed_from_set_of_two() {
     AssertValidatorIsRemoved {
         how_many_initial: 2,
         epoch_length: 20,
-        allegretto_at_genesis: false,
     }
     .run();
 }
 
 #[test_traced]
-fn after_hardfork_validator_is_removed_from_set_of_four() {
+fn validator_is_removed_from_set_of_four() {
     AssertValidatorIsRemoved {
         how_many_initial: 4,
         epoch_length: 40,
-        allegretto_at_genesis: false,
-    }
-    .run();
-}
-
-#[test_traced]
-fn with_allegretto_at_genesis_validator_is_added_to_a_set_of_three() {
-    AssertValidatorIsAdded {
-        how_many_initial: 3,
-        epoch_length: 30,
-        allegretto_at_genesis: true,
-    }
-    .run();
-}
-
-#[test_traced]
-fn with_allegretto_at_genesis_validator_is_removed_from_set_of_two() {
-    AssertValidatorIsRemoved {
-        how_many_initial: 2,
-        epoch_length: 20,
-        allegretto_at_genesis: true,
-    }
-    .run();
-}
-
-#[test_traced]
-fn with_allegretto_at_genesis_validator_is_removed_from_set_of_four() {
-    AssertValidatorIsRemoved {
-        how_many_initial: 4,
-        epoch_length: 40,
-        allegretto_at_genesis: true,
     }
     .run();
 }
@@ -74,7 +40,6 @@ fn with_allegretto_at_genesis_validator_is_removed_from_set_of_four() {
 struct AssertValidatorIsAdded {
     how_many_initial: u32,
     epoch_length: u64,
-    allegretto_at_genesis: bool,
 }
 
 impl AssertValidatorIsAdded {
@@ -82,7 +47,6 @@ impl AssertValidatorIsAdded {
         let Self {
             how_many_initial,
             epoch_length,
-            allegretto_at_genesis,
         } = self;
         let _ = tempo_eyre::install();
 
@@ -90,12 +54,6 @@ impl AssertValidatorIsAdded {
             .how_many_signers(how_many_initial)
             .how_many_verifiers(1)
             .epoch_length(epoch_length);
-
-        let setup = if allegretto_at_genesis {
-            setup.allegretto_time(0)
-        } else {
-            setup.allegretto_in_seconds(10).no_validators_in_genesis()
-        };
 
         let cfg = Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -130,55 +88,6 @@ impl AssertValidatorIsAdded {
                 .unwrap()
                 .parse::<Url>()
                 .unwrap();
-
-            if !allegretto_at_genesis {
-                info!(
-                    "running in pre-allegretto state: adding validators to the \
-                    smart contract and waiting to make the hardfork"
-                );
-                for (i, node) in validators.iter().enumerate() {
-                    let receipt = execution_runtime
-                        .add_validator(
-                            http_url.clone(),
-                            validator(i as u32),
-                            node.public_key().clone(),
-                            SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
-                        )
-                        .await
-                        .unwrap();
-
-                    tracing::debug!(
-                        block.number = receipt.block_number,
-                        "addValidator call returned receipt"
-                    );
-                }
-
-                // After the validators have been added to the smart contract, wait
-                // until the node makes the allegretto hardfork transition.
-                loop {
-                    context.sleep(Duration::from_secs(1)).await;
-                    let metrics = context.encode();
-
-                    let mut transitioned = 0;
-
-                    for line in metrics.lines() {
-                        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                            continue;
-                        }
-                        let mut parts = line.split_whitespace();
-                        let metric = parts.next().unwrap();
-                        let value = parts.next().unwrap();
-
-                        if metric.ends_with("_dkg_manager_post_allegretto_ceremonies_total") {
-                            let value = value.parse::<u64>().unwrap();
-                            transitioned += (value > 0) as u32;
-                        }
-                    }
-                    if transitioned == how_many_initial {
-                        break;
-                    }
-                }
-            }
 
             // Now add and start the new validator.
             let receipt = execution_runtime
@@ -282,7 +191,6 @@ impl AssertValidatorIsAdded {
 struct AssertValidatorIsRemoved {
     how_many_initial: u32,
     epoch_length: u64,
-    allegretto_at_genesis: bool,
 }
 
 impl AssertValidatorIsRemoved {
@@ -290,19 +198,12 @@ impl AssertValidatorIsRemoved {
         let Self {
             how_many_initial,
             epoch_length,
-            allegretto_at_genesis,
         } = self;
         let _ = tempo_eyre::install();
 
         let setup = Setup::new()
             .how_many_signers(how_many_initial)
             .epoch_length(epoch_length);
-
-        let setup = if allegretto_at_genesis {
-            setup.allegretto_time(0)
-        } else {
-            setup.allegretto_in_seconds(10).no_validators_in_genesis()
-        };
 
         let cfg = Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
@@ -322,55 +223,6 @@ impl AssertValidatorIsRemoved {
                 .unwrap()
                 .parse::<Url>()
                 .unwrap();
-
-            if !allegretto_at_genesis {
-                info!(
-                    "running in pre-allegretto state: adding validators to the \
-                    smart contract and waiting to make the hardfork"
-                );
-                for (i, node) in validators.iter().enumerate() {
-                    let receipt = execution_runtime
-                        .add_validator(
-                            http_url.clone(),
-                            validator(i as u32),
-                            node.public_key().clone(),
-                            SocketAddr::from(([127, 0, 0, 1], (i + 1) as u16)),
-                        )
-                        .await
-                        .unwrap();
-
-                    tracing::debug!(
-                        block.number = receipt.block_number,
-                        "addValidator call returned receipt"
-                    );
-                }
-
-                // After the validators have been added to the smart contract, wait
-                // until the node makes the allegretto hardfork transition.
-                loop {
-                    context.sleep(Duration::from_secs(1)).await;
-                    let metrics = context.encode();
-
-                    let mut transitioned = 0;
-
-                    for line in metrics.lines() {
-                        if !line.starts_with(CONSENSUS_NODE_PREFIX) {
-                            continue;
-                        }
-                        let mut parts = line.split_whitespace();
-                        let metric = parts.next().unwrap();
-                        let value = parts.next().unwrap();
-
-                        if metric.ends_with("_dkg_manager_post_allegretto_ceremonies_total") {
-                            let value = value.parse::<u64>().unwrap();
-                            transitioned += (value > 0) as u32;
-                        }
-                    }
-                    if transitioned == how_many_initial {
-                        break;
-                    }
-                }
-            }
 
             let receipt = execution_runtime
                 // XXX: The addValidator call above adding the initial set
