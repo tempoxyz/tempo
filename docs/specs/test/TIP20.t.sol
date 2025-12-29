@@ -1193,7 +1193,7 @@ contract TIP20Test is BaseTest {
             vm.expectEmit(true, true, true, true);
             emit Transfer(admin, address(token), rewardAmount);
 
-            vm.expectEmit(true, true, true);
+            vm.expectEmit(true, true, true, false);
             emit RewardDistributed(admin, rewardAmount);
         }
 

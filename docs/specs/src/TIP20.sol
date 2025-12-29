@@ -444,11 +444,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     /// @notice Distributes rewards to opted-in token holders.
-    function distributeReward(uint256 amount)
-        external
-        virtual
-        notPaused
-    {
+    function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
         if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
             revert PolicyForbids();
