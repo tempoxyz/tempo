@@ -109,6 +109,15 @@ impl GenerateDevnet {
                 SocketAddr::new(validator.addr.ip(), execution_p2p_port),
             ));
 
+            let signing_key_str = validator
+                .signing_key
+                .to_encrypted_string()
+                .wrap_err("failed to encode signing key")?;
+            let signing_share_str = validator
+                .signing_share
+                .to_encrypted_string()
+                .wrap_err("failed to encode signing share")?;
+
             all_configs.push((
                 validator.clone(),
                 ConfigOutput {
@@ -117,8 +126,8 @@ impl GenerateDevnet {
                     devmode,
                     node_image_tag: image_tag.clone(),
 
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+                    consensus_on_disk_signing_key: signing_key_str,
+                    consensus_on_disk_signing_share: signing_share_str,
 
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
