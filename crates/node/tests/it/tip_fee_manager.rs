@@ -10,7 +10,7 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Signature, U256};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
@@ -340,12 +340,18 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         nonce: provider.get_transaction_count(user.address()).await?,
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
-        gas_limit: 21000,
+        gas_limit: 100_000,
         calls: vec![Call {
             to: Address::ZERO.into(),
             value: U256::ZERO,
             input: alloy_primitives::Bytes::new(),
         }],
+        // Placeholder so `skip_fee_token = true` when computing signature_hash
+        fee_payer_signature: Some(Signature::new(
+            Default::default(),
+            Default::default(),
+            false,
+        )),
         ..Default::default()
     };
 
