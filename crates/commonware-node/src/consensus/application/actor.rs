@@ -531,7 +531,7 @@ impl Inner<Init> {
             );
             outcome.encode().freeze().into()
         } else {
-            // Regular block: try to include intermediate dealing
+            // Regular block: try to include DKG dealer log.
             match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
                 Err(error) => {
                     warn!(

@@ -491,8 +491,8 @@ where
     /// + first half: if we are a dealer, distribute the generated DKG shares
     ///   to the players and collect their acks. If we are a player, receive
     ///   DKG shares and respond with an ack.
-    /// + exact middle of an epoch: if we are a dealer, generate the dealing
-    ///   (the intermediate outcome) of the ceremony.
+    /// + exact middle of an epoch: if we are a dealer, generate the dealer log
+    ///   of the DKG ceremony.
     /// + second half of the epoch: read dealer logs from blocks.
     #[instrument(
         parent = &cause,

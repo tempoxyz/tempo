@@ -750,34 +750,6 @@ fn generate_consensus_config(
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-    // let mut signers = (0..validators.len())
-    //     .map(|_| PrivateKey::from_rng(&mut rng))
-    //     .collect::<Vec<_>>();
-
-    // // generate consensus key
-    // let threshold = commonware_utils::quorum(validators.len() as u32);
-    // let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
-    //     _,
-    //     commonware_cryptography::bls12381::primitives::variant::MinSig,
-    // >(&mut rng, None, validators.len() as u32, threshold);
-
-    // signers.sort_by_key(|signer| signer.public_key());
-    // let peers = ordered::Map::try_from_iter(
-    //     validators
-    //         .iter()
-    //         .zip(signers.iter())
-    //         .map(|(addr, private_key)| (private_key.public_key(), *addr)),
-    // )
-    // .expect("must not contain duplicate keys");
-
-    // let mut validators = vec![];
-    // for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
-    //     validators.push(Validator {
-    //         addr: *addr,
-    //         signing_key: SigningKey::from(signer),
-    //         signing_share: SigningShare::from(share),
-    //     });
-    // }
 
     // Some anonymous dealer
     let dealer_key = PrivateKey::from_rng(&mut rng);

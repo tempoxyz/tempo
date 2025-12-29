@@ -25,7 +25,7 @@ impl Mailbox {
         Self { inner }
     }
 
-    /// Returns the intermediate dealing of this node's ceremony.
+    /// Returns the dealer log of the node to include in a proposal.
     ///
     /// Returns `None` if this node was not a dealer, or if the request is
     /// for a different epoch than the ceremony that's currently running.

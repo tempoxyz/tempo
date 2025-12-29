@@ -22,6 +22,8 @@ use tracing::{Level, info, instrument, warn};
 /// Reads the validator config from the boundary block of `epoch`.
 ///
 /// If `epoch` is not set, reads the genesis block.
+///
+/// Note that this returns all validators, active and inactive.
 #[instrument(
     skip_all,
     fields(

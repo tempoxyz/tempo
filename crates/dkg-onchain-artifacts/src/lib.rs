@@ -17,10 +17,22 @@ use commonware_utils::{NZU32, ordered};
 const MAX_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
 /// The outcome of a DKG ceremony as it is written to the chain.
+///
+/// This DKG outcome can encode up to [`u16::MAX`] validators. Note that in
+/// practice this far exceeds the maximum size permitted header size and so
+/// is likely out of reach.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnchainDkgOutcome {
+    /// The epoch for which this outcome is used.
     pub epoch: Epoch,
+
+    /// The output of the DKG ceremony. Contains the shared public polynomial,
+    /// and the players in the ceremony (which will be the dealers for the
+    /// epoch encoded with this output).
     pub output: Output<MinSig, PublicKey>,
+
+    /// The next players. These will be the players in the DKG ceremony running
+    /// during `epoch`.
     pub next_players: ordered::Set<PublicKey>,
 }
 
