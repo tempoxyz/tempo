@@ -46,11 +46,11 @@ pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 const MIN_AUTH_DATA_LEN: usize = 37;
 
 /// WebAuthn authenticator data flags (byte 32)
-/// ref: https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data
-const FLAG_UP: u8 = 0x01; // User Presence (bit 0)
-const FLAG_UV: u8 = 0x04; // User Verified (bit 2)
-const FLAG_AT: u8 = 0x40; // Attested credential data (bit 6)
-const FLAG_ED: u8 = 0x80; // Extension data present (bit 7)
+/// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
+const UP: u8 = 0x01; // User Presence (bit 0)
+const UV: u8 = 0x04; // User Verified (bit 2)
+const AT: u8 = 0x40; // Attested credential data (bit 6)
+const ED: u8 = 0x80; // Extension data present (bit 7)
 
 /// P256 signature with pre-hash flag
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -746,12 +746,7 @@ fn verify_webauthn_data_internal(
 
     // Check flags (byte 32)
     let flags = webauthn_data[32];
-    let (up_flag, uv_flag, at_flag, ed_flag) = (
-        flags & FLAG_UP,
-        flags & FLAG_UV,
-        flags & FLAG_AT,
-        flags & FLAG_ED,
-    );
+    let (up_flag, uv_flag, at_flag, ed_flag) = (flags & UP, flags & UV, flags & AT, flags & ED);
 
     // UP or UV flag MUST be set (UV implies user presence per WebAuthn spec)
     if up_flag == 0 && uv_flag == 0 {
