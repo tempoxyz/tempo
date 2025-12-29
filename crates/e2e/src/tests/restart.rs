@@ -41,6 +41,7 @@ fn run_restart_test(
         final_height,
     }: RestartSetup,
 ) -> String {
+    let _ = tempo_eyre::install();
     let cfg = deterministic::Config::default().with_seed(node_setup.seed);
     let executor = Runner::from(cfg);
 
@@ -168,7 +169,7 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
 /// This is the simplest possible restart case: the network stops because we
 /// dropped below quorum. The node should be able to pick up after.
 #[test_traced]
-fn network_resumes_after_restart() {
+fn network_resumes_after_restart_with_el_p2p() {
     let _ = tempo_eyre::install();
 
     for seed in 0..3 {
@@ -176,10 +177,61 @@ fn network_resumes_after_restart() {
             .how_many_signers(3) // quorum for 3 validators is 3.
             .seed(seed)
             .epoch_length(100)
-            // FIXME(https://github.com/tempoxyz/tempo/issues/1309): this should
-            // be also tested without connecting the execution layer nodes to
-            // force a CL -> EL backfill.
             .connect_execution_layer_nodes(true);
+
+        let shutdown_height = 5;
+        let final_height = 10;
+
+        let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let executor = Runner::from(cfg);
+
+        executor.start(|mut context| async move {
+            let (mut validators, _execution_runtime) =
+                setup_validators(context.clone(), setup.clone()).await;
+
+            join_all(validators.iter_mut().map(|v| v.start())).await;
+
+            debug!(
+                height = shutdown_height,
+                "waiting for network to reach target height before stopping a validator",
+            );
+            wait_for_height(&context, setup.how_many_signers, shutdown_height).await;
+
+            let idx = context.gen_range(0..validators.len());
+            validators[idx].stop().await;
+            debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
+
+            // wait a bit to let the network settle; some finalizations come in later
+            context.sleep(Duration::from_secs(1)).await;
+            ensure_no_progress(&context, 5).await;
+
+            validators[idx].start().await;
+            debug!(
+                public_key = %validators[idx].public_key(),
+                "restarted validator",
+            );
+
+            debug!(
+                height = final_height,
+                "waiting for reconstituted validators to reach target height to reach test success",
+            );
+            wait_for_height(&context, validators.len() as u32, final_height).await;
+        })
+    }
+}
+
+/// This is the simplest possible restart case: the network stops because we
+/// dropped below quorum. The node should be able to pick up after.
+#[test_traced]
+fn network_resumes_after_restart_without_el_p2p() {
+    let _ = tempo_eyre::install();
+
+    for seed in 0..3 {
+        let setup = Setup::new()
+            .how_many_signers(3) // quorum for 3 validators is 3.
+            .seed(seed)
+            .epoch_length(100)
+            .connect_execution_layer_nodes(false);
 
         let shutdown_height = 5;
         let final_height = 10;
@@ -251,8 +303,6 @@ fn validator_catches_up_across_epochs() {
     let _state = run_restart_test(setup);
 }
 
-// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
-#[ignore]
 #[test_traced]
 fn single_node_recovers_after_finalizing_ceremony() {
     AssertNodeRecoversAfterFinalizingBlock {
@@ -293,8 +343,6 @@ fn node_recovers_before_finalizing_middle_of_epoch_four_validators() {
     .run()
 }
 
-// FIXME: needs https://github.com/tempoxyz/tempo/issues/1309
-#[ignore]
 #[test_traced]
 fn single_node_recovers_after_finalizing_boundary() {
     AssertNodeRecoversAfterFinalizingBlock {
@@ -362,6 +410,8 @@ struct AssertNodeRecoversAfterFinalizingBlock {
 
 impl AssertNodeRecoversAfterFinalizingBlock {
     fn run(self) {
+        let _ = tempo_eyre::install();
+
         let Self {
             n_validators,
             epoch_length,
