@@ -56,7 +56,6 @@ fn test_fee_manager_layout() {
         user_tokens,
         collected_fees,
         pools,
-        pending_fee_swap_in,
         total_supply,
         liquidity_balances
     );
@@ -264,7 +263,6 @@ fn export_all_storage_constants() {
             user_tokens,
             collected_fees,
             pools,
-            pending_fee_swap_in,
             total_supply,
             liquidity_balances
         );

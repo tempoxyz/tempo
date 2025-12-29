@@ -23,7 +23,6 @@ pub struct TipFeeManager {
     user_tokens: Mapping<Address, Address>,
     collected_fees: Mapping<Address, U256>,
     pools: Mapping<B256, Pool>,
-    pending_fee_swap_in: Mapping<B256, u128>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
 }
@@ -568,10 +567,6 @@ mod tests {
                 U256::ZERO,
                 "Different tokens: no fees accumulated in pre_tx (swap happens in post_tx)"
             );
-
-            // Pending fee swap should NOT be recorded (liquidity is checked, not reserved)
-            let pending = fee_manager.get_pending_fee_swap_in(pool_id)?;
-            assert_eq!(pending, 0, "No liquidity reservation in pre_tx");
 
             // Pool reserves should NOT be updated yet
             let pool = fee_manager.pools.at(pool_id).read()?;

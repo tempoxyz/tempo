@@ -25,9 +25,6 @@ contract FeeManager {
     /// Mapping of pool key to pool data (AMM reserves)
     mapping(bytes32 => Pool) public pools;
 
-    /// Mapping of pool key to pending swap amounts
-    mapping(bytes32 => uint128) public pendingFeeSwapIn;
-
     /// Mapping of pool key to total LP token supply
     mapping(bytes32 => uint256) public totalSupply;
 
