@@ -1180,9 +1180,8 @@ fn calculate_aa_batch_intrinsic_gas<'a>(
     // 2. Signature verification gas
     gas.initial_gas += tempo_signature_verification_gas(signature);
 
-    // 3. Per-call overhead: cold account access
-    // if the `to` address has not appeared in the call batch before.
-    gas.initial_gas += COLD_ACCOUNT_ACCESS_COST * calls.len() as u64;
+    // 3. Per-call overhead: cold account access for additional calls beyond the first.
+    gas.initial_gas += COLD_ACCOUNT_ACCESS_COST * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
     gas.initial_gas += authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
@@ -1558,11 +1557,10 @@ mod tests {
             0,     // no authorization list
         );
 
-        // AA should be: normal tx + per-call overhead (COLD_ACCOUNT_ACCESS_COST)
-        let expected_initial = normal_tx_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        // AA with secp256k1 + single call should match normal tx exactly
         assert_eq!(
-            aa_gas.initial_gas, expected_initial,
-            "AA secp256k1 single call should match normal tx + per-call overhead"
+            aa_gas.initial_gas, normal_tx_gas.initial_gas,
+            "AA secp256k1 single call should match normal tx exactly"
         );
     }
 
@@ -1611,14 +1609,14 @@ mod tests {
         // Calculate base gas for a single normal tx
         let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
 
-        // For 3 calls: base (21k) + 3*calldata + 3*per-call overhead
-        // = 21k + 2*(calldata cost) + 3*COLD_ACCOUNT_ACCESS_COST
+        // For 3 calls: base (21k) + 3*calldata + 2*per-call overhead (calls 2 and 3)
+        // = 21k + 2*(calldata cost) + 2*COLD_ACCOUNT_ACCESS_COST
         let expected = base_tx_gas.initial_gas
             + 2 * (calldata.len() as u64 * 16)
-            + 3 * COLD_ACCOUNT_ACCESS_COST;
+            + 2 * COLD_ACCOUNT_ACCESS_COST;
         assert_eq!(
             gas.initial_gas, expected,
-            "Should charge per-call overhead for each call"
+            "Should charge per-call overhead for calls beyond the first"
         );
     }
 
@@ -1663,8 +1661,8 @@ mod tests {
         // Calculate base gas for normal tx
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
 
-        // Expected: normal tx + P256_VERIFY_GAS + per-call overhead
-        let expected = base_gas.initial_gas + P256_VERIFY_GAS + COLD_ACCOUNT_ACCESS_COST;
+        // Expected: normal tx + P256_VERIFY_GAS
+        let expected = base_gas.initial_gas + P256_VERIFY_GAS;
         assert_eq!(
             gas.initial_gas, expected,
             "Should include P256 verification gas"
@@ -1707,9 +1705,11 @@ mod tests {
             0, 0, 0,
         );
 
-        // AA CREATE should be: normal CREATE + per-call overhead
-        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
-        assert_eq!(gas.initial_gas, expected, "Should include CREATE costs");
+        // AA CREATE should match normal CREATE exactly
+        assert_eq!(
+            gas.initial_gas, base_gas.initial_gas,
+            "Should include CREATE costs"
+        );
     }
 
     #[test]
@@ -1779,11 +1779,10 @@ mod tests {
         // Calculate expected using revm's function
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
 
-        // Expected: normal tx + per-call overhead (no access list in this test)
-        let expected = base_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        // Expected: normal tx
         assert_eq!(
-            gas.initial_gas, expected,
-            "Should match normal tx + per-call overhead"
+            gas.initial_gas, base_gas.initial_gas,
+            "Should match normal tx exactly"
         );
     }
 
@@ -2072,7 +2071,7 @@ mod tests {
         // Also verify absolute values
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
         let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
-        let expected_without = base_tx_gas.initial_gas + COLD_ACCOUNT_ACCESS_COST;
+        let expected_without = base_tx_gas.initial_gas; // no cold access for single call
         let expected_with = expected_without + expected_key_auth_gas;
 
         assert_eq!(
