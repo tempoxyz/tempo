@@ -175,7 +175,6 @@ impl GenesisArgs {
         println!("Initializing TIP20Factory");
         initialize_tip20_factory(&mut evm)?;
 
-        // Post-Allegretto: PathUSD is created through the factory as token_id=0 with address(0) as quote token
         println!("Creating PathUSD through factory");
         create_path_usd_token(admin, &addresses, &mut evm)?;
 
