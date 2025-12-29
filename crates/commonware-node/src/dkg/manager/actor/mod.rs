@@ -164,21 +164,23 @@ where
             impl Receiver<PublicKey = PublicKey>,
         ),
     ) {
-        let Ok(initial_state) = read_initial_state_from_genesis(
-            &mut self.context,
-            &self.config.execution_node,
-            self.config.epoch_length,
-            self.config.initial_share.clone(),
-        )
-        .await
-        else {
-            // NOTE: read_initial_state_from_genesis emits error event
-            return;
-        };
-
         let Ok(mut storage) = state::builder()
             .partition_prefix(&self.config.partition_prefix)
-            .initial_state(initial_state)
+            .initial_state({
+                let mut context = self.context.clone();
+                let execution_node = self.config.execution_node.clone();
+                let epoch_length = self.config.epoch_length;
+                let initial_share = self.config.initial_share.clone();
+                async move {
+                    read_initial_state_from_genesis(
+                        &mut context,
+                        &execution_node,
+                        epoch_length,
+                        initial_share.clone(),
+                    )
+                    .await
+                }
+            })
             .init(self.context.with_label("state"))
             .await
         else {

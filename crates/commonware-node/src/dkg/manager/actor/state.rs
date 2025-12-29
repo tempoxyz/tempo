@@ -19,8 +19,8 @@ use commonware_cryptography::{
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
 use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
-use eyre::{OptionExt, WrapErr as _, bail};
-use futures::StreamExt as _;
+use eyre::{OptionExt, WrapErr as _, bail, eyre};
+use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
@@ -457,14 +457,17 @@ where
 
 #[derive(Default)]
 pub(super) struct Builder {
-    initial_state: Option<State>,
+    initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
 }
 
 impl Builder {
-    pub(super) fn initial_state(self, initial_outcome: State) -> Self {
+    pub(super) fn initial_state(
+        self,
+        initial_state: impl Future<Output = eyre::Result<State>> + Send + 'static,
+    ) -> Self {
         Self {
-            initial_state: Some(initial_outcome),
+            initial_state: Some(initial_state.boxed()),
             ..self
         }
     }
@@ -522,9 +525,16 @@ impl Builder {
 
         // Replay states to get current epoch
         if states.size() == 0 {
-            let initial_state = initial_state.ok_or_eyre(
-                "states journal was empty, but no initial state to populate it with was provided",
-            )?;
+            let initial_state = match initial_state {
+                None => {
+                    return Err(eyre!(
+                        "states journal was empty and initializer was not set"
+                    ));
+                }
+                Some(initial_state) => initial_state
+                    .await
+                    .wrap_err("failed constructing initial state to populate storage")?,
+            };
             states
                 .append(initial_state)
                 .await
