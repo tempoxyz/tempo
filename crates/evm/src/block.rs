@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -19,15 +19,8 @@ use commonware_cryptography::{
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
-use revm::{
-    DatabaseCommit,
-    context::ContextTr,
-    state::{Account, Bytecode},
-};
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::TempoChainSpec;
-
-use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
@@ -342,37 +335,7 @@ where
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()?;
-
-        // Initialize keychain precompile
-        let evm = self.evm_mut();
-        let db = evm.ctx_mut().db_mut();
-
-        // Load the keychain account from the cache
-        let acc = db
-            .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
-            .map_err(BlockExecutionError::other)?;
-
-        // Get existing account info or create default
-        let mut acc_info = acc.account_info().unwrap_or_default();
-
-        // Only initialize if the account has no code
-        if acc_info.is_empty_code_hash() {
-            // Set the keychain code
-            let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
-            acc_info.code_hash = code.hash_slow();
-            acc_info.code = Some(code);
-
-            // Convert to revm account and mark as touched
-            let mut revm_acc: Account = acc_info.into();
-            revm_acc.mark_touch();
-
-            // Commit the account to the database to ensure it persists
-            // even if no transactions are executed in this block
-            db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
-        }
-
-        Ok(())
+        self.inner.apply_pre_execution_changes()
     }
 
     fn execute_transaction_without_commit(
