@@ -126,7 +126,7 @@ impl Default for Setup {
 /// Sets up validators and returns the nodes and execution runtime.
 ///
 /// The execution runtime is created internally with a chainspec configured
-/// according to the Setup parameters (epoch_length, allegretto, validators, polynomial).
+/// according to the Setup parameters (epoch_length, validators, polynomial).
 ///
 /// The oracle is accessible via `TestingNode::oracle()` if needed for dynamic linking.
 pub async fn setup_validators(

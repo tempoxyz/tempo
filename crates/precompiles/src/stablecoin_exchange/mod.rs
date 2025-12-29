@@ -133,8 +133,8 @@ impl StablecoinExchange {
         amount_filled: u128,
         partial_fill: bool,
     ) -> Result<()> {
-        self.emit_event(StablecoinExchangeEvents::OrderFilled_1(
-            IStablecoinExchange::OrderFilled_1 {
+        self.emit_event(StablecoinExchangeEvents::OrderFilled(
+            IStablecoinExchange::OrderFilled {
                 orderId: order_id,
                 maker,
                 taker,
@@ -1314,7 +1314,6 @@ impl StablecoinExchange {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::IntoLogData;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
@@ -3011,7 +3010,7 @@ mod tests {
 
     #[test]
     fn test_best_tick_updates_on_fill() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3086,7 +3085,7 @@ mod tests {
 
     #[test]
     fn test_best_tick_updates_on_cancel() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3171,7 +3170,7 @@ mod tests {
     fn test_place() -> eyre::Result<()> {
         const AMOUNT: u128 = 1_000_000_000;
 
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3212,7 +3211,7 @@ mod tests {
     fn test_place_flip_checks() -> eyre::Result<()> {
         const AMOUNT: u128 = 1_000_000_000;
 
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3285,7 +3284,7 @@ mod tests {
 
     #[test]
     fn test_find_trade_path_rejects_non_tip20() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3314,7 +3313,7 @@ mod tests {
 
     #[test]
     fn test_quote_exact_in_handles_both_directions() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3374,7 +3373,7 @@ mod tests {
 
     #[test]
     fn test_place_auto_creates_pair() -> Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3456,7 +3455,7 @@ mod tests {
 
     #[test]
     fn test_place_order_immediately_active() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -3508,7 +3507,7 @@ mod tests {
 
     #[test]
     fn test_place_flip_order_immediately_active() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;

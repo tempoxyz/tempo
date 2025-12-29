@@ -66,7 +66,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Mint liquidity (use mint as mint is disabled post-Moderato)
+    // Mint liquidity
     let mint_receipt = fee_amm
         .mint(
             pool_key.user_token,
@@ -147,7 +147,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
 
-    // Mint liquidity using balanced `mint` (available pre-Moderato)
+    // Mint liquidity using balanced `mint`
     let mint_receipt = fee_amm
         .mint(
             pool_key.user_token,
@@ -248,7 +248,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
 async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Note: This test uses moderato genesis to test pre-allegretto behavior
+    // Setup tokens for fee payment
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
@@ -269,7 +269,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     let validator_address = block.header.beneficiary;
     assert!(!validator_address.is_zero());
 
-    // Create different tokens for user and validator (use pre-allegretto version)
+    // Create different tokens for user and validator
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     // Use default fee token for validator
     let validator_token = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
@@ -395,7 +395,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let alice = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Setup test tokens and fee AMM (use pre-allegretto token creation)
+    // Setup test tokens and fee AMM
     let user_token = setup_test_token(provider.clone(), alice).await?;
     let validator_token = setup_test_token(provider.clone(), alice).await?;
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -495,7 +495,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
 
-    // Add liquidity using balanced `mint` (available pre-Moderato)
+    // Add liquidity using balanced `mint`
     let mint_receipt = fee_amm
         .mint(
             pool_key.user_token,

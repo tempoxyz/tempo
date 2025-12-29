@@ -39,7 +39,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let user_address = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
-    // Use pre-allegretto token creation since test uses moderato genesis
+    // Create test tokens
     let user_token = setup_test_token(provider.clone(), user_address).await?;
     let validator_token = ITIP20::new(PATH_USD_ADDRESS, &provider);
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
@@ -88,7 +88,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     let expected_cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price);
 
-    // Post-AllegroModerato: fees accumulate in collected_fees and require distributeFees() call
+    // Fees accumulate in collected_fees and require distributeFees() call
     let collected_fees_after = fee_manager
         .collectedFeesByValidator(validator)
         .call()
@@ -122,7 +122,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let current_token = fee_manager.userTokens(user_address).call().await?;
     assert_eq!(current_token, *user_token.address());
 
-    // Post-AllegroModerato: fees from setUserToken tx also accumulated
+    // Fees from setUserToken tx also accumulated
     fee_manager
         .distributeFees(validator)
         .send()
@@ -145,7 +145,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     let receipt = pending_tx.get_receipt().await?;
     assert!(receipt.status());
 
-    // Post-AllegroModerato: verify fee was paid in user_token (max_fee deducted from user)
+    // Verify fee was paid in user_token (max_fee deducted from user)
     let user_balance_after = user_token.balanceOf(user_address).call().await?;
     let tx = provider.get_transaction_by_hash(tx_hash).await?.unwrap();
     let expected_max_fee =
@@ -162,7 +162,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
         expected_max_fee * U256::from(9970) / U256::from(10000)
     );
 
-    // Post-AllegroModerato: distribute fees before checking validator balance
+    // Distribute fees before checking validator balance
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
     fee_manager
         .distributeFees(validator)
@@ -174,7 +174,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     assert!(validator_balance_after > validator_balance_before);
 
-    // Ensure that the user can set the fee token back to pathUSD post allegro moderato
+    // Ensure that the user can set the fee token back to pathUSD
     let set_receipt = fee_manager
         .setUserToken(PATH_USD_ADDRESS)
         .send()

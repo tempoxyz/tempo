@@ -23,7 +23,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
@@ -79,22 +79,6 @@ pub(crate) struct GenesisArgs {
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
-
-    /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    adagio_time: u64,
-
-    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    pub moderato_time: u64,
-
-    /// Allegretto hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    pub allegretto_time: u64,
-
-    /// Allegro-Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    pub allegro_moderato_time: u64,
 
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
@@ -191,7 +175,6 @@ impl GenesisArgs {
         println!("Initializing TIP20Factory");
         initialize_tip20_factory(&mut evm)?;
 
-        // Post-Allegretto: PathUSD is created through the factory as token_id=0 with address(0) as quote token
         println!("Creating PathUSD through factory");
         create_path_usd_token(admin, &addresses, &mut evm)?;
 
@@ -366,25 +349,6 @@ impl GenesisArgs {
             ..Default::default()
         };
 
-        // Add Tempo hardfork times to extra_fields
-        chain_config.extra_fields.insert(
-            "adagioTime".to_string(),
-            serde_json::json!(self.adagio_time),
-        );
-        chain_config.extra_fields.insert(
-            "moderatoTime".to_string(),
-            serde_json::json!(self.moderato_time),
-        );
-        chain_config.extra_fields.insert(
-            "allegrettoTime".to_string(),
-            serde_json::json!(self.allegretto_time),
-        );
-
-        chain_config.extra_fields.insert(
-            "allegroModeratoTime".to_string(),
-            serde_json::json!(self.allegro_moderato_time),
-        );
-
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
@@ -420,10 +384,7 @@ impl GenesisArgs {
 fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    // Configure EVM for Allegretto hardfork so factory uses correct token_id counter (starts at 0)
-    // and accepts address(0) as quote token for the first token
-    env.cfg_env = env.cfg_env.with_spec(TempoHardfork::Allegretto);
+    let env = EvmEnv::default().with_timestamp(U256::ZERO);
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
 }
@@ -438,7 +399,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 }
 
 /// Creates PathUSD as the first TIP20 token (token_id=0) through the factory.
-/// Post-Allegretto, the first token must have address(0) as quote token.
+/// The first token must have address(0) as quote token.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -446,7 +407,7 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        // Create PathUSD through factory with address(0) as quote token (required for first token post-Allegretto)
+        // Create PathUSD through factory with address(0) as quote token (required for first token)
         let token_address = TIP20Factory::new()
             .create_token(
                 admin,

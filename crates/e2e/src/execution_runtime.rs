@@ -134,13 +134,6 @@ impl Builder {
             .insert_value("validators".to_string(), validators.clone())
             .wrap_err("failed to insert validators into genesis")?;
 
-        // TODO: remove, but might still be relevant for some tests (like subblocks).
-        genesis
-            .config
-            .extra_fields
-            .insert_value("allegrettoTime".to_string(), 0)
-            .wrap_err("failed to insert allegretto timestamp into genesis")?;
-
         genesis.extra_data = PublicOutcome {
             epoch: Epoch::zero(),
             participants: validators.public_keys().clone(),

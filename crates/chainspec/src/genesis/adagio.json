@@ -29,8 +29,7 @@
       }
     },
     "depositContractAddress": "0x00000000219ab540356cBB839Cbe05303d7705Fa",
-    "pragueTime": 0,
-    "adagioTime": 0
+    "pragueTime": 0
   },
   "baseFeePerGas": "0x2540be400",
   "gasLimit": 50000000,

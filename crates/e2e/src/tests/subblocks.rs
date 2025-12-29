@@ -19,7 +19,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::ConsensusEngineEvent;
 use reth_node_core::primitives::transaction::TxHashRef;
-use tempo_chainspec::{hardfork::TempoHardforks, spec::TEMPO_BASE_FEE};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_node::primitives::{
     SubBlockMetadata, TempoTransaction, TempoTxEnvelope,
     subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -337,11 +337,7 @@ async fn submit_subblock_tx_from(node: &TestingNode, wallet: &PrivateKeySigner) 
 
     let provider = node.execution_provider();
 
-    let gas_price = if provider.chain_spec().is_allegretto_active_at_timestamp(0) {
-        TEMPO_BASE_FEE as u128
-    } else {
-        0
-    };
+    let gas_price = TEMPO_BASE_FEE as u128;
 
     let mut tx = TempoTransaction {
         chain_id: provider.chain_spec().chain_id(),
