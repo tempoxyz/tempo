@@ -257,7 +257,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             fee_token: Some(*user_token.address()),
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
-            gas_limit: 21000,
+            gas_limit: 100_000,
             calls: vec![Call {
                 to: Address::ZERO.into(),
                 value: U256::ZERO,
