@@ -31,6 +31,8 @@ use tempo_precompiles::{
 
 use crate::{Setup, TestingNode, setup_validators};
 
+const SYSTEM_TX_COUNT: usize = 1;
+
 #[test_traced]
 fn subblocks_are_included() {
     let _ = tempo_eyre::install();
@@ -79,11 +81,11 @@ fn subblocks_are_included() {
 
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
-            // Assert that block only contains our subblock transactions and 2 system transactions
+            // Assert that block only contains our subblock transactions and the system transactions
             // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
-                2 + expected_transactions.len()
+                SYSTEM_TX_COUNT + expected_transactions.len()
             );
 
             // Assert that all expected transactions are included in the block.
@@ -188,11 +190,11 @@ fn subblocks_are_included_with_failing_txs() {
             };
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
-            // Assert that block only contains our subblock transactions and 2 system transactions
+            // Assert that block only contains our subblock transactions and system transactions
             // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
-                2 + expected_transactions.len()
+                SYSTEM_TX_COUNT + expected_transactions.len()
             );
 
             // Assert that all expected transactions are included in the block.
