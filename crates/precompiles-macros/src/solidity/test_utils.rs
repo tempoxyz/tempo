@@ -1,10 +1,13 @@
 //! Shared test utilities for the solidity module.
 
-use proc_macro2::Span;
+use proc_macro2::{Ident, Span};
 use quote::format_ident;
 use syn::{Type, Visibility};
 
-use super::parser::{FieldDef, SolStructDef, SolidityModule, UnitEnumDef};
+use super::parser::{
+    EnumVariantDef, FieldDef, InterfaceDef, MethodDef, SolEnumDef, SolStructDef, SolidityModule,
+    UnitEnumDef,
+};
 
 pub(super) fn make_field(name: &str, ty: Type) -> FieldDef {
     FieldDef {
@@ -53,5 +56,44 @@ pub(super) fn empty_module() -> SolidityModule {
         event: None,
         interface: None,
         other_items: vec![],
+    }
+}
+
+pub(super) fn make_method(name: &str, params: Vec<(Ident, Type)>) -> MethodDef {
+    MethodDef {
+        name: format_ident!("{}", name),
+        sol_name: name.to_string(),
+        params,
+        return_type: None,
+        is_mutable: false,
+    }
+}
+
+pub(super) fn make_error_enum(variants: Vec<EnumVariantDef>) -> SolEnumDef {
+    SolEnumDef {
+        name: format_ident!("Error"),
+        variants,
+        attrs: vec![],
+        vis: Visibility::Public(syn::token::Pub {
+            span: Span::call_site(),
+        }),
+    }
+}
+
+pub(super) fn make_variant(name: &str, fields: Vec<FieldDef>) -> EnumVariantDef {
+    EnumVariantDef {
+        name: format_ident!("{}", name),
+        fields,
+    }
+}
+
+pub(super) fn make_interface(methods: Vec<MethodDef>) -> InterfaceDef {
+    InterfaceDef {
+        name: format_ident!("Interface"),
+        methods,
+        attrs: vec![],
+        vis: Visibility::Public(syn::token::Pub {
+            span: Span::call_site(),
+        }),
     }
 }

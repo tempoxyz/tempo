@@ -78,6 +78,9 @@ pub(crate) fn expand(item: ItemMod) -> syn::Result<TokenStream> {
     let module = SolidityModule::parse(item)?;
     let registry = TypeRegistry::from_module(&module)?;
 
+    // Check for selector collisions before generating code
+    registry.check_selector_collisions(&module)?;
+
     let mod_name = &module.name;
     let vis = &module.vis;
 

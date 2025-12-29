@@ -24,15 +24,14 @@
 //!
 //! Circular struct dependencies are detected and reported as compile errors.
 
-use std::collections::{HashMap, HashSet};
-
+use alloy_sol_macro_expander::selector;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
+use std::collections::{HashMap, HashSet};
 use syn::Type;
 
+use super::parser::{FieldAccessors, FieldDef, SolStructDef, SolidityModule, UnitEnumDef};
 use crate::utils::SolType;
-
-use super::parser::{FieldDef, SolStructDef, SolidityModule, UnitEnumDef};
 
 /// Type registry for resolving Rust types to Solidity ABI.
 #[derive(Debug, Default)]
@@ -300,6 +299,84 @@ impl TypeRegistry {
         self.compute_signature(name, &types)
     }
 
+    /// Check for 4-byte selector collisions across functions and errors.
+    pub(super) fn check_selector_collisions(&self, module: &SolidityModule) -> syn::Result<()> {
+        // Calculate capacity; early-return if nothing to check
+        let method_count = module.interface.as_ref().map_or(0, |i| i.methods.len());
+        let error_count = module.error.as_ref().map_or(0, |e| e.variants.len());
+        let capacity = method_count + error_count;
+        if capacity == 0 {
+            return Ok(());
+        }
+
+        let mut seen = HashSet::with_capacity(capacity);
+        let mut collision: Option<[u8; 4]> = None;
+
+        // Detect collisions
+        if let Some(ref interface) = module.interface {
+            for method in &interface.methods {
+                let sig = self.compute_signature(&method.sol_name, &method.field_raw_types())?;
+                let selector = selector(&sig);
+                if !seen.insert(selector) {
+                    collision = Some(selector);
+                    break;
+                }
+            }
+        }
+
+        if collision.is_none()
+            && let Some(ref error_enum) = module.error
+        {
+            for variant in &error_enum.variants {
+                let sig =
+                    self.compute_signature_from_fields(&variant.name.to_string(), &variant.fields)?;
+                let selector = selector(&sig);
+                if !seen.insert(selector) {
+                    collision = Some(selector);
+                    break;
+                }
+            }
+        }
+
+        let Some(colliding) = collision else {
+            return Ok(());
+        };
+
+        // If collision is detected, perform a second pass to gather details.
+        let mut colliders = Vec::new();
+        let mut first_span = None;
+
+        if let Some(ref interface) = module.interface {
+            for method in &interface.methods {
+                let sig = self.compute_signature(&method.sol_name, &method.field_raw_types())?;
+                if selector(&sig) == colliding {
+                    first_span.get_or_insert(method.name.span());
+                    colliders.push(format!("  function `{}`: `{}`", method.sol_name, sig));
+                }
+            }
+        }
+
+        if let Some(ref error_enum) = module.error {
+            for variant in &error_enum.variants {
+                let sig =
+                    self.compute_signature_from_fields(&variant.name.to_string(), &variant.fields)?;
+                if selector(&sig) == colliding {
+                    first_span.get_or_insert(variant.name.span());
+                    colliders.push(format!("  error `{}`: `{}`", variant.name, sig));
+                }
+            }
+        }
+
+        Err(syn::Error::new(
+            first_span.unwrap_or_else(proc_macro2::Span::call_site),
+            format!(
+                "selector collision: 0x{:08x} is used by:\n{}",
+                u32::from_be_bytes(colliding),
+                colliders.join("\n")
+            ),
+        ))
+    }
+
     /// Check if a type is a registered struct.
     #[cfg(test)]
     pub(super) fn is_struct(&self, ty: &Type) -> bool {
@@ -394,7 +471,10 @@ impl TypeRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::solidity::test_utils::{empty_module, make_field, make_struct, make_unit_enum};
+    use crate::solidity::test_utils::{
+        empty_module, make_error_enum, make_field, make_interface, make_method, make_struct,
+        make_unit_enum, make_variant,
+    };
     use syn::parse_quote;
 
     #[test]
@@ -805,5 +885,36 @@ mod tests {
         assert!(deps.is_empty());
 
         Ok(())
+    }
+
+    #[test]
+    fn test_selector_collision_detected() {
+        // Two methods with identical signatures collide
+        let mut module = empty_module();
+        module.interface = Some(make_interface(vec![
+            make_method("foo", vec![]),
+            make_method("foo", vec![]),
+        ]));
+        let registry = TypeRegistry::from_module(&module).unwrap();
+        let result = registry.check_selector_collisions(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("selector collision"));
+        assert!(err.contains("foo()"));
+    }
+
+    #[test]
+    fn test_function_error_cross_collision() {
+        // Function and error with same signature collide
+        let mut module = empty_module();
+        module.interface = Some(make_interface(vec![make_method("transfer", vec![])]));
+        module.error = Some(make_error_enum(vec![make_variant("transfer", vec![])]));
+
+        let registry = TypeRegistry::from_module(&module).unwrap();
+        let result = registry.check_selector_collisions(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("function"));
+        assert!(err.contains("error"));
     }
 }
