@@ -242,13 +242,20 @@ where
                     //
                     // Backfills will be spawned as tasks and will also send
                     // resolved the blocks to this queue.
-                    self.handle_message(msg).await;
+                    if let Err(error) = self.handle_message(msg).await {
+                        warn!(
+                            %error,
+                            "executor encountered fatal fork choice update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        );
+                        break;
+                    }
                 },
             }
         }
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
             Command::CanonicalizeHead {
@@ -256,14 +263,14 @@ where
                 digest,
                 ack,
             } => {
-                let _ = self
-                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
-                    .await;
+                self.canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
+                    .await?;
             }
             Command::Finalize(finalized) => {
-                let _ = self.finalize(cause, *finalized).await;
+                self.finalize(cause, *finalized).await?;
             }
         }
+        Ok(())
     }
 
     /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
@@ -334,27 +341,30 @@ where
         Ok(())
     }
 
-    #[instrument(parent = &cause, skip_all)]
+    #[instrument(parent = &cause, skip_all, err)]
     /// Handles finalization events.
-    async fn finalize(&mut self, cause: Span, finalized: super::ingress::Finalized) {
+    async fn finalize(
+        &mut self,
+        cause: Span,
+        finalized: super::ingress::Finalized,
+    ) -> eyre::Result<()> {
         match finalized.inner {
             Update::Tip(height, digest) => {
-                let _: Result<_, _> = self
-                    .canonicalize(
-                        Span::current(),
-                        HeadOrFinalized::Finalized,
-                        height,
-                        digest,
-                        oneshot::channel().0,
-                    )
-                    .await;
+                self.canonicalize(
+                    Span::current(),
+                    HeadOrFinalized::Finalized,
+                    height,
+                    digest,
+                    oneshot::channel().0,
+                )
+                .await?;
             }
             Update::Block(block, acknowledgment) => {
-                let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), block, acknowledgment)
-                    .await;
+                self.forward_finalized(Span::current(), block, acknowledgment)
+                    .await?;
             }
         }
+        Ok(())
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -392,22 +402,15 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        if let Err(error) = self
-            .canonicalize(
-                Span::current(),
-                HeadOrFinalized::Finalized,
-                block.height(),
-                block.digest(),
-                oneshot::channel().0,
-            )
-            .await
-        {
-            warn!(
-                %error,
-                "failed canonicalizing finalized block; will still attempt \
-                forwarding it to the execution layer",
-            );
-        }
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            block.height(),
+            block.digest(),
+            oneshot::channel().0,
+        )
+        .await
+        .wrap_err("failed canonicalizing finalized block")?;
 
         if let Ok(execution_height) = self
             .execution_node
@@ -429,7 +432,9 @@ where
                 "hole detected; consensus attempts to finalize block with gaps \
                 on the execution layer; filling them in first",
             );
-            let _ = self.fill_holes(execution_height + 1, block.height()).await;
+            self.fill_holes(execution_height + 1, block.height())
+                .await
+                .wrap_err("failed to fill holes during block finalization")?;
         }
 
         let block = block.into_inner();
