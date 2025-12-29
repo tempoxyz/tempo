@@ -34,7 +34,7 @@ use rand_core::CryptoRngCore;
 use reth_ethereum::chainspec::EthChainSpec as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, debug, info, instrument, warn, warn_span};
+use tracing::{Span, debug, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -298,6 +298,19 @@ where
             })?;
 
         let mut ancestry_stream = AncestorStream::new();
+
+        info_span!("run_dkg_loop").in_scope(|| {
+            info!(
+                me = %self.config.me.public_key(),
+                epoch = %round.epoch(),
+                dealers = ?state.dealers,
+                players = ?state.players,
+                syncers = ?state.syncers,
+                as_dealer = dealer_state.is_some(),
+                as_player= player_state.is_some(),
+                "entering a new DKG ceremony",
+            )
+        });
         loop {
             let mut shutdown = self.context.stopped().fuse();
             select_biased!(
