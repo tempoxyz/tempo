@@ -478,7 +478,7 @@ contract StablecoinExchangeTest is BaseTest {
     //////////////////////////////////////////////////////////////*/
 
     function test_PlaceOrder_RevertIf_BelowMinimumOrderSize(uint128 amount) public {
-        vm.assume(amount < exchange.exchange.MIN_ORDER_AMOUNT()());
+        vm.assume(amount < exchange.MIN_ORDER_AMOUNT());
 
         vm.prank(alice);
         try exchange.place(address(token1), amount, true, 100) {
@@ -490,7 +490,7 @@ contract StablecoinExchangeTest is BaseTest {
 
     function test_PlaceOrder_SucceedsAt_MinimumOrderSize() public {
         vm.prank(alice);
-        uint128 orderId = exchange.place(address(token1), exchange.exchange.MIN_ORDER_AMOUNT()(), true, 100);
+        uint128 orderId = exchange.place(address(token1), exchange.MIN_ORDER_AMOUNT(), true, 100);
 
         assertEq(orderId, 1);
         assertEq(exchange.nextOrderId(), 2);
@@ -505,7 +505,7 @@ contract StablecoinExchangeTest is BaseTest {
         // So: amount * 1000100 / 1000000 <= INITIAL_BALANCE
         // Therefore: amount <= INITIAL_BALANCE * 1000000 / 1000100
         uint128 maxAmount = uint128((uint256(INITIAL_BALANCE) * 1_000_000) / 1_000_100);
-        vm.assume(amount >= exchange.exchange.MIN_ORDER_AMOUNT()() && amount <= maxAmount);
+        vm.assume(amount >= exchange.MIN_ORDER_AMOUNT() && amount <= maxAmount);
 
         vm.prank(alice);
         uint128 orderId = exchange.place(address(token1), amount, true, 100);
@@ -515,7 +515,7 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PlaceFlipOrder_RevertIf_BelowMinimumOrderSize(uint128 amount) public {
-        vm.assume(amount < exchange.exchange.MIN_ORDER_AMOUNT()());
+        vm.assume(amount < exchange.MIN_ORDER_AMOUNT());
 
         vm.prank(alice);
         try exchange.placeFlip(address(token1), amount, true, 100, 200) {
