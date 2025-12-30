@@ -9,7 +9,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
 use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
-use crate::utils::{TestNodeBuilder, setup_test_token};
+use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_transfer() -> eyre::Result<()> {
@@ -653,6 +653,121 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
             }),
     )
     .await?;
+
+    Ok(())
+}
+
+/// Test immediate reward distribution functionality.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_rewards() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let admin_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let admin = admin_wallet.address();
+    let admin_provider = ProviderBuilder::new()
+        .wallet(admin_wallet)
+        .connect_http(http_url.clone());
+
+    let token = setup_test_token(admin_provider.clone(), admin).await?;
+
+    let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(1)?
+        .build()?;
+    let alice = alice_wallet.address();
+    let alice_provider = ProviderBuilder::new()
+        .wallet(alice_wallet)
+        .connect_http(http_url.clone());
+    let alice_token = ITIP20::new(*token.address(), alice_provider);
+
+    let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(2)?
+        .build()?;
+    let bob = bob_wallet.address();
+    let bob_provider = ProviderBuilder::new()
+        .wallet(bob_wallet)
+        .connect_http(http_url.clone());
+    let bob_token = ITIP20::new(*token.address(), bob_provider);
+
+    let mint_amount = U256::from(1000e18);
+    let reward_amount = U256::from(300e18);
+
+    let gas = 300_000;
+    let gas_price = TEMPO_BASE_FEE as u128;
+
+    let mut pending = vec![];
+    pending.push(
+        token
+            .mint(alice, mint_amount)
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    pending.push(
+        token
+            .mint(admin, reward_amount)
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    pending.push(
+        alice_token
+            .setRewardRecipient(bob)
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    // Distribute reward (immediate distribution)
+    let distribute_receipt = token
+        .distributeReward(reward_amount)
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    distribute_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP20::RewardDistributed::decode_log(&log.inner).ok())
+        .next()
+        .expect("RewardDistributed event should be emitted");
+
+    // Transfer to trigger reward update (use authorized address, not random)
+    pending.push(
+        alice_token
+            .transfer(admin, U256::from(100e18))
+            .gas(gas)
+            .gas_price(gas_price)
+            .send()
+            .await?,
+    );
+    await_receipts(&mut pending).await?;
+
+    assert_eq!(token.balanceOf(alice).call().await?, U256::from(900e18));
+    assert_eq!(token.balanceOf(bob).call().await?, U256::ZERO);
+    assert_eq!(
+        token.balanceOf(*token.address()).call().await?,
+        reward_amount
+    );
+
+    bob_token
+        .claimRewards()
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert_eq!(token.balanceOf(bob).call().await?, reward_amount);
 
     Ok(())
 }
