@@ -1,0 +1,166 @@
+---
+showOutline: 1
+---
+
+import * as Card from "../../components/Card.tsx"
+import LucideCoins from '~icons/lucide/coins'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideShieldCheck from '~icons/lucide/shield-check'
+import LucideWallet from '~icons/lucide/wallet'
+
+# Wallet Integration Guide
+
+Because there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) and transaction fees are paid directly in stablecoins, wallets need specific UI and logic adjustments to support the network. Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
+
+As part of supporting Tempo in your wallet, you can also deliver an enhanced experience for your users by integrating [Tempo Transactions](/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
+
+## Steps
+
+::::steps
+
+### Handle the absence of a native token
+
+If you use `eth_getBalance` to validate a user's balance, you should instead check the user's account fee token balance on Tempo. Additionally, you should not display any "native balance" in your UI for Tempo users.
+
+:::info
+In testnet, `eth_getBalance` [returns a large placeholder value](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) for the native token balance to unblock existing assumptions wallets have about the native token balance.
+:::
+
+:::code-group
+
+```ts twoslash [example.ts]
+import { client } from './viem.config'
+
+const userFeeToken = await client.fee.getUserToken({ 
+  account: '0x...' 
+})
+
+const balance = await client.token.getBalance({ 
+  account: '0x...',
+  token: userFeeToken.address 
+})
+```
+
+```ts twoslash [viem.config.ts] filename="viem.config.ts"
+// [!include ~/snippets/viem.config.ts:setup]
+```
+:::
+
+### Configure native currency symbol
+
+If you need to display a native token symbol, such as showing how much gas a transaction requires, you can set the currency symbol to `USD` for Tempo as fees are denominated in USD.
+
+### Use fee token preferences to quote gas prices
+
+On Tempo, users can pay fees in any supported stablecoin. You should quote gas/fee prices in your UI based on a transaction's fee token.
+
+:::info
+As a wallet developer, you can set the fee token for your user at the account level.
+
+If you don't, Tempo uses a cascading fee token selection algorithm to determine the fee token for a transaction – learn more about [Fee Token Preferences](/protocol/fees/spec-fee#fee-token-preferences).
+:::
+
+### Display token and network assets
+
+Tempo provides a public tokenlist service that hosts token and network assets. You can pull these assets from our public tokenlist service to display in your UI.
+
+- **GitHub**: [tempoxyz/tempo-apps/apps/tokenlist](https://github.com/tempoxyz/tempo-apps/tree/main/apps/tokenlist)
+- **Tokenlist JSON**: [tempoxyz.github.io/tempo-apps/42429/tokenlist.json](https://tempoxyz.github.io/tempo-apps/42429/tokenlist.json)
+
+### Integrate Tempo Transactions
+
+We strongly recommend using [Tempo Transactions](/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](/guide/tempo-transaction#integration-guides) available to get you integrated in less than an hour!
+
+:::tip
+Use Tempo Transactions to
+- Set the fee token used for your users' transactions ([guide](/guide/payments/pay-fees-in-any-stablecoin))
+- Sponsor transaction fees for your users ([guide](/guide/payments/sponsor-user-fees))
+- Send concurrent transactions with independent nonces ([guide](/guide/payments/send-parallel-transactions))
+:::
+::::
+
+## Recipes
+
+### Get user's fee token
+
+Retrieve the user's configured fee token preference:
+
+```ts
+import { getUserToken } from 'viem/tempo'
+
+const feeToken = await client.fee.getUserToken({ 
+  account: userAddress 
+})
+```
+
+See [`getUserToken`](https://viem.sh/tempo/actions/fee.getUserToken) for full documentation.
+
+### Get token balance
+
+Check a user's balance for a specific token:
+
+```ts
+import { getBalance } from 'viem/tempo'
+
+const balance = await client.token.getBalance({ 
+  account: userAddress,
+  token: tokenAddress 
+})
+```
+
+See [`getBalance`](https://viem.sh/tempo/actions/token.getBalance) for full documentation.
+
+### Set user fee token
+
+Set the user's default fee token preference. This will be used for all transactions unless a different fee token is specified at the transaction level. 
+
+```ts
+import { setUserToken } from 'viem/tempo'
+
+await client.fee.setUserTokenSync({ 
+  token: '0x20c0000000000000000000000000000000000001', 
+})
+```
+
+See [`setUserToken`](https://viem.sh/tempo/actions/fee.setUserToken) for full documentation.
+
+## Checklist
+
+Before launching Tempo support, ensure your wallet:
+
+- [ ] Checks fee token balance instead of native balance
+- [ ] Hides or removes native balance display for Tempo
+- [ ] Displays `USD` as the currency symbol for gas
+- [ ] Quotes gas prices in the user's fee token
+- [ ] Pulls token/network assets from Tempo's tokenlist
+- [ ] (Recommended) Integrates Tempo Transactions for enhanced UX
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Learn how fee token preferences work in the protocol"
+    href="/protocol/fees/spec-fee#fee-token-preferences"
+    icon={LucideFileText}
+    title="Fee Token Preferences"
+  />
+  <Card.Link
+    description="Integrate Tempo Transactions for full control over transaction parameters"
+    href="/guide/tempo-transaction"
+    icon={LucideCoins}
+    title="Tempo Transactions"
+  />
+  <Card.Link
+    description="Sponsor user fees to enable feeless transaction experiences in your application"
+    href="/guide/payments/sponsor-user-fees"
+    icon={LucideShieldCheck}
+    title="Sponsor User Fees"
+  />
+  <Card.Link
+    description="Pay fees in any supported stablecoin"
+    href="/guide/payments/pay-fees-in-any-stablecoin"
+    icon={LucideWallet}
+    title="Pay Fees in Any Stablecoin"
+  />
+</Card.Container>
+

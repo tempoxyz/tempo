@@ -179,14 +179,12 @@ Each authorization in the list:
 
 #### Account State Changes
 - `nonces: mapping(uint256 => uint64)` - 2D nonce tracking
-- `num_active_user_keys: uint` - tracks number of user keys for gas calculation
 
 **Implementation Note:** Nonces are stored in the storage of a designated precompile at address `0x4E4F4E4345000000000000000000000000000000` (ASCII hex for "NONCE"), as there is currently no clean way to extend account state in Reth.
 
 **Storage Layout at 0x4E4F4E4345:**
 - Storage key: `keccak256(abi.encode(account_address, nonce_key))`
 - Storage value: `nonce` (uint64)
-- Active key count for account: stored at `keccak256(abi.encode(account_address, uint256(0)))`
 
 Note: Protocol Nonce key (0), is directly stored in the account state, just like normal transaction types.
 
@@ -206,10 +204,6 @@ interface INonce {
     /// @param nonceKey The nonce key that was incremented
     /// @param newNonce The new nonce value after incrementing
     event NonceIncremented(address indexed account, uint256 indexed nonceKey, uint64 newNonce);
-    /// @notice Emitted when the active key count changes for an account
-    /// @param account The account whose active key count changed
-    /// @param newCount The new active key count
-    event ActiveKeyCountChanged(address indexed account, uint256 newCount);
     /// @notice Thrown when trying to access protocol nonce (key 0) through the precompile
     /// @dev Protocol nonce should be accessed through account state, not this precompile
     error ProtocolNonceNotSupported();
@@ -222,23 +216,17 @@ interface INonce {
     /// @param nonceKey The nonce key (must be > 0, protocol nonce key 0 not supported)
     /// @return nonce The current nonce value
     function getNonce(address account, uint256 nonceKey) external view returns (uint64 nonce);
-    /// @notice Get the number of active nonce keys for an account
-    /// @param account The account address
-    /// @return count The number of nonce keys that have been used (nonce > 0)
-    function getActiveNonceKeyCount(address account) external view returns (uint256 count);
 }
 ```
 
 #### Precompile Implementation
 
-The precompile contract maintains two primary storage mappings:
+The precompile contract maintains a single storage mapping:
 
 ```solidity
 contract Nonce is INonce {
     /// @dev Mapping from account -> nonce key -> nonce value
     mapping(address => mapping(uint256 => uint64)) private nonces;
-    /// @dev Mapping from account -> count of active nonce keys
-    mapping(address => uint256) private activeKeyCount;
 }
 ```
 
@@ -246,16 +234,15 @@ contract Nonce is INonce {
 
 For transactions using nonce keys:
 
-1. If `sequence > 0`: Add 5,000 gas to base cost (21,000)
-   - Rationale: Equivalent to a cold SSTORE on a non-zero slot (2,900 base + 2,100 cold access)
+1. **Protocol nonce (key 0)**: No additional gas cost
+   - Uses the standard account nonce stored in account state
 
-2. If `sequence == 0`: Add progressive cost
-   ```rust
-   let num_active_nonce_keys = count(non_zero_nonce_keys with sequence > 0)
-   base_gas_cost = 21_000 + num_active_nonce_keys * 20_000
-   ```
+2. **Existing user key (nonce > 0)**: Add 5,000 gas to base cost
+   - Rationale: Cold SLOAD (2,100) + warm SSTORE reset (2,900)
 
-This linearly increasing fee compensates for state growth and mitigates DOS vectors from unbounded sequence key creation.
+3. **New user key (nonce == 0)**: Add 22,100 gas to base cost
+   - Rationale: Cold SLOAD (2,100) + SSTORE set for 0 → non-zero (20,000)
+
 We specify the complete gas schedule in more detail in the [gas costs section](#gas-costs)
 
 ### Transaction Validation
@@ -657,14 +644,16 @@ When an Access Key attempts to call `authorizeKey()`, `revokeKey()`, or `updateS
 
 The protocol tracks and enforces spending limits for TIP20 token transfers:
 
-**Scope:** Only TIP20 `transfer()` and `approve()` calls are tracked
+**Scope:** Only TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `startReward()` calls are tracked
+- Spending limits only apply when `msg.sender == tx.origin` (direct EOA calls)
+- When a contract makes transfers on behalf of the user, spending limits do NOT apply (e.g., `transferFrom()`)
 - Native value transfers are NOT limited
 - NFT transfers are NOT limited
 - Other asset types are NOT limited
 
-**Tracking:** During transaction execution, when an Access Key's transaction calls TIP20 methods:
-1. Protocol intercepts `transfer(to, amount)` and `approve(spender, amount)` calls
-2. For `transfer`, the full `amount` is checked against the remaining limit
+**Tracking:** During transaction execution, when an Access Key's transaction directly calls TIP20 methods:
+1. Protocol intercepts `transfer(to, amount)`, `transferWithMemo()`, `approve(spender, amount)`, and `startReward()` calls
+2. For `transfer`/`transferWithMemo`, the full `amount` is checked against the remaining limit
 3. For `approve`, only **increases** in approval (new approval minus previous allowance) are checked and counted against the limit
 4. Queries: `getRemainingLimit(account, keyId, token)`
 5. Checks: relevant amount (transfer amount or approval increase) `<= remaining_limit`
@@ -866,11 +855,13 @@ Different signature types incur different base transaction costs to reflect thei
 | **secp256k1** | 21,000 | Standard | Includes 3,000 gas for ecrecover precompile |
 | **P256** | 26,000 | 21,000 + 5,000 | Base 21k + additional 5k for P256 verification |
 | **WebAuthn** | 26,000 + variable data cost | 26,000 + (calldata gas for clientDataJSON) | Base P256 cost plus variable cost for clientDataJSON based on size |
+| **Keychain** | Inner signature + 3,000 | primitive_sig_cost + 3,000 | Inner signature cost + key validation overhead (2,100 SLOAD + 900 buffer) |
 
 **Rationale:**
 - The base 21,000 gas for standard transactions already includes the cost of secp256k1 signature verification via ecrecover (3,000 gas)
-- [EIP 7951](https://eips.ethereum.org/EIPS/eip-7951) sets P256 verification cost at 6,900 gas. We add 1,100 gas to account for the additional 65 bytes of signature size (129 bytes total vs 64 bytes for secp256k1), giving 8,000 gas total. Since the base 21k already includes 3,000 gas for ecrecover (which P256 doesn't use), the net additional cost is 8,000 - 3,000 = **5,000 gas**. 
+- [EIP 7951](https://eips.ethereum.org/EIPS/eip-7951) sets P256 verification cost at 6,900 gas. We add 1,100 gas to account for the additional 65 bytes of signature size (129 bytes total vs 64 bytes for secp256k1), giving 8,000 gas total. Since the base 21k already includes 3,000 gas for ecrecover (which P256 doesn't use), the net additional cost is 8,000 - 3,000 = **5,000 gas**.
 - WebAuthn signatures require additional computation to parse and validate the clientDataJSON structure. We cap the total signature size at 2kb. The signature is also  charged using the same gas schedule as calldata (16 gas per non-zero byte, 4 gas per zero byte) to prevent the use of this signature space from spam.
+- Keychain signatures wrap a primitive signature and are used by access keys. They add 3,000 gas to cover key validation during transaction validation (cold SLOAD to verify key exists + processing overhead).
 - Individual per-signature-type gas costs allow us to add more advanced verification methods in the future like multisigs, which could have dynamic gas pricing.
 
 ### Nonce Key Gas Schedule
@@ -882,31 +873,69 @@ Transactions using parallelizable nonces incur additional costs based on the non
 - **Total:** 21,000 gas (base transaction cost)
 - **Rationale:** Maintains backward compatibility with existing transaction flow
 
-#### Case 2: Existing User Nonce Key (sequence > 0)
+#### Case 2: Existing User Nonce Key (nonce > 0)
 - **Additional Cost:** 5,000 gas
 - **Total:** 26,000 gas
-- **Rationale:** Equivalent to a cold SSTORE on a non-zero slot (2,900 base + 2,100 cold access)
+- **Rationale:** Cold SLOAD (2,100) + warm SSTORE reset (2,900) for incrementing an existing nonce
 
-#### Case 3: New User Nonce Key (sequence == 0)
-- **Additional Cost:** Progressive based on active keys
-- **Formula:**
-  ```
-  additional_gas = num_active_nonce_keys * 20,000
-  total_base_cost = 21,000 + additional_gas + signature_verification_cost
-  ```
-- **Examples:**
-  - First user key: 21,000 + 0 = 21,000 gas
-  - Second user key: 21,000 + 20,000 = 41,000 gas
-  - Third user key: 21,000 + 40,000 = 61,000 gas
+#### Case 3: New User Nonce Key (nonce == 0)
+- **Additional Cost:** 22,100 gas
+- **Total:** 43,100 gas
+- **Rationale:** Cold SLOAD (2,100) + SSTORE set (20,000) for writing to a new storage slot
 
-**Rationale for Progressive Pricing:**
-1. **State Growth Compensation:** Each new nonce key adds permanent state that nodes must maintain
-2. **DoS Prevention:** Linear cost increase prevents attackers from cheaply creating unbounded nonce keys
-3. **Fair Usage:** Users who need higher parallel execution pay proportionally to their state footprint
-4. **Storage Pattern Alignment:** Costs mirror actual storage operations (cold vs warm access patterns)
+**Rationale for Fixed Pricing:**
+1. **Simplicity:** Fixed costs based on actual EVM storage operations are straightforward to reason about
+2. **Storage Pattern Alignment:** Costs directly mirror EVM cold SSTORE costs for new vs existing slots
+3. **State Growth:** Creating new nonce keys incurs the higher cost naturally through SSTORE set pricing
+
+### Key Authorization Gas Schedule
+
+When a transaction includes a `key_authorization` field to provision a new access key, additional intrinsic gas is charged to cover signature verification and storage operations. This gas is charged **before execution** as part of the transaction's intrinsic gas cost.
+
+#### Gas Components
+
+| Component | Gas Cost | Notes |
+|-----------|----------|-------|
+| **Signature verification** | 3,000 (secp256k1) / 8,000 (P256) / 8,000 + calldata (WebAuthn) | Verifying the root key's signature on the authorization |
+| **Key storage** | 22,000 | Cold SSTORE to store new key (0→non-zero) |
+| **Overhead buffer** | 5,000 | Buffer for event emission, storage reads, and other overhead |
+| **Per spending limit** | 22,000 each | Cold SSTORE per token limit (0→non-zero) |
+
+**Signature verification rationale:** KeyAuthorization requires an *additional* signature verification beyond the transaction signature. Unlike the transaction signature (where ecrecover cost is included in the base 21k), KeyAuthorization must pay the full verification cost:
+- **secp256k1**: 3,000 gas (ecrecover precompile cost)
+- **P256**: 8,000 gas (6,900 from EIP-7951 + 1,100 for signature size). Note: the transaction signature schedule charges only 5,000 additional gas for P256 because it subtracts the 3,000 ecrecover "savings" already in base 21k. KeyAuthorization pays the full 8,000.
+- **WebAuthn**: 8,000 + calldata gas for webauthn_data
+
+#### Gas Formula
+
+```
+KEY_AUTH_BASE_GAS = 30,000  # For secp256k1 signature (3,000 + 22,000 + 5,000)
+KEY_AUTH_BASE_GAS = 35,000  # For P256 signature (5,000 + 3,000 + 22,000 + 5,000)
+KEY_AUTH_BASE_GAS = 35,000 + webauthn_calldata_gas  # For WebAuthn signature
+
+PER_LIMIT_GAS = 22,000  # Per spending limit entry
+
+total_key_auth_gas = KEY_AUTH_BASE_GAS + (num_limits * PER_LIMIT_GAS)
+```
+
+#### Examples
+
+| Configuration | Gas Cost | Calculation |
+|--------------|----------|-------------|
+| secp256k1, no limits | 30,000 | Base only |
+| secp256k1, 1 limit | 52,000 | 30,000 + 22,000 |
+| secp256k1, 3 limits | 96,000 | 30,000 + (3 × 22,000) |
+| P256, no limits | 35,000 | Base with P256 verification |
+| P256, 2 limits | 79,000 | 35,000 + (2 × 22,000) |
+
+#### Rationale
+
+1. **Pre-execution charging**: KeyAuthorization is validated and executed during transaction validation (before the EVM runs), so its gas must be included in intrinsic gas
+2. **Storage cost alignment**: The 22,000 gas per storage slot approximates EVM cold SSTORE costs for new slots
+3. **DoS prevention**: Progressive cost based on number of limits prevents abuse through excessive limit creation
 
 ### Reference Pseudocode
-```
+```python
 def calculate_calldata_gas(data: bytes) -> uint256:
     """
     Calculate gas cost for calldata based on zero and non-zero bytes
@@ -929,16 +958,87 @@ def calculate_calldata_gas(data: bytes) -> uint256:
 
     return gas
 
+
+def calculate_signature_verification_gas(signature: PrimitiveSignature) -> uint256:
+    """
+    Calculate gas cost for verifying a primitive signature.
+
+    Returns the ADDITIONAL gas beyond the base 21k transaction cost.
+    - secp256k1: 0 (already included in base 21k via ecrecover)
+    - P256: 5,000 (8,000 full cost - 3,000 ecrecover already in base 21k)
+    - WebAuthn: 5,000 + calldata gas for webauthn_data
+    """
+    # P256 full verification cost is 8,000 (6,900 from EIP-7951 + 1,100 for signature size)
+    # But base 21k already includes 3,000 for ecrecover, so additional cost is 5,000
+    P256_ADDITIONAL_GAS = 5_000
+
+    if signature.type == Secp256k1:
+        return 0  # Already included in base 21k
+    elif signature.type == P256:
+        return P256_ADDITIONAL_GAS
+    elif signature.type == WebAuthn:
+        webauthn_data_gas = calculate_calldata_gas(signature.webauthn_data)
+        return P256_ADDITIONAL_GAS + webauthn_data_gas
+    else:
+        revert("Invalid signature type")
+
+
+def calculate_key_authorization_gas(key_auth: SignedKeyAuthorization) -> uint256:
+    """
+    Calculate the intrinsic gas cost for a KeyAuthorization.
+
+    This is charged BEFORE execution as part of transaction validation.
+
+    Args:
+        key_auth: SignedKeyAuthorization with fields:
+            - signature: PrimitiveSignature (root key's signature)
+            - limits: Optional[List[TokenLimit]]
+
+    Returns:
+        gas_cost: uint256
+    """
+    # Constants - KeyAuthorization pays FULL signature verification costs
+    # (not the "additional" costs used for transaction signatures)
+    ECRECOVER_GAS = 3_000   # Full ecrecover cost
+    P256_FULL_GAS = 8_000   # Full P256 cost (6,900 + 1,100)
+    COLD_SSTORE_SET_GAS = 22_000  # Storage cost for new slot
+    OVERHEAD_BUFFER = 5_000  # Buffer for event emission, storage reads, etc.
+
+    gas = 0
+
+    # Step 1: Signature verification cost (full cost, not additional)
+    if key_auth.signature.type == Secp256k1:
+        gas += ECRECOVER_GAS  # 3,000
+    elif key_auth.signature.type == P256:
+        gas += P256_FULL_GAS  # 8,000
+    elif key_auth.signature.type == WebAuthn:
+        webauthn_data_gas = calculate_calldata_gas(key_auth.signature.webauthn_data)
+        gas += P256_FULL_GAS + webauthn_data_gas  # 8,000 + calldata
+
+    # Step 2: Key storage
+    gas += COLD_SSTORE_SET_GAS  # 22,000 - store new key (0 → non-zero)
+
+    # Step 3: Overhead buffer
+    gas += OVERHEAD_BUFFER  # 5,000
+
+    # Step 4: Per-limit storage cost
+    num_limits = len(key_auth.limits) if key_auth.limits else 0
+    gas += num_limits * COLD_SSTORE_SET_GAS  # 22,000 per limit
+
+    return gas
+
+
 def calculate_tempo_tx_base_gas(tx):
     """
     Calculate the base gas cost for a TempoTransaction
 
     Args:
         tx: TempoTransaction object with fields:
-            - signature: bytes (variable length)
+            - signature: TempoSignature (variable length)
             - nonce_key: uint192
             - nonce: uint64
             - sender_address: address
+            - key_authorization: Optional[SignedKeyAuthorization]
 
     Returns:
         total_gas: uint256
@@ -946,25 +1046,22 @@ def calculate_tempo_tx_base_gas(tx):
 
     # Constants
     BASE_TX_GAS = 21_000
-    P256_VERIFY_GAS = 5_000 
-    COLD_SSTORE_GAS = 5_000
-    NEW_NONCE_KEY_MULTIPLIER = 20_000
+    EXISTING_NONCE_KEY_GAS = 5_000   # Cold SLOAD (2,100) + warm SSTORE reset (2,900)
+    NEW_NONCE_KEY_GAS = 22_100       # Cold SLOAD (2,100) + SSTORE set (20,000)
+    KEYCHAIN_VALIDATION_GAS = 3_000  # 2,100 SLOAD + 900 processing buffer
 
     # Step 1: Determine signature verification cost
-    sig_length = len(tx.signature)
-
-    if sig_length == 65:  # secp256k1
-        signature_gas = BASE_TX_GAS  # Already includes ecrecover
-    elif sig_length == 129:  # P256
-        signature_gas = BASE_TX_GAS + P256_VERIFY_GAS
-    elif sig_length > 129:  # WebAuthn
-        # WebAuthn signature format: webauthn variable data || r (32) || s (32) || pubKeyX (32) || pubKeyY (32)
-        # Charge calldata gas for everything except the last 128 bytes (r, s, pubKeyX, pubKeyY)
-        webauthn_data = tx.signature[:-128]
-        webauthn_data_gas = calculate_calldata_gas(webauthn_data)
-        signature_gas = BASE_TX_GAS + P256_VERIFY_GAS + webauthn_data_gas
+    # For Keychain signatures, use the inner primitive signature
+    if tx.signature.type == Keychain:
+        inner_sig = tx.signature.inner_signature
     else:
-        revert("Invalid signature length")
+        inner_sig = tx.signature
+
+    signature_gas = BASE_TX_GAS + calculate_signature_verification_gas(inner_sig)
+
+    # Add keychain validation overhead if using access key
+    if tx.signature.type == Keychain:
+        signature_gas += KEYCHAIN_VALIDATION_GAS
 
     # Step 2: Calculate nonce key cost
     if tx.nonce_key == 0:
@@ -972,18 +1069,23 @@ def calculate_tempo_tx_base_gas(tx):
         nonce_gas = 0
     else:
         # User nonce key
-        current_sequence = get_nonce(tx.sender_address, tx.nonce_key)
+        current_nonce = get_nonce(tx.sender_address, tx.nonce_key)
 
-        if current_sequence > 0:
-            # Existing nonce key
-            nonce_gas = COLD_SSTORE_GAS
+        if current_nonce > 0:
+            # Existing nonce key - cold SLOAD + warm SSTORE reset
+            nonce_gas = EXISTING_NONCE_KEY_GAS
         else:
-            # New nonce key - progressive pricing
-            num_active_keys = num_active_user_keys(tx.sender_address)
-            nonce_gas = num_active_keys * NEW_NONCE_KEY_MULTIPLIER
+            # New nonce key - cold SLOAD + SSTORE set
+            nonce_gas = NEW_NONCE_KEY_GAS
 
-    # Step 3: Calculate total base gas
-    total_gas = signature_gas + nonce_gas
+    # Step 3: Calculate key authorization cost (if present)
+    if tx.key_authorization is not None:
+        key_auth_gas = calculate_key_authorization_gas(tx.key_authorization)
+    else:
+        key_auth_gas = 0
+
+    # Step 4: Calculate total base gas
+    total_gas = signature_gas + nonce_gas + key_auth_gas
 
     return total_gas
 ```
@@ -1023,40 +1125,3 @@ Because a single transaction can invalidate multiple others by spending balances
 
 **Assessment:** While this transaction type introduces additional pre-execution validation costs, all costs are bounded to reasonable limits. The mempool complexity issues around cross-transaction dependencies already exist in Ethereum due to 7702 and accounts with code, making static validation inherently difficult. So the incremental cost from this transaction type is acceptable given these existing constraints.
 
-### State Growth and Nonce Garbage Collection
-
-The 2D nonce system introduces some state growth concerns, as each account can create a large number of nonce keys. One discussed solution to this has been garbage collection of nonces after transaction expiry. 
-Current spec makes an *intentionally excludes garbage collection** for nonces.
-
-#### Rationale for Excluding Garbage Collection 
-
-1. **Not Valuable in Isolation, but future compatible**
-In the current implementation, each new nonce is stored in a precompile storage. So nonce state, growth is the exact same problem as general state growth.
-So it is not valuable to enshrine a partial solution just for nonces, until we solve the broader state growth problem.
-
-2. **Progressive Gas Model Addresses State Growth**
-The linearly increasing gas cost model provides economic pressure against state bloat:
-     - 1st new sequence key: 20,000 gas
-     - 2nd new sequence key: 40,000 gas
-     - Nth new sequence key: N × 20,000 gas
-This creates a **practical economic limit** on the number of sequence keys per account. We can also introduce a protocol limit of 32 or 64 nonce keys for each account.
-
-3. **Technical Complexity with Nonce Keys**
-It is unclear how garbage collection would work safely with sequence-based nonces
-Example: If a nonce key is at sequence X and a wallet signs for X+1, but X gets garbage collected before submission, the transaction with X+1 would fail unexpectedly
-
-4. **Future Extensibility**
-The specification includes an optional `validBefore` field in the transaction structure
-If garbage collection becomes necessary, this field can be made mandatory
-
-#### State Growth Analysis
-
-**Worst Case Scenario:**
-- An attacker willing to pay increasing gas costs could create many nonce keys
-- However, the linear cost model makes this economically prohibitive at scale
-- Example: Creating 100 nonce keys would require cumulative gas costs of ~5,000,000 gas just for the nonce key creation
-
-
-**Practical Usage:**
-- Most users will use 1-5 parallel nonce keys for typical parallel transaction patterns
-- Power users requiring higher parallelism will pay proportionally

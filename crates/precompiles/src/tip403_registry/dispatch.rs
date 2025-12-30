@@ -26,6 +26,15 @@ impl Precompile for TIP403Registry {
                     self.policy_id_counter()
                 })
             }
+            ITIP403Registry::policyExistsCall::SELECTOR => {
+                if self.storage.spec().is_allegro_moderato() {
+                    view::<ITIP403Registry::policyExistsCall>(calldata, |call| {
+                        self.policy_exists(call)
+                    })
+                } else {
+                    unknown_selector(selector, self.storage.gas_used(), self.storage.spec())
+                }
+            }
             ITIP403Registry::policyDataCall::SELECTOR => {
                 view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))
             }
@@ -512,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::AllegroModerato);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

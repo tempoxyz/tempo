@@ -136,6 +136,10 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
         let ty = field.ty;
         let consts = PackingConstants::new(field.name);
         let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
+        let slots_to_end = quote! {
+            ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+                .saturating_sub(::alloy::primitives::U256::ONE)
+        };
 
         // Generate byte count constants for each field
         let bytes_expr = quote! { <#ty as crate::storage::StorableType>::BYTES };
@@ -146,35 +150,41 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
             SlotAssignment::Manual(manual_slot) => {
                 let hex_value = format!("{manual_slot}_U256");
                 let slot_lit = syn::LitInt::new(&hex_value, proc_macro2::Span::call_site());
-                let slot_expr = quote! { ::alloy::primitives::uint!(#slot_lit) };
+                // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+                // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
+                let slot_expr = quote! {
+                    ::alloy::primitives::uint!(#slot_lit)
+                        .checked_add(#slots_to_end).expect("slot overflow")
+                        .saturating_sub(#slots_to_end)
+                };
                 (slot_expr, quote! { 0 })
             }
             // Auto-assignment computes slot/offset using const expressions
             SlotAssignment::Auto { base_slot, .. } => {
-                let output = if let Some(current_base) = current_base_slot {
+                let output = if let Some(current_base) = current_base_slot
+                    && current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot()
+                {
                     // Fields that share the same base compute their slots based on the previous field
-                    if current_base.assigned_slot.ref_slot() == field.assigned_slot.ref_slot() {
-                        let (prev_slot, prev_offset) =
-                            PackingConstants::new(current_base.name).into_tuple();
-                        gen_slot_packing_logic(
-                            current_base.ty,
-                            field.ty,
-                            quote! { #prev_slot },
-                            quote! { #prev_offset },
-                        )
-                    }
+                    let (prev_slot, prev_offset) =
+                        PackingConstants::new(current_base.name).into_tuple();
+                    gen_slot_packing_logic(
+                        current_base.ty,
+                        field.ty,
+                        quote! { #prev_slot },
+                        quote! { #prev_offset },
+                    )
+                } else {
                     // If a new base is adopted, start from the base slot and offset 0
-                    else {
-                        let limbs = *base_slot.as_limbs();
-                        (
-                            quote! { ::alloy::primitives::U256::from_limbs([#(#limbs),*]) },
-                            quote! { 0 },
-                        )
-                    }
-                }
-                // First field always starts at slot 0 and offset 0
-                else {
-                    (quote! { ::alloy::primitives::U256::ZERO }, quote! { 0 })
+                    let limbs = *base_slot.as_limbs();
+
+                    // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+                    // by computing the slot as: `SLOT = SLOT + (TYPE_LEN - 1)  - (TYPE_LEN - 1)`
+                    let slot_expr = quote! {
+                        ::alloy::primitives::U256::from_limbs([#(#limbs),*])
+                            .checked_add(#slots_to_end).expect("slot overflow")
+                            .saturating_sub(#slots_to_end)
+                    };
+                    (slot_expr, quote! { 0 })
                 };
                 // update cache
                 current_base_slot = Some(field);
@@ -276,6 +286,10 @@ pub(crate) fn gen_slot_packing_logic(
     let prev_layout_slots = quote! {
         ::alloy::primitives::U256::from_limbs([<#prev_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
     };
+    let curr_slots_to_end = quote! {
+        ::alloy::primitives::U256::from_limbs([<#curr_ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+            .saturating_sub(::alloy::primitives::U256::ONE)
+    };
 
     // Compute packing decision at compile-time
     let can_pack_expr = quote! {
@@ -285,7 +299,16 @@ pub(crate) fn gen_slot_packing_logic(
     };
 
     let slot_expr = quote! {{
-        if #can_pack_expr { #prev_slot_expr } else { #prev_slot_expr.checked_add(#prev_layout_slots).expect("slot overflow") }
+        if #can_pack_expr {
+            #prev_slot_expr
+        } else {
+            // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
+            // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - 1) - (CURR_LEN - 1)`
+            #prev_slot_expr
+                .checked_add(#prev_layout_slots).expect("slot overflow")
+                .checked_add(#curr_slots_to_end).expect("slot overflow")
+                .saturating_sub(#curr_slots_to_end)
+        }
     }};
 
     let offset_expr = quote! {{
@@ -366,69 +389,80 @@ pub(crate) fn gen_layout_ctx_expr_inefficient(
 /// Generate collision detection debug assertions for a field against all other fields.
 ///
 /// This function generates runtime checks that verify storage slots don't overlap.
-/// Only manual slot assignments are checked, as auto-assigned slots are guaranteed
-/// not to collide by the allocation algorithm.
+/// Checks are generated for all fields (both manual and auto-assigned) to ensure
+/// comprehensive collision detection.
 pub(crate) fn gen_collision_check_fn(
     idx: usize,
     field: &LayoutField<'_>,
     all_fields: &[LayoutField<'_>],
-) -> Option<(Ident, TokenStream)> {
+) -> (Ident, TokenStream) {
     fn gen_slot_count_expr(ty: &Type) -> TokenStream {
         quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
     }
 
-    // Only check explicit slot assignments against other fields
-    if let SlotAssignment::Manual(_) = field.assigned_slot {
-        let field_name = field.name;
-        let check_fn_name = format_ident!("__check_collision_{}", field_name);
-        let slot_const = PackingConstants::new(field.name).slot();
+    let check_fn_name = format_ident!("__check_collision_{}", field.name);
+    let consts = PackingConstants::new(field.name);
+    let (slot_const, offset_const) = consts.into_tuple();
+    let (field_name, field_ty) = (field.name, field.ty);
 
-        let mut checks = TokenStream::new();
+    let mut checks = TokenStream::new();
 
-        // Check against all other fields
-        for (other_idx, other_field) in all_fields.iter().enumerate() {
-            if other_idx == idx {
-                continue;
-            }
-
-            let other_slot_const = PackingConstants::new(other_field.name).slot();
-            let other_name = other_field.name;
-
-            // Generate slot count expressions
-            let current_count_expr = gen_slot_count_expr(field.ty);
-            let other_count_expr = gen_slot_count_expr(other_field.ty);
-
-            // Generate runtime assertion that checks for overlap
-            checks.extend(quote! {
-                {
-                    let slot = #slot_const;
-                    let slot_end = slot + #current_count_expr;
-                    let other_slot = #other_slot_const;
-                    let other_end = other_slot + #other_count_expr;
-
-                    let no_overlap = slot_end.le(&other_slot) || other_end.le(&slot);
-                    debug_assert!(
-                        no_overlap,
-                        "Storage slot collision: field `{}` (slot {:?}) overlaps with field `{}` (slot {:?})",
-                        stringify!(#field_name),
-                        slot,
-                        stringify!(#other_name),
-                        other_slot
-                    );
-                }
-            });
+    // Check against all other fields
+    for (other_idx, other_field) in all_fields.iter().enumerate() {
+        if other_idx == idx {
+            continue;
         }
 
-        let check_fn = quote! {
-            #[cfg(debug_assertions)]
-            #[inline(always)]
-            fn #check_fn_name() {
-                #checks
-            }
-        };
+        let other_consts = PackingConstants::new(other_field.name);
+        let (other_slot_const, other_offset_const) = other_consts.into_tuple();
+        let other_name = other_field.name;
+        let other_ty = other_field.ty;
 
-        Some((check_fn_name, check_fn))
-    } else {
-        None
+        // Generate slot count expressions
+        let current_count_expr = gen_slot_count_expr(field.ty);
+        let other_count_expr = gen_slot_count_expr(other_field.ty);
+
+        // Generate runtime assertion that checks for overlap
+        // Two fields collide if their slot ranges overlap AND (if same slot) their byte ranges overlap
+        checks.extend(quote! {
+            {
+                let slot = #slot_const;
+                let slot_end = slot + #current_count_expr;
+                let other_slot = #other_slot_const;
+                let other_slot_end = other_slot + #other_count_expr;
+
+                // Determine if there's no overlap:
+                // - If starting in different slots: rely on slot range check
+                // - If starting in same slot (packed fields): check byte ranges
+                let no_overlap = if slot == other_slot {
+                    let byte_end = #offset_const + <#field_ty as crate::storage::StorableType>::BYTES;
+                    let other_byte_end = #other_offset_const + <#other_ty as crate::storage::StorableType>::BYTES;
+                    byte_end <= #other_offset_const || other_byte_end <= #offset_const
+                } else {
+                    slot_end.le(&other_slot) || other_slot_end.le(&slot)
+                };
+
+                debug_assert!(
+                    no_overlap,
+                    "Storage slot collision: field `{}` (slot {:?}, offset {}) overlaps with field `{}` (slot {:?}, offset {})",
+                    stringify!(#field_name),
+                    slot,
+                    #offset_const,
+                    stringify!(#other_name),
+                    other_slot,
+                    #other_offset_const
+                );
+            }
+        });
     }
+
+    let check_fn = quote! {
+        #[cfg(debug_assertions)]
+        #[inline(always)]
+        fn #check_fn_name() {
+            #checks
+        }
+    };
+
+    (check_fn_name, check_fn)
 }

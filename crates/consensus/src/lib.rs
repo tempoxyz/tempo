@@ -23,15 +23,17 @@ use tempo_primitives::{
 };
 
 // End-of-block system transactions (required)
+// Pre AllegroModerato: 3 txs (fee manager, stablecoin exchange, subblocks signatures)
+// Post AllegroModerato: 1 tx (subblocks signatures)
 const SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO: usize = 3;
 const SYSTEM_TX_ADDRESSES_PRE_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_PRE_ALLEGRO_MODERATO] = [
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_EXCHANGE_ADDRESS,
     Address::ZERO,
 ];
-const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 2;
+const SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO: usize = 1;
 const SYSTEM_TX_ADDRESSES_POST_ALLEGRO_MODERATO: [Address; SYSTEM_TX_COUNT_POST_ALLEGRO_MODERATO] =
-    [TIP_FEE_MANAGER_ADDRESS, Address::ZERO];
+    [Address::ZERO];
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;

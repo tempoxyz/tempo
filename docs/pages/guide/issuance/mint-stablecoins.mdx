@@ -74,11 +74,11 @@ export function GrantIssuerRole() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -177,11 +177,11 @@ export function MintToken() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -331,11 +331,11 @@ export function BurnToken() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -405,7 +405,7 @@ If your token has a supply cap set, any `mint()` or `mintWithMemo()` call that w
 - Increase the supply cap (requires `DEFAULT_ADMIN_ROLE`)
 - Remove the cap entirely by setting it to `type(uint256).max`
 
-Use [`getMetadata`](/sdk/typescript/viem/token.getMetadata) to check your token's total supply before minting.
+Use [`getMetadata`](https://viem.sh/tempo/actions/token.getMetadata) to check your token's total supply before minting.
 
 ### Role Separation
 

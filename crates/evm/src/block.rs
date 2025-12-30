@@ -27,7 +27,7 @@ use revm::{
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::CREATEX_ADDRESS;
+use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
 
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
@@ -345,7 +345,8 @@ where
                 ));
             };
 
-            if !validator.verify(None, signature_hash.as_slice(), &signature) {
+            // TODO: Add namespace?
+            if !validator.verify(&[], signature_hash.as_slice(), &signature) {
                 return Err(BlockValidationError::msg("invalid subblock signature"));
             }
 
@@ -502,7 +503,7 @@ where
             }
         }
 
-        // Modify CreateX bytecode if AllegroModerato is active and bytecode is outdated
+        // Modify CreateX bytecode and upgrade Multicall to Multicall3 if AllegroModerato is active
         if self
             .inner
             .spec
@@ -511,6 +512,7 @@ where
             let evm = self.evm_mut();
             let db = evm.ctx_mut().db_mut();
 
+            // Update CreateX bytecode if outdated
             let acc = db
                 .load_cache_account(CREATEX_ADDRESS)
                 .map_err(BlockExecutionError::other)?;
@@ -529,6 +531,26 @@ where
                 revm_acc.mark_touch();
 
                 db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
+            }
+
+            // Update Multicall to Multicall3 if outdated
+            let acc = db
+                .load_cache_account(MULTICALL_ADDRESS)
+                .map_err(BlockExecutionError::other)?;
+
+            let mut acc_info = acc.account_info().unwrap_or_default();
+
+            let correct_code_hash = tempo_contracts::contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
+            if acc_info.code_hash != correct_code_hash {
+                acc_info.code_hash = correct_code_hash;
+                acc_info.code = Some(Bytecode::new_legacy(
+                    tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone(),
+                ));
+
+                let mut revm_acc: Account = acc_info.into();
+                revm_acc.mark_touch();
+
+                db.commit(HashMap::from_iter([(MULTICALL_ADDRESS, revm_acc)]));
             }
         }
 
@@ -628,14 +650,13 @@ where
             .spec
             .is_allegro_moderato_active_at_timestamp(block_timestamp);
 
-        // Post AllegroModerato, stablecoin DEX system tx is no longer required
-        // (orders are immediately active when placed)
-        let expected_seen_stablecoin_dex = !is_allegro_moderato;
+        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
+        let expected_seen_system_tx = !is_allegro_moderato;
 
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: true,
-                seen_stablecoin_dex: expected_seen_stablecoin_dex,
+                seen_fee_manager: expected_seen_system_tx,
+                seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })
         {

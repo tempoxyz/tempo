@@ -683,6 +683,17 @@ where
         self.protocol_pool
             .get_blobs_for_versioned_hashes_v2(versioned_hashes)
     }
+
+    fn get_blobs_for_versioned_hashes_v3(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<
+        Vec<Option<alloy_eips::eip4844::BlobAndProofV2>>,
+        reth_transaction_pool::blobstore::BlobStoreError,
+    > {
+        self.protocol_pool
+            .get_blobs_for_versioned_hashes_v3(versioned_hashes)
+    }
 }
 
 impl<Client> TransactionPoolExt for TempoTransactionPool<Client>

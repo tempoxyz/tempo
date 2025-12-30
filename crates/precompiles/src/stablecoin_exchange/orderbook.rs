@@ -14,6 +14,70 @@ pub const MIN_TICK: i16 = -2000;
 pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
 
+/// Rounding direction for price conversions.
+///
+/// Rounding should always favor the protocol to prevent insolvency:
+/// - When users deposit funds (escrow) → round UP (user pays more)
+/// - When users receive funds (settlement/refunds) → round DOWN (user receives less)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundingDirection {
+    /// Round down (floor division) - favors protocol when user receives funds
+    Down,
+    /// Round up (ceiling division) - favors protocol when user deposits funds
+    Up,
+}
+
+/// Checked ceiling division for u128.
+/// Returns None if divisor is zero.
+fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
+    if divisor == 0 {
+        return None;
+    }
+    Some(numerator.div_ceil(divisor))
+}
+
+/// Convert base token amount to quote token amount at a given tick.
+///
+/// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
+///
+/// # Arguments
+/// * `base_amount` - Amount of base tokens
+/// * `tick` - Price tick
+/// * `rounding` - Rounding direction
+///
+/// # Returns
+/// Quote token amount, or None on overflow
+pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    let numerator = base_amount.checked_mul(price)?;
+
+    match rounding {
+        RoundingDirection::Down => numerator.checked_div(PRICE_SCALE as u128),
+        RoundingDirection::Up => checked_div_ceil(numerator, PRICE_SCALE as u128),
+    }
+}
+
+/// Convert quote token amount to base token amount at a given tick.
+///
+/// Formula: base_amount = (quote_amount * PRICE_SCALE) / price
+///
+/// # Arguments
+/// * `quote_amount` - Amount of quote tokens
+/// * `tick` - Price tick
+/// * `rounding` - Rounding direction
+///
+/// # Returns
+/// Base token amount, or None on overflow
+pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    let numerator = quote_amount.checked_mul(PRICE_SCALE as u128)?;
+
+    match rounding {
+        RoundingDirection::Down => numerator.checked_div(price),
+        RoundingDirection::Up => checked_div_ceil(numerator, price),
+    }
+}
+
 // Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
 //
 // i16::MIN as price
@@ -732,6 +796,114 @@ mod tests {
                 ));
                 Ok(())
             })
+        }
+    }
+
+    mod rounding_tests {
+        use super::*;
+
+        #[test]
+        fn test_base_to_quote_rounds_down_correctly() {
+            let base_amount = 1_000_003u128;
+            let tick = 0i16;
+
+            let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert_eq!(quote_down, 1_000_003);
+            assert_eq!(quote_up, 1_000_003);
+        }
+
+        #[test]
+        fn test_base_to_quote_rounds_up_when_remainder_exists() {
+            let base_amount = 33u128;
+            let tick = 100i16;
+
+            let price = tick_to_price(tick) as u128;
+            let numerator = base_amount * price;
+            let has_remainder = !numerator.is_multiple_of(PRICE_SCALE as u128);
+
+            let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            if has_remainder {
+                assert_eq!(
+                    quote_up,
+                    quote_down + 1,
+                    "Round up should be 1 more than round down when there's a remainder"
+                );
+            } else {
+                assert_eq!(
+                    quote_up, quote_down,
+                    "Round up and down should be equal when there's no remainder"
+                );
+            }
+        }
+
+        #[test]
+        fn test_quote_to_base_rounds_down_correctly() {
+            let quote_amount = 1_000_003u128;
+            let tick = 0i16;
+
+            let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
+            let base_up = quote_to_base(quote_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert_eq!(base_down, 1_000_003);
+            assert_eq!(base_up, 1_000_003);
+        }
+
+        #[test]
+        fn test_quote_to_base_rounds_up_when_remainder_exists() {
+            let quote_amount = 33u128;
+            let tick = 100i16;
+
+            let price = tick_to_price(tick) as u128;
+            let numerator = quote_amount * PRICE_SCALE as u128;
+            let has_remainder = !numerator.is_multiple_of(price);
+
+            let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
+            let base_up = quote_to_base(quote_amount, tick, RoundingDirection::Up).unwrap();
+
+            if has_remainder {
+                assert_eq!(
+                    base_up,
+                    base_down + 1,
+                    "Round up should be 1 more than round down when there's a remainder"
+                );
+            } else {
+                assert_eq!(
+                    base_up, base_down,
+                    "Round up and down should be equal when there's no remainder"
+                );
+            }
+        }
+
+        #[test]
+        fn test_rounding_favors_protocol_for_bid_escrow() {
+            let base_amount = 10_000_001u128;
+            let tick = 100i16;
+
+            let escrow_floor = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let escrow_ceil = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert!(
+                escrow_ceil >= escrow_floor,
+                "Ceiling should never be less than floor"
+            );
+        }
+
+        #[test]
+        fn test_rounding_favors_protocol_for_settlement() {
+            let base_amount = 10_000_001u128;
+            let tick = 100i16;
+
+            let payout_floor = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let payout_ceil = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert!(
+                payout_floor <= payout_ceil,
+                "Floor should never be more than ceiling"
+            );
         }
     }
 }

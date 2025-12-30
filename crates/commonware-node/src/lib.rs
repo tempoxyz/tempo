@@ -7,8 +7,7 @@ pub(crate) mod alias;
 mod args;
 pub(crate) mod config;
 pub mod consensus;
-pub mod db;
-pub mod dkg;
+pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub mod metrics;
 pub(crate) mod utils;
@@ -24,11 +23,12 @@ use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
 
-use crate::config::{
+use crate::config::PEERSETS_TO_TRACK;
+pub use crate::config::{
     BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PEERSETS_TO_TRACK,
-    PENDING_CHANNEL_IDENT, PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT,
-    RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
+    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
 pub use args::Args;
@@ -101,7 +101,6 @@ pub async fn run_consensus_stack(
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         share,
-        delete_signing_share: config.delete_signing_share,
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
@@ -175,7 +174,7 @@ async fn instantiate_network(
     signing_key: PrivateKey,
     listen_addr: SocketAddr,
     mailbox_size: usize,
-    max_message_size: usize,
+    max_message_size: u32,
     allow_unregistered_handshakes: bool,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,

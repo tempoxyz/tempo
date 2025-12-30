@@ -1,33 +1,25 @@
 use crate::{
     db,
-    dkg::{HardforkRegime, RegimeEpochState, ceremony, manager::ValidatorState},
+    dkg::{
+        ceremony,
+        manager::{ValidatorState, actor},
+    },
 };
+use commonware_consensus::types::Epoch;
 use commonware_runtime::{Clock, Metrics, Storage};
 
 // Key helpers for typed storage
-fn ceremony_key(epoch: u64) -> String {
+fn ceremony_key(epoch: Epoch) -> String {
     format!("ceremony_{epoch}")
 }
 
-fn validators_key(epoch: u64) -> String {
+fn validators_key(epoch: Epoch) -> String {
     format!("validators_{epoch}")
 }
 
 const LAST_PROCESSED_HEIGHT_KEY: &str = "last_processed_height";
-
-fn current_epoch_key(regime: HardforkRegime) -> &'static str {
-    match regime {
-        HardforkRegime::PreAllegretto => "pre_allegretto_epoch_current",
-        HardforkRegime::PostAllegretto => "post_allegretto_epoch_current",
-    }
-}
-
-fn previous_epoch_key(regime: HardforkRegime) -> &'static str {
-    match regime {
-        HardforkRegime::PreAllegretto => "pre_allegretto_epoch_previous",
-        HardforkRegime::PostAllegretto => "post_allegretto_epoch_previous",
-    }
-}
+const CURRENT_EPOCH_KEY: &str = "current_epoch";
+const PREVIOUS_EPOCH_KEY: &str = "previous_epoch";
 
 /// A DKG-specific transaction wrapper around the generic database transaction.
 pub(crate) struct DkgReadWriteTransaction<TContext>(db::ReadWriteTransaction<TContext>)
@@ -43,6 +35,7 @@ where
         Self(tx)
     }
 
+    #[expect(dead_code, reason = "unused right now, but important in the future")]
     /// Get the node version from the database.
     pub(super) async fn get_node_version(&self) -> Result<Option<String>, eyre::Error> {
         self.0.get_node_version().await
@@ -75,25 +68,25 @@ where
     /// Get ceremony state for a specific epoch.
     pub(in crate::dkg) async fn get_ceremony(
         &self,
-        epoch: u64,
+        epoch: Epoch,
     ) -> Result<Option<ceremony::State>, eyre::Error> {
         self.0.get(ceremony_key(epoch)).await
     }
 
     /// Set ceremony state for a specific epoch.
-    pub(in crate::dkg) fn set_ceremony(&mut self, epoch: u64, state: ceremony::State) {
+    pub(in crate::dkg) fn set_ceremony(&mut self, epoch: Epoch, state: ceremony::State) {
         self.0.insert(ceremony_key(epoch), state)
     }
 
     /// Remove ceremony state for a specific epoch.
-    pub(super) fn remove_ceremony(&mut self, epoch: u64) {
+    pub(super) fn remove_ceremony(&mut self, epoch: Epoch) {
         self.0.remove(ceremony_key(epoch))
     }
 
     /// Update ceremony state for a specific epoch using a closure.
     pub(in crate::dkg) async fn update_ceremony<F>(
         &mut self,
-        epoch: u64,
+        epoch: Epoch,
         f: F,
     ) -> Result<(), eyre::Error>
     where
@@ -110,66 +103,52 @@ where
     /// Get validators state for a specific epoch.
     pub(super) async fn get_validators(
         &self,
-        epoch: u64,
+        epoch: Epoch,
     ) -> Result<Option<ValidatorState>, eyre::Error> {
         self.0.get(validators_key(epoch)).await
     }
 
     /// Set validators state for a specific epoch.
-    pub(super) fn set_validators(&mut self, epoch: u64, state: ValidatorState) {
+    pub(super) fn set_validators(&mut self, epoch: Epoch, state: ValidatorState) {
         self.0.insert(validators_key(epoch), state)
     }
 
     /// Remove validators state for a specific epoch.
-    pub(super) fn remove_validators(&mut self, epoch: u64) {
+    pub(super) fn remove_validators(&mut self, epoch: Epoch) {
         self.0.remove(validators_key(epoch))
     }
 
     // ── DKG Epoch Store ─────────────────────────────────────────────────────
 
     /// Get the current epoch state for the given hardfork regime.
-    pub(super) async fn get_epoch<S: RegimeEpochState>(&self) -> Result<Option<S>, eyre::Error> {
-        self.0.get(current_epoch_key(S::REGIME)).await
+    pub(super) async fn get_actor_state(&self) -> Result<Option<actor::State>, eyre::Error> {
+        self.0.get(CURRENT_EPOCH_KEY).await
     }
 
     /// Set the current epoch state for the given hardfork regime.
-    pub(super) fn set_epoch<S: RegimeEpochState>(&mut self, state: S) {
-        self.0.insert(current_epoch_key(S::REGIME), state)
+    pub(super) fn set_actor_state(&mut self, state: actor::State) {
+        self.0.insert(CURRENT_EPOCH_KEY, state)
     }
 
     /// Get the previous epoch state for the given hardfork regime.
-    pub(super) async fn get_previous_epoch<S: RegimeEpochState>(
+    pub(super) async fn get_previous_actor_state(
         &self,
-    ) -> Result<Option<S>, eyre::Error> {
-        self.0.get(previous_epoch_key(S::REGIME)).await
+    ) -> Result<Option<actor::State>, eyre::Error> {
+        self.0.get(PREVIOUS_EPOCH_KEY).await
     }
 
     /// Set the previous epoch state for the given hardfork regime.
-    pub(super) fn set_previous_epoch<S: RegimeEpochState>(&mut self, state: S) {
-        self.0.insert(previous_epoch_key(S::REGIME), state)
+    pub(super) fn set_previous_actor_state(&mut self, state: actor::State) {
+        self.0.insert(PREVIOUS_EPOCH_KEY, state)
     }
 
     /// Remove the previous epoch state for the given hardfork regime.
-    pub(super) fn remove_previous_epoch(&mut self, regime: HardforkRegime) {
-        self.0.remove(previous_epoch_key(regime))
+    pub(super) fn remove_previous_actor_state(&mut self) {
+        self.0.remove(PREVIOUS_EPOCH_KEY)
     }
 
-    /// Remove the current epoch state for the given hardfork regime.
-    pub(super) fn remove_epoch(&mut self, regime: HardforkRegime) {
-        self.0.remove(current_epoch_key(regime))
-    }
-
-    /// Check if a post-allegretto epoch state exists.
-    pub(super) async fn has_post_allegretto_state(&self) -> bool {
-        self.0
-            .contains_key(current_epoch_key(HardforkRegime::PostAllegretto))
-            .await
-    }
-
-    /// Check if a pre-allegretto epoch state exists.
-    pub(super) async fn has_pre_allegretto_state(&self) -> bool {
-        self.0
-            .contains_key(current_epoch_key(HardforkRegime::PreAllegretto))
-            .await
+    /// Check if an epoch state exists in the database.
+    pub(super) async fn has_actor_state(&self) -> bool {
+        self.0.contains_key(CURRENT_EPOCH_KEY).await
     }
 }
