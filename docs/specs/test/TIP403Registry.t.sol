@@ -702,6 +702,15 @@ contract TIP403RegistryTest is BaseTest {
         assertFalse(registry.isAuthorized(999, alice));
     }
 
+    function test_PolicyData_RevertsForNonExistentPolicy() public {
+        // Querying policy data for non-existent policy should revert
+        try registry.policyData(999) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP403Registry.PolicyNotFound.selector));
+        }
+    }
+
     function test_PolicyIdCounter_Increment() public {
         uint64 initialCounter = registry.policyIdCounter();
 
