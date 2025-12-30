@@ -237,4 +237,10 @@ interface ITIP20 {
         view
         returns (address rewardRecipient, uint256 rewardPerToken, uint256 rewardBalance);
 
+    /// @notice Calculates the pending claimable rewards for an account without modifying state.
+    /// @dev Returns the total pending claimable reward amount, including stored balance and newly accrued rewards.
+    /// @param account The address to query pending rewards for.
+    /// @return The total pending claimable reward amount.
+    function getPendingRewards(address account) external view returns (uint256);
+
 }
