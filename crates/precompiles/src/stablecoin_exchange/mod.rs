@@ -25,8 +25,8 @@ use crate::{
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
 
-/// Minimum order size of $10 USD
-pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
+/// Minimum order size of $100 USD
+pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
 
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
