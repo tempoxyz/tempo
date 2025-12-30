@@ -42,7 +42,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -182,7 +182,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                             );
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            warn!("subblock transactions channel closed unexpectedly");
+                            error!("subblock transactions channel closed unexpectedly");
                             break;
                         }
                     }
