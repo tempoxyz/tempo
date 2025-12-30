@@ -648,7 +648,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
             registry.initialize()?;
-            
+
             let policy_id = registry.create_policy(
                 admin,
                 ITIP403Registry::createPolicyCall {
@@ -667,7 +667,7 @@ mod tests {
             )?;
 
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-            
+
             token.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
@@ -677,7 +677,10 @@ mod tests {
 
             let err = token.claim_rewards(alice).unwrap_err();
             assert!(
-                matches!(err, TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))),
+                matches!(
+                    err,
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                ),
                 "Expected PolicyForbids error, got: {err:?}"
             );
 
