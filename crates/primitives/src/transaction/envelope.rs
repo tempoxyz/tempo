@@ -622,7 +622,10 @@ mod codec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Signature, TxKind, address};
+    use crate::transaction::{Call, TempoTransaction};
+    use alloy_primitives::{Bytes, Signature, TxKind, U256, address};
+
+    const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
     #[test]
     fn test_non_fee_token_access() {
@@ -642,9 +645,8 @@ mod tests {
     #[test]
     fn test_payment_classification_legacy_tx() {
         // Test with legacy transaction type
-        let payment_addr = address!("20c0000000000000000000000000000000000001");
         let tx = TxLegacy {
-            to: TxKind::Call(payment_addr),
+            to: TxKind::Call(PAYMENT_TKN),
             gas_limit: 21000,
             ..Default::default()
         };
@@ -665,6 +667,76 @@ mod tests {
         let signed = Signed::new_unhashed(tx, Signature::test_signature());
         let envelope = TempoTxEnvelope::Legacy(signed);
 
+        assert!(!envelope.is_payment());
+    }
+
+    fn create_aa_envelope(call: Call) -> TempoTxEnvelope {
+        let tx = TempoTransaction {
+            fee_token: Some(PAYMENT_TKN),
+            calls: vec![call],
+            ..Default::default()
+        };
+        TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()))
+    }
+
+    #[test]
+    fn test_payment_classification_aa_with_tip20_prefix() {
+        let payment_addr = address!("20c0000000000000000000000000000000000001");
+        let call = Call {
+            to: TxKind::Call(payment_addr),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_aa_without_tip20_prefix() {
+        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let call = Call {
+            to: TxKind::Call(non_payment_addr),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_aa_no_to_address() {
+        let call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_aa_partial_match() {
+        // First 14 bytes (28 hex chars) match TIP20_PAYMENT_PREFIX, remaining 6 bytes differ
+        let payment_addr = address!("20c0000000000000000000000000111111111111");
+        let call = Call {
+            to: TxKind::Call(payment_addr),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
+        assert!(envelope.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_aa_different_prefix() {
+        // Different prefix (30c0 instead of 20c0)
+        let non_payment_addr = address!("30c0000000000000000000000000000000000001");
+        let call = Call {
+            to: TxKind::Call(non_payment_addr),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let envelope = create_aa_envelope(call);
         assert!(!envelope.is_payment());
     }
 }
