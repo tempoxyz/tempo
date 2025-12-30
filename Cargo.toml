@@ -184,16 +184,16 @@ alloy-signer-local = "1.1.3"
 alloy-sol-types = "1.5.0"
 alloy-transport = "1.1.3"
 
-commonware-broadcast = "0.0.64"
-commonware-codec = "0.0.64"
-commonware-consensus = "0.0.64"
-commonware-cryptography = "0.0.64"
-commonware-macros = "0.0.64"
-commonware-math = "0.0.64"
-commonware-p2p = "0.0.64"
-commonware-runtime = "0.0.64"
-commonware-storage = "0.0.64"
-commonware-utils = "0.0.64"
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "d16c7481c72cf6f19b77e1435f1e5dd8e32a1aac" }
 arbitrary = { version = "1.3", features = ["derive"] }
 async-lock = "3.4.1"
 async-trait = "0.1"
