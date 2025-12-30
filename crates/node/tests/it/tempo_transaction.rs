@@ -74,11 +74,8 @@ async fn fund_address_with_fee_tokens(
     };
 
     // Sign and send the funding transaction
-    let sig_hash = funding_tx.signature_hash();
-    let signature = funder_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
-    let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
+    let signature = funder_signer.sign_hash_sync(&funding_tx.signature_hash())?;
+    let funding_envelope: TempoTxEnvelope = funding_tx.into_signed(signature.into()).into();
     let mut encoded_funding = Vec::new();
     funding_envelope.encode_2718(&mut encoded_funding);
 
@@ -605,15 +602,11 @@ async fn submit_and_mine_aa_tx(
     tx: TempoTransaction,
     signature: TempoSignature,
 ) -> eyre::Result<B256> {
-    let signed_tx = AASigned::new_unhashed(tx, signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
-    let tx_hash = envelope.tx_hash();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
-
-    setup.node.rpc.inject_tx(encoded.into()).await?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+    setup.node.rpc.inject_tx(envelope.encoded_2718().into()).await?;
     setup.node.advance_block().await?;
-    Ok(*tx_hash)
+    Ok(tx_hash)
 }
 
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
@@ -829,11 +822,8 @@ fn sign_aa_tx_webauthn(
 
 /// Helper to encode an AA transaction
 fn encode_aa_tx(tx: TempoTransaction, signature: TempoSignature) -> Vec<u8> {
-    let signed_tx = AASigned::new_unhashed(tx, signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
-    encoded
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    envelope.encoded_2718()
 }
 
 // ===== Token Helper Functions =====
@@ -879,11 +869,8 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 
     // Sign and encode the transaction
     let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
-    let encoded = encode_aa_tx(tx.clone(), aa_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let encoded = envelope.encoded_2718();
 
     println!(
         "Encoded AA transaction: {} bytes (type: 0x{:02x})",
@@ -952,11 +939,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
     // Sign and encode transaction
     let aa_signature = sign_aa_tx_secp256k1(&tx_protocol, &alice_signer)?;
-    let encoded_protocol = encode_aa_tx(tx_protocol.clone(), aa_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_tx_protocol = AASigned::new_unhashed(tx_protocol, aa_signature);
-    let envelope_protocol: TempoTxEnvelope = signed_tx_protocol.into();
+    let envelope_protocol: TempoTxEnvelope = tx_protocol.into_signed(aa_signature).into();
+    let encoded_protocol = envelope_protocol.encoded_2718();
 
     println!(
         "Transaction with nonce_key=0 encoded, size: {} bytes",
@@ -995,11 +979,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
     // Sign and encode transaction
     let aa_signature_parallel = sign_aa_tx_secp256k1(&tx_parallel, &alice_signer)?;
-    let encoded_parallel = encode_aa_tx(tx_parallel.clone(), aa_signature_parallel.clone());
-
-    // Recreate envelope for verification
-    let signed_tx_parallel = AASigned::new_unhashed(tx_parallel, aa_signature_parallel);
-    let envelope_parallel: TempoTxEnvelope = signed_tx_parallel.into();
+    let envelope_parallel: TempoTxEnvelope = tx_parallel.into_signed(aa_signature_parallel).into();
+    let encoded_parallel = envelope_parallel.encoded_2718();
 
     println!(
         "Transaction with nonce_key=1 encoded, size: {} bytes",

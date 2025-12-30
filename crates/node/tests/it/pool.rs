@@ -28,12 +28,7 @@ use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
-    transaction::{
-        calc_gas_balance_spending,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
-    },
+    transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -123,11 +118,8 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
     };
     let signer = PrivateKeySigner::random();
 
-    let sig_hash = tx.signature_hash();
-    let signature = signer.sign_hash_sync(&sig_hash).unwrap();
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_tx = AASigned::new_unhashed(tx.clone(), aa_signature);
-    let tx: TempoTxEnvelope = signed_tx.into();
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let tx: TempoTxEnvelope = tx.clone().into_signed(signature.into()).into();
 
     let res = node
         .pool
@@ -188,12 +180,8 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     };
 
     // Sign the AA transaction
-    let sig_hash = tx_aa.signature_hash();
-    let signature = signer_wallet.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_tx = AASigned::new_unhashed(tx_aa, aa_signature);
-
-    let envelope: TempoTxEnvelope = signed_tx.into();
+    let signature = signer_wallet.sign_hash_sync(&tx_aa.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx_aa.into_signed(signature.into()).into();
     let recovered = envelope.try_into_recovered()?;
     let tx_hash = *recovered.tx_hash();
     assert_eq!(recovered.signer(), signer_addr);
