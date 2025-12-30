@@ -132,6 +132,12 @@ impl TempoNode {
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
         ProviderFactoryBuilder::default()
     }
+
+    /// Sets the validator key for filtering subblock transactions.
+    pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
+        self.validator_key = validator_key;
+        self
+    }
 }
 
 impl NodeTypes for TempoNode {
