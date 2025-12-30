@@ -24,7 +24,7 @@ impl TIP20Token {
         }
 
         self.ensure_transfer_authorized(msg_sender, token_address)?;
-        self.check_spending_limit(msg_sender, call.amount)?;
+        self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, token_address, call.amount)?;
 

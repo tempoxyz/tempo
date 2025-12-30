@@ -539,7 +539,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_recipient(to)?;
         self.ensure_transfer_authorized(from, to)?;
-        self.check_spending_limit(from, amount)?;
+        self.check_and_update_spending_limit(from, amount)?;
 
         self._transfer(from, to, amount)?;
 
@@ -583,7 +583,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.check_recipient(call.to)?;
         self.ensure_transfer_authorized(msg_sender, call.to)?;
-        self.check_spending_limit(msg_sender, call.amount)?;
+        self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
         self._transfer(msg_sender, call.to, call.amount)?;
 
@@ -720,7 +720,7 @@ impl TIP20Token {
     }
 
     /// Checks and updates spending limits for access keys.
-    pub fn check_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
+    pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
@@ -763,7 +763,7 @@ impl TIP20Token {
             );
         }
 
-        self.check_spending_limit(from, amount)?;
+        self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
         let from_reward_recipient = self.update_rewards(from)?;
