@@ -997,12 +997,13 @@ impl StablecoinExchange {
 
         level_handler.write(level)?;
 
-        // Refund tokens to maker - round DOWN to favor protocol
+        // Refund tokens to maker - must match the escrow amount
         let orderbook = self.books.at(order.book_key()).read()?;
         if order.is_bid() {
-            // Bid orders are in quote token, refund quote amount - round DOWN
+            // Bid orders escrowed quote tokens using RoundingDirection::Up,
+            // so refund must also use Up to return the exact escrowed amount
             let quote_amount =
-                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Down)
+                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
@@ -1500,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancellation_refund_rounding_favors_protocol() -> eyre::Result<()> {
+    fn test_cancellation_refund_equals_escrow_for_bid_orders() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -1509,12 +1510,12 @@ mod tests {
             let alice = Address::random();
             let admin = Address::random();
 
+            // Use an amount that will cause rounding (not evenly divisible)
             let base_amount = 10_000_003u128;
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
             let escrow_ceil = (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
-            let refund_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)
@@ -1532,18 +1533,22 @@ mod tests {
 
             let order_id = exchange.place(alice, base_token, base_amount, true, tick)?;
 
+            // Verify escrow was taken
+            let alice_balance_after_place = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(
+                alice_balance_after_place, 0,
+                "All quote tokens should be escrowed"
+            );
+
             exchange.cancel(alice, order_id)?;
 
             let alice_refund = exchange.balance_of(alice, quote_token)?;
 
+            // The refund should equal the escrow amount - user should not lose tokens
+            // when placing and immediately canceling an order
             assert_eq!(
-                alice_refund, refund_floor,
-                "Cancellation refund should round DOWN to favor protocol. Got {alice_refund}, expected floor {refund_floor}"
-            );
-
-            assert!(
-                escrow_ceil > refund_floor,
-                "Protocol should keep the rounding difference: escrowed {escrow_ceil} but refunded {refund_floor}"
+                alice_refund, escrow_ceil,
+                "Cancellation refund must equal escrow amount. User escrowed {escrow_ceil} but got back {alice_refund}"
             );
 
             Ok(())
