@@ -40,12 +40,11 @@ use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, Permit2, SafeDeployer},
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
-use tempo_revm::TempoTxEnv;
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
@@ -58,6 +57,7 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
+use tempo_revm::TempoTxEnv;
 
 /// Generate genesis allocation file for testing
 #[derive(Debug, clap::Args)]
@@ -397,12 +397,12 @@ fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
 
 /// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
 fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
-    println!("Deploying Arachnid CREATE2 factory at {}", ARACHNID_CREATE2_FACTORY_ADDRESS);
+    println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
 
     evm.db_mut().insert_account_info(
         ARACHNID_CREATE2_FACTORY_ADDRESS,
         AccountInfo {
-            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE.clone())),
+            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
             nonce: 1,
             ..Default::default()
         },
@@ -420,7 +420,7 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
         .copied()
         .collect();
 
-    println!("Deploying Permit2 via CREATE2 to {}", PERMIT2_ADDRESS);
+    println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
 
     let tx = TempoTxEnv {
         inner: TxEnv {
@@ -428,6 +428,7 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
             kind: TxKind::Call(ARACHNID_CREATE2_FACTORY_ADDRESS),
             data: calldata,
             gas_limit: 10_000_000,
+            chain_id: None,
             ..Default::default()
         },
         ..Default::default()
@@ -441,7 +442,7 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
 
     evm.db_mut().commit(result.state);
 
-    println!("Permit2 deployed successfully at {}", PERMIT2_ADDRESS);
+    println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
     Ok(())
 }
 
