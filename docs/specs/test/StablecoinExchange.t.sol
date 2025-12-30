@@ -1277,6 +1277,96 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(askLiquidity, 0, "No liquidity should exist at flip tick");
     }
 
+    /// @notice Test that a maker blacklisted in the token they are buying cannot place a bid order
+    /// @dev This tests the new check that verifies authorization on both base and quote tokens
+    function test_BlacklistedInBuyToken_CannotPlaceBidOrder() public {
+        // Create a blacklist policy for token1 (the base token alice wants to buy)
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in token1
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Verify alice is blacklisted in token1
+        assertFalse(registry.isAuthorized(policyId, alice), "Alice should be blacklisted in token1");
+
+        // Alice tries to place a bid order to BUY token1 with pathUSD
+        // Even though alice is authorized in pathUSD (the escrow token), she is blacklisted in token1
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.place(address(token1), orderAmount, true, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    /// @notice Test that a maker blacklisted in the token they would receive cannot place an ask order
+    /// @dev This tests the new check that verifies authorization on both base and quote tokens
+    function test_BlacklistedInReceiveToken_CannotPlaceAskOrder() public {
+        // Create a blacklist policy for pathUSD (the quote token alice would receive)
+        uint64 policyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on pathUSD
+        vm.prank(pathUSDAdmin);
+        pathUSD.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in pathUSD
+        vm.prank(pathUSDAdmin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Verify alice is blacklisted in pathUSD
+        assertFalse(
+            registry.isAuthorized(policyId, alice), "Alice should be blacklisted in pathUSD"
+        );
+
+        // Alice tries to place an ask order to SELL token1 for pathUSD
+        // Even though alice is authorized in token1 (the escrow token), she is blacklisted in pathUSD
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.place(address(token1), orderAmount, false, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    /// @notice Test that a maker blacklisted in either token cannot place a flip order
+    function test_BlacklistedUser_CannotPlaceFlipOrder() public {
+        // Create a blacklist policy
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in token1
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Alice tries to place a flip bid order (buy token1, flip to sell token1)
+        // She is blacklisted in token1, so this should fail
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.placeFlip(address(token1), orderAmount, true, 100, 200) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // Also test flip ask order
+        vm.prank(alice);
+        try exchange.placeFlip(address(token1), orderAmount, false, 200, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                         CANCEL STALE ORDER TESTS
     //////////////////////////////////////////////////////////////*/

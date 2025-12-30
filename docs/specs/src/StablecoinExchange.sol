@@ -119,6 +119,16 @@ contract StablecoinExchange is IStablecoinExchange {
         }
     }
 
+    /// @notice Check if an account is authorized by a token's transfer policy
+    /// @param token The token to check the policy of
+    /// @param account The account to check authorization for
+    /// @return True if both the account and this contract are authorized
+    function _checkTransferPolicy(address token, address account) internal view returns (bool) {
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        return TIP403_REGISTRY.isAuthorized(policyId, account)
+            && TIP403_REGISTRY.isAuthorized(policyId, address(this));
+    }
+
     /// @notice Generate deterministic key for token pair
     /// @return key Deterministic pair key
     function pairKey(address tokenA, address tokenB) public pure returns (bytes32 key) {
@@ -231,14 +241,7 @@ contract StablecoinExchange is IStablecoinExchange {
             }
 
             // Check if maker and DEX are authorized by both tokens' transfer policies
-            uint64 basePolicyId = ITIP20(base).transferPolicyId();
-            uint64 quotePolicyId = ITIP20(quote).transferPolicyId();
-            if (
-                !TIP403_REGISTRY.isAuthorized(basePolicyId, maker)
-                    || !TIP403_REGISTRY.isAuthorized(basePolicyId, address(this))
-                    || !TIP403_REGISTRY.isAuthorized(quotePolicyId, maker)
-                    || !TIP403_REGISTRY.isAuthorized(quotePolicyId, address(this))
-            ) {
+            if (!_checkTransferPolicy(base, maker) || !_checkTransferPolicy(quote, maker)) {
                 if (revertOnTransferFail) {
                     revert ITIP20.PolicyForbids();
                 } else {
