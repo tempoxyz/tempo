@@ -295,7 +295,7 @@ impl TIP20Token {
     ///
     /// For accounts that have delegated their rewards to another recipient, this returns 0
     /// since their rewards accrue to their delegate instead.
-    pub fn get_pending_rewards(&self, account: Address) -> Result<U256> {
+    pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
         let info = self.user_reward_info.at(account).read()?;
 
         // Start with the stored reward balance
@@ -322,7 +322,9 @@ impl TIP20Token {
             }
         }
 
-        Ok(pending)
+        pending
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())
     }
 }
 
@@ -471,7 +473,7 @@ mod tests {
 
             // Before any rewards, pending should be 0
             let pending_before = token.get_pending_rewards(alice)?;
-            assert_eq!(pending_before, U256::ZERO);
+            assert_eq!(pending_before, 0u128);
 
             // Distribute immediate reward
             token.distribute_reward(
@@ -483,7 +485,7 @@ mod tests {
 
             // Now alice should have pending rewards equal to reward_amount (she's the only opted-in holder)
             let pending_after = token.get_pending_rewards(alice)?;
-            assert_eq!(pending_after, reward_amount);
+            assert_eq!(U256::from(pending_after), reward_amount);
 
             // Verify that calling get_pending_rewards did not modify state
             let user_info = token.get_user_reward_info(alice)?;
@@ -539,7 +541,7 @@ mod tests {
 
             // get_pending_rewards should return stored + new accrued
             let pending = token.get_pending_rewards(alice)?;
-            assert_eq!(pending, reward_amount * U256::from(2));
+            assert_eq!(U256::from(pending), reward_amount * U256::from(2));
 
             Ok(())
         })
@@ -575,18 +577,18 @@ mod tests {
 
             // Alice's pending should be 0 (she delegated to bob)
             let alice_pending = token.get_pending_rewards(alice)?;
-            assert_eq!(alice_pending, U256::ZERO);
+            assert_eq!(alice_pending, 0u128);
 
             // Bob's pending should be 0 until update_rewards is called for alice
             // (We can't iterate all delegators on-chain, so pending calculation is limited
             // to stored balance + self-delegated accrued rewards)
             let bob_pending_before_update = token.get_pending_rewards(bob)?;
-            assert_eq!(bob_pending_before_update, U256::ZERO);
+            assert_eq!(bob_pending_before_update, 0u128);
 
             // After calling update_rewards on alice, bob's stored balance is updated
             token.update_rewards(alice)?;
             let bob_pending_after_update = token.get_pending_rewards(bob)?;
-            assert_eq!(bob_pending_after_update, reward_amount);
+            assert_eq!(U256::from(bob_pending_after_update), reward_amount);
 
             Ok(())
         })
@@ -624,11 +626,11 @@ mod tests {
 
             // Alice should have pending rewards
             let alice_pending = token.get_pending_rewards(alice)?;
-            assert_eq!(alice_pending, reward_amount);
+            assert_eq!(U256::from(alice_pending), reward_amount);
 
             // Bob should have 0 pending rewards (not opted in)
             let bob_pending = token.get_pending_rewards(bob)?;
-            assert_eq!(bob_pending, U256::ZERO);
+            assert_eq!(bob_pending, 0u128);
 
             Ok(())
         })
