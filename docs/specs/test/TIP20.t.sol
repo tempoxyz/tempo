@@ -2104,7 +2104,7 @@ contract TIP20Test is BaseTest {
         uint256 rewardAmount = 100e18;
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // Alice should have pending rewards (she's the only opted-in holder)
@@ -2125,7 +2125,7 @@ contract TIP20Test is BaseTest {
         uint256 rewardAmount = 50e18;
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // Trigger state update by transferring 0 (or any action that updates rewards)
@@ -2139,7 +2139,7 @@ contract TIP20Test is BaseTest {
         // Second reward distribution
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // getPendingRewards should return stored + new accrued
@@ -2156,7 +2156,7 @@ contract TIP20Test is BaseTest {
         uint256 rewardAmount = 100e18;
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // Get pending rewards
@@ -2186,7 +2186,7 @@ contract TIP20Test is BaseTest {
 
         // Distribute rewards
         vm.prank(admin);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
 
         // Alice should have pending rewards
         uint256 alicePending = token.getPendingRewards(alice);
@@ -2206,7 +2206,7 @@ contract TIP20Test is BaseTest {
         uint256 rewardAmount = 100e18;
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // Alice's pending should be 0 (delegated to bob)
@@ -2236,7 +2236,7 @@ contract TIP20Test is BaseTest {
         // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
-        token.startReward(rewardAmount, 0);
+        token.distributeReward(rewardAmount);
         vm.stopPrank();
 
         // Pending should approximately equal reward amount (allow for rounding due to integer division)
