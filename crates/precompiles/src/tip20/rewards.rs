@@ -661,14 +661,19 @@ mod tests {
                 admin,
                 ITIP403Registry::modifyPolicyBlacklistCall {
                     policyId: policy_id,
-                    addr: alice,
-                    blacklisted: true,
+                    account: alice,
+                    restricted: true,
                 },
             )?;
 
-            let mut token = TIP20Setup::create("Test", "TST", admin)
-                .with_policy_id(policy_id)
-                .apply()?;
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
             let err = token.claim_rewards(alice).unwrap_err();
             assert!(
