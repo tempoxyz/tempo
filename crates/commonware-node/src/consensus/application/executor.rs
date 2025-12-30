@@ -341,7 +341,7 @@ where
         Ok(())
     }
 
-    #[instrument(parent = &cause, skip_all, err)]
+    #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
     async fn finalize(
         &mut self,
