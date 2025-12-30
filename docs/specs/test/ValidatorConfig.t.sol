@@ -241,7 +241,9 @@ contract ValidatorConfigTest is BaseTest {
         // Validator tries to update with zero public key
         bytes32 zeroPublicKey = bytes32(0);
         vm.prank(validator1);
-        try validatorConfig.updateValidator(validator1, zeroPublicKey, inboundAddr2, outboundAddr2) {
+        try validatorConfig.updateValidator(
+            validator1, zeroPublicKey, inboundAddr2, outboundAddr2
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.InvalidPublicKey.selector));
