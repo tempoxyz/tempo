@@ -94,21 +94,8 @@ contract FeeAMM is IFeeAMM {
         emit RebalanceSwap(userToken, validatorToken, msg.sender, amountIn, amountOut);
     }
 
-    /// @notice Two-sided mint is disabled post-Moderato.
-    /// Use mintWithValidatorToken instead for single-sided liquidity provision.
+    /// Single-sided liquidity provision.
     function mint(
-        address userToken,
-        address validatorToken,
-        uint256 amountUserToken,
-        uint256 amountValidatorToken,
-        address to
-    ) external returns (uint256 liquidity) {
-        // Two-sided mint is disabled post-Moderato
-        // The precompile returns UnknownFunctionSelector for this function
-        revert MintDisabled();
-    }
-
-    function mintWithValidatorToken(
         address userToken,
         address validatorToken,
         uint256 amountValidatorToken,
