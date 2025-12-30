@@ -88,7 +88,7 @@ impl From<Verify> for Message {
 /// This enum unwraps `Update<Block>` into this `Finalized` enum so that
 /// a `response` channel is attached to a block-finalization.
 ///
-/// The reason is that the marshal actor expects blocks finzalitions to be
+/// The reason is that the marshal actor expects blocks finalizations to be
 /// acknowledged by the application.
 ///
 /// Updated tips on the other hand are fire-and-forget.

@@ -307,7 +307,7 @@ where
     /// # Invariants
     ///
     /// It is critical that a newer finalized block is always send after an
-    /// older finalized block. This is standard behavior of the commonmware
+    /// older finalized block. This is standard behavior of the commonware
     /// marshal agent.
     #[instrument(
         skip_all,

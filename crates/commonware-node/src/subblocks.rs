@@ -238,7 +238,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         txs.insert(*transaction.tx_hash(), Arc::new(transaction));
     }
 
-    /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
+    /// Tracking of the current consensus state by listening to notarizations and nullifications.
     #[instrument(skip_all, fields(event.epoch = %event.epoch(), event.view = %event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
         let (new_tip, new_round, new_cert) = match event {
