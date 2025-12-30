@@ -162,6 +162,8 @@ Places a limit order against the pair of `token` and its quote, immediately addi
 Notes:
 
 - `tick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
+- The maker must be authorized by the TIP-403 transfer policies of both the base and quote tokens. This ensures makers cannot place orders to buy or sell tokens they are not permitted to transfer.
+- Additionally, the DEX contract itself must be authorized by the TIP-20 transfer policies of both the base and quote tokens. This allows token issuers to prevent their tokens from being traded on the DEX.
 
 ```solidity
 function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
@@ -173,6 +175,7 @@ Notes:
 
 - Both `tick` and `flipTick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
 - When the order flips, escrow is drawn exclusively from the maker's internal exchange balance. If the internal balance is insufficient, the flip silently fails—no `transferFrom` is attempted, even if the maker has sufficient external balance and approval.
+- The maker must be authorized by the TIP-403 transfer policies of both the base and quote tokens, both at initial placement and when the order flips. If the maker becomes unauthorized before a flip, the flip silently fails and no new order is created (although the existing order is executed).
 
 ```solidity
 function cancel(uint128 orderId) external;

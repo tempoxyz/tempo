@@ -230,11 +230,14 @@ contract StablecoinExchange is IStablecoinExchange {
                 escrowAmount = amount;
             }
 
-            // Check if maker is authorized by the token's transfer policy before operating on internal balance
-            uint64 policyId = ITIP20(escrowToken).transferPolicyId();
+            // Check if maker and DEX are authorized by both tokens' transfer policies
+            uint64 basePolicyId = ITIP20(base).transferPolicyId();
+            uint64 quotePolicyId = ITIP20(quote).transferPolicyId();
             if (
-                !TIP403_REGISTRY.isAuthorized(policyId, maker)
-                    || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+                !TIP403_REGISTRY.isAuthorized(basePolicyId, maker)
+                    || !TIP403_REGISTRY.isAuthorized(basePolicyId, address(this))
+                    || !TIP403_REGISTRY.isAuthorized(quotePolicyId, maker)
+                    || !TIP403_REGISTRY.isAuthorized(quotePolicyId, address(this))
             ) {
                 if (revertOnTransferFail) {
                     revert ITIP20.PolicyForbids();
