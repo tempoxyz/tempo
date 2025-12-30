@@ -236,7 +236,11 @@ contract StablecoinExchange is IStablecoinExchange {
                 !TIP403_REGISTRY.isAuthorized(policyId, maker)
                     || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
             ) {
-                revert ITIP20.PolicyForbids();
+                if (revertOnTransferFail) {
+                    revert ITIP20.PolicyForbids();
+                } else {
+                    return 0;
+                }
             }
 
             // Check if the user has a balance, transfer the rest
