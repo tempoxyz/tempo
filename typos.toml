@@ -15,7 +15,6 @@ extend-exclude = [
 
 [default.extend-words]
 ba = "ba"
-DAA = "DAA"
 multline = "multline"
 froms = "froms"
 Nam = "Nam"

@@ -19,7 +19,7 @@ reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
 # Alloy
-alloy-consensus = { workspace = true, features = ["secp256k1"] }
+alloy-consensus = { workspace = true, features = ["secp256k1", "k256"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
@@ -41,8 +41,6 @@ base64.workspace = true
 [dev-dependencies]
 arbitrary.workspace = true
 reth-codecs.workspace = true
-reth-codecs-derive.workspace = true
-test-fuzz.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
@@ -80,6 +78,7 @@ reth-codec = [
 	"reth-primitives-traits/reth-codec",
 ]
 serde-bincode-compat = [
+	"reth",
 	"serde",
 	"alloy-consensus/serde-bincode-compat",
 	"reth-primitives-traits?/serde-bincode-compat",

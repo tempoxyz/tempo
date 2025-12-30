@@ -50,7 +50,6 @@ crate::sol! {
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
         function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
         function cancel(uint128 orderId) external;
-        function executeBlock() external;
 
         // Swap Functions
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -67,9 +66,7 @@ crate::sol! {
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
-        function activeOrderId() external view returns (uint128);
         function nextOrderId() external view returns (uint128);
-        function pendingOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
 
         // Constants (exposed as view functions)
@@ -88,9 +85,6 @@ crate::sol! {
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
-        /// Pre-Allegretto: OrderFilled event without taker parameter
-        event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);
-        /// Post-Allegretto: OrderFilled event with taker parameter
         event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderCancelled(uint128 indexed orderId);
 

@@ -42,11 +42,11 @@ We can also utilize [wallet connectors](https://wagmi.sh/react/api/connectors) f
 ```tsx twoslash [config.ts]
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { metaMask } from 'wagmi/connectors' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
@@ -103,11 +103,11 @@ export function Connect() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { metaMask } from 'wagmi/connectors' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
@@ -163,11 +163,11 @@ export function Account() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { metaMask } from 'wagmi/connectors' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
@@ -199,7 +199,7 @@ If the wallet is not on the Tempo network, we can display a "Add Tempo" button s
 ```tsx twoslash [Account.tsx]
 // @noErrors
 import { useConnection, useDisconnect, useSwitchChain } from 'wagmi'
-import { tempo } from 'tempo.ts/chains' // [!code ++]
+import { tempoTestnet } from 'viem/chains' // [!code ++]
 
 export function Account() {
   const account = useConnection()
@@ -240,11 +240,11 @@ export function Account() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { metaMask } from 'wagmi/connectors' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [metaMask()], // [!code ++]
   multiInjectedProviderDiscovery: true, // [!code ++]
   transports: {
