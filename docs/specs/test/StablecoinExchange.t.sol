@@ -1160,6 +1160,47 @@ contract StablecoinExchangeTest is BaseTest {
         );
     }
 
+    function test_FlipOrder_BlacklistedMakerDoesNotRevertSwap() public {
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        uint128 orderAmount = 100e18;
+        int16 bidTick = 100;
+        int16 flipTick = 200;
+
+        vm.prank(alice);
+        uint128 flipOrderId =
+            exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
+        assertEq(flipOrderId, 1);
+
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+        assertFalse(registry.isAuthorized(policyId, alice));
+
+        uint256 bobInitialToken1 = token1.balanceOf(bob);
+        uint256 bobInitialPathUSD = pathUSD.balanceOf(bob);
+
+        vm.prank(bob);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(pathUSD), orderAmount, 0);
+
+        assertGt(amountOut, 0);
+        assertEq(token1.balanceOf(bob), bobInitialToken1 - orderAmount);
+        assertEq(pathUSD.balanceOf(bob), bobInitialPathUSD + amountOut);
+
+        uint128 aliceInternalToken1 = exchange.balanceOf(alice, address(token1));
+        assertEq(aliceInternalToken1, orderAmount);
+
+        assertEq(exchange.nextOrderId(), 2);
+
+        (uint128 askHead,, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), flipTick, false);
+        assertEq(askHead, 0);
+        assertEq(askLiquidity, 0);
+    }
+
     /*//////////////////////////////////////////////////////////////
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
