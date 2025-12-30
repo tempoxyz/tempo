@@ -735,7 +735,6 @@ impl TIP20Token {
         self.handle_rewards_on_transfer(from, to, amount)?;
 
         // Adjust balances
-        let from_balance = self.get_balance(from)?;
         let new_from_balance = from_balance
             .checked_sub(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
