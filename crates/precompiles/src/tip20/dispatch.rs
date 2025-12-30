@@ -6,12 +6,23 @@ use crate::{
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::TIP20Error;
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
+
+        // Ensure that the token is initialized (has bytecode) if the call is not static
+        if !self.storage.is_static()
+            && let Err(e) = self.is_initialized().and_then(|init| {
+                init.then_some(())
+                    .ok_or_else(|| TIP20Error::invalid_token().into())
+            })
+        {
+            return e.into_precompile_result(self.storage.gas_used());
+        }
 
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -701,6 +712,35 @@ mod tests {
             assert!(output.reverted);
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mutable_call_uninitialized_token_reverts() -> eyre::Result<()> {
+        let (mut storage, _) = setup_storage();
+        let caller = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Create token without initialization (no bytecode deployed)
+            let mut token = TIP20Token::new(1);
+
+            // Any mutable call should revert with invalid_token error
+            let calldata = ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::random(),
+            }
+            .abi_encode();
+            let result = token.call(&calldata, caller)?;
+
+            assert!(result.reverted);
+            let expected: Bytes = TIP20Error::invalid_token().selector().into();
+            assert_eq!(result.bytes, expected);
+
+            TIP20Setup::create("Test", "TST", caller).apply()?;
+            let result = token.call(&calldata, caller)?;
+            assert!(!result.reverted);
 
             Ok(())
         })

@@ -263,8 +263,7 @@ fn fill_precompile_output(
 /// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
-    error::TempoPrecompileError::UnknownFunctionSelector(selector)
-        .into_precompile_result(gas, |_: ()| Bytes::new())
+    error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
 #[cfg(test)]

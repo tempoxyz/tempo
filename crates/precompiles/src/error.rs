@@ -77,6 +77,39 @@ impl TempoPrecompileError {
     pub fn under_overflow() -> Self {
         Self::Panic(PanicKind::UnderOverflow)
     }
+
+    pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
+        let bytes = match self {
+            Self::StablecoinExchange(e) => e.abi_encode().into(),
+            Self::TIP20(e) => e.abi_encode().into(),
+            Self::RolesAuthError(e) => e.abi_encode().into(),
+            Self::TIP403RegistryError(e) => e.abi_encode().into(),
+            Self::FeeManagerError(e) => e.abi_encode().into(),
+            Self::TIPFeeAMMError(e) => e.abi_encode().into(),
+            Self::NonceError(e) => e.abi_encode().into(),
+            Self::Panic(kind) => {
+                let panic = Panic {
+                    code: U256::from(kind as u32),
+                };
+
+                panic.abi_encode().into()
+            }
+            Self::ValidatorConfigError(e) => e.abi_encode().into(),
+            Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::OutOfGas => {
+                return Err(PrecompileError::OutOfGas);
+            }
+            Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
+                selector: selector.into(),
+            }
+            .abi_encode()
+            .into(),
+            Self::Fatal(msg) => {
+                return Err(PrecompileError::Fatal(msg));
+            }
+        };
+        Ok(PrecompileOutput::new_reverted(gas, bytes))
+    }
 }
 
 pub fn add_errors_to_registry<T: SolInterface>(
@@ -158,42 +191,9 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
         gas: u64,
         encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
-        use TempoPrecompileError as TPErr;
-
         match self {
             Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res))),
-            Err(err) => {
-                let bytes = match err {
-                    TPErr::StablecoinExchange(e) => e.abi_encode().into(),
-                    TPErr::TIP20(e) => e.abi_encode().into(),
-                    TPErr::RolesAuthError(e) => e.abi_encode().into(),
-                    TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
-                    TPErr::FeeManagerError(e) => e.abi_encode().into(),
-                    TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
-                    TPErr::NonceError(e) => e.abi_encode().into(),
-                    TPErr::Panic(kind) => {
-                        let panic = Panic {
-                            code: U256::from(kind as u32),
-                        };
-
-                        panic.abi_encode().into()
-                    }
-                    TPErr::ValidatorConfigError(e) => e.abi_encode().into(),
-                    TPErr::AccountKeychainError(e) => e.abi_encode().into(),
-                    TPErr::OutOfGas => {
-                        return Err(PrecompileError::OutOfGas);
-                    }
-                    TPErr::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
-                        selector: selector.into(),
-                    }
-                    .abi_encode()
-                    .into(),
-                    TPErr::Fatal(msg) => {
-                        return Err(PrecompileError::Fatal(msg));
-                    }
-                };
-                Ok(PrecompileOutput::new_reverted(gas, bytes))
-            }
+            Err(err) => err.into_precompile_result(gas),
         }
     }
 }
