@@ -74,6 +74,7 @@ crate::sol! {
         function MAX_TICK() external pure returns (int16);
         function TICK_SPACING() external pure returns (int16);
         function PRICE_SCALE() external pure returns (uint32);
+        function MIN_ORDER_AMOUNT() external pure returns (uint128);
         function MIN_PRICE() external pure returns (uint32);
         function MAX_PRICE() external pure returns (uint32);
 
