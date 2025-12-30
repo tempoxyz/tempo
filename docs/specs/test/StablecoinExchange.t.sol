@@ -1171,7 +1171,8 @@ contract StablecoinExchangeTest is BaseTest {
         int16 flipTick = 200;
 
         vm.prank(alice);
-        uint128 flipOrderId = exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
+        uint128 flipOrderId =
+            exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
         assertEq(flipOrderId, 1);
 
         vm.prank(admin);
