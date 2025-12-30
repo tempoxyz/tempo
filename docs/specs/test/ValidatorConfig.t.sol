@@ -73,6 +73,10 @@ contract ValidatorConfigTest is BaseTest {
     function test_AddValidator_Success() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
 
+        // New validator accepts the pending entry
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
+
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 1, "Should have 1 validator");
         assertEq(validators[0].validatorAddress, validator1);
@@ -85,8 +89,16 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_AddValidator_MultipleValidators() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
+
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
+
         validatorConfig.addValidator(validator3, publicKey3, false, inboundAddr3, outboundAddr3);
+        vm.prank(validator3);
+        validatorConfig.acceptValidator();
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 3, "Should have 3 validators");
@@ -117,6 +129,8 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_AddValidator_DuplicateValidator() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         try validatorConfig.addValidator(
             validator1, publicKey2, true, inboundAddr2, outboundAddr2
@@ -124,6 +138,22 @@ contract ValidatorConfigTest is BaseTest {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.ValidatorAlreadyExists.selector));
+        }
+    }
+
+    function test_AddValidator_DuplicatePendingValidator() public {
+        // Create a pending validator
+        validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+
+        // Try to create another pending entry for the same address
+        try validatorConfig.addValidator(
+            validator1, publicKey2, true, inboundAddr2, outboundAddr2
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err, abi.encodeWithSelector(IValidatorConfig.PendingValidatorAlreadyExists.selector)
+            );
         }
     }
 
@@ -171,8 +201,10 @@ contract ValidatorConfigTest is BaseTest {
     function test_UpdateValidator_Success() public {
         // Owner adds validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
-        // Validator updates their own info
+        // Validator updates their own info (in-place, no rotation)
         vm.prank(validator1);
         validatorConfig.updateValidator(validator1, publicKey2, inboundAddr2, outboundAddr2);
 
@@ -188,10 +220,16 @@ contract ValidatorConfigTest is BaseTest {
     function test_UpdateValidator_RotateAddress() public {
         // Owner adds validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
-        // Validator rotates to new address
+        // Validator rotates to new address (creates pending entry)
         vm.prank(validator1);
         validatorConfig.updateValidator(validator2, publicKey2, inboundAddr2, outboundAddr2);
+
+        // New address accepts the rotation
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 1, "Should still have 1 validator");
@@ -202,7 +240,12 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_UpdateValidator_RotateToExistingAddress() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
+
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
 
         // Validator1 tries to rotate to validator2's address
         vm.prank(validator1);
@@ -225,6 +268,8 @@ contract ValidatorConfigTest is BaseTest {
     function test_UpdateValidator_OwnerCannotUpdateValidator() public {
         // Owner adds validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Owner tries to update validator (should fail - only validator can update themselves)
         try validatorConfig.updateValidator(validator1, publicKey2, inboundAddr2, outboundAddr2) {
@@ -237,6 +282,8 @@ contract ValidatorConfigTest is BaseTest {
     function test_UpdateValidator_ZeroPublicKey() public {
         // Owner adds validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Validator tries to update with zero public key
         bytes32 zeroPublicKey = bytes32(0);
@@ -261,6 +308,8 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_ChangeValidatorStatus_Deactivate() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         validatorConfig.changeValidatorStatus(validator1, false);
 
@@ -270,6 +319,8 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_ChangeValidatorStatus_Activate() public {
         validatorConfig.addValidator(validator1, publicKey1, false, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         validatorConfig.changeValidatorStatus(validator1, true);
 
@@ -279,6 +330,8 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_ChangeValidatorStatus_Unauthorized() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         vm.prank(nonOwner);
         try validatorConfig.changeValidatorStatus(validator1, false) {
@@ -298,6 +351,8 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_ChangeValidatorStatus_ValidatorCannotChangeOwnStatus() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Validator tries to change their own status
         vm.prank(validator1);
@@ -319,8 +374,16 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_GetValidators_PreservesOrder() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
+
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
+
         validatorConfig.addValidator(validator3, publicKey3, true, inboundAddr3, outboundAddr3);
+        vm.prank(validator3);
+        validatorConfig.acceptValidator();
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
 
@@ -340,6 +403,8 @@ contract ValidatorConfigTest is BaseTest {
         vm.assume(pubKey != bytes32(0));
 
         validatorConfig.addValidator(validatorAddr, pubKey, active, inboundAddr1, outboundAddr1);
+        vm.prank(validatorAddr);
+        validatorConfig.acceptValidator();
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 1);
@@ -377,6 +442,8 @@ contract ValidatorConfigTest is BaseTest {
 
         // First add a validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Non-owner tries to change status
         vm.prank(caller);
@@ -392,6 +459,8 @@ contract ValidatorConfigTest is BaseTest {
 
         // First add a validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Non-validator tries to update
         vm.prank(caller);
@@ -418,6 +487,8 @@ contract ValidatorConfigTest is BaseTest {
                 string(abi.encodePacked("192.168.1.", _uint8ToString(i + 1), ":9000"));
 
             validatorConfig.addValidator(validatorAddrs[i], pubKeys[i], true, inbound, outbound);
+            vm.prank(validatorAddrs[i]);
+            validatorConfig.acceptValidator();
         }
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
@@ -446,11 +517,20 @@ contract ValidatorConfigTest is BaseTest {
     function test_ComplexScenario_ValidatorRotation() public {
         // Add multiple validators
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
-        validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
-        // Validator1 rotates to validator3
+        validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
+
+        // Validator1 rotates to validator3 (creates pending entry)
         vm.prank(validator1);
         validatorConfig.updateValidator(validator3, publicKey3, inboundAddr3, outboundAddr3);
+
+        // Validator3 accepts the rotation
+        vm.prank(validator3);
+        validatorConfig.acceptValidator();
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 2);
@@ -469,6 +549,8 @@ contract ValidatorConfigTest is BaseTest {
     function test_ComplexScenario_OwnershipTransferChain() public {
         // Owner adds a validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
         // Transfer ownership to alice
         validatorConfig.changeOwner(alice);
@@ -476,6 +558,8 @@ contract ValidatorConfigTest is BaseTest {
         // Alice adds another validator
         vm.prank(alice);
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
+        vm.prank(validator2);
+        validatorConfig.acceptValidator();
 
         // Original owner cannot add validators
         try validatorConfig.addValidator(
@@ -503,8 +587,10 @@ contract ValidatorConfigTest is BaseTest {
     function test_ComplexScenario_ValidatorSelfUpdate() public {
         // Owner adds validator
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+        vm.prank(validator1);
+        validatorConfig.acceptValidator();
 
-        // Validator updates multiple times
+        // Validator updates multiple times (in-place, no rotation)
         for (uint256 i = 0; i < 5; i++) {
             bytes32 newPubKey = bytes32(uint256(0x5000 + i));
             string memory newInbound =

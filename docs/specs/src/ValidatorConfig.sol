@@ -21,6 +21,9 @@ contract ValidatorConfig is IValidatorConfig {
     /// @notice Mapping from validator address to validator info
     mapping(address => Validator) public validators;
 
+    /// @notice Mapping from pending validator address to pending info
+    mapping(address => PendingValidator) public pendingValidators;
+
     /// @notice Check if caller is the owner
     modifier onlyOwner() {
         if (msg.sender != owner) {
@@ -33,6 +36,19 @@ contract ValidatorConfig is IValidatorConfig {
     /// @param _owner The initial owner address
     constructor(address _owner) {
         owner = _owner;
+    }
+
+    /// @inheritdoc IValidatorConfig
+    function getPendingValidator(address pendingAddress)
+        external
+        view
+        returns (PendingValidator memory)
+    {
+        PendingValidator memory pending = pendingValidators[pendingAddress];
+        if (pending.publicKey == bytes32(0)) {
+            revert PendingValidatorNotFound();
+        }
+        return pending;
     }
 
     /// @inheritdoc IValidatorConfig
@@ -65,25 +81,23 @@ contract ValidatorConfig is IValidatorConfig {
             revert ValidatorAlreadyExists();
         }
 
+        // Check if pending entry already exists for this address
+        if (pendingValidators[newValidatorAddress].publicKey != bytes32(0)) {
+            revert PendingValidatorAlreadyExists();
+        }
+
         // Validate addresses (basic validation - actual validation happens in precompile)
         _validateHostPort(inboundAddress, "inboundAddress");
         _validateIpPort(outboundAddress, "outboundAddress");
 
-        // Store the new validator
-        validators[newValidatorAddress] = Validator({
+        // Create pending entry - requires acceptance by the new validator address
+        pendingValidators[newValidatorAddress] = PendingValidator({
             publicKey: publicKey,
             active: active,
-            index: validatorCount,
-            validatorAddress: newValidatorAddress,
+            fromValidator: address(0),
             inboundAddress: inboundAddress,
             outboundAddress: outboundAddress
         });
-
-        // Add to array
-        validatorsArray.push(newValidatorAddress);
-
-        // Increment count
-        validatorCount++;
     }
 
     /// @inheritdoc IValidatorConfig
@@ -103,36 +117,97 @@ contract ValidatorConfig is IValidatorConfig {
             revert ValidatorNotFound();
         }
 
-        // Load old validator info
-        Validator memory oldValidator = validators[msg.sender];
-
-        // Check if rotating to a new address
-        if (newValidatorAddress != msg.sender) {
-            // Check if new address already exists
-            if (validators[newValidatorAddress].publicKey != bytes32(0)) {
-                revert ValidatorAlreadyExists();
-            }
-
-            // Update the validators array
-            validatorsArray[oldValidator.index] = newValidatorAddress;
-
-            // Clear the old validator
-            delete validators[msg.sender];
-        }
-
         // Validate addresses
         _validateHostPort(inboundAddress, "inboundAddress");
         _validateIpPort(outboundAddress, "outboundAddress");
 
-        // Store updated validator
-        validators[newValidatorAddress] = Validator({
-            publicKey: publicKey,
-            active: oldValidator.active,
-            index: oldValidator.index,
-            validatorAddress: newValidatorAddress,
-            inboundAddress: inboundAddress,
-            outboundAddress: outboundAddress
-        });
+        // Check if rotating to a new address
+        if (newValidatorAddress != msg.sender) {
+            // Check if new address already exists as validator
+            if (validators[newValidatorAddress].publicKey != bytes32(0)) {
+                revert ValidatorAlreadyExists();
+            }
+
+            // Check if pending entry already exists for this address
+            if (pendingValidators[newValidatorAddress].publicKey != bytes32(0)) {
+                revert PendingValidatorAlreadyExists();
+            }
+
+            // Create pending entry for rotation - requires acceptance by the new validator address
+            pendingValidators[newValidatorAddress] = PendingValidator({
+                publicKey: publicKey,
+                active: validators[msg.sender].active,
+                fromValidator: msg.sender,
+                inboundAddress: inboundAddress,
+                outboundAddress: outboundAddress
+            });
+        } else {
+            // In-place update (no rotation) - apply immediately
+            validators[msg.sender].publicKey = publicKey;
+            validators[msg.sender].inboundAddress = inboundAddress;
+            validators[msg.sender].outboundAddress = outboundAddress;
+        }
+    }
+
+    /// @inheritdoc IValidatorConfig
+    function acceptValidator() external {
+        // Check if there's a pending entry for caller
+        PendingValidator memory pending = pendingValidators[msg.sender];
+        if (pending.publicKey == bytes32(0)) {
+            revert PendingValidatorNotFound();
+        }
+
+        // Check if this is a rotation (fromValidator != address(0)) or new addition
+        if (pending.fromValidator != address(0)) {
+            // Rotation: update the old validator's slot in the array
+            Validator memory oldValidator = validators[pending.fromValidator];
+
+            // Update the validators array
+            validatorsArray[oldValidator.index] = msg.sender;
+
+            // Store the new validator with the old index
+            validators[msg.sender] = Validator({
+                publicKey: pending.publicKey,
+                active: pending.active,
+                index: oldValidator.index,
+                validatorAddress: msg.sender,
+                inboundAddress: pending.inboundAddress,
+                outboundAddress: pending.outboundAddress
+            });
+
+            // Clear the old validator
+            delete validators[pending.fromValidator];
+        } else {
+            // New addition
+            validators[msg.sender] = Validator({
+                publicKey: pending.publicKey,
+                active: pending.active,
+                index: validatorCount,
+                validatorAddress: msg.sender,
+                inboundAddress: pending.inboundAddress,
+                outboundAddress: pending.outboundAddress
+            });
+
+            // Add to array
+            validatorsArray.push(msg.sender);
+
+            // Increment count
+            validatorCount++;
+        }
+
+        // Clear the pending entry
+        delete pendingValidators[msg.sender];
+    }
+
+    /// @inheritdoc IValidatorConfig
+    function cancelPendingValidator(address pendingAddress) external onlyOwner {
+        // Check if there's a pending entry
+        if (pendingValidators[pendingAddress].publicKey == bytes32(0)) {
+            revert PendingValidatorNotFound();
+        }
+
+        // Clear the pending entry
+        delete pendingValidators[pendingAddress];
     }
 
     /// @inheritdoc IValidatorConfig

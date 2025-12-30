@@ -20,6 +20,12 @@ interface IValidatorConfig {
     /// @notice Thrown when public key is invalid (zero)
     error InvalidPublicKey();
 
+    /// @notice Thrown when pending validator is not found
+    error PendingValidatorNotFound();
+
+    /// @notice Thrown when pending validator already exists
+    error PendingValidatorAlreadyExists();
+
     /// @notice Thrown when inbound address is not in valid host:port format
     /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
@@ -48,11 +54,33 @@ interface IValidatorConfig {
         string outboundAddress;
     }
 
+    /// @notice Pending validator information for two-step addition/rotation
+    /// @param publicKey The validator's communication public key
+    /// @param active Whether the validator should be active when finalized
+    /// @param fromValidator The source validator address for rotations, or address(0) for new additions
+    /// @param inboundAddress Address where other validators can connect (format: `<hostname|ip>:<port>`)
+    /// @param outboundAddress IP address for firewall whitelisting (format: `<ip>:<port>`)
+    struct PendingValidator {
+        bytes32 publicKey;
+        bool active;
+        address fromValidator;
+        string inboundAddress;
+        string outboundAddress;
+    }
+
     /// @notice Get the complete set of validators
     /// @return validators Array of all validators with their information
     function getValidators() external view returns (Validator[] memory validators);
 
-    /// @notice Add a new validator (owner only)
+    /// @notice Get pending validator information
+    /// @param pendingAddress The pending validator address to query
+    /// @return pending The pending validator information
+    function getPendingValidator(address pendingAddress)
+        external
+        view
+        returns (PendingValidator memory pending);
+
+    /// @notice Add a new validator (owner only) - creates pending entry requiring acceptance
     /// @param newValidatorAddress The address of the new validator
     /// @param publicKey The validator's communication public key
     /// @param active Whether the validator should be active
@@ -66,7 +94,7 @@ interface IValidatorConfig {
         string calldata outboundAddress
     ) external;
 
-    /// @notice Update validator information (only validator)
+    /// @notice Update validator information (only validator) - rotations create pending entry requiring acceptance
     /// @param newValidatorAddress The new address for this validator
     /// @param publicKey The validator's new communication public key
     /// @param inboundAddress The validator's inbound address `<hostname|ip>:<port>` for incoming connections
@@ -77,6 +105,13 @@ interface IValidatorConfig {
         string calldata inboundAddress,
         string calldata outboundAddress
     ) external;
+
+    /// @notice Accept pending validator addition or rotation (called by the new validator address)
+    function acceptValidator() external;
+
+    /// @notice Cancel a pending validator addition or rotation (owner only)
+    /// @param pendingAddress The pending validator address to cancel
+    function cancelPendingValidator(address pendingAddress) external;
 
     /// @notice Change validator active status (owner only)
     /// @param validator The validator address
