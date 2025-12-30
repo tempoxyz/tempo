@@ -16,8 +16,6 @@ pub struct PoolsResponse {
 pub struct PoolsFilters {
     /// Effective validator reserve in range
     pub effective_validator_reserve: Option<FilterRange<U256>>,
-    /// Pending fee swap input in range
-    pub pending_fee_swap_in: Option<FilterRange<U256>>,
     /// Reserve user token in range
     pub reserve_user_token: Option<FilterRange<U256>>,
     /// Reserve validator token in range

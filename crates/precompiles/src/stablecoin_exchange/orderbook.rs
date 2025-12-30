@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Handler, Mapping, Slot, StorageCtx},
+    storage::{Handler, Mapping, Slot},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -14,19 +14,74 @@ pub const MIN_TICK: i16 = -2000;
 pub const MAX_TICK: i16 = 2000;
 pub const PRICE_SCALE: u32 = 100_000;
 
-// Pre-moderato: MIN_PRICE and MAX_PRICE covered full i16 range
-//
-// i16::MIN as price
-pub(crate) const MIN_PRICE_PRE_MODERATO: u32 = 67_232;
-// i16::MAX as price
-pub(crate) const MAX_PRICE_PRE_MODERATO: u32 = 132_767;
+/// Rounding direction for price conversions.
+///
+/// Rounding should always favor the protocol to prevent insolvency:
+/// - When users deposit funds (escrow) → round UP (user pays more)
+/// - When users receive funds (settlement/refunds) → round DOWN (user receives less)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoundingDirection {
+    /// Round down (floor division) - favors protocol when user receives funds
+    Down,
+    /// Round up (ceiling division) - favors protocol when user deposits funds
+    Up,
+}
 
-// Post-moderato: MIN_PRICE and MAX_PRICE match MIN_TICK and MAX_TICK
-//
+/// Checked ceiling division for u128.
+/// Returns None if divisor is zero.
+fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
+    if divisor == 0 {
+        return None;
+    }
+    Some(numerator.div_ceil(divisor))
+}
+
+/// Convert base token amount to quote token amount at a given tick.
+///
+/// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
+///
+/// # Arguments
+/// * `base_amount` - Amount of base tokens
+/// * `tick` - Price tick
+/// * `rounding` - Rounding direction
+///
+/// # Returns
+/// Quote token amount, or None on overflow
+pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    let numerator = base_amount.checked_mul(price)?;
+
+    match rounding {
+        RoundingDirection::Down => numerator.checked_div(PRICE_SCALE as u128),
+        RoundingDirection::Up => checked_div_ceil(numerator, PRICE_SCALE as u128),
+    }
+}
+
+/// Convert quote token amount to base token amount at a given tick.
+///
+/// Formula: base_amount = (quote_amount * PRICE_SCALE) / price
+///
+/// # Arguments
+/// * `quote_amount` - Amount of quote tokens
+/// * `tick` - Price tick
+/// * `rounding` - Rounding direction
+///
+/// # Returns
+/// Base token amount, or None on overflow
+pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+    let price = tick_to_price(tick) as u128;
+    let numerator = quote_amount.checked_mul(PRICE_SCALE as u128)?;
+
+    match rounding {
+        RoundingDirection::Down => numerator.checked_div(price),
+        RoundingDirection::Up => checked_div_ceil(numerator, price),
+    }
+}
+
 // PRICE_SCALE + MIN_TICK = 100_000 - 2000
-pub(crate) const MIN_PRICE_POST_MODERATO: u32 = 98_000;
+pub(crate) const MIN_PRICE: u32 = 98_000;
 // PRICE_SCALE + MAX_TICK = 100_000 + 2000
-pub(crate) const MAX_PRICE_POST_MODERATO: u32 = 102_000;
+pub(crate) const MAX_PRICE: u32 = 102_000;
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
@@ -226,7 +281,7 @@ impl OrderbookHandler {
     /// Find next initialized ask tick higher than current tick
     fn next_initialized_ask_tick(&self, tick: i16) -> (i16, bool) {
         // Guard against overflow when tick is at or above MAX_TICK
-        if StorageCtx.spec().is_allegretto() && tick >= MAX_TICK {
+        if tick >= MAX_TICK {
             return (MAX_TICK, false);
         }
         let mut next_tick = tick + 1;
@@ -242,7 +297,7 @@ impl OrderbookHandler {
     /// Find next initialized bid tick lower than current tick
     fn next_initialized_bid_tick(&self, tick: i16) -> (i16, bool) {
         // Guard against underflow when tick is at or below MIN_TICK
-        if StorageCtx.spec().is_allegretto() && tick <= MIN_TICK {
+        if tick <= MIN_TICK {
             return (MIN_TICK, false);
         }
         let mut next_tick = tick - 1;
@@ -288,15 +343,9 @@ pub fn tick_to_price(tick: i16) -> u32 {
     (PRICE_SCALE as i32 + tick as i32) as u32
 }
 
-/// Convert scaled price to relative tick pre moderato hardfork
-pub fn price_to_tick_pre_moderato(price: u32) -> Result<i16> {
-    // Pre-Moderato: legacy behavior without validation
-    Ok((price as i32 - PRICE_SCALE as i32) as i16)
-}
-
-/// Convert scaled price to relative tick post moderato hardfork
-pub fn price_to_tick_post_moderato(price: u32) -> Result<i16> {
-    if !(MIN_PRICE_POST_MODERATO..=MAX_PRICE_POST_MODERATO).contains(&price) {
+/// Convert scaled price to relative tick
+pub fn price_to_tick(price: u32) -> Result<i16> {
+    if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
         return Err(StablecoinExchangeError::tick_out_of_bounds(invalid_tick).into());
     }
@@ -337,15 +386,15 @@ mod tests {
     fn test_tick_price_conversion() -> eyre::Result<()> {
         // Test at peg price (tick 0)
         assert_eq!(tick_to_price(0), PRICE_SCALE);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE)?, 0);
+        assert_eq!(price_to_tick(PRICE_SCALE)?, 0);
 
         // Test above peg
         assert_eq!(tick_to_price(100), PRICE_SCALE + 100);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE + 100)?, 100);
+        assert_eq!(price_to_tick(PRICE_SCALE + 100)?, 100);
 
         // Test below peg
         assert_eq!(tick_to_price(-100), PRICE_SCALE - 100);
-        assert_eq!(price_to_tick_post_moderato(PRICE_SCALE - 100)?, -100);
+        assert_eq!(price_to_tick(PRICE_SCALE - 100)?, -100);
 
         Ok(())
     }
@@ -353,7 +402,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_below_min() {
         // Price below MIN_PRICE should return an error
-        let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO - 1);
+        let result = price_to_tick(MIN_PRICE - 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -364,7 +413,7 @@ mod tests {
     #[test]
     fn test_price_to_tick_above_max() {
         // Price above MAX_PRICE should return an error
-        let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO + 1);
+        let result = price_to_tick(MAX_PRICE + 1);
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
@@ -373,51 +422,19 @@ mod tests {
     }
 
     #[test]
-    fn test_price_to_tick_at_min_boundary_pre_moderato() {
-        // MIN_PRICE should be valid and return i16::MIN (the minimum representable tick)
-        let result = price_to_tick_pre_moderato(MIN_PRICE_PRE_MODERATO);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), i16::MIN);
-        // Verify MIN_PRICE = PRICE_SCALE + i16::MIN
-        assert_eq!(
-            MIN_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MIN as i32) as u32
-        );
-    }
-
-    #[test]
-    fn test_price_to_tick_at_max_boundary_pre_moderato() {
-        // MAX_PRICE should be valid and return i16::MAX (the maximum representable tick)
-        let result = price_to_tick_pre_moderato(MAX_PRICE_PRE_MODERATO);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), i16::MAX);
-        // Verify MAX_PRICE = PRICE_SCALE + i16::MAX
-        assert_eq!(
-            MAX_PRICE_PRE_MODERATO,
-            (PRICE_SCALE as i32 + i16::MAX as i32) as u32
-        );
-    }
-
-    #[test]
-    fn test_price_to_tick_at_min_boundary_post_moderato() {
-        let result = price_to_tick_post_moderato(MIN_PRICE_POST_MODERATO);
+    fn test_price_to_tick_at_min_boundary() {
+        let result = price_to_tick(MIN_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(
-            MIN_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MIN_TICK as i32) as u32
-        );
+        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
     }
 
     #[test]
-    fn test_price_to_tick_at_max_boundary_post_moderato() {
-        let result = price_to_tick_post_moderato(MAX_PRICE_POST_MODERATO);
+    fn test_price_to_tick_at_max_boundary() {
+        let result = price_to_tick(MAX_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(
-            MAX_PRICE_POST_MODERATO,
-            (PRICE_SCALE as i32 + MAX_TICK as i32) as u32
-        );
+        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
     }
 
     #[test]
@@ -458,7 +475,8 @@ mod tests {
     mod bitmap_tests {
         use super::*;
         use crate::{
-            stablecoin_exchange::StablecoinExchange, storage::hashmap::HashMapStorageProvider,
+            stablecoin_exchange::StablecoinExchange,
+            storage::{StorageCtx, hashmap::HashMapStorageProvider},
         };
         const BOOK_KEY: B256 = B256::ZERO;
 
@@ -732,6 +750,114 @@ mod tests {
                 ));
                 Ok(())
             })
+        }
+    }
+
+    mod rounding_tests {
+        use super::*;
+
+        #[test]
+        fn test_base_to_quote_rounds_down_correctly() {
+            let base_amount = 1_000_003u128;
+            let tick = 0i16;
+
+            let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert_eq!(quote_down, 1_000_003);
+            assert_eq!(quote_up, 1_000_003);
+        }
+
+        #[test]
+        fn test_base_to_quote_rounds_up_when_remainder_exists() {
+            let base_amount = 33u128;
+            let tick = 100i16;
+
+            let price = tick_to_price(tick) as u128;
+            let numerator = base_amount * price;
+            let has_remainder = !numerator.is_multiple_of(PRICE_SCALE as u128);
+
+            let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            if has_remainder {
+                assert_eq!(
+                    quote_up,
+                    quote_down + 1,
+                    "Round up should be 1 more than round down when there's a remainder"
+                );
+            } else {
+                assert_eq!(
+                    quote_up, quote_down,
+                    "Round up and down should be equal when there's no remainder"
+                );
+            }
+        }
+
+        #[test]
+        fn test_quote_to_base_rounds_down_correctly() {
+            let quote_amount = 1_000_003u128;
+            let tick = 0i16;
+
+            let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
+            let base_up = quote_to_base(quote_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert_eq!(base_down, 1_000_003);
+            assert_eq!(base_up, 1_000_003);
+        }
+
+        #[test]
+        fn test_quote_to_base_rounds_up_when_remainder_exists() {
+            let quote_amount = 33u128;
+            let tick = 100i16;
+
+            let price = tick_to_price(tick) as u128;
+            let numerator = quote_amount * PRICE_SCALE as u128;
+            let has_remainder = !numerator.is_multiple_of(price);
+
+            let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
+            let base_up = quote_to_base(quote_amount, tick, RoundingDirection::Up).unwrap();
+
+            if has_remainder {
+                assert_eq!(
+                    base_up,
+                    base_down + 1,
+                    "Round up should be 1 more than round down when there's a remainder"
+                );
+            } else {
+                assert_eq!(
+                    base_up, base_down,
+                    "Round up and down should be equal when there's no remainder"
+                );
+            }
+        }
+
+        #[test]
+        fn test_rounding_favors_protocol_for_bid_escrow() {
+            let base_amount = 10_000_001u128;
+            let tick = 100i16;
+
+            let escrow_floor = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let escrow_ceil = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert!(
+                escrow_ceil >= escrow_floor,
+                "Ceiling should never be less than floor"
+            );
+        }
+
+        #[test]
+        fn test_rounding_favors_protocol_for_settlement() {
+            let base_amount = 10_000_001u128;
+            let tick = 100i16;
+
+            let payout_floor = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
+            let payout_ceil = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
+
+            assert!(
+                payout_floor <= payout_ceil,
+                "Floor should never be more than ceiling"
+            );
         }
     }
 }

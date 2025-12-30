@@ -1,11 +1,11 @@
-use std::net::SocketAddr;
-
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::{
     bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
+use commonware_p2p::Address;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
-use commonware_utils::set::OrderedAssociated;
+use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
@@ -13,13 +13,10 @@ use tempo_node::TempoFullNode;
 
 mod actor;
 mod ingress;
-mod migrate;
-pub(super) mod read_write_transaction;
 mod validators;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
-pub(crate) use validators::ValidatorState;
 
 use ingress::{Command, Message};
 
@@ -31,10 +28,8 @@ pub(crate) async fn init<TContext, TPeerManager>(
 ) -> eyre::Result<(Actor<TContext, TPeerManager>, Mailbox)>
 where
     TContext: Clock + CryptoRngCore + Metrics + Spawner + Storage,
-    TPeerManager: commonware_p2p::Manager<
-            PublicKey = PublicKey,
-            Peers = OrderedAssociated<PublicKey, SocketAddr>,
-        > + Sync,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = ordered::Map<PublicKey, Address>>
+        + Sync,
 {
     let (tx, rx) = mpsc::unbounded();
 
@@ -46,6 +41,8 @@ where
 }
 
 pub(crate) struct Config<TPeerManager> {
+    pub(crate) epoch_strategy: FixedEpocher,
+
     pub(crate) epoch_manager: epoch::manager::Mailbox,
 
     /// The namespace the dkg manager will use when sending messages during
@@ -53,9 +50,6 @@ pub(crate) struct Config<TPeerManager> {
     pub(crate) namespace: Vec<u8>,
 
     pub(crate) me: PrivateKey,
-
-    /// The number of heights per epoch.
-    pub(crate) epoch_length: u64,
 
     pub(crate) mailbox_size: usize,
 
@@ -68,9 +62,7 @@ pub(crate) struct Config<TPeerManager> {
     pub(crate) partition_prefix: String,
 
     /// The full execution layer node. On init, used to read the initial set
-    /// of peers and public polynomial (either from chainspec if running
-    /// pre-allegretto or from the genesis extra_data header and block state if
-    /// post-allegretto).
+    /// of peers and public polynomial.
     ///
     /// During normal operation, used to read the validator config at the end
     /// of each epoch.
@@ -78,9 +70,6 @@ pub(crate) struct Config<TPeerManager> {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
-
-    /// Whether to ignore the first signing share the node reads on startup.
-    pub(crate) delete_signing_share: bool,
 
     /// The peer manager on which the dkg actor will register new peers for a
     /// given epoch after reading them from the smart contract.

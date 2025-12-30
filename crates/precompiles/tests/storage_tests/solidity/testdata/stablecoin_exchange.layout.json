@@ -30,21 +30,13 @@
           {
             "astId": 81,
             "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
-            "label": "activeOrderId",
+            "label": "nextOrderId",
             "offset": 0,
             "slot": "3",
             "type": "t_uint128"
           },
           {
-            "astId": 84,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
-            "label": "pendingOrderId",
-            "offset": 16,
-            "slot": "3",
-            "type": "t_uint128"
-          },
-          {
-            "astId": 88,
+            "astId": 85,
             "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
             "label": "bookKeys",
             "offset": 0,

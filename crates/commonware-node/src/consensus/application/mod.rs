@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
@@ -54,10 +55,8 @@ pub(super) struct Config<TContext> {
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
 
-    /// The number of heights H in an epoch. For a given epoch E, all heights
-    /// `E*H` to and including `(E+1)*H-1` make up the epoch. The block at
-    /// `E*H-1` (saturating) is said to be the genesis (or parent) of the epoch.
-    pub(super) epoch_length: u64,
+    /// The epoch strategy used by tempo, to map block heights to epochs.
+    pub(super) epoch_strategy: FixedEpocher,
 
     /// The scheme provider to use for the application.
     pub(crate) scheme_provider: SchemeProvider,
