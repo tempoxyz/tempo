@@ -689,7 +689,7 @@ impl StablecoinExchange {
             book_handler_order.delete_tick_bit(order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
-                book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                book_handler.next_initialized_tick(order.tick(), order.is_bid())?;
 
             // Update best_tick when tick is exhausted
             if order.is_bid() {
@@ -977,7 +977,7 @@ impl StablecoinExchange {
 
             if best_tick == order.tick() {
                 let (next_tick, has_liquidity) =
-                    book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                    book_handler.next_initialized_tick(order.tick(), order.is_bid())?;
 
                 if order.is_bid() {
                     let new_best = if has_liquidity { next_tick } else { i16::MIN };
@@ -1059,7 +1059,7 @@ impl StablecoinExchange {
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1112,7 +1112,7 @@ impl StablecoinExchange {
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized && remaining_out > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1253,7 +1253,7 @@ impl StablecoinExchange {
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1293,7 +1293,7 @@ impl StablecoinExchange {
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized && remaining_in > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());

@@ -270,7 +270,7 @@ impl OrderbookHandler {
     }
 
     /// Find next initialized ask tick higher than current tick
-    pub fn next_initialized_tick(&self, tick: i16, is_bid: bool) -> (i16, bool) {
+    pub fn next_initialized_tick(&self, tick: i16, is_bid: bool) -> Result<(i16, bool)> {
         if is_bid {
             self.next_initialized_bid_tick(tick)
         } else {
@@ -282,10 +282,10 @@ impl OrderbookHandler {
     ///
     /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
     /// bit manipulation to find set bits, minimizing storage reads.
-    fn next_initialized_ask_tick(&self, tick: i16) -> (i16, bool) {
+    fn next_initialized_ask_tick(&self, tick: i16) -> Result<(i16, bool)> {
         // Guard against overflow when tick is at or above MAX_TICK
         if tick >= MAX_TICK {
-            return (MAX_TICK, false);
+            return Ok((MAX_TICK, false));
         }
 
         let mut next_tick = tick + 1;
@@ -294,15 +294,12 @@ impl OrderbookHandler {
         loop {
             let word_index = next_tick >> 8;
             if word_index > max_word_index {
-                return (next_tick, false);
+                return Ok((next_tick, false));
             }
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = match self.ask_bitmap.at(word_index).read() {
-                Ok(w) => w,
-                Err(_) => return (next_tick, false),
-            };
+            let word = self.ask_bitmap.at(word_index).read()?;
 
             // Mask off bits below bit_index to only consider ticks >= next_tick
             let mask = if bit_index == 0 {
@@ -317,15 +314,15 @@ impl OrderbookHandler {
                 let lowest_bit = masked_word.trailing_zeros();
                 let found_tick = (word_index << 8) | (lowest_bit as i16);
                 if found_tick <= MAX_TICK {
-                    return (found_tick, true);
+                    return Ok((found_tick, true));
                 }
-                return (found_tick, false);
+                return Ok((found_tick, false));
             }
 
             // No set bits in this word, move to next word
             let next_word_index = word_index + 1;
             if next_word_index > max_word_index {
-                return (next_word_index << 8, false);
+                return Ok((next_word_index << 8, false));
             }
             next_tick = next_word_index << 8; // First tick of next word
         }
@@ -335,10 +332,10 @@ impl OrderbookHandler {
     ///
     /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
     /// bit manipulation to find set bits, minimizing storage reads.
-    fn next_initialized_bid_tick(&self, tick: i16) -> (i16, bool) {
+    fn next_initialized_bid_tick(&self, tick: i16) -> Result<(i16, bool)> {
         // Guard against underflow when tick is at or below MIN_TICK
         if tick <= MIN_TICK {
-            return (MIN_TICK, false);
+            return Ok((MIN_TICK, false));
         }
 
         let mut next_tick = tick - 1;
@@ -347,15 +344,12 @@ impl OrderbookHandler {
         loop {
             let word_index = next_tick >> 8;
             if word_index < min_word_index {
-                return (next_tick, false);
+                return Ok((next_tick, false));
             }
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = match self.bid_bitmap.at(word_index).read() {
-                Ok(w) => w,
-                Err(_) => return (next_tick, false),
-            };
+            let word = self.bid_bitmap.at(word_index).read()?;
 
             // Mask off bits above bit_index to only consider ticks <= next_tick
             let mask = if bit_index == 255 {
@@ -372,15 +366,15 @@ impl OrderbookHandler {
                 let highest_bit = 255 - leading;
                 let found_tick = (word_index << 8) | (highest_bit as i16);
                 if found_tick >= MIN_TICK {
-                    return (found_tick, true);
+                    return Ok((found_tick, true));
                 }
-                return (found_tick, false);
+                return Ok((found_tick, false));
             }
 
             // No set bits in this word, move to previous word
             let prev_word_index = word_index - 1;
             if prev_word_index < min_word_index {
-                return ((prev_word_index << 8) | 0xFF, false);
+                return Ok(((prev_word_index << 8) | 0xFF, false));
             }
             next_tick = (prev_word_index << 8) | 0xFF; // Last tick of previous word
         }
@@ -841,17 +835,17 @@ mod tests {
                 book_handler.set_tick_bit(50, false)?;
 
                 // From tick 0, should find tick 10
-                let (next, found) = book_handler.next_initialized_tick(0, false);
+                let (next, found) = book_handler.next_initialized_tick(0, false)?;
                 assert!(found);
                 assert_eq!(next, 10);
 
                 // From tick 10, should find tick 50
-                let (next, found) = book_handler.next_initialized_tick(10, false);
+                let (next, found) = book_handler.next_initialized_tick(10, false)?;
                 assert!(found);
                 assert_eq!(next, 50);
 
                 // From tick 50, should find nothing in bounds
-                let (next, found) = book_handler.next_initialized_tick(50, false);
+                let (next, found) = book_handler.next_initialized_tick(50, false)?;
                 assert!(!found);
                 assert!(next > MAX_TICK);
 
@@ -873,17 +867,17 @@ mod tests {
                 book_handler.set_tick_bit(600, false)?;
 
                 // From tick 0, should find tick 100 (same word)
-                let (next, found) = book_handler.next_initialized_tick(0, false);
+                let (next, found) = book_handler.next_initialized_tick(0, false)?;
                 assert!(found);
                 assert_eq!(next, 100);
 
                 // From tick 100, should find tick 300 (cross word boundary)
-                let (next, found) = book_handler.next_initialized_tick(100, false);
+                let (next, found) = book_handler.next_initialized_tick(100, false)?;
                 assert!(found);
                 assert_eq!(next, 300);
 
                 // From tick 300, should find tick 600 (cross word boundary)
-                let (next, found) = book_handler.next_initialized_tick(300, false);
+                let (next, found) = book_handler.next_initialized_tick(300, false)?;
                 assert!(found);
                 assert_eq!(next, 600);
 
@@ -904,17 +898,17 @@ mod tests {
                 book_handler.set_tick_bit(50, true)?;
 
                 // From tick 100, should find tick 50
-                let (next, found) = book_handler.next_initialized_tick(100, true);
+                let (next, found) = book_handler.next_initialized_tick(100, true)?;
                 assert!(found);
                 assert_eq!(next, 50);
 
                 // From tick 50, should find tick 10
-                let (next, found) = book_handler.next_initialized_tick(50, true);
+                let (next, found) = book_handler.next_initialized_tick(50, true)?;
                 assert!(found);
                 assert_eq!(next, 10);
 
                 // From tick 10, should find nothing in bounds
-                let (next, found) = book_handler.next_initialized_tick(10, true);
+                let (next, found) = book_handler.next_initialized_tick(10, true)?;
                 assert!(!found);
                 assert!(next < MIN_TICK);
 
@@ -936,17 +930,17 @@ mod tests {
                 book_handler.set_tick_bit(100, true)?;
 
                 // From tick 700, should find tick 600 (same word)
-                let (next, found) = book_handler.next_initialized_tick(700, true);
+                let (next, found) = book_handler.next_initialized_tick(700, true)?;
                 assert!(found);
                 assert_eq!(next, 600);
 
                 // From tick 600, should find tick 300 (cross word boundary)
-                let (next, found) = book_handler.next_initialized_tick(600, true);
+                let (next, found) = book_handler.next_initialized_tick(600, true)?;
                 assert!(found);
                 assert_eq!(next, 300);
 
                 // From tick 300, should find tick 100 (cross word boundary)
-                let (next, found) = book_handler.next_initialized_tick(300, true);
+                let (next, found) = book_handler.next_initialized_tick(300, true)?;
                 assert!(found);
                 assert_eq!(next, 100);
 
@@ -968,17 +962,17 @@ mod tests {
                 book_handler.set_tick_bit(50, false)?;
 
                 // From -600, should find -500
-                let (next, found) = book_handler.next_initialized_tick(-600, false);
+                let (next, found) = book_handler.next_initialized_tick(-600, false)?;
                 assert!(found);
                 assert_eq!(next, -500);
 
                 // From -500, should find -100
-                let (next, found) = book_handler.next_initialized_tick(-500, false);
+                let (next, found) = book_handler.next_initialized_tick(-500, false)?;
                 assert!(found);
                 assert_eq!(next, -100);
 
                 // From -100, should find 50
-                let (next, found) = book_handler.next_initialized_tick(-100, false);
+                let (next, found) = book_handler.next_initialized_tick(-100, false)?;
                 assert!(found);
                 assert_eq!(next, 50);
 
@@ -987,12 +981,12 @@ mod tests {
                 book_handler.set_tick_bit(-500, true)?;
 
                 // From 0, should find -100
-                let (next, found) = book_handler.next_initialized_tick(0, true);
+                let (next, found) = book_handler.next_initialized_tick(0, true)?;
                 assert!(found);
                 assert_eq!(next, -100);
 
                 // From -100, should find -500
-                let (next, found) = book_handler.next_initialized_tick(-100, true);
+                let (next, found) = book_handler.next_initialized_tick(-100, true)?;
                 assert!(found);
                 assert_eq!(next, -500);
 
@@ -1013,12 +1007,12 @@ mod tests {
                 book_handler.set_tick_bit(256, false)?; // First bit of word 1
 
                 // From 254, should find 255
-                let (next, found) = book_handler.next_initialized_tick(254, false);
+                let (next, found) = book_handler.next_initialized_tick(254, false)?;
                 assert!(found);
                 assert_eq!(next, 255);
 
                 // From 255, should find 256 (cross word)
-                let (next, found) = book_handler.next_initialized_tick(255, false);
+                let (next, found) = book_handler.next_initialized_tick(255, false)?;
                 assert!(found);
                 assert_eq!(next, 256);
 
@@ -1027,12 +1021,12 @@ mod tests {
                 book_handler.set_tick_bit(255, true)?;
 
                 // From 257, should find 256
-                let (next, found) = book_handler.next_initialized_tick(257, true);
+                let (next, found) = book_handler.next_initialized_tick(257, true)?;
                 assert!(found);
                 assert_eq!(next, 256);
 
                 // From 256, should find 255 (cross word going down)
-                let (next, found) = book_handler.next_initialized_tick(256, true);
+                let (next, found) = book_handler.next_initialized_tick(256, true)?;
                 assert!(found);
                 assert_eq!(next, 255);
 
