@@ -264,10 +264,13 @@ where
                 ack,
             } => {
                 self.canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
-                    .await?;
+                    .await
+                    .wrap_err("failed canonicalizing head")?;
             }
             Command::Finalize(finalized) => {
-                self.finalize(cause, *finalized).await?;
+                self.finalize(cause, *finalized)
+                    .await
+                    .wrap_err("failed handling finalization")?;
             }
         }
         Ok(())
@@ -357,11 +360,13 @@ where
                     digest,
                     oneshot::channel().0,
                 )
-                .await?;
+                .await
+                .wrap_err("failed canonicalizing finalization tip")?;
             }
             Update::Block(block, acknowledgment) => {
                 self.forward_finalized(Span::current(), block, acknowledgment)
-                    .await?;
+                    .await
+                    .wrap_err("failed forwarding finalized block to execution layer")?;
             }
         }
         Ok(())
