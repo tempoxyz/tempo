@@ -452,25 +452,20 @@ mod tests {
 
     #[test]
     fn test_get_pending_rewards_immediate_distribution() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            // Mint tokens to alice and have her opt in
             let alice_balance = U256::from(1000e18);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: alice,
-                    amount: alice_balance,
-                },
-            )?;
+            let reward_amount = U256::from(100e18);
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
@@ -478,20 +473,11 @@ mod tests {
             let pending_before = token.get_pending_rewards(alice)?;
             assert_eq!(pending_before, U256::ZERO);
 
-            // Fund immediate reward
-            let reward_amount = U256::from(100e18);
-            token.mint(
+            // Distribute immediate reward
+            token.distribute_reward(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
-                },
-            )?;
-            token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
@@ -513,42 +499,28 @@ mod tests {
 
     #[test]
     fn test_get_pending_rewards_includes_stored_balance() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            // Mint tokens to alice and have her opt in
             let alice_balance = U256::from(1000e18);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: alice,
-                    amount: alice_balance,
-                },
-            )?;
+            let reward_amount = U256::from(50e18);
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .with_mint(admin, reward_amount * U256::from(2))
+                .apply()?;
+
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-            // Fund first reward
-            let reward_amount = U256::from(50e18);
-            token.mint(
+            // Distribute first reward
+            token.distribute_reward(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
-                },
-            )?;
-            token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
@@ -557,19 +529,11 @@ mod tests {
             let user_info = token.get_user_reward_info(alice)?;
             assert_eq!(user_info.reward_balance, reward_amount);
 
-            // Fund second reward
-            token.mint(
+            // Distribute second reward
+            token.distribute_reward(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
-                },
-            )?;
-            token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
@@ -583,42 +547,29 @@ mod tests {
 
     #[test]
     fn test_get_pending_rewards_with_delegation() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
         let bob = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            // Mint tokens to alice and have her delegate to bob
             let alice_balance = U256::from(1000e18);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: alice,
-                    amount: alice_balance,
-                },
-            )?;
+            let reward_amount = U256::from(100e18);
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, alice_balance)
+                .with_mint(admin, reward_amount)
+                .apply()?;
+
+            // Alice delegates to bob
             token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
 
-            // Fund immediate reward
-            let reward_amount = U256::from(100e18);
-            token.mint(
+            // Distribute immediate reward
+            token.distribute_reward(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
-                },
-            )?;
-            token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
@@ -643,52 +594,31 @@ mod tests {
 
     #[test]
     fn test_get_pending_rewards_not_opted_in() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
         let bob = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            initialize_path_usd(admin)?;
-            let mut token = TIP20Token::new(1);
-            token.initialize("Test", "TST", "USD", PATH_USD_ADDRESS, admin, Address::ZERO)?;
-            token.grant_role_internal(admin, *ISSUER_ROLE)?;
-
-            // Mint tokens to alice (opted in) and bob (not opted in)
             let balance = U256::from(1000e18);
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: alice,
-                    amount: balance,
-                },
-            )?;
-            token.mint(
-                admin,
-                ITIP20::mintCall {
-                    to: bob,
-                    amount: balance,
-                },
-            )?;
+            let reward_amount = U256::from(100e18);
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(bob, balance)
+                .with_mint(admin, reward_amount)
+                .apply()?;
 
             // Only alice opts in
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-            // Fund reward
-            let reward_amount = U256::from(100e18);
-            token.mint(
+            // Distribute reward
+            token.distribute_reward(
                 admin,
-                ITIP20::mintCall {
-                    to: admin,
+                ITIP20::distributeRewardCall {
                     amount: reward_amount,
-                },
-            )?;
-            token.start_reward(
-                admin,
-                ITIP20::startRewardCall {
-                    amount: reward_amount,
-                    secs: 0,
                 },
             )?;
 
