@@ -1,14 +1,18 @@
-use alloy::{primitives::Address, providers::ProviderBuilder};
+use alloy::{
+    primitives::Address,
+    providers::{Provider, ProviderBuilder},
+    rpc::types::Filter,
+    sol_types::SolEvent,
+};
 use eyre::{Result, eyre};
-use itertools::Itertools;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use poem::{Response, handler};
 use reqwest::Url;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Pool},
+    tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Mint, Pool},
     tip20::{ITIP20, token_id_to_address},
     tip20_factory::ITIP20Factory,
 };
@@ -24,6 +28,8 @@ pub struct Monitor {
     poll_interval: u64,
     tokens: HashMap<Address, TIP20Token>,
     pools: HashMap<(Address, Address), Pool>,
+    known_pool_pairs: HashSet<(Address, Address)>,
+    last_processed_block: u64,
 }
 
 impl Monitor {
@@ -33,6 +39,8 @@ impl Monitor {
             poll_interval,
             tokens: HashMap::new(),
             pools: HashMap::new(),
+            known_pool_pairs: HashSet::new(),
+            last_processed_block: 0,
         }
     }
 
@@ -81,6 +89,84 @@ impl Monitor {
         Ok(())
     }
 
+    /// Discovers all pool pairs from historical Mint events (block 0 to current).
+    /// Called once on startup.
+    #[instrument(name = "monitor::discover_historical_pools", skip(self))]
+    async fn discover_historical_pools(&mut self) -> Result<()> {
+        let provider = ProviderBuilder::new()
+            .connect(self.rpc_url.as_str())
+            .await?;
+
+        let current_block = provider.get_block_number().await?;
+
+        let filter = Filter::new()
+            .address(TIP_FEE_MANAGER_ADDRESS)
+            .event_signature(Mint::SIGNATURE_HASH)
+            .from_block(0)
+            .to_block(current_block);
+
+        let logs = provider.get_logs(&filter).await?;
+
+        for log in logs {
+            // Mint event: topic[1]=sender, topic[2]=userToken, topic[3]=validatorToken
+            if log.topics().len() >= 4 {
+                let user_token = Address::from_word(log.topics()[2]);
+                let validator_token = Address::from_word(log.topics()[3]);
+                self.known_pool_pairs.insert((user_token, validator_token));
+            }
+        }
+
+        self.last_processed_block = current_block;
+        info!(
+            pools_discovered = self.known_pool_pairs.len(),
+            last_block = current_block,
+            "historical pool discovery complete"
+        );
+
+        Ok(())
+    }
+
+    /// Checks for new pools by querying Mint events since last processed block.
+    /// Called each poll cycle.
+    #[instrument(name = "monitor::check_for_new_pools", skip(self))]
+    async fn check_for_new_pools(&mut self) -> Result<()> {
+        let provider = ProviderBuilder::new()
+            .connect(self.rpc_url.as_str())
+            .await?;
+
+        let current_block = provider.get_block_number().await?;
+
+        if current_block <= self.last_processed_block {
+            return Ok(());
+        }
+
+        let filter = Filter::new()
+            .address(TIP_FEE_MANAGER_ADDRESS)
+            .event_signature(Mint::SIGNATURE_HASH)
+            .from_block(self.last_processed_block + 1)
+            .to_block(current_block);
+
+        let logs = provider.get_logs(&filter).await?;
+
+        let mut new_pools = 0;
+        for log in logs {
+            if log.topics().len() >= 4 {
+                let user_token = Address::from_word(log.topics()[2]);
+                let validator_token = Address::from_word(log.topics()[3]);
+                if self.known_pool_pairs.insert((user_token, validator_token)) {
+                    new_pools += 1;
+                }
+            }
+        }
+
+        self.last_processed_block = current_block;
+        if new_pools > 0 {
+            info!(new_pools, "discovered new pools");
+        }
+
+        Ok(())
+    }
+
     #[instrument(name = "monitor::update_tip20_pools", skip(self))]
     async fn update_tip20_pools(&mut self) -> Result<()> {
         let provider = ProviderBuilder::new()
@@ -89,8 +175,7 @@ impl Monitor {
 
         let fee_amm: ITIPFeeAMMInstance<_, _> = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
-        for pool_addresses in self.tokens.keys().permutations(2) {
-            let (&token_a, &token_b) = (pool_addresses[0], pool_addresses[1]);
+        for &(token_a, token_b) in &self.known_pool_pairs {
             debug!(%token_a, %token_b, "fetching pool");
 
             let pool: Result<Pool, _> = fee_amm.getPool(token_a, token_b).call().await;
@@ -157,14 +242,22 @@ impl Monitor {
 
     #[instrument(name = "monitor::worker", skip(self))]
     pub async fn worker(&mut self) {
+        // Initial historical discovery
+        if let Err(e) = self.discover_historical_pools().await {
+            error!("failed to discover historical pools: {}", e);
+        }
+
         loop {
             info!("updating pools and tokens");
             if let Err(e) = self.update_tip20_tokens().await {
-                error!("failed to update pools: {}", e);
-            };
+                error!("failed to update tokens: {}", e);
+            }
+            if let Err(e) = self.check_for_new_pools().await {
+                error!("failed to check for new pools: {}", e);
+            }
             if let Err(e) = self.update_tip20_pools().await {
                 error!("failed to update pools: {}", e);
-            };
+            }
             self.update_metrics().await;
             tokio::time::sleep(std::time::Duration::from_secs(self.poll_interval)).await;
         }
