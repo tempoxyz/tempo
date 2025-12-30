@@ -132,6 +132,12 @@ impl TempoNode {
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
         ProviderFactoryBuilder::default()
     }
+
+    /// Sets the validator key for filtering subblock transactions.
+    pub fn with_validator_key(mut self, validator_key: Option<B256>) -> Self {
+        self.validator_key = validator_key;
+        self
+    }
 }
 
 impl NodeTypes for TempoNode {
@@ -153,15 +159,20 @@ pub struct TempoAddOns<
     validator_key: Option<B256>,
 }
 
-impl<N, EthB> TempoAddOns<N, EthB>
+impl<N> TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder>
 where
-    N: FullNodeComponents,
-    EthB: EthApiBuilder<N>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
     pub fn new(validator_key: Option<B256>) -> Self {
         Self {
-            inner: Default::default(),
+            inner: RpcAddOns::new(
+                TempoEthApiBuilder::new(validator_key),
+                TempoEngineValidatorBuilder,
+                NoopEngineApiBuilder::default(),
+                BasicEngineValidatorBuilder::default(),
+                Identity::default(),
+            ),
             validator_key,
         }
     }
