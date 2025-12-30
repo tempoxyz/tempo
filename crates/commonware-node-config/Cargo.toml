@@ -13,13 +13,10 @@ workspace = true
 [dependencies]
 commonware-codec.workspace = true
 commonware-cryptography.workspace = true
-commonware-utils.workspace = true
-const-hex = { workspace = true, features = ["serde"] }
+const-hex.workspace = true
 derive_more = { workspace = true, features = ["debug"] }
-indexmap = { workspace = true, features = ["serde"] }
-serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+commonware-utils.workspace = true
 rand.workspace = true

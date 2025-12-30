@@ -33,7 +33,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
+    config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, BOUNDARY_CERT_LIMIT, MARSHAL_LIMIT},
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -79,7 +79,6 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub share: Option<Share>,
-    pub delete_signing_share: bool,
 
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -308,6 +307,7 @@ where
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
                 epoch_length,
+                rate_limit: BOUNDARY_CERT_LIMIT,
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
@@ -330,7 +330,6 @@ where
                 epoch_length,
                 execution_node,
                 initial_share: self.share.clone(),
-                delete_signing_share: self.delete_signing_share,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),

@@ -27,6 +27,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) subblocks: subblocks::Mailbox,
     pub(crate) marshal: marshal::Mailbox<Scheme<PublicKey, MinSig>, Block>,
     pub(crate) scheme_provider: SchemeProvider,
+    pub(crate) rate_limit: governor::Quota,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
