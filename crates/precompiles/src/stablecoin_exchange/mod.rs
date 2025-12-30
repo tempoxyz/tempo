@@ -934,10 +934,7 @@ impl StablecoinExchange {
             return Err(StablecoinExchangeError::order_does_not_exist().into());
         }
 
-        // All orders are immediately active in the orderbook
-        self.cancel_active_order(order)?;
-
-        Ok(())
+        self.cancel_active_order(order)
     }
 
     /// Cancel an active order (already in the orderbook)

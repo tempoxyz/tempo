@@ -27,6 +27,7 @@ pub const TEMPO_SYSTEM_TX_SENDER: Address = Address::ZERO;
 /// - EIP-2930 access list transactions
 /// - EIP-1559 dynamic fee transactions
 /// - EIP-7702 authorization list transactions
+/// - Tempo transactions
 #[derive(Clone, Debug, alloy_consensus::TransactionEnvelope)]
 #[envelope(
     tx_type_name = TempoTxType,

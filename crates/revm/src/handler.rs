@@ -1035,7 +1035,7 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // Fees are collected and swapped immediately in collectFeePreTx.
+        // Fee handling (refunds and swaps) are done in `reimburse_caller()` via `collectFeePostTx`.
         // Validators call distributeFees() to claim their accumulated fees.
         Ok(())
     }

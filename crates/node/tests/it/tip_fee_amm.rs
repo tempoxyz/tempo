@@ -419,8 +419,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
-    // Add liquidity using single-sided mint (only validator tokens)
-    // Note: Post hardfork removal, mint only takes validator tokens
+    // Mint single-sided liquidity (with validator tokens)
     let mint_receipt = fee_amm
         .mint(
             pool_key.user_token,
