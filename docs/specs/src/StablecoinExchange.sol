@@ -362,47 +362,7 @@ contract StablecoinExchange is IStablecoinExchange {
             revert IStablecoinExchange.Unauthorized();
         }
 
-        Orderbook storage book = books[order.bookKey];
-        address token = order.isBid ? book.quote : book.base;
-        bool isBid = order.isBid;
-        IStablecoinExchange.TickLevel storage level =
-            isBid ? book.bids[order.tick] : book.asks[order.tick];
-
-        if (order.prev != 0) {
-            orders[order.prev].next = order.next;
-        } else {
-            level.head = order.next;
-        }
-
-        if (order.next != 0) {
-            orders[order.next].prev = order.prev;
-        } else {
-            level.tail = order.prev;
-        }
-
-        // Decrement total liquidity
-        level.totalLiquidity -= order.remaining;
-
-        if (level.head == 0) {
-            _clearTickBit(order.bookKey, order.tick, isBid);
-        }
-
-        // Credit escrow amount to user's withdrawable balance
-        uint128 escrowAmount;
-        if (order.isBid) {
-            // For bids, escrow quote tokens based on price
-            uint32 price = tickToPrice(order.tick);
-            escrowAmount =
-                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
-        } else {
-            // For asks, escrow base tokens
-            escrowAmount = order.remaining;
-        }
-        balances[order.maker][token] += escrowAmount;
-
-        delete orders[orderId];
-
-        emit OrderCancelled(orderId);
+        _cancelOrder(orderId, order);
     }
 
     /// @notice Cancel an order where the maker is forbidden by TIP-403 policy
@@ -423,6 +383,16 @@ contract StablecoinExchange is IStablecoinExchange {
             revert IStablecoinExchange.OrderNotStale();
         }
 
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Internal function to cancel an order and refund escrow
+    /// @dev Caller must validate authorization before calling
+    /// @param orderId The order ID to cancel
+    /// @param order Storage reference to the order
+    function _cancelOrder(uint128 orderId, IStablecoinExchange.Order storage order) internal {
+        Orderbook storage book = books[order.bookKey];
+        address token = order.isBid ? book.quote : book.base;
         bool isBid = order.isBid;
         IStablecoinExchange.TickLevel storage level =
             isBid ? book.bids[order.tick] : book.asks[order.tick];
