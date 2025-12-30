@@ -412,7 +412,7 @@ where
         if let Ok(execution_height) = self
             .execution_node
             .provider
-            .last_block_number()
+            .best_block_number()
             .map_err(Report::new)
             .inspect_err(|error| {
                 warn!(
