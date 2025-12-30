@@ -107,12 +107,6 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Get validator token reserve
-    fn get_effective_validator_reserve(&self, pool_id: B256) -> Result<U256> {
-        let pool = self.pools.at(pool_id).read()?;
-        Ok(U256::from(pool.reserve_validator_token))
-    }
-
     /// Swap to rebalance a fee token pool
     pub fn rebalance_swap(
         &mut self,
@@ -406,12 +400,6 @@ impl TipFeeManager {
             .checked_mul(U256::from(pool.reserve_validator_token))
             .and_then(|product| product.checked_div(total_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
-
-        // Check that withdrawal does not violate pending swaps
-        let available_validator_token = self.get_effective_validator_reserve(pool_id)?;
-        if amount_validator_token > available_validator_token {
-            return Err(TIPFeeAMMError::insufficient_reserves().into());
-        }
 
         Ok((amount_user_token, amount_validator_token))
     }
