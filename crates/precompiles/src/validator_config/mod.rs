@@ -121,13 +121,13 @@ impl ValidatorConfig {
         sender: Address,
         call: IValidatorConfig::addValidatorCall,
     ) -> Result<()> {
-        // Only owner can create validators
-        self.check_owner(sender)?;
-
         // Reject zero public key - zero is used as sentinel value for non-existence
         if call.publicKey.is_zero() {
             return Err(ValidatorConfigError::invalid_public_key())?;
         }
+
+        // Only owner can create validators
+        self.check_owner(sender)?;
 
         // Check if validator already exists
         if self.validator_exists(call.newValidatorAddress)? {
@@ -182,14 +182,14 @@ impl ValidatorConfig {
         sender: Address,
         call: IValidatorConfig::updateValidatorCall,
     ) -> Result<()> {
-        // Validator can update their own info
-        if !self.validator_exists(sender)? {
-            return Err(ValidatorConfigError::validator_not_found())?;
-        }
-
         // Reject zero public key - zero is used as sentinel value for non-existence
         if call.publicKey.is_zero() {
             return Err(ValidatorConfigError::invalid_public_key())?;
+        }
+
+        // Validator can update their own info
+        if !self.validator_exists(sender)? {
+            return Err(ValidatorConfigError::validator_not_found())?;
         }
 
         // Load the current validator info
