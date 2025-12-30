@@ -160,7 +160,7 @@ impl TIP20Token {
     /// and receive them as token transfers to their own balance.
     pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
         self.check_not_paused()?;
-        self.ensure_transfer_authorized(msg_sender, msg_sender)?;
+        self.ensure_transfer_authorized(self.address, msg_sender)?;
 
         self.update_rewards(msg_sender)?;
 
@@ -349,10 +349,13 @@ impl From<UserRewardInfo> for ITIP20::UserRewardInfo {
 mod tests {
     use super::*;
     use crate::{
+        error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip403_registry::TIP403Registry,
     };
     use alloy::primitives::{Address, U256};
+    use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
@@ -631,6 +634,47 @@ mod tests {
             // Bob should have 0 pending rewards (not opted in)
             let bob_pending = token.get_pending_rewards(bob)?;
             assert_eq!(bob_pending, 0u128);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_claim_rewards_unauthorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let alice = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.initialize()?;
+            
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    addr: alice,
+                    blacklisted: true,
+                },
+            )?;
+
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_policy_id(policy_id)
+                .apply()?;
+
+            let err = token.claim_rewards(alice).unwrap_err();
+            assert!(
+                matches!(err, TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))),
+                "Expected PolicyForbids error, got: {err:?}"
+            );
 
             Ok(())
         })
