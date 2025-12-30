@@ -153,6 +153,17 @@ contract ValidatorConfigTest is BaseTest {
         }
     }
 
+    function test_AddValidator_ZeroPublicKey() public {
+        bytes32 zeroPublicKey = bytes32(0);
+        try validatorConfig.addValidator(
+            validator1, zeroPublicKey, true, inboundAddr1, outboundAddr1
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IValidatorConfig.InvalidPublicKey.selector));
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                            UPDATE VALIDATOR TESTS
     //////////////////////////////////////////////////////////////*/
@@ -221,6 +232,25 @@ contract ValidatorConfigTest is BaseTest {
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.ValidatorNotFound.selector));
         }
+    }
+
+    function test_UpdateValidator_ZeroPublicKey() public {
+        // Owner adds validator
+        validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
+
+        // Validator tries to update with zero public key
+        bytes32 zeroPublicKey = bytes32(0);
+        vm.prank(validator1);
+        try validatorConfig.updateValidator(validator1, zeroPublicKey, inboundAddr2, outboundAddr2) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IValidatorConfig.InvalidPublicKey.selector));
+        }
+
+        // Verify original public key is preserved
+        IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
+        assertEq(validators.length, 1, "Should still have 1 validator");
+        assertEq(validators[0].publicKey, publicKey1, "Original public key should be preserved");
     }
 
     /*//////////////////////////////////////////////////////////////
