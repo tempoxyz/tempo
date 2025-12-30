@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::{block::BlockExecutionResult, revm::primitives::Address};
+use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_consensus_common::validation::{
@@ -14,14 +14,10 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::spec::TempoChainSpec;
+use tempo_chainspec::spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
-
-// End-of-block system transactions
-const SYSTEM_TX_COUNT: usize = 1;
-const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;

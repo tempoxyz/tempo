@@ -17,6 +17,10 @@ use tempo_primitives::TempoHeader;
 
 pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
 
+// End-of-block system transactions
+pub const SYSTEM_TX_COUNT: usize = 1;
+pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
+
 /// Tempo genesis info extracted from genesis extra_fields
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
