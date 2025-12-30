@@ -29,11 +29,14 @@ alloy = { workspace = true, features = [
 alloy-primitives.workspace = true
 clap = { version = "4.5.45", features = ["derive"] }
 commonware-codec.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
+commonware-math.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
+itertools.workspace = true
 rand.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true

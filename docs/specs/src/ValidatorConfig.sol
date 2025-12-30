@@ -58,6 +58,11 @@ contract ValidatorConfig is IValidatorConfig {
         string calldata inboundAddress,
         string calldata outboundAddress
     ) external onlyOwner {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if (publicKey == bytes32(0)) {
+            revert InvalidPublicKey();
+        }
+
         // Check if validator already exists (public key must be non-zero for existing validators)
         if (validators[newValidatorAddress].publicKey != bytes32(0)) {
             revert ValidatorAlreadyExists();
@@ -91,6 +96,11 @@ contract ValidatorConfig is IValidatorConfig {
         string calldata inboundAddress,
         string calldata outboundAddress
     ) external {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if (publicKey == bytes32(0)) {
+            revert InvalidPublicKey();
+        }
+
         // Check if caller is a validator
         if (validators[msg.sender].publicKey == bytes32(0)) {
             revert ValidatorNotFound();

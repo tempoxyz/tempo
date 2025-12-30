@@ -65,7 +65,7 @@ address yourToken = 0x20c0000000000000000000000000000000000004; // Your issued t
 address validatorToken = 0x20c0000000000000000000000000000000000001; // AlphaUSD
 
 // Add 100 AlphaUSD of liquidity to the fee pool
-feeAmm.mintWithValidatorToken(
+feeAmm.mint(
   yourToken,
   validatorToken,
   100_000_000, // 100 tokens (6 decimals)
@@ -252,7 +252,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add 100 AlphaUSD of liquidity to the fee pool
     fee_amm // [!code focus]
-        .mintWithValidatorToken( // [!code focus]
+        .mint( // [!code focus]
             your_token,              // [!code focus]
             validator_token,         // [!code focus]
             U256::from(100_000_000), // [!code focus]

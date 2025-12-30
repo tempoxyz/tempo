@@ -26,8 +26,6 @@ interface ITIP20 {
     error InvalidRecipient();
     error InvalidSupplyCap();
     error NoOptedInSupply();
-    /// @notice Error when starting a reward stream with seconds > 0
-    error ScheduledRewardsDisabled();
 
     /// @notice Error when a transfer is blocked by the current transfer policy.
     error PolicyForbids();
@@ -64,9 +62,7 @@ interface ITIP20 {
     event PauseStateUpdate(address indexed updater, bool isPaused);
     event QuoteTokenUpdate(address indexed updater, ITIP20 indexed newQuoteToken);
     event RewardRecipientSet(address indexed holder, address indexed recipient);
-    event RewardScheduled(
-        address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds
-    );
+    event RewardDistributed(address indexed funder, uint256 amount);
 
     /// @notice Emitted when the supply cap is updated.
     /// @param updater The address that initiated the supply cap update.
@@ -182,7 +178,7 @@ interface ITIP20 {
 
     function setSupplyCap(uint256 newSupplyCap) external;
 
-    function startReward(uint256 amount, uint32 seconds_) external returns (uint64);
+    function distributeReward(uint256 amount) external;
 
     /// @notice Returns the maximum supply cap for the token.
     /// @return The supply cap amount.
@@ -240,5 +236,11 @@ interface ITIP20 {
         external
         view
         returns (address rewardRecipient, uint256 rewardPerToken, uint256 rewardBalance);
+
+    /// @notice Calculates the pending claimable rewards for an account without modifying state.
+    /// @dev Returns the total pending claimable reward amount, including stored balance and newly accrued rewards.
+    /// @param account The address to query pending rewards for.
+    /// @return The total pending claimable reward amount.
+    function getPendingRewards(address account) external view returns (uint256);
 
 }

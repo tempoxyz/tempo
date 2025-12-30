@@ -66,7 +66,7 @@ impl Precompile for ValidatorConfig {
                 )
             }
 
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
@@ -85,14 +85,13 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::SolValue,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
