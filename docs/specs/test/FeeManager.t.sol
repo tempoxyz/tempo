@@ -266,11 +266,11 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            uint256 validatorBalanceBefore = amm.collectedFeesByValidator(validator);
+            uint256 validatorBalanceBefore = amm.collectedFees(validator, address(validatorToken));
 
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
-            uint256 validatorBalanceAfter = amm.collectedFeesByValidator(validator);
+            uint256 validatorBalanceAfter = amm.collectedFees(validator, address(validatorToken));
             vm.stopPrank();
 
             assertGt(validatorBalanceAfter, validatorBalanceBefore);
