@@ -310,31 +310,6 @@ impl GenesisArgs {
             })
             .collect();
 
-        for (address, db_account) in evm.db_mut().cache.accounts.iter() {
-            if !genesis_alloc.contains_key(address) {
-                let storage = if db_account.storage.is_empty() {
-                    None
-                } else {
-                    Some(
-                        db_account
-                            .storage
-                            .iter()
-                            .map(|(key, val)| ((*key).into(), (*val).into()))
-                            .collect(),
-                    )
-                };
-                genesis_alloc.insert(
-                    *address,
-                    GenesisAccount {
-                        nonce: Some(db_account.info.nonce),
-                        code: db_account.info.code.as_ref().map(|c| c.original_bytes()),
-                        storage,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-
         genesis_alloc.insert(
             MULTICALL3_ADDRESS,
             GenesisAccount {
