@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
-use commonware_consensus::{types::Epoch, utils::last_block_in_epoch};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -29,7 +29,6 @@ use tracing::{Level, info, instrument, warn};
     fields(
         attempt = _attempt,
         epoch = epoch.map(tracing::field::display),
-        height = epoch.map_or(0, |epoch| last_block_in_epoch(epoch_length, epoch)),
     ),
     err
 )]
@@ -37,9 +36,17 @@ pub(super) async fn read_from_contract_on_epoch_boundary(
     _attempt: u32,
     node: &TempoFullNode,
     epoch: Option<Epoch>,
-    epoch_length: u64,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let last_height = epoch.map_or(0, |epoch| last_block_in_epoch(epoch_length, epoch));
+    let last_height = epoch.map_or(0, |epoch| {
+        epoch_strategy
+            .last(epoch)
+            .expect("epoch strategy covers all epochs")
+    });
+    info!(
+        last_height,
+        "will read contract state from last height of epoch"
+    );
 
     // Try mapping the block height to a hash tracked by reth.
     //

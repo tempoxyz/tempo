@@ -24,6 +24,7 @@ commonware-codec.workspace = true
 # fuzz features provides access to dkg fixtures
 commonware-consensus = { workspace = true, features = ["fuzz"] }
 commonware-cryptography.workspace = true
+commonware-math.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true

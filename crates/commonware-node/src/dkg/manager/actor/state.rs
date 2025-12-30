@@ -11,11 +11,12 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
-        primitives::{group::Share, variant::MinSig},
+        primitives::{group::Share, sharing::Mode, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey},
     transcript::{Summary, Transcript},
 };
+use commonware_p2p::Address;
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
 use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
@@ -92,6 +93,15 @@ where
     /// Returns the DKG outcome for the current epoch.
     pub(super) fn current(&self) -> State {
         self.current.clone()
+    }
+
+    /// Returns the DKG outcome for the previous epoch, if there is one.
+    pub(super) async fn previous(&self) -> Option<State> {
+        let previous_epoch = self.current().epoch.previous()?;
+
+        let segment = self.states.size().checked_sub(2)?;
+        let previous = self.states.read(segment).await.ok()?;
+        (previous_epoch == previous.epoch).then_some(previous)
     }
 
     /// Appends the outcome of a DKG ceremony to state
@@ -597,13 +607,13 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn construct_merged_peer_set(&self) -> ordered::Map<PublicKey, SocketAddr> {
+    pub(super) fn construct_merged_peer_set(&self) -> ordered::Map<PublicKey, Address> {
         ordered::Map::from_iter_dedup(
             self.dealers
                 .iter_pairs()
                 .chain(self.players.iter_pairs())
                 .chain(self.syncers.iter_pairs())
-                .map(|(key, val)| (key.clone(), *val)),
+                .map(|(key, val)| (key.clone(), Address::Symmetric(*val))),
         )
     }
 }
@@ -952,6 +962,7 @@ impl Round {
                 namespace,
                 state.epoch.get(),
                 Some(state.output.clone()),
+                Mode::NonZeroCounter,
                 state.dealers.keys().clone(),
                 state.players.keys().clone(),
             )

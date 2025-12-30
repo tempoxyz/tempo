@@ -50,9 +50,8 @@ use bytes::Bytes;
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_consensus::{
     Reporters,
-    simplex::{self, signing_scheme::bls12381_threshold::Scheme, types::Certificate},
-    types::Epoch,
-    utils,
+    simplex::{self, elector, scheme::bls12381_threshold::Scheme, types::Certificate},
+    types::{Epoch, Epocher as _},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -63,9 +62,8 @@ use commonware_p2p::{
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
-use eyre::{WrapErr as _, ensure, eyre};
+use eyre::{WrapErr as _, bail, ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
-use governor::{RateLimiter, middleware::RateLimitingMiddleware};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand::{CryptoRng, Rng};
 use tracing::{Level, Span, error, error_span, field::display, info, instrument, warn, warn_span};
@@ -226,10 +224,6 @@ where
         );
         mux.start();
 
-        // Create rate limiter for orchestrators
-        let rate_limiter =
-            RateLimiter::hashmap_with_clock(self.config.rate_limit, self.context.clone());
-
         loop {
             select!(
                 message = vote_backup.next() => {
@@ -243,7 +237,6 @@ where
                         &mut boundary_certificate_sender,
                         Epoch::new(their_epoch),
                         from,
-                        &rate_limiter,
                     ).await;
                 },
 
@@ -334,10 +327,11 @@ where
         // Register the new signing scheme with the scheme provider.
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::new(participants, &public, share)
+            Scheme::signer(participants, public, share)
+                .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(participants, &public)
+            Scheme::verifier(participants, public)
         };
         assert!(
             self.config.scheme_provider.register(epoch, scheme.clone()),
@@ -350,6 +344,7 @@ where
             self.context.with_label("consensus_engine"),
             simplex::Config {
                 scheme,
+                elector: elector::Random,
                 blocker: self.config.blocker.clone(),
                 automaton: self.config.application.clone(),
                 relay: self.config.application.clone(),
@@ -377,7 +372,6 @@ where
                 skip_timeout: self.config.views_until_leader_skip,
 
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
-                fetch_rate_per_peer: crate::config::RESOLVER_LIMIT,
             },
         );
 
@@ -438,18 +432,12 @@ where
     /// commonware p2p muxer will send the message to the backup channel, tagged
     /// with the unknown epoch.
     #[instrument(skip_all, fields(msg.epoch = %their_epoch, msg.from = %from), err(level = Level::INFO))]
-    async fn handle_msg_for_unregistered_epoch<S, C, MW>(
+    async fn handle_msg_for_unregistered_epoch(
         &mut self,
         boundary_certificate_sender: &mut impl Sender<PublicKey = PublicKey>,
         their_epoch: Epoch,
         from: PublicKey,
-        rate_limiter: &RateLimiter<PublicKey, S, C, MW>,
-    ) -> eyre::Result<()>
-    where
-        S: governor::state::keyed::KeyedStateStore<PublicKey>,
-        C: governor::clock::Clock,
-        MW: RateLimitingMiddleware<C::Instant>,
-    {
+    ) -> eyre::Result<()> {
         let Some(our_epoch) = self.active_epochs.keys().last().copied() else {
             return Err(eyre!(
                 "received message over unregistered epoch channel, but we are \
@@ -461,12 +449,11 @@ where
             "request epoch `{their_epoch}` is in our past, no action is necessary",
         );
 
-        ensure!(
-            rate_limiter.check_key(&from).is_ok(),
-            "sender `{from}` is rate limited",
-        );
-
-        let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, our_epoch);
+        let boundary_height = self
+            .config
+            .epoch_strategy
+            .last(our_epoch)
+            .expect("our epoch strategy should cover all epochs");
         ensure!(
             self.config
                 .marshal
@@ -477,10 +464,20 @@ where
             height `{boundary_height}` is already known; no action necessary",
         );
 
-        boundary_certificate_sender
+        // FIXME(janis): the GATs in the Sender (and LimitedSender)
+        // lead to `borrowed data escapes outside of method` errors.
+        // `wrap_err` with early return does not work, and neither
+        // does `Report::new` nor `&error as &dyn std::error::Error`.
+        if let Err(error) = boundary_certificate_sender
             .send(Recipients::One(from), our_epoch.encode().freeze(), true)
             .await
-            .wrap_err("failed request for finalization certificate of our epoch")?;
+        {
+            warn!(
+                reason = ?error,
+              "failed request for finalization certificate of our epoch",
+            );
+            bail!("failed request for finalization certificate of our epoch");
+        }
 
         info!("requested finalization certificate for our epoch");
 
@@ -501,7 +498,11 @@ where
         let requested_epoch = Epoch::decode(bytes.as_ref())
             .wrap_err("failed decoding epoch channel payload as epoch")?;
         tracing::Span::current().record("msg.decoded_epoch", display(requested_epoch));
-        let boundary_height = utils::last_block_in_epoch(self.config.epoch_length, requested_epoch);
+        let boundary_height = self
+            .config
+            .epoch_strategy
+            .last(requested_epoch)
+            .expect("our epoch strategy is for all epochs");
         let cert = self
             .config
             .marshal
@@ -515,7 +516,7 @@ where
                 )
             })?;
         let message = Certificate::<Scheme<PublicKey, MinSig>, Digest>::Finalization(cert);
-        recovered_global_sender
+        if let Err(error) = recovered_global_sender
             .send(
                 requested_epoch.get(),
                 Recipients::One(from),
@@ -523,9 +524,13 @@ where
                 false,
             )
             .await
-            .wrap_err(
-                "failed forwarding finalization certificate to requester via `recovered` channel",
-            )?;
+        {
+            warn!(
+                reason = ?error,
+                "failed forwarding finalization certificate to requester"
+            );
+            bail!("failed forwarding finalization certificate to requester");
+        }
         Ok(())
     }
 }

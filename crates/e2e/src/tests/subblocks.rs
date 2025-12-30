@@ -317,7 +317,9 @@ fn subblocks_are_included_with_failing_txs() {
     });
 }
 
-async fn submit_subblock_tx(node: &TestingNode) -> TxHash {
+async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
+    node: &TestingNode<TClock>,
+) -> TxHash {
     // First signer of the test mnemonic
     let wallet = PrivateKeySigner::from_bytes(&b256!(
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -327,7 +329,10 @@ async fn submit_subblock_tx(node: &TestingNode) -> TxHash {
     submit_subblock_tx_from(node, &wallet).await
 }
 
-async fn submit_subblock_tx_from(node: &TestingNode, wallet: &PrivateKeySigner) -> TxHash {
+async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
+    node: &TestingNode<TClock>,
+    wallet: &PrivateKeySigner,
+) -> TxHash {
     let mut nonce_bytes = rand::random::<[u8; 32]>();
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
     nonce_bytes[1..16].copy_from_slice(&node.public_key().as_ref()[..15]);

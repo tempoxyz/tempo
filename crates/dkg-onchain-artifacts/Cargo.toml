@@ -15,6 +15,7 @@ commonware-utils.workspace = true
 modular-bitfield = { version = "0.11.2", optional = true }
 
 [dev-dependencies]
+commonware-math.workspace = true
 rand.workspace = true
 
 [lints]

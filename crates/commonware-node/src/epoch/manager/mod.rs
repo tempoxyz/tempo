@@ -8,7 +8,9 @@ use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::Pu
 pub(crate) use ingress::Mailbox;
 
 use commonware_consensus::{
-    marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::ViewDelta,
+    marshal,
+    simplex::scheme::bls12381_threshold::Scheme,
+    types::{FixedEpocher, ViewDelta},
 };
 use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
@@ -20,14 +22,13 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
     pub(crate) blocker: TBlocker,
     pub(crate) buffer_pool: PoolRef,
-    pub(crate) epoch_length: u64,
+    pub(crate) epoch_strategy: FixedEpocher,
     pub(crate) time_for_peer_response: Duration,
     pub(crate) time_to_propose: Duration,
     pub(crate) mailbox_size: usize,
     pub(crate) subblocks: subblocks::Mailbox,
     pub(crate) marshal: marshal::Mailbox<Scheme<PublicKey, MinSig>, Block>,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) rate_limit: governor::Quota,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,

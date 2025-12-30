@@ -5,12 +5,13 @@
 
 use std::time::Duration;
 
-use commonware_consensus::utils::is_last_block_in_epoch;
+use commonware_consensus::types::{Epocher, FixedEpocher};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
+use commonware_utils::NZU64;
 use futures::future::join_all;
 use rand::Rng;
 use tracing::debug;
@@ -323,11 +324,16 @@ enum ShutdownAfterFinalizing {
 
 impl ShutdownAfterFinalizing {
     fn is_target_height(&self, epoch_length: u64, block_height: u64) -> bool {
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         match self {
             // NOTE: ceremonies are finalized on the pre-to-last block, so
             // block + 1 needs to be the boundary / last block.
-            Self::Ceremony => is_last_block_in_epoch(epoch_length, block_height + 1).is_some(),
-            Self::Boundary => is_last_block_in_epoch(epoch_length, block_height).is_some(),
+            Self::Ceremony => {
+                block_height + 1 == epoch_strategy.containing(block_height + 1).unwrap().last()
+            }
+            Self::Boundary => {
+                block_height == epoch_strategy.containing(block_height).unwrap().last()
+            }
             Self::BeforeMiddleOfEpoch => {
                 (block_height + 1).rem_euclid(epoch_length) == epoch_length / 2
             }

@@ -1,14 +1,9 @@
-use std::collections::BTreeMap;
-
 use commonware_cryptography::{
-    PrivateKeyExt as _, Signer as _,
-    bls12381::{
-        dkg::{Dealer, Info, Player},
-        primitives::variant::MinSig,
-    },
-    ed25519::{PrivateKey, PublicKey},
+    Signer as _,
+    bls12381::{dkg, primitives::variant::MinSig},
+    ed25519::PrivateKey,
 };
-use commonware_utils::{TryFromIterator as _, ordered};
+use commonware_utils::NZU32;
 use rand::SeedableRng as _;
 
 use crate::{SigningKey, SigningShare};
@@ -39,33 +34,8 @@ fn signing_share_snapshot() {
 fn signing_share_roundtrip() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
-    let dealer_key = PrivateKey::from_rng(&mut rng);
-    let player_key = PrivateKey::from_rng(&mut rng);
-
-    let info = Info::<MinSig, PublicKey>::new(
-        b"test",
-        0,
-        None,
-        ordered::Set::try_from_iter([dealer_key.public_key()]).unwrap(),
-        ordered::Set::try_from_iter([player_key.public_key()]).unwrap(),
-    )
-    .unwrap();
-
-    let (mut dealer, pub_msg, mut priv_msgs) =
-        Dealer::start(rng, info.clone(), dealer_key.clone(), None).unwrap();
-
-    let mut player = Player::new(info.clone(), player_key.clone()).unwrap();
-    let ack = player
-        .dealer_message(dealer_key.public_key(), pub_msg, priv_msgs.remove(0).1)
-        .unwrap();
-    dealer
-        .receive_player_ack(player_key.public_key(), ack)
-        .unwrap();
-    let signed_log = dealer.finalize();
-    let (_, log) = signed_log.check(&info).unwrap();
-    let logs = BTreeMap::from([(dealer_key.public_key(), log)]);
-    let (_, share) = player.finalize(logs, 1).unwrap();
-
+    let (_, mut shares) = dkg::deal_anonymous::<MinSig>(&mut rng, Default::default(), NZU32!(1));
+    let share = shares.remove(0);
     let signing_share: SigningShare = share.into();
     assert_eq!(
         signing_share,

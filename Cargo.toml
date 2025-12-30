@@ -184,15 +184,16 @@ alloy-signer-local = "1.1.3"
 alloy-sol-types = "1.5.0"
 alloy-transport = "1.1.3"
 
-commonware-broadcast = "0.0.63"
-commonware-codec = "0.0.63"
-commonware-consensus = "0.0.63"
-commonware-cryptography = "0.0.63"
-commonware-macros = "0.0.63"
-commonware-p2p = "0.0.63"
-commonware-runtime = "0.0.63"
-commonware-storage = "0.0.63"
-commonware-utils = "0.0.63"
+commonware-broadcast = "0.0.64"
+commonware-codec = "0.0.64"
+commonware-consensus = "0.0.64"
+commonware-cryptography = "0.0.64"
+commonware-macros = "0.0.64"
+commonware-math = "0.0.64"
+commonware-p2p = "0.0.64"
+commonware-runtime = "0.0.64"
+commonware-storage = "0.0.64"
+commonware-utils = "0.0.64"
 arbitrary = { version = "1.3", features = ["derive"] }
 async-lock = "3.4.1"
 async-trait = "0.1"
@@ -240,19 +241,6 @@ rayon = "1.10"
 # build deps
 vergen = "9"
 vergen-git2 = "1"
-
-[patch.crates-io]
-# main branch, right after https://github.com/commonwarexyz/monorepo/pull/2439 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "709d24861c4ebe0091e50337f6d2f61d1547fdb1" }
 
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }

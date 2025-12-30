@@ -10,18 +10,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{collections::BTreeMap, iter::repeat_with, net::SocketAddr, time::Duration};
+use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
-use alloy::signers::k256::schnorr::CryptoRngCore;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
-    PrivateKeyExt as _, Signer as _,
-    bls12381::{
-        dkg::{Dealer, Info, Player},
-        primitives::group::Share,
-    },
+    Signer as _,
+    bls12381::{dkg, primitives::sharing::Mode},
     ed25519::{PrivateKey, PublicKey},
 };
+use commonware_math::algebra::Random as _;
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
 use commonware_runtime::{
@@ -145,7 +142,7 @@ pub async fn setup_validators(
         epoch_length,
         ..
     }: Setup,
-) -> (Vec<TestingNode>, ExecutionRuntime) {
+) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
@@ -156,10 +153,23 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let (signers, initial_dkg_outcome) =
-        generate_initial_outcome(&mut context, how_many_signers as usize);
+    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut context))
+        .take(how_many_signers as usize)
+        .collect::<Vec<_>>();
+    signer_keys.sort_by_key(|key| key.public_key());
+    let (initial_dkg_outcome, shares) = dkg::deal(
+        &mut context,
+        Mode::NonZeroCounter,
+        ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
+    )
+    .unwrap();
 
-    let mut verifier_keys = repeat_with(|| PrivateKey::from_rng(&mut context))
+    let onchain_dkg_outcome = OnchainDkgOutcome {
+        epoch: Epoch::zero(),
+        output: initial_dkg_outcome,
+        next_players: shares.keys().clone(),
+    };
+    let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut context))
         .take(how_many_verifiers as usize)
         .collect::<Vec<_>>();
     verifier_keys.sort_by_key(|key| key.public_key());
@@ -167,9 +177,9 @@ pub async fn setup_validators(
     // The port here does not matter because it will be ignored in simulated p2p.
     // Still nice, because sometimes nodes can be better identified in logs.
     let validators =
-        ordered::Map::try_from_iter(signers.iter().enumerate().map(|(i, (signer, _))| {
+        ordered::Map::try_from_iter(shares.keys().iter().enumerate().map(|(i, key)| {
             (
-                signer.public_key(),
+                key.clone(),
                 SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
             )
         }))
@@ -177,7 +187,7 @@ pub async fn setup_validators(
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
-        .with_initial_dkg_outcome(initial_dkg_outcome)
+        .with_initial_dkg_outcome(onchain_dkg_outcome)
         .with_validators(validators)
         .launch()
         .unwrap();
@@ -188,14 +198,18 @@ pub async fn setup_validators(
         .generate();
 
     let mut nodes = vec![];
-    for ((private_key, share), execution_config) in signers
+    for ((private_key, share), execution_config) in signer_keys
         .into_iter()
-        .map(|(key, share)| (key, Some(share)))
+        .zip_eq(shares)
+        .map(|(signing_key, (verifying_key, share))| {
+            assert_eq!(signing_key.public_key(), verifying_key);
+            (signing_key, Some(share))
+        })
         .chain(verifier_keys.into_iter().map(|key| (key, None)))
         .zip_eq(execution_configs)
     {
         let oracle = oracle.clone();
-        let uid = format!("{CONSENSUS_NODE_PREFIX}-{}", private_key.public_key());
+        let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
@@ -245,13 +259,12 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
         join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let pat = format!("{CONSENSUS_NODE_PREFIX}-");
         loop {
             let metrics = context.encode();
 
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with(&pat) {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                     continue;
                 }
 
@@ -285,9 +298,9 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 ///
 /// The `restrict_to` function can be used to restrict the linking to certain connections,
 /// otherwise all validators will be linked to all other validators.
-pub async fn link_validators(
-    oracle: &mut Oracle<PublicKey>,
-    validators: &[TestingNode],
+pub async fn link_validators<TClock: commonware_runtime::Clock>(
+    oracle: &mut Oracle<PublicKey, TClock>,
+    validators: &[TestingNode<TClock>],
     link: Link,
     restrict_to: Option<fn(usize, usize, usize) -> bool>,
 ) {
@@ -336,68 +349,4 @@ pub fn get_pipeline_runs(recorder: &PrometheusRecorder) -> u64 {
         .find(|line| line.starts_with("reth_consensus_engine_beacon_pipeline_runs"))
         .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
         .unwrap_or(0)
-}
-
-fn generate_initial_outcome(
-    rng: &mut impl CryptoRngCore,
-    participants: usize,
-) -> (Vec<(PrivateKey, Share)>, OnchainDkgOutcome) {
-    let dealer_key = PrivateKey::from_rng(rng);
-    let mut player_keys = repeat_with(|| PrivateKey::from_rng(rng))
-        .take(participants)
-        .collect::<Vec<_>>();
-    player_keys.sort_by_key(|key| key.public_key());
-    let info = Info::new(
-        b"test",
-        0,
-        None,
-        ordered::Set::try_from_iter(std::iter::once(dealer_key.public_key())).unwrap(),
-        ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
-    )
-    .unwrap();
-
-    let (mut dealer, pub_msg, priv_msgs) =
-        Dealer::start(rng, info.clone(), dealer_key.clone(), None).unwrap();
-    let priv_msgs = priv_msgs.into_iter().collect::<BTreeMap<_, _>>();
-    let mut players = player_keys
-        .iter()
-        .cloned()
-        .map(|key| Player::new(info.clone(), key).unwrap())
-        .collect::<Vec<_>>();
-
-    for (player, key) in players.iter_mut().zip(&player_keys) {
-        let ack = player
-            .dealer_message(
-                dealer_key.public_key(),
-                pub_msg.clone(),
-                priv_msgs.get(&key.public_key()).cloned().unwrap(),
-            )
-            .unwrap();
-        dealer.receive_player_ack(key.public_key(), ack).unwrap();
-    }
-    let signed_log = dealer.finalize();
-    let (_, log) = signed_log.check(&info).unwrap();
-    let logs = BTreeMap::from([(dealer_key.public_key(), log)]);
-
-    let outputs = players
-        .into_iter()
-        .map(|player| player.finalize(logs.clone(), 1).unwrap())
-        .collect::<Vec<_>>();
-    let output = outputs[0].0.clone();
-    assert!(outputs.iter().all(|(o, _)| &output == o));
-    let shares = outputs
-        .into_iter()
-        .map(|(_, share)| share)
-        .collect::<Vec<_>>();
-
-    let initial_outcome = OnchainDkgOutcome {
-        epoch: Epoch::zero(),
-        output,
-        next_players: ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key()))
-            .unwrap(),
-    };
-    (
-        player_keys.into_iter().zip(shares).collect(),
-        initial_outcome,
-    )
 }
