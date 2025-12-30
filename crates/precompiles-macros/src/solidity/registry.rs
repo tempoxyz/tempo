@@ -30,8 +30,10 @@ use quote::quote;
 use std::collections::{HashMap, HashSet};
 use syn::Type;
 
-use super::parser::{FieldAccessors, FieldDef, SolStructDef, SolidityModule, UnitEnumDef};
-use crate::utils::SolType;
+use super::{
+    common::SynSolType,
+    parser::{FieldAccessors, FieldDef, SolStructDef, SolidityModule, UnitEnumDef},
+};
 
 /// Type registry for resolving Rust types to Solidity ABI.
 #[derive(Debug, Default)]
@@ -225,7 +227,7 @@ impl TypeRegistry {
     ///
     /// - If the type is a registered unit enum, returns "uint8"
     /// - If the type is a registered struct, returns its ABI tuple
-    /// - Otherwise, uses SolType::from_syn for primitives
+    /// - Otherwise, uses `SynSolType::parse()` for primitives
     pub(super) fn resolve_abi(&self, ty: &Type) -> syn::Result<String> {
         match ty {
             Type::Path(type_path) => {
@@ -248,7 +250,7 @@ impl TypeRegistry {
                         return Ok(format!("{inner_abi}[]"));
                     }
                 }
-                let sol_type = SolType::from_syn(ty)?;
+                let sol_type = SynSolType::parse(ty)?;
                 Ok(sol_type.sol_name())
             }
             Type::Array(arr) => {
@@ -272,7 +274,7 @@ impl TypeRegistry {
                 Ok(format!("({})", parts?.join(",")))
             }
             _ => {
-                let sol_type = SolType::from_syn(ty)?;
+                let sol_type = SynSolType::parse(ty)?;
                 Ok(sol_type.sol_name())
             }
         }

@@ -10,15 +10,13 @@ use alloy_sol_macro_expander::{
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
-use crate::utils::{SolType, to_snake_case};
+use crate::utils::to_snake_case;
 
-use super::common;
-use super::parser::{EnumVariantDef, FieldAccessors, SolEnumDef, UnitEnumDef};
-use super::registry::TypeRegistry;
-
-// ============================================================================
-// Unit Enum Generation
-// ============================================================================
+use super::{
+    common::{self, SynSolType},
+    parser::{EnumVariantDef, FieldAccessors, SolEnumDef, UnitEnumDef},
+    registry::TypeRegistry,
+};
 
 /// Generate code for a unit enum definition (uint8-encoded).
 pub(super) fn generate_unit_enum(def: &UnitEnumDef) -> TokenStream {
@@ -169,10 +167,6 @@ fn expand_unit_enum_traits(
     }
 }
 
-// ============================================================================
-// Variant Enum Generation (Error/Event)
-// ============================================================================
-
 /// Kind of variant enum being generated.
 #[derive(Clone, Copy)]
 pub(super) enum VariantEnumKind {
@@ -267,7 +261,7 @@ fn generate_sol_event_impl(variant: &EnumVariantDef, signature: &str) -> syn::Re
         .fields
         .iter()
         .map(|f| {
-            let sol_ty = SolType::from_syn(&f.ty)?;
+            let sol_ty = SynSolType::parse(&f.ty)?;
             Ok(EventFieldInfo {
                 name: f.name.clone(),
                 sol_type: sol_ty.to_sol_data(),

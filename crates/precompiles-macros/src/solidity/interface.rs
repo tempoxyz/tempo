@@ -11,11 +11,11 @@ use alloy_sol_macro_expander::{
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::utils::SolType;
-
-use super::common;
-use super::parser::{FieldAccessors, InterfaceDef, MethodDef};
-use super::registry::TypeRegistry;
+use super::{
+    common::{self, SynSolType},
+    parser::{FieldAccessors, InterfaceDef, MethodDef},
+    registry::TypeRegistry,
+};
 
 /// Generate code for the Interface trait.
 pub(super) fn generate_interface(
@@ -102,7 +102,7 @@ fn generate_method_code(method: &MethodDef, registry: &TypeRegistry) -> syn::Res
 
     let (return_struct, return_from_tuple, return_sol_tuple, return_info) =
         if let Some(ref ret_ty) = method.return_type {
-            let ret_sol = SolType::from_syn(ret_ty)?.to_sol_data();
+            let ret_sol = SynSolType::parse(ret_ty)?.to_sol_data();
             let field_name = format_ident!("_0");
             let return_field_names = vec![field_name.clone()];
             let return_field_types = vec![quote! { #ret_ty }];

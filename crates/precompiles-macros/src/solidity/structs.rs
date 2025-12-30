@@ -7,7 +7,8 @@ use alloy_sol_macro_expander::{Eip712Options, SolStructData};
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
-use crate::utils::{SolType, to_camel_case};
+use super::common::SynSolType;
+use crate::utils::to_camel_case;
 
 use super::common;
 use super::parser::{FieldAccessors, SolStructDef};
@@ -85,7 +86,7 @@ fn build_eip712_signature(name: &Ident, def: &SolStructDef) -> syn::Result<Strin
             sig.push(',');
         }
         let field_name = to_camel_case(&field.name.to_string());
-        let sol_ty = SolType::from_syn(&field.ty)?;
+        let sol_ty = SynSolType::parse(&field.ty)?;
         sig.push_str(&sol_ty.sol_name());
         sig.push(' ');
         sig.push_str(&field_name);
