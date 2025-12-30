@@ -364,12 +364,12 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
                     Ok(tx_hash)
                 }))
             }
-            Some(_) => Either::Left(Either::Right(async move {
-                Err(EthApiError::from(RethError::msg(
+            Some(_) => Either::Left(Either::Right(futures::future::err(
+                EthApiError::from(RethError::msg(
                     "subblock transaction rejected: target validator mismatch",
                 ))
-                .into())
-            })),
+                .into(),
+            ))),
             None => Either::Right(self.inner.send_transaction(tx).map_err(Into::into)),
         }
     }
