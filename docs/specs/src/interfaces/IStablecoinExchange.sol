@@ -98,6 +98,8 @@ interface IStablecoinExchange {
 
     function PRICE_SCALE() external view returns (uint32);
 
+    function MIN_ORDER_AMOUNT() external view returns (uint128);
+
     function nextOrderId() external view returns (uint128);
 
     function balanceOf(address user, address token) external view returns (uint128);
