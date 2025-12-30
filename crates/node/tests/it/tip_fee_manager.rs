@@ -19,13 +19,8 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
 use tempo_primitives::{
-    TempoTransaction,
-    transaction::{
-        calc_gas_balance_spending,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
-    },
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -266,12 +261,8 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             ..Default::default()
         };
 
-        let sig_hash = tx.signature_hash();
-        let signature = signers[0].sign_hash_sync(&sig_hash).unwrap();
-        let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-        let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-        let envelope: tempo_primitives::TempoTxEnvelope = signed_tx.into();
-
+        let signature = signers[0].sign_hash_sync(&tx.signature_hash()).unwrap();
+        let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
         provider
             .send_raw_transaction(&envelope.encoded_2718())
             .await
@@ -369,9 +360,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
 
     tx.fee_payer_signature = Some(fee_payer_signature);
 
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(user_signature));
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let tx: tempo_primitives::TempoTxEnvelope = signed_tx.into();
+    let tx: TempoTxEnvelope = tx.into_signed(user_signature.into()).into();
 
     // Query the fee payer's actual fee token from the FeeManager
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, &provider);

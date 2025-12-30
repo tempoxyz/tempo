@@ -19,7 +19,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::ConsensusEngineEvent;
 use reth_node_core::primitives::transaction::TxHashRef;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::{SYSTEM_TX_COUNT, TEMPO_BASE_FEE};
 use tempo_node::primitives::{
     SubBlockMetadata, TempoTransaction, TempoTxEnvelope,
     subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -30,8 +30,6 @@ use tempo_precompiles::{
 };
 
 use crate::{Setup, TestingNode, setup_validators};
-
-const SYSTEM_TX_COUNT: usize = 1;
 
 #[test_traced]
 fn subblocks_are_included() {
@@ -82,7 +80,6 @@ fn subblocks_are_included() {
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
             // Assert that block only contains our subblock transactions and the system transactions
-            // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
                 SYSTEM_TX_COUNT + expected_transactions.len()
@@ -191,7 +188,6 @@ fn subblocks_are_included_with_failing_txs() {
             let receipts = block.execution_outcome().receipts().first().unwrap();
 
             // Assert that block only contains our subblock transactions and system transactions
-            // (stablecoin exchange + subblocks signatures)
             assert_eq!(
                 block.sealed_block().body().transactions.len(),
                 SYSTEM_TX_COUNT + expected_transactions.len()

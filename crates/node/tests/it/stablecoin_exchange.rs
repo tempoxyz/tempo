@@ -102,6 +102,7 @@ async fn test_bids() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -246,6 +247,7 @@ async fn test_asks() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -406,6 +408,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
 
     // Cancel all orders
     for (order_id, (_, signer)) in (1..=num_orders).zip(&account_data) {

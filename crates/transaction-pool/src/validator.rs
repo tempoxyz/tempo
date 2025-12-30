@@ -14,7 +14,7 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
@@ -247,7 +247,12 @@ where
             }
         };
 
-        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer) {
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
+        let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
@@ -255,7 +260,7 @@ where
         };
 
         // Ensure that fee token is valid.
-        match state_provider.is_valid_fee_token(fee_token) {
+        match state_provider.is_valid_fee_token(spec, fee_token) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -272,7 +277,7 @@ where
         }
 
         // Ensure that the fee payer is not blacklisted
-        match state_provider.can_fee_payer_transfer(fee_token, fee_payer) {
+        match state_provider.can_fee_payer_transfer(fee_token, fee_payer, spec) {
             Ok(valid) => {
                 if !valid {
                     return TransactionValidationOutcome::Invalid(
@@ -291,7 +296,7 @@ where
             }
         }
 
-        let balance = match state_provider.get_token_balance(fee_token, fee_payer) {
+        let balance = match state_provider.get_token_balance(fee_token, fee_payer, spec) {
             Ok(balance) => balance,
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));

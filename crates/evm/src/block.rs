@@ -264,9 +264,6 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block();
-        let _block_timestamp = block.timestamp.to::<u64>();
-
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)

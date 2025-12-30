@@ -196,14 +196,14 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         self.fee_payer = ctx.tx.fee_payer()?;
         self.fee_token = ctx
             .journaled_state
-            .get_fee_token(&ctx.tx, self.fee_payer)
+            .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
         // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
             && !ctx
                 .journaled_state
-                .is_valid_fee_token(self.fee_token)
+                .is_valid_fee_token(ctx.cfg.spec, self.fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
@@ -1035,7 +1035,7 @@ where
         _evm: &mut Self::Evm,
         _exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // Fees are collected and swapped immediately in collectFeePreTx.
+        // Fee handling (refunds and swaps) are done in `reimburse_caller()` via `collectFeePostTx`.
         // Validators call distributeFees() to claim their accumulated fees.
         Ok(())
     }
@@ -1484,7 +1484,9 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx.journaled_state.get_fee_token(&ctx.tx, user)?;
+            let fee_token = ctx
+                .journaled_state
+                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
             assert_eq!(DEFAULT_FEE_TOKEN, fee_token);
         }
 
@@ -1499,13 +1501,17 @@ mod tests {
             .unwrap();
 
         {
-            let fee_token = ctx.journaled_state.get_fee_token(&ctx.tx, user)?;
+            let fee_token = ctx
+                .journaled_state
+                .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
             assert_eq!(user_fee_token, fee_token);
         }
 
         // Set tx fee token
         ctx.tx.fee_token = Some(tx_fee_token);
-        let fee_token = ctx.journaled_state.get_fee_token(&ctx.tx, user)?;
+        let fee_token = ctx
+            .journaled_state
+            .get_fee_token(&ctx.tx, user, ctx.cfg.spec)?;
         assert_eq!(tx_fee_token, fee_token);
 
         Ok(())

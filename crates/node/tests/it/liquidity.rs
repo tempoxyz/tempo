@@ -7,14 +7,7 @@ use alloy::{
 use alloy_eips::Encodable2718;
 use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
 use tempo_precompiles::DEFAULT_FEE_TOKEN;
-use tempo_primitives::{
-    TempoTransaction,
-    transaction::{
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
-    },
-};
+use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use crate::utils::setup_test_token;
 
@@ -146,11 +139,8 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         gas_limit: 100000,
         ..Default::default()
     };
-    let sig_hash = tx.signature_hash();
-    let signature = wallet.sign_hash_sync(&sig_hash).unwrap();
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let envelope: tempo_primitives::TempoTxEnvelope = signed_tx.into();
+    let signature = wallet.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
@@ -188,11 +178,6 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     }
 
     println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
-
-    // With immediate fee swaps (post hardfork removal), transactions that require swaps
-    // are included as long as there's any liquidity available.
-    // The pool has minimal liquidity (2000 validator tokens from MIN_LIQUIDITY),
-    // which is enough for small transfers.
     println!("Test completed: block building continued without stalling");
 
     Ok(())
