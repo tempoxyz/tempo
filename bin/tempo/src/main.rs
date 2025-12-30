@@ -53,6 +53,12 @@ struct TempoArgs {
     )]
     pub follow: Option<String>,
 
+    /// Run in minimal storage mode. Sets all prune distances to 10064 and blocks-per-file to
+    /// 50000. Note: merkle_changesets uses the default value of 128 blocks (set via config file
+    /// if different value needed).
+    #[arg(long)]
+    pub minimal: bool,
+
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
 
@@ -250,6 +256,22 @@ fn main() -> eyre::Result<()> {
             .apply(|mut builder: WithLaunchContext<_>| {
                 if let Some(follow_url) = &args.follow {
                     builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
+                }
+
+                if args.minimal {
+                    let config = builder.config_mut();
+
+                    config.pruning.sender_recovery_distance = Some(10064);
+                    config.pruning.transaction_lookup_distance = Some(10064);
+                    config.pruning.receipts_distance = Some(10064);
+                    config.pruning.account_history_distance = Some(10064);
+                    config.pruning.storage_history_distance = Some(10064);
+
+                    config.static_files.blocks_per_file_headers = Some(50000);
+                    config.static_files.blocks_per_file_transactions = Some(50000);
+                    config.static_files.blocks_per_file_receipts = Some(50000);
+
+                    info!("Minimal mode enabled: prune distances=10064, blocks_per_file=50000");
                 }
 
                 builder
