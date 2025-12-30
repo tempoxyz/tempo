@@ -28,7 +28,7 @@ use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningS
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     SAFE_DEPLOYER_ADDRESS,
-    contracts::ARACHNID_CREATE2_FACTORY_BYTECODE,
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, Permit2, SafeDeployer},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::PublicOutcome;
@@ -288,7 +288,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             MULTICALL3_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone()),
+                code: Some(Bytes::from_static(&Multicall3::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -297,7 +297,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::CreateX::DEPLOYED_BYTECODE.clone()),
+                code: Some(Bytes::from_static(&CreateX::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -306,7 +306,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             SAFE_DEPLOYER_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::SafeDeployer::DEPLOYED_BYTECODE.clone()),
+                code: Some(Bytes::from_static(&SafeDeployer::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -315,7 +315,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             PERMIT2_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
+                code: Some(Bytes::from_static(&Permit2::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
