@@ -263,7 +263,9 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
 
         let signature = signers[0].sign_hash_sync(&tx.signature_hash()).unwrap();
         let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
-        provider.send_raw_transaction(&envelope.encoded_2718()).await
+        provider
+            .send_raw_transaction(&envelope.encoded_2718())
+            .await
     };
 
     let res = send_fee_token_tx().await;

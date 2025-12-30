@@ -604,7 +604,11 @@ async fn submit_and_mine_aa_tx(
 ) -> eyre::Result<B256> {
     let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
     let tx_hash = *envelope.tx_hash();
-    setup.node.rpc.inject_tx(envelope.encoded_2718().into()).await?;
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
     setup.node.advance_block().await?;
     Ok(tx_hash)
 }
