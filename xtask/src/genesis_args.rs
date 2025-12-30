@@ -22,8 +22,8 @@ use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
     revm::{
-        DatabaseCommit as _,
         context::TxEnv,
+        context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
         state::{AccountInfo, Bytecode},
@@ -275,6 +275,13 @@ impl GenesisArgs {
             &mut evm,
         );
 
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(PERMIT2_ADDRESS)?;
+
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
@@ -428,7 +435,7 @@ fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
         ARACHNID_CREATE2_FACTORY_ADDRESS,
         AccountInfo {
             code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
-            nonce: 1,
+            nonce: 0,
             ..Default::default()
         },
     );
@@ -459,13 +466,11 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
         ..Default::default()
     };
 
-    let result = evm.transact(tx)?;
+    let result = evm.transact_commit(tx)?;
 
-    if !result.result.is_success() {
-        return Err(eyre!("Permit2 deployment failed: {:?}", result.result));
+    if !result.is_success() {
+        return Err(eyre!("Permit2 deployment failed: {:?}", result));
     }
-
-    evm.db_mut().commit(result.state);
 
     println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
     Ok(())
