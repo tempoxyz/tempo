@@ -1676,7 +1676,7 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
 async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
+    let transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(6)); // 10 tokens (6 decimals)
     let (
         mut setup,
         provider,
@@ -2143,7 +2143,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(18)); // 20 tokens with 18 decimals
+    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(6)); // 20 tokens with 6 decimals (TIP20 decimals)
     let (
         mut setup,
         provider,
@@ -2179,7 +2179,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     }
 
     // Create batch calls - transfer different amounts to each recipient
-    let transfer_base_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18)); // 1 token base
+    let transfer_base_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token base (6 decimals)
     let mut calls = Vec::new();
 
     for (recipient, multiplier) in &recipients {
