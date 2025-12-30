@@ -30,8 +30,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Maximum valid price (PRICE_SCALE + int16.max)
     uint32 public constant MAX_PRICE = 132_767;
 
-    /// @notice Minimum order amount (10 units with 6 decimals)
-    uint128 public constant MIN_ORDER_AMOUNT = 10_000_000;
+    /// @notice Minimum order amount (100 units with 6 decimals)
+    uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
 
     /// @notice TIP20 token address prefix (12 bytes)
     bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;

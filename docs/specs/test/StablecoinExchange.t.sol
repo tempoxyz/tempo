@@ -477,9 +477,9 @@ contract StablecoinExchangeTest is BaseTest {
                         MINIMUM ORDER SIZE TESTS
     //////////////////////////////////////////////////////////////*/
 
-    // MIN_ORDER_AMOUNT = 10_000_000 (10 units with 6 decimals)
+    // MIN_ORDER_AMOUNT = 100_000_000 (100 units with 6 decimals)
     // Note: The Rust impl doesn't expose this as a view function, so we hardcode it
-    uint128 constant MIN_ORDER_AMOUNT = 10_000_000;
+    uint128 constant MIN_ORDER_AMOUNT = 100_000_000;
 
     function test_PlaceOrder_RevertIf_BelowMinimumOrderSize(uint128 amount) public {
         vm.assume(amount < MIN_ORDER_AMOUNT);
