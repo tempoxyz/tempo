@@ -6,7 +6,7 @@
 use alloy_primitives::{Address, address};
 
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>
-pub const MULTICALL_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
+pub const MULTICALL3_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
 pub const CREATEX_ADDRESS: Address = address!("0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed");
 pub const SAFE_DEPLOYER_ADDRESS: Address = address!("0x914d7Fec6aaC8cd542e72Bca78B30650d45643d7");
 pub const PERMIT2_ADDRESS: Address = address!("0x000000000022d473030f116ddee9f6b43ac78ba3");
@@ -32,12 +32,6 @@ pub(crate) use sol;
 
 pub mod contracts {
     use alloy_primitives::{B256, Bytes, b256, bytes};
-
-    sol!(
-        #[allow(missing_docs)]
-        Multicall,
-        "abi/Multicall.json",
-    );
 
     sol!(
         #[allow(missing_docs)]
@@ -79,7 +73,7 @@ pub mod contracts {
         b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
 }
 
-pub use contracts::{CreateX, Multicall, Multicall3, Permit2, SafeDeployer};
+pub use contracts::{CreateX, Multicall3, Permit2, SafeDeployer};
 
 pub mod precompiles;
 
@@ -136,7 +130,7 @@ mod tests {
         );
 
         // Verify our bytecode matches mainnet
-        let mainnet_hash = get_mainnet_code_hash(MULTICALL_ADDRESS).await;
+        let mainnet_hash = get_mainnet_code_hash(MULTICALL3_ADDRESS).await;
         assert_eq!(
             mainnet_hash, stored_hash,
             "Multicall3 bytecode hash mismatch!\n\

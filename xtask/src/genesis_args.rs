@@ -26,7 +26,7 @@ use std::{
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL_ADDRESS, PERMIT2_ADDRESS,
+    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_BYTECODE},
     precompiles::{ITIP20Factory, IValidatorConfig},
@@ -286,9 +286,9 @@ impl GenesisArgs {
             .collect();
 
         genesis_alloc.insert(
-            MULTICALL_ADDRESS,
+            MULTICALL3_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
+                code: Some(tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone()),
                 nonce: Some(1),
                 ..Default::default()
             },
