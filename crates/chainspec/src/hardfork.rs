@@ -123,6 +123,12 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
+    }
+}
+
 impl From<SpecId> for TempoHardfork {
     /// Maps a [`SpecId`] to the *latest compatible* [`TempoHardfork`].
     ///

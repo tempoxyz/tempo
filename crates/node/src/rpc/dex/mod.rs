@@ -199,7 +199,7 @@ impl<
             .map_err(|e| DexApiError::CreateEvm(Box::new(e)))?;
 
         let ctx = evm.ctx_mut();
-        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
 
         StorageCtx::enter(&mut storage, f)

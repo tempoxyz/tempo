@@ -235,7 +235,10 @@ where
 #[cfg(test)]
 mod tests {
     use reth_revm::context::BlockEnv;
-    use revm::{context::TxEnv, database::EmptyDB};
+    use revm::{
+        context::{CfgEnv, TxEnv},
+        database::EmptyDB,
+    };
 
     use super::*;
 
@@ -251,7 +254,7 @@ mod tests {
                     },
                     ..Default::default()
                 },
-                ..Default::default()
+                cfg_env: CfgEnv::default(),
             },
         );
         let result = evm

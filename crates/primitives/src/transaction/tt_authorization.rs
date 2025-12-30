@@ -1,7 +1,8 @@
 use alloy_eips::eip7702::{Authorization, RecoveredAuthority, RecoveredAuthorization};
-use alloy_primitives::{Address, B256, keccak256};
+use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::{BufMut, Decodable, Encodable, Header, Result as RlpResult, length_of_length};
 use core::ops::Deref;
+use revm::context::transaction::AuthorizationTr;
 use std::sync::OnceLock;
 
 use crate::TempoSignature;
@@ -290,6 +291,22 @@ impl Deref for RecoveredTempoAuthorization {
 
     fn deref(&self) -> &Self::Target {
         self.signed.inner()
+    }
+}
+
+impl AuthorizationTr for RecoveredTempoAuthorization {
+    fn chain_id(&self) -> U256 {
+        self.chain_id
+    }
+    fn address(&self) -> Address {
+        self.address
+    }
+    fn nonce(&self) -> u64 {
+        self.nonce
+    }
+
+    fn authority(&self) -> Option<Address> {
+        self.authority()
     }
 }
 
