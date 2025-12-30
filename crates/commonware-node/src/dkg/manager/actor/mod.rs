@@ -560,20 +560,20 @@ where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
     {
-        let bounds = self
+        let epoch_info = self
             .config
             .epoch_strategy
             .containing(block.height())
             .expect("epoch strategy is covering all block heights");
 
-        let block_epoch = bounds.epoch();
+        let block_epoch = epoch_info.epoch();
 
         if block_epoch != round.epoch() {
             info!("block was not for this epoch");
             return Ok(None);
         }
 
-        if block.height() == bounds.first()
+        if block.height() == epoch_info.first()
             && let Some(epoch) = round.epoch().previous()
         {
             self.config
@@ -582,7 +582,7 @@ where
                 .await;
         }
 
-        match bounds.phase() {
+        match epoch_info.phase() {
             EpochPhase::Early => {
                 if let Some(dealer_state) = dealer_state {
                     self.distribute_shares(
@@ -602,7 +602,7 @@ where
             }
         }
 
-        if block.height() != bounds.last() {
+        if block.height() != epoch_info.last() {
             if !block.header().extra_data().is_empty() {
                 'handle_log: {
                     let (dealer, log) =

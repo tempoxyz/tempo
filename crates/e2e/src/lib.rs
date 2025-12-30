@@ -15,7 +15,7 @@ use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     Signer as _,
-    bls12381::dkg,
+    bls12381::{dkg, primitives::sharing::Mode},
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_math::algebra::Random as _;
@@ -159,7 +159,7 @@ pub async fn setup_validators(
     signer_keys.sort_by_key(|key| key.public_key());
     let (initial_dkg_outcome, shares) = dkg::deal(
         &mut context,
-        Default::default(),
+        Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
     )
     .unwrap();

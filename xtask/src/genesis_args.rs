@@ -9,7 +9,7 @@ use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
     bls12381::{
         dkg::{self, Output},
-        primitives::variant::MinSig,
+        primitives::{sharing::Mode, variant::MinSig},
     },
     ed25519::PublicKey,
 };
@@ -759,7 +759,7 @@ fn generate_consensus_config(
 
     let (output, shares) = dkg::deal(
         &mut rng,
-        Default::default(),
+        Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
     )
     .unwrap();

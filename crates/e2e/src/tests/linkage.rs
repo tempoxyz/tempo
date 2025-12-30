@@ -25,7 +25,6 @@ fn only_good_links() {
             // // We should rename this to marshal (the actor, that is).
             if metric.ends_with("_marshal_processed_height") {
                 let value = value.parse::<u64>().unwrap();
-                println!("{metric} {value}");
                 value >= 5
             } else {
                 false

@@ -11,7 +11,7 @@ use commonware_cryptography::{
     Signer as _,
     bls12381::{
         dkg::{self, DealerPrivMsg, DealerPubMsg, Info, Output, PlayerAck, SignedDealerLog},
-        primitives::{group::Share, variant::MinSig},
+        primitives::{group::Share, sharing::Mode, variant::MinSig},
     },
     ed25519::{PrivateKey, PublicKey},
     transcript::{Summary, Transcript},
@@ -95,7 +95,7 @@ where
         self.current.clone()
     }
 
-    /// Returns the DKG outcome for the current epoch.
+    /// Returns the DKG outcome for the previous epoch, if there is one.
     pub(super) async fn previous(&self) -> Option<State> {
         let previous_epoch = self.current().epoch.previous()?;
 
@@ -962,7 +962,7 @@ impl Round {
                 namespace,
                 state.epoch.get(),
                 Some(state.output.clone()),
-                Default::default(),
+                Mode::NonZeroCounter,
                 state.dealers.keys().clone(),
                 state.players.keys().clone(),
             )

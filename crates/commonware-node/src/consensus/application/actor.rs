@@ -890,11 +890,11 @@ async fn verify_header_extra_data(
                 our.epoch = %our_outcome.epoch,
                 our.players = ?our_outcome.players(),
                 our.next_players = ?our_outcome.next_players(),
-                our.public = ?our_outcome.public(),
+                our.sharing = ?our_outcome.sharing(),
                 block.epoch = %block_outcome.epoch,
                 block.players = ?block_outcome.players(),
                 block.next_players = ?block_outcome.next_players(),
-                block.public = ?block_outcome.public(),
+                block.sharing = ?block_outcome.sharing(),
                 "our public dkg outcome does not match what's stored \
                 in the block",
             );

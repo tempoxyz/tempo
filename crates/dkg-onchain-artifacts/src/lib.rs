@@ -37,6 +37,10 @@ pub struct OnchainDkgOutcome {
 }
 
 impl OnchainDkgOutcome {
+    pub fn dealers(&self) -> &ordered::Set<PublicKey> {
+        self.output.dealers()
+    }
+
     pub fn players(&self) -> &ordered::Set<PublicKey> {
         self.output.players()
     }
@@ -45,7 +49,7 @@ impl OnchainDkgOutcome {
         &self.next_players
     }
 
-    pub fn public(&self) -> &Sharing<MinSig> {
+    pub fn sharing(&self) -> &Sharing<MinSig> {
         self.output.public()
     }
 }
