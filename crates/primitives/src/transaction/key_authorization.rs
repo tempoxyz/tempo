@@ -3,7 +3,6 @@ use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
-use core::mem;
 
 /// Token spending limit for access keys
 ///
@@ -89,15 +88,11 @@ impl KeyAuthorization {
 
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
-        mem::size_of::<u64>() + // chain_id
-        mem::size_of::<u8>() + // key_type
-        mem::size_of::<Address>() + // key_id
-        mem::size_of::<Option<u64>>() + // expiry
-        self.limits.as_ref().map_or(0, |limits| {
-            limits.iter().map(|_limit| {
-                mem::size_of::<Address>() + mem::size_of::<U256>()
-            }).sum::<usize>()
-        })
+        size_of::<Self>()
+            + self
+                .limits
+                .as_ref()
+                .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
     }
 }
 

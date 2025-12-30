@@ -177,15 +177,12 @@ mod tests {
 
     #[test]
     fn test_mapping_size() {
-        assert_eq!(std::mem::size_of::<Address>(), 20);
+        assert_eq!(size_of::<Address>(), 20);
         // Mapping contains: U256 (32) + Address (20 + 4 for 8-byte alignment) + PhantomData (0) = 56 bytes
-        assert_eq!(std::mem::size_of::<Mapping<Address, U256>>(), 56);
-        assert_eq!(std::mem::size_of::<Mapping<U256, Address>>(), 56);
+        assert_eq!(size_of::<Mapping<Address, U256>>(), 56);
+        assert_eq!(size_of::<Mapping<U256, Address>>(), 56);
         // Nested mappings are just Mapping<K, Mapping<K2, V>>, same size
-        assert_eq!(
-            std::mem::size_of::<Mapping<Address, Mapping<Address, U256>>>(),
-            56
-        );
+        assert_eq!(size_of::<Mapping<Address, Mapping<Address, U256>>>(), 56);
     }
 
     #[test]

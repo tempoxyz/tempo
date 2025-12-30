@@ -6,7 +6,6 @@ use alloy_consensus::{
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
-use core::mem;
 
 /// Fee token transaction type byte (0x77)
 pub const FEE_TOKEN_TX_TYPE_ID: u8 = 0x77;
@@ -112,17 +111,10 @@ impl TxFeeToken {
     /// Calculates a heuristic for the in-memory size of the transaction
     #[inline]
     pub fn size(&self) -> usize {
-        mem::size_of::<ChainId>() + // chain_id
-        mem::size_of::<u64>() + // nonce
-        mem::size_of::<Option<Address>>() + // fee_token
-        mem::size_of::<u128>() + // max_priority_fee_per_gas
-        mem::size_of::<u128>() + // max_fee_per_gas
-        mem::size_of::<u64>() + // gas_limit
-        mem::size_of::<TxKind>() + // to
-        mem::size_of::<U256>() + // value
-        self.access_list.size() + // access_list
-        self.authorization_list.len() * mem::size_of::<SignedAuthorization>() + // authorization_list
-        self.input.len() // input
+        size_of::<Self>()
+            + self.access_list.size()
+            + self.authorization_list.capacity() * size_of::<SignedAuthorization>()
+            + self.input.len()
     }
 
     /// Combines this transaction with `signature`, taking `self`. Returns [`Signed`].
