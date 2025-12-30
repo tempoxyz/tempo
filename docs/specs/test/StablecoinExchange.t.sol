@@ -944,9 +944,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should route token1 -> pathUSD -> token2
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(token2), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(token2), minOrderAmount);
             assertGt(amountOut, 0);
         } else {
             // Reverse direction
@@ -1050,14 +1049,18 @@ contract StablecoinExchangeTest is BaseTest {
         // Test with non-TIP20 token (should fail when trying to get quote token)
         address invalidToken = address(0x123456);
 
-        try exchange.quoteSwapExactAmountIn(invalidToken, address(token1), exchange.MIN_ORDER_AMOUNT()) {
+        try exchange.quoteSwapExactAmountIn(
+            invalidToken, address(token1), exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted - exact error depends on whether token implements interface
         }
 
         // Test swap to non-TIP20 token
-        try exchange.quoteSwapExactAmountIn(address(token1), invalidToken, exchange.MIN_ORDER_AMOUNT()) {
+        try exchange.quoteSwapExactAmountIn(
+            address(token1), invalidToken, exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted
