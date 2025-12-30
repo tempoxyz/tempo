@@ -35,6 +35,7 @@ commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
+itertools.workspace = true
 rand.workspace = true
 rayon.workspace = true
 reth-evm.workspace = true

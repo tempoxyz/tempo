@@ -272,12 +272,22 @@ fn node_recovers_after_finalizing_ceremony_four_validators() {
     .run()
 }
 
-#[test_traced]
+#[test_traced("ERROR")]
 fn node_recovers_after_finalizing_middle_of_epoch_four_validators() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 4,
         epoch_length: 30,
         shutdown_after_finalizing: ShutdownAfterFinalizing::MiddleOfEpoch,
+    }
+    .run()
+}
+
+#[test_traced]
+fn node_recovers_before_finalizing_middle_of_epoch_four_validators() {
+    AssertNodeRecoversAfterFinalizingBlock {
+        n_validators: 4,
+        epoch_length: 30,
+        shutdown_after_finalizing: ShutdownAfterFinalizing::BeforeMiddleOfEpoch,
     }
     .run()
 }
@@ -307,6 +317,7 @@ fn node_recovers_after_finalizing_boundary_four_validators() {
 enum ShutdownAfterFinalizing {
     Boundary,
     Ceremony,
+    BeforeMiddleOfEpoch,
     MiddleOfEpoch,
 }
 
@@ -317,8 +328,23 @@ impl ShutdownAfterFinalizing {
             // block + 1 needs to be the boundary / last block.
             Self::Ceremony => is_last_block_in_epoch(epoch_length, block_height + 1).is_some(),
             Self::Boundary => is_last_block_in_epoch(epoch_length, block_height).is_some(),
+            Self::BeforeMiddleOfEpoch => {
+                (block_height + 1).rem_euclid(epoch_length) == epoch_length / 2
+            }
             Self::MiddleOfEpoch => block_height.rem_euclid(epoch_length) == epoch_length / 2,
         }
+    }
+}
+
+impl std::fmt::Display for ShutdownAfterFinalizing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::Boundary => "boundary",
+            Self::Ceremony => "ceremony",
+            Self::BeforeMiddleOfEpoch => "before-middle-of-epoch",
+            Self::MiddleOfEpoch => "middle-of-epoch",
+        };
+        f.write_str(msg)
     }
 }
 
@@ -353,7 +379,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             // Best-effort: we hot-loop in 100ms steps, but if processing is too
             // fast we might miss the window and the test will succeed no matter
             // what.
-            let (metric, height) = 'wait_to_boundary: loop {
+            let (stopped_val_metric, height) = 'wait_to_boundary: loop {
                 let metrics = context.encode();
                 'lines: for line in metrics.lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
@@ -374,14 +400,15 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             };
 
             tracing::debug!(
-                metric,
+                stopped_val_metric,
                 height,
-                "found a node that reached the pre-to-last height; restarting it"
+                target = %shutdown_after_finalizing,
+                "found a node that finalized the target height",
             );
             // Now restart the node for which we found the metric.
             let idx = validators
                 .iter()
-                .position(|node| metric.contains(node.uid()))
+                .position(|node| stopped_val_metric.contains(node.uid()))
                 .unwrap();
             validators[idx].stop().await;
             validators[idx].start().await;
@@ -394,13 +421,14 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                         continue 'lines;
                     }
-                    if line.starts_with(&metric) {
-                        let mut parts = line.split_whitespace();
-                        let _ = parts.next().unwrap();
-                        let value = parts.next().unwrap();
-                        if value.parse::<u64>().unwrap() > height + 10 {
-                            break 'look_for_progress;
-                        }
+                    let mut parts = line.split_whitespace();
+                    let metric = parts.next().unwrap();
+                    let value = parts.next().unwrap();
+                    if metric == stopped_val_metric && value.parse::<u64>().unwrap() > height + 10 {
+                        break 'look_for_progress;
+                    }
+                    if metric.ends_with("ceremony_bad_dealings") {
+                        assert_eq!(value.parse::<u64>().unwrap(), 0);
                     }
                 }
                 iteration += 1;

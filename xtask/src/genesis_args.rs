@@ -6,10 +6,17 @@ use alloy::{
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_cryptography::{
+    bls12381::{
+        dkg::{Dealer, Info, Output, Player},
+        primitives::variant::MinSig,
+    },
+    ed25519::PublicKey,
+};
 use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
+use itertools::Itertools;
 use rayon::prelude::*;
 use reth_evm::{
     EvmEnv, EvmFactory,
@@ -20,18 +27,19 @@ use reth_evm::{
 };
 use std::{
     collections::BTreeMap,
+    iter::repeat_with,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
 use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
-use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
     MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_POST_ALLEGRO_MODERATO_BYTECODE},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
@@ -123,16 +131,18 @@ pub(crate) struct GenesisArgs {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConsensusConfig {
-    pub(crate) public_polynomial: PublicPolynomial,
-    pub(crate) peers: Peers,
+    pub(crate) output: Output<MinSig, PublicKey>,
     pub(crate) validators: Vec<Validator>,
 }
 impl ConsensusConfig {
-    pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
-        PublicOutcome {
+    pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
+        OnchainDkgOutcome {
             epoch: Epoch::zero(),
-            participants: self.peers.public_keys().clone(),
-            public: self.public_polynomial.clone().into_inner(),
+            output: self.output.clone(),
+            next_players: ordered::Set::try_from_iter(
+                self.validators.iter().map(Validator::public_key),
+            )
+            .unwrap(),
         }
     }
 }
@@ -740,40 +750,70 @@ fn generate_consensus_config(
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-    let mut signers = (0..validators.len())
-        .map(|_| PrivateKey::from_rng(&mut rng))
+
+    // Some anonymous dealer
+    let dealer_key = PrivateKey::from_rng(&mut rng);
+    let mut player_keys = repeat_with(|| PrivateKey::from_rng(&mut rng))
+        .take(validators.len())
         .collect::<Vec<_>>();
 
-    // generate consensus key
-    let threshold = commonware_utils::quorum(validators.len() as u32);
-    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
-        _,
-        commonware_cryptography::bls12381::primitives::variant::MinSig,
-    >(&mut rng, None, validators.len() as u32, threshold);
-
-    signers.sort_by_key(|signer| signer.public_key());
-    let peers = ordered::Map::try_from_iter(
-        validators
-            .iter()
-            .zip(signers.iter())
-            .map(|(addr, private_key)| (private_key.public_key(), *addr)),
+    player_keys.sort_by_key(|key| key.public_key());
+    let info = Info::new(
+        b"tempo-genesis",
+        0,
+        None,
+        ordered::Set::try_from_iter(std::iter::once(dealer_key.public_key())).unwrap(),
+        ordered::Set::try_from_iter(player_keys.iter().map(|key| key.public_key())).unwrap(),
     )
-    .expect("must not contain duplicate keys");
+    .unwrap();
 
-    let mut validators = vec![];
-    for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
-        validators.push(Validator {
-            addr: *addr,
-            signing_key: SigningKey::from(signer),
-            signing_share: SigningShare::from(share),
-        });
+    let (mut dealer, pub_msg, priv_msgs) =
+        Dealer::start(rng, info.clone(), dealer_key.clone(), None).unwrap();
+    let priv_msgs = priv_msgs.into_iter().collect::<BTreeMap<_, _>>();
+    let mut players = player_keys
+        .iter()
+        .cloned()
+        .map(|key| Player::new(info.clone(), key).unwrap())
+        .collect::<Vec<_>>();
+
+    for (player, key) in players.iter_mut().zip(&player_keys) {
+        let ack = player
+            .dealer_message(
+                dealer_key.public_key(),
+                pub_msg.clone(),
+                priv_msgs.get(&key.public_key()).cloned().unwrap(),
+            )
+            .unwrap();
+        dealer.receive_player_ack(key.public_key(), ack).unwrap();
     }
+    let signed_log = dealer.finalize();
+    let (_, log) = signed_log.check(&info).unwrap();
+    let logs = BTreeMap::from([(dealer_key.public_key(), log)]);
 
-    Some(ConsensusConfig {
-        peers: peers.into(),
-        public_polynomial: polynomial.into(),
-        validators,
-    })
+    let outputs = players
+        .into_iter()
+        .map(|player| player.finalize(logs.clone(), 1).unwrap())
+        .collect::<Vec<_>>();
+    let output = outputs[0].0.clone();
+    assert!(outputs.iter().all(|(o, _)| &output == o));
+    let shares = outputs
+        .into_iter()
+        .map(|(_, share)| share)
+        .collect::<Vec<_>>();
+
+    let validators = validators
+        .iter()
+        .copied()
+        .zip_eq(player_keys)
+        .zip_eq(shares)
+        .map(|((addr, signing_key), signing_share)| Validator {
+            addr,
+            signing_key: SigningKey::from(signing_key),
+            signing_share: SigningShare::from(signing_share),
+        })
+        .collect();
+
+    Some(ConsensusConfig { output, validators })
 }
 
 fn mint_pairwise_liquidity(
