@@ -14,9 +14,9 @@ use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IFeeManager};
+use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self, transferCall},
 };
 
@@ -46,9 +46,6 @@ async fn fund_address_with_fee_tokens(
     amount: U256,
     chain_id: u64,
 ) -> eyre::Result<Address> {
-    let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider);
-    let fee_token = fee_manager.userTokens(funder_addr).call().await?;
-
     let transfer_calldata = transferCall {
         to: recipient,
         amount,
@@ -61,13 +58,13 @@ async fn fund_address_with_fee_tokens(
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 100_000,
         calls: vec![Call {
-            to: fee_token.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
-        fee_token: Some(fee_token),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         ..Default::default()
@@ -92,7 +89,7 @@ async fn fund_address_with_fee_tokens(
         funding_payload.block().inner.number
     );
 
-    Ok(fee_token)
+    Ok(DEFAULT_FEE_TOKEN)
 }
 
 /// Helper function to verify a transaction exists in the blockchain via eth_getTransactionByHash
