@@ -184,6 +184,9 @@ impl GenesisArgs {
         let admin = addresses[0];
         let mut evm = setup_tempo_evm(self.chain_id);
 
+        deploy_arachnid_create2_factory(&mut evm);
+        deploy_permit2(&mut evm)?;
+
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
 
@@ -272,9 +275,6 @@ impl GenesisArgs {
             &mut evm,
         );
 
-        deploy_arachnid_create2_factory(&mut evm);
-        deploy_permit2(&mut evm)?;
-
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
@@ -302,6 +302,31 @@ impl GenesisArgs {
                 (*address, genesis_account)
             })
             .collect();
+
+        for (address, db_account) in evm.db_mut().cache.accounts.iter() {
+            if !genesis_alloc.contains_key(address) {
+                let storage = if db_account.storage.is_empty() {
+                    None
+                } else {
+                    Some(
+                        db_account
+                            .storage
+                            .iter()
+                            .map(|(key, val)| ((*key).into(), (*val).into()))
+                            .collect(),
+                    )
+                };
+                genesis_alloc.insert(
+                    *address,
+                    GenesisAccount {
+                        nonce: Some(db_account.info.nonce),
+                        code: db_account.info.code.as_ref().map(|c| c.original_bytes()),
+                        storage,
+                        ..Default::default()
+                    },
+                );
+            }
+        }
 
         genesis_alloc.insert(
             MULTICALL3_ADDRESS,
