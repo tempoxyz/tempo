@@ -256,6 +256,22 @@ impl TempoTransaction {
             }
         }
 
+        // CREATE validation for batch transactions:
+        // 1. Only ONE CREATE is allowed per transaction
+        // 2. If present, CREATE must be the FIRST call in the batch
+        let mut create_found = false;
+        for (index, call) in self.calls.iter().enumerate() {
+            if call.to.is_create() {
+                if create_found {
+                    return Err("only one CREATE call is allowed per transaction");
+                }
+                if index != 0 {
+                    return Err("CREATE call must be at the first position in the calls array");
+                }
+                create_found = true;
+            }
+        }
+
         Ok(())
     }
 
@@ -765,7 +781,7 @@ impl reth_primitives_traits::InMemorySize for TempoTransaction {
 #[cfg(feature = "serde-bincode-compat")]
 impl reth_primitives_traits::serde_bincode_compat::RlpBincode for TempoTransaction {}
 
-// Custom Arbitrary implementation to ensure calls is never empty
+// Custom Arbitrary implementation to ensure calls is never empty and CREATE validation passes
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
@@ -776,7 +792,8 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         let max_fee_per_gas = u.arbitrary()?;
         let gas_limit = u.arbitrary()?;
 
-        // Generate calls - ensure at least one call is present
+        // Generate calls - ensure at least one call is present and CREATE validation passes
+        // CREATE must be first (if present) and only one CREATE allowed
         let mut calls: Vec<Call> = u.arbitrary()?;
         if calls.is_empty() {
             calls.push(Call {
@@ -784,6 +801,25 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
                 value: u.arbitrary()?,
                 input: u.arbitrary()?,
             });
+        }
+
+        // Filter out CREATEs from non-first positions and ensure only one CREATE (if any)
+        let first_is_create = calls.first().map(|c| c.to.is_create()).unwrap_or(false);
+        if first_is_create {
+            // Keep the first CREATE, remove all other CREATEs
+            for i in 1..calls.len() {
+                if calls[i].to.is_create() {
+                    // Replace with a CALL to a random address
+                    calls[i].to = TxKind::Call(u.arbitrary()?);
+                }
+            }
+        } else {
+            // Remove all CREATEs (they would be at non-first positions)
+            for call in &mut calls {
+                if call.to.is_create() {
+                    call.to = TxKind::Call(u.arbitrary()?);
+                }
+            }
         }
 
         let access_list = u.arbitrary()?;
@@ -2011,5 +2047,89 @@ mod tests {
             "size() calculation doesn't match expected field sizes. \
              If you added/changed a field in TempoTransaction, update both size() and this test."
         );
+    }
+
+    #[test]
+    fn test_create_must_be_first_call() {
+        let create_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let call_call = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Valid: CREATE as first call
+        let tx_valid = TempoTransaction {
+            calls: vec![create_call.clone(), call_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx_valid.validate().is_ok());
+
+        // Invalid: CREATE as second call
+        let tx_invalid = TempoTransaction {
+            calls: vec![call_call.clone(), create_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx_invalid.validate().is_err());
+        assert!(
+            tx_invalid
+                .validate()
+                .unwrap_err()
+                .contains("first position")
+        );
+    }
+
+    #[test]
+    fn test_only_one_create_allowed() {
+        let create_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+
+        // Valid: Single CREATE
+        let tx_valid = TempoTransaction {
+            calls: vec![create_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx_valid.validate().is_ok());
+
+        // Invalid: Multiple CREATEs (both at first position, second one triggers error)
+        let tx_invalid = TempoTransaction {
+            calls: vec![create_call.clone(), create_call.clone()],
+            ..Default::default()
+        };
+        assert!(tx_invalid.validate().is_err());
+        assert!(
+            tx_invalid
+                .validate()
+                .unwrap_err()
+                .contains("only one CREATE")
+        );
+    }
+
+    #[test]
+    fn test_create_validation_allows_call_only_batch() {
+        // A batch with only CALL operations should be valid
+        let call1 = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let call2 = Call {
+            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
+            value: U256::from(100),
+            input: Bytes::from(vec![1, 2, 3]),
+        };
+
+        let tx = TempoTransaction {
+            calls: vec![call1, call2],
+            ..Default::default()
+        };
+        assert!(tx.validate().is_ok());
     }
 }

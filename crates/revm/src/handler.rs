@@ -690,9 +690,9 @@ where
         } else {
             nonce_2d_gas = 0;
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
-            //
-            // Always bump nonce for AA transactions.
-            if tx.tempo_tx_env.is_some() || tx.kind().is_call() {
+            // This applies uniformly to both standard and AA transactions - we only bump here
+            // for CALLs, letting make_create_frame handle the nonce for CREATE operations.
+            if tx.kind().is_call() {
                 caller_account.bump_nonce();
             }
         }
