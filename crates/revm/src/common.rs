@@ -108,16 +108,20 @@ pub trait TempoStateAccess<M = ()> {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
 
     /// Returns a read-only storage provider for the given spec.
-    fn with_read_only_storage_ctx<R>(&mut self, f: impl FnOnce() -> R) -> R
+    fn with_read_only_storage_ctx<R>(&mut self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R
     where
         Self: Sized,
     {
-        let spec = TempoHardfork::default();
         StorageCtx::enter(&mut ReadOnlyStorageProvider::new(self, spec), f)
     }
 
     /// Resolves user-level or transaction-level fee token preference.
-    fn get_fee_token(&mut self, tx: impl TempoTx, fee_payer: Address) -> TempoResult<Address>
+    fn get_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        fee_payer: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<Address>
     where
         Self: Sized,
     {
@@ -139,7 +143,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Check stored user token preference
-        let user_token = self.with_read_only_storage_ctx(|| {
+        let user_token = self.with_read_only_storage_ctx(spec, || {
             // ensure TIP_FEE_MANAGER_ADDRESS is loaded
             TipFeeManager::new().user_tokens.at(fee_payer).read()
         })?;
@@ -163,7 +167,7 @@ pub trait TempoStateAccess<M = ()> {
                 }
             ;
 
-            if can_infer_tip20 && self.is_valid_fee_token(to)? {
+            if can_infer_tip20 && self.is_valid_fee_token(spec, to)? {
                 return Ok(to);
             }
         }
@@ -177,11 +181,11 @@ pub trait TempoStateAccess<M = ()> {
             && (!tx.is_aa() || calls.next().is_none())
         {
             if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
-                && self.is_valid_fee_token(call.tokenIn)?
+                && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
             } else if let Ok(call) = IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
-                && self.is_valid_fee_token(call.tokenIn)?
+                && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
             }
@@ -192,7 +196,7 @@ pub trait TempoStateAccess<M = ()> {
     }
 
     /// Checks if the given token can be used as a fee token.
-    fn is_valid_fee_token(&mut self, fee_token: Address) -> TempoResult<bool>
+    fn is_valid_fee_token(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
     where
         Self: Sized,
     {
@@ -203,7 +207,7 @@ pub trait TempoStateAccess<M = ()> {
 
         // Ensure the currency is USD
         // load fee token account to ensure that we can load storage for it.
-        self.with_read_only_storage_ctx(|| {
+        self.with_read_only_storage_ctx(spec, || {
             let token = TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token));
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
         })
@@ -214,11 +218,12 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         fee_token: Address,
         fee_payer: Address,
+        spec: TempoHardfork,
     ) -> TempoResult<bool>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(|| {
+        self.with_read_only_storage_ctx(spec, || {
             // Ensure the fee payer is not blacklisted
             let transfer_policy_id = TIP20Token::from_address(fee_token)?
                 .transfer_policy_id
@@ -233,11 +238,16 @@ pub trait TempoStateAccess<M = ()> {
     /// Returns the balance of the given token for the given account.
     ///
     /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
-    fn get_token_balance(&mut self, token: Address, account: Address) -> TempoResult<U256>
+    fn get_token_balance(
+        &mut self,
+        token: Address,
+        account: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<U256>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(|| {
+        self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
             TIP20Token::from_address(token)?.balances.at(account).read()
         })
@@ -421,7 +431,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, fee_token);
         Ok(())
     }
@@ -444,7 +454,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(result_token, token);
         Ok(())
     }
@@ -460,7 +470,8 @@ mod tests {
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
-        let result_token = db.get_fee_token(TempoTxEnv::default(), caller)?;
+        let result_token =
+            db.get_fee_token(TempoTxEnv::default(), caller, TempoHardfork::Genesis)?;
         assert_eq!(result_token, user_token);
         Ok(())
     }
@@ -482,7 +493,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
     }
@@ -500,7 +511,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let result_token = db.get_fee_token(tx, caller)?;
+        let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         // Should fallback to DEFAULT_FEE_TOKEN when no preferences are found
         assert_eq!(result_token, DEFAULT_FEE_TOKEN);
         Ok(())
@@ -533,7 +544,7 @@ mod tests {
         };
 
         let mut db = EmptyDB::default();
-        let token = db.get_fee_token(tx, caller)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
@@ -556,7 +567,7 @@ mod tests {
             ..Default::default()
         };
 
-        let token = db.get_fee_token(tx, caller)?;
+        let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, token_in);
 
         Ok(())
@@ -576,7 +587,7 @@ mod tests {
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage
-        let balance = db.get_token_balance(token_address, account)?;
+        let balance = db.get_token_balance(token_address, account, TempoHardfork::Genesis)?;
         assert_eq!(balance, expected_balance);
 
         Ok(())
