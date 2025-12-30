@@ -109,7 +109,7 @@ export function StartReward() {
     token: tokenAddress,
   })
 
-  const start = Hooks.reward.useStartSync()
+  const start = Hooks.reward.useDistributeSync()
 
   const handleStart = () => { // [!code hl]
     if (!metadata) return // [!code hl]

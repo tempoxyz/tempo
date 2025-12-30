@@ -1021,8 +1021,8 @@ export default defineConfig({
                             link: "/sdk/typescript/wagmi/hooks/reward.useSetRecipient",
                           },
                           {
-                            text: "useStart",
-                            link: "/sdk/typescript/wagmi/hooks/reward.useStart",
+                            text: "useDistribute",
+                            link: "/sdk/typescript/wagmi/hooks/reward.useDistribute",
                           },
                           {
                             text: "useUserRewardInfo",

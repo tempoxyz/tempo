@@ -1,6 +1,6 @@
-# `reward.useStart`
+# `reward.useDistribute`
 
-Starts a new reward stream that distributes tokens to opted-in holders.
+Distributes tokens to opted-in holders.
 
 ## Usage
 
@@ -18,7 +18,7 @@ declare module 'wagmi' {
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseEther } from 'viem'
 
-const { data: result, mutate } = Hooks.reward.useStartSync()
+const { data: result, mutate } = Hooks.reward.useDistributeSync()
 
 // Call `mutate` in response to user action (e.g. button click, form submission)
 mutate({
@@ -60,7 +60,7 @@ import { parseEther } from 'viem'
 import { useWaitForTransactionReceipt } from 'wagmi'
 import { config } from './wagmi.config'
 
-const { data: hash, mutate } = Hooks.reward.useStart()
+const { data: hash, mutate } = Hooks.reward.useDistribute()
 const { data: receipt } = useWaitForTransactionReceipt({ hash })
 
 // Call `mutate` in response to user action (e.g. button click, form submission)
