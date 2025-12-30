@@ -39,6 +39,7 @@ pub struct TokenLimit {
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct KeyAuthorization {
     /// Chain ID for replay protection (0 = valid on any chain)
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity"))]
     pub chain_id: u64,
 
     /// Type of key being authorized (Secp256k1, P256, or WebAuthn)
@@ -50,6 +51,7 @@ pub struct KeyAuthorization {
     /// Unix timestamp when key expires.
     /// - `None` (RLP 0x80) = key never expires (stored as u64::MAX in precompile)
     /// - `Some(timestamp)` = key expires at this timestamp
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
     pub expiry: Option<u64>,
 
     /// TIP20 spending limits for this key.

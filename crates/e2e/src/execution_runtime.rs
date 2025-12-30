@@ -16,11 +16,8 @@ use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
-use commonware_cryptography::{
-    bls12381::primitives::{poly::Public, variant::MinSig},
-    ed25519::PublicKey,
-};
-use commonware_utils::set::OrderedAssociated;
+use commonware_cryptography::ed25519::PublicKey;
+use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseEnv;
@@ -49,8 +46,7 @@ use secp256k1::SecretKey;
 use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node_config::{Peers, PublicPolynomial};
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
     evm::{TempoEvmFactory, evm::TempoEvm},
@@ -70,42 +66,17 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 
 #[derive(Default, Debug)]
 pub struct Builder {
-    allegretto_time: Option<u64>,
     epoch_length: Option<u64>,
-    public_polynomial: Option<PublicPolynomial>,
-    validators: Option<Peers>,
-    write_validators_into_genesis: bool,
+    initial_dkg_outcome: Option<OnchainDkgOutcome>,
+    validators: Option<ordered::Map<PublicKey, SocketAddr>>,
 }
 
 impl Builder {
     pub fn new() -> Self {
         Self {
-            allegretto_time: None,
             epoch_length: None,
-            public_polynomial: None,
+            initial_dkg_outcome: None,
             validators: None,
-            write_validators_into_genesis: true,
-        }
-    }
-
-    pub fn set_allegretto_time(self, allegretto_time: Option<u64>) -> Self {
-        Self {
-            allegretto_time,
-            ..self
-        }
-    }
-
-    pub fn set_write_validators_into_genesis(self, write_validators_into_genesis: bool) -> Self {
-        Self {
-            write_validators_into_genesis,
-            ..self
-        }
-    }
-
-    pub fn with_allegretto_time(self, allegretto_time: u64) -> Self {
-        Self {
-            allegretto_time: Some(allegretto_time),
-            ..self
         }
     }
 
@@ -116,32 +87,33 @@ impl Builder {
         }
     }
 
-    pub fn with_public_polynomial(self, public_polynomial: Public<MinSig>) -> Self {
+    pub fn with_initial_dkg_outcome(self, initial_dkg_outcome: OnchainDkgOutcome) -> Self {
         Self {
-            public_polynomial: Some(public_polynomial.into()),
+            initial_dkg_outcome: Some(initial_dkg_outcome),
             ..self
         }
     }
 
-    pub fn with_validators(self, validators: OrderedAssociated<PublicKey, SocketAddr>) -> Self {
+    pub fn with_validators(self, validators: ordered::Map<PublicKey, SocketAddr>) -> Self {
         Self {
-            validators: Some(validators.into()),
+            validators: Some(validators),
             ..self
         }
     }
 
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
-            allegretto_time,
             epoch_length,
-            public_polynomial,
+            initial_dkg_outcome,
             validators,
-            write_validators_into_genesis,
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
-        let public_polynomial = public_polynomial.ok_or_eyre("must specify a public polynomial")?;
+        let initial_dkg_outcome =
+            initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
         let validators = validators.ok_or_eyre("must specify validators")?;
+
+        assert!(initial_dkg_outcome.next_players() == validators.keys(),);
 
         let mut genesis = genesis();
         genesis
@@ -149,93 +121,60 @@ impl Builder {
             .extra_fields
             .insert_value("epochLength".to_string(), epoch_length)
             .wrap_err("failed to insert epoch length into genesis")?;
-        genesis
-            .config
-            .extra_fields
-            .insert_value("publicPolynomial".to_string(), public_polynomial.clone())
-            .wrap_err("failed to insert public polynomial into genesis")?;
-        genesis
-            .config
-            .extra_fields
-            .insert_value("validators".to_string(), validators.clone())
-            .wrap_err("failed to insert validators into genesis")?;
 
-        if let Some(allegretto_time) = allegretto_time {
-            genesis
-                .config
-                .extra_fields
-                .insert_value("allegrettoTime".to_string(), allegretto_time)
-                .wrap_err("failed to insert allegretto timestamp into genesis")?;
+        genesis.extra_data = initial_dkg_outcome.encode().freeze().to_vec().into();
 
-            genesis.extra_data = PublicOutcome {
-                epoch: 0,
-                participants: validators.public_keys().clone(),
-                public: public_polynomial.into_inner(),
-            }
-            .encode()
-            .freeze()
-            .to_vec()
-            .into();
+        let mut evm = setup_tempo_evm();
 
-            if write_validators_into_genesis {
-                let mut evm = setup_tempo_evm();
+        {
+            let cx = evm.ctx_mut();
+            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
+                // TODO(janis): figure out the owner of the test-genesis.json
+                let mut validator_config = ValidatorConfig::new();
+                validator_config
+                    .initialize(admin())
+                    .wrap_err("Failed to initialize validator config")
+                    .unwrap();
 
-                {
-                    let cx = evm.ctx_mut();
-                    StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
-                        // TODO(janis): figure out the owner of the test-genesis.json
-                        let mut validator_config = ValidatorConfig::new();
-                        validator_config
-                            .initialize(admin())
-                            .wrap_err("Failed to initialize validator config")
-                            .unwrap();
-
-                        for (i, (peer, addr)) in validators.into_inner().iter_pairs().enumerate() {
-                            validator_config
-                                .add_validator(
-                                    admin(),
-                                    IValidatorConfig::addValidatorCall {
-                                        newValidatorAddress: validator(i as u32),
-                                        publicKey: peer
-                                            .encode()
-                                            .freeze()
-                                            .as_ref()
-                                            .try_into()
-                                            .unwrap(),
-                                        active: true,
-                                        inboundAddress: addr.to_string(),
-                                        outboundAddress: addr.to_string(),
-                                    },
-                                )
-                                .unwrap();
-                        }
-                    })
-                }
-
-                let evm_state = evm.ctx_mut().journaled_state.evm_state();
-                for (address, account) in evm_state.iter() {
-                    let storage = if !account.storage.is_empty() {
-                        Some(
-                            account
-                                .storage
-                                .iter()
-                                .map(|(key, val)| ((*key).into(), val.present_value.into()))
-                                .collect(),
+                for (i, (peer, addr)) in validators.iter_pairs().enumerate() {
+                    validator_config
+                        .add_validator(
+                            admin(),
+                            IValidatorConfig::addValidatorCall {
+                                newValidatorAddress: validator(i as u32),
+                                publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
+                                active: true,
+                                inboundAddress: addr.to_string(),
+                                outboundAddress: addr.to_string(),
+                            },
                         )
-                    } else {
-                        None
-                    };
-                    genesis.alloc.insert(
-                        *address,
-                        GenesisAccount {
-                            nonce: Some(account.info.nonce),
-                            code: account.info.code.as_ref().map(|c| c.original_bytes()),
-                            storage,
-                            ..Default::default()
-                        },
-                    );
+                        .unwrap();
                 }
-            }
+            })
+        }
+
+        let evm_state = evm.ctx_mut().journaled_state.evm_state();
+        for (address, account) in evm_state.iter() {
+            let storage = if !account.storage.is_empty() {
+                Some(
+                    account
+                        .storage
+                        .iter()
+                        .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            genesis.alloc.insert(
+                *address,
+                GenesisAccount {
+                    nonce: Some(account.info.nonce),
+                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                    storage,
+                    ..Default::default()
+                },
+            );
         }
 
         Ok(ExecutionRuntime::with_chain_spec(
@@ -672,10 +611,7 @@ impl std::fmt::Debug for ExecutionNode {
 }
 
 pub fn genesis() -> Genesis {
-    serde_json::from_str(include_str!(
-        "../../node/tests/assets/test-genesis-moderato.json"
-    ))
-    .unwrap()
+    serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
 /// Launches a tempo execution node.

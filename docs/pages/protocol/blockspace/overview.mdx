@@ -25,7 +25,7 @@ pub struct Header {
 - `timestamp_millis_part` stores the sub‑second component; the full timestamp is `inner.timestamp * 1000 + timestamp_millis_part` .
 
 ### Block body
-The block body in Tempo retains the canonical Ethereum block body structure, with the addition of new system transactions. Transactions are ordered in the following sections:
+The block body in Tempo retains the canonical Ethereum block body structure, with the addition of system transactions. Transactions are ordered in the following sections:
 
 1. Start-of-block system transaction(s) (must begin with the rewards registry call).
 2. Proposer lane transactions, subject to `general_gas_limit` on non-payment transactions.
@@ -35,8 +35,6 @@ The block body in Tempo retains the canonical Ethereum block body structure, wit
 
 ### System transactions
 
-A valid tempo block must contain the following new system transactions
+A valid tempo block must contain the following system transactions:
   - **Rewards Registry (start-of-block)** — must be the first transaction in the block body; refreshes validator rewards metadata before user transactions begin.  Detailed specification [here](/protocol/tip20-rewards/spec).
- - **Fee Manager (end-of-block 1/3)** — settles block fee accounting.  Detailed specification [here](/protocol/fees/spec-fee-amm).
- - **Stablecoin DEX (end-of-block 2/3)** — settles stablecoin exchange balances. Detailed specification [here](/protocol/exchange/spec).
-  - **Subblock Metadata (end-of-block 3/3)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
+  - **Subblock Metadata (end-of-block)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
