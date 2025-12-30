@@ -46,8 +46,7 @@ contract FeeAMMTest is BaseTest {
         uint256 minLiq = 1000; // MIN_LIQUIDITY constant
 
         vm.prank(alice);
-        uint256 liquidity =
-            amm.mint(address(userToken), address(validatorToken), amountV, alice);
+        uint256 liquidity = amm.mint(address(userToken), address(validatorToken), amountV, alice);
 
         // Expected liquidity: amountV/2 - MIN_LIQUIDITY
         uint256 expected = amountV / 2 - minLiq;
@@ -68,9 +67,7 @@ contract FeeAMMTest is BaseTest {
         uint256 amountV = 2 * minLiq; // amountV/2 == MIN_LIQUIDITY -> should revert
 
         vm.prank(alice);
-        try amm.mint(
-            address(userToken), address(validatorToken), amountV, alice
-        ) {
+        try amm.mint(address(userToken), address(validatorToken), amountV, alice) {
             revert CallShouldHaveReverted();
         } catch (bytes memory revertData) {
             assertEq(bytes4(revertData), IFeeAMM.InsufficientLiquidity.selector);
@@ -138,9 +135,7 @@ contract FeeAMMTest is BaseTest {
         uint256 initialAmount = 5000e18; // Use half so we have tokens left for subsequent deposit
 
         vm.prank(alice);
-        amm.mint(
-            address(userToken), address(validatorToken), initialAmount, alice
-        );
+        amm.mint(address(userToken), address(validatorToken), initialAmount, alice);
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
         uint256 supplyBefore = amm.totalSupply(poolId);
@@ -150,9 +145,8 @@ contract FeeAMMTest is BaseTest {
         uint256 additionalAmount = 1000e18;
 
         vm.prank(alice);
-        uint256 liquidity = amm.mint(
-            address(userToken), address(validatorToken), additionalAmount, alice
-        );
+        uint256 liquidity =
+            amm.mint(address(userToken), address(validatorToken), additionalAmount, alice);
 
         assertGt(liquidity, 0);
         assertEq(amm.totalSupply(poolId), supplyBefore + liquidity);
