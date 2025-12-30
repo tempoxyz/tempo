@@ -1447,7 +1447,8 @@ mod tests {
             let bob = Address::random();
             let admin = Address::random();
 
-            let base_amount = 10_000_003u128;
+            // Use an amount above MIN_ORDER_AMOUNT that causes rounding
+            let base_amount = 100_000_003u128;
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
@@ -1510,8 +1511,8 @@ mod tests {
             let alice = Address::random();
             let admin = Address::random();
 
-            // Use an amount that will cause rounding (not evenly divisible)
-            let base_amount = 10_000_003u128;
+            // Use an amount above MIN_ORDER_AMOUNT that causes rounding (not evenly divisible)
+            let base_amount = 100_000_003u128;
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
