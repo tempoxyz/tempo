@@ -389,69 +389,80 @@ pub(crate) fn gen_layout_ctx_expr_inefficient(
 /// Generate collision detection debug assertions for a field against all other fields.
 ///
 /// This function generates runtime checks that verify storage slots don't overlap.
-/// Only manual slot assignments are checked, as auto-assigned slots are guaranteed
-/// not to collide by the allocation algorithm.
+/// Checks are generated for all fields (both manual and auto-assigned) to ensure
+/// comprehensive collision detection.
 pub(crate) fn gen_collision_check_fn(
     idx: usize,
     field: &LayoutField<'_>,
     all_fields: &[LayoutField<'_>],
-) -> Option<(Ident, TokenStream)> {
+) -> (Ident, TokenStream) {
     fn gen_slot_count_expr(ty: &Type) -> TokenStream {
         quote! { ::alloy::primitives::U256::from_limbs([<#ty as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0]) }
     }
 
-    // Only check explicit slot assignments against other fields
-    if let SlotAssignment::Manual(_) = field.assigned_slot {
-        let field_name = field.name;
-        let check_fn_name = format_ident!("__check_collision_{}", field_name);
-        let slot_const = PackingConstants::new(field.name).slot();
+    let check_fn_name = format_ident!("__check_collision_{}", field.name);
+    let consts = PackingConstants::new(field.name);
+    let (slot_const, offset_const) = consts.into_tuple();
+    let (field_name, field_ty) = (field.name, field.ty);
 
-        let mut checks = TokenStream::new();
+    let mut checks = TokenStream::new();
 
-        // Check against all other fields
-        for (other_idx, other_field) in all_fields.iter().enumerate() {
-            if other_idx == idx {
-                continue;
-            }
-
-            let other_slot_const = PackingConstants::new(other_field.name).slot();
-            let other_name = other_field.name;
-
-            // Generate slot count expressions
-            let current_count_expr = gen_slot_count_expr(field.ty);
-            let other_count_expr = gen_slot_count_expr(other_field.ty);
-
-            // Generate runtime assertion that checks for overlap
-            checks.extend(quote! {
-                {
-                    let slot = #slot_const;
-                    let slot_end = slot + #current_count_expr;
-                    let other_slot = #other_slot_const;
-                    let other_end = other_slot + #other_count_expr;
-
-                    let no_overlap = slot_end.le(&other_slot) || other_end.le(&slot);
-                    debug_assert!(
-                        no_overlap,
-                        "Storage slot collision: field `{}` (slot {:?}) overlaps with field `{}` (slot {:?})",
-                        stringify!(#field_name),
-                        slot,
-                        stringify!(#other_name),
-                        other_slot
-                    );
-                }
-            });
+    // Check against all other fields
+    for (other_idx, other_field) in all_fields.iter().enumerate() {
+        if other_idx == idx {
+            continue;
         }
 
-        let check_fn = quote! {
-            #[cfg(debug_assertions)]
-            #[inline(always)]
-            fn #check_fn_name() {
-                #checks
-            }
-        };
+        let other_consts = PackingConstants::new(other_field.name);
+        let (other_slot_const, other_offset_const) = other_consts.into_tuple();
+        let other_name = other_field.name;
+        let other_ty = other_field.ty;
 
-        Some((check_fn_name, check_fn))
-    } else {
-        None
+        // Generate slot count expressions
+        let current_count_expr = gen_slot_count_expr(field.ty);
+        let other_count_expr = gen_slot_count_expr(other_field.ty);
+
+        // Generate runtime assertion that checks for overlap
+        // Two fields collide if their slot ranges overlap AND (if same slot) their byte ranges overlap
+        checks.extend(quote! {
+            {
+                let slot = #slot_const;
+                let slot_end = slot + #current_count_expr;
+                let other_slot = #other_slot_const;
+                let other_slot_end = other_slot + #other_count_expr;
+
+                // Determine if there's no overlap:
+                // - If starting in different slots: rely on slot range check
+                // - If starting in same slot (packed fields): check byte ranges
+                let no_overlap = if slot == other_slot {
+                    let byte_end = #offset_const + <#field_ty as crate::storage::StorableType>::BYTES;
+                    let other_byte_end = #other_offset_const + <#other_ty as crate::storage::StorableType>::BYTES;
+                    byte_end <= #other_offset_const || other_byte_end <= #offset_const
+                } else {
+                    slot_end.le(&other_slot) || other_slot_end.le(&slot)
+                };
+
+                debug_assert!(
+                    no_overlap,
+                    "Storage slot collision: field `{}` (slot {:?}, offset {}) overlaps with field `{}` (slot {:?}, offset {})",
+                    stringify!(#field_name),
+                    slot,
+                    #offset_const,
+                    stringify!(#other_name),
+                    other_slot,
+                    #other_offset_const
+                );
+            }
+        });
     }
+
+    let check_fn = quote! {
+        #[cfg(debug_assertions)]
+        #[inline(always)]
+        fn #check_fn_name() {
+            #checks
+        }
+    };
+
+    (check_fn_name, check_fn)
 }

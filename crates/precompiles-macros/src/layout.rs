@@ -176,12 +176,17 @@ pub(crate) fn gen_constructor(
             }
 
             #[cfg(any(test, feature = "test-utils"))]
-            fn emitted_events(&self) -> &Vec<::alloy::primitives::LogData> {
+            pub fn emitted_events(&self) -> &Vec<::alloy::primitives::LogData> {
                 self.storage.get_events(self.address)
             }
 
             #[cfg(any(test, feature = "test-utils"))]
-            fn assert_emitted_events(&self, expected: Vec<impl ::alloy::primitives::IntoLogData>) {
+            pub fn clear_emitted_events(&mut self) {
+                self.storage.clear_events(self.address);
+            }
+
+            #[cfg(any(test, feature = "test-utils"))]
+            pub fn assert_emitted_events(&self, expected: Vec<impl ::alloy::primitives::IntoLogData>) {
                 let emitted = self.storage.get_events(self.address);
                 assert_eq!(emitted.len(), expected.len());
 
@@ -233,14 +238,12 @@ fn gen_collision_checks(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::To
     let mut generated = proc_macro2::TokenStream::new();
     let mut check_fn_calls = Vec::new();
 
-    // Generate collision detection check functions
+    // Generate collision detection check functions for all fields
     for (idx, allocated) in allocated_fields.iter().enumerate() {
-        if let Some((check_fn_name, check_fn)) =
-            packing::gen_collision_check_fn(idx, allocated, allocated_fields)
-        {
-            generated.extend(check_fn);
-            check_fn_calls.push(check_fn_name);
-        }
+        let (check_fn_name, check_fn) =
+            packing::gen_collision_check_fn(idx, allocated, allocated_fields);
+        generated.extend(check_fn);
+        check_fn_calls.push(check_fn_name);
     }
 
     // Generate a module initializer that calls all check functions

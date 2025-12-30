@@ -209,7 +209,7 @@ export const config = createConfig({
 
 ### Watch for new reward distributions
 
-Use `useWatchRewardScheduled` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
+Use `useWatchRewardDistributed` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
 
 ```tsx twoslash
 import { Hooks } from 'tempo.ts/wagmi'
@@ -218,9 +218,9 @@ import { Hooks } from 'tempo.ts/wagmi'
 function WatchRewards() {
   const tokenAddress = '0x...' // Your token address
 
-  Hooks.reward.useWatchRewardScheduled({ // [!code hl]
+  Hooks.reward.useWatchRewardDistributed({ // [!code hl]
     token: tokenAddress, // [!code hl]
-    onRewardScheduled(args) { // [!code hl]
+    onRewardDistributed(args) { // [!code hl]
       console.log('New reward scheduled:', args) // [!code hl]
       // Update UI, refetch balances, show notification, etc. // [!code hl]
     }, // [!code hl]

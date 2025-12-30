@@ -1,5 +1,7 @@
 //! Test utilities for precompile dispatch testing
 
+#[cfg(any(test, feature = "test-utils"))]
+use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
@@ -11,6 +13,8 @@ use alloy::{
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
+#[cfg(any(test, feature = "test-utils"))]
+use tempo_contracts::precompiles::TIP20Error;
 use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
 
 /// Checks that all selectors in an interface have dispatch handlers.
@@ -86,7 +90,7 @@ pub fn setup_storage() -> (HashMapStorageProvider, Address) {
 }
 
 /// Setup mode - determines how the token is obtained.
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[cfg(any(test, feature = "test-utils"))]
 enum Action {
     #[default]
@@ -97,7 +101,7 @@ enum Action {
     CreateToken {
         name: &'static str,
         symbol: &'static str,
-        currency: &'static str,
+        currency: String,
     },
     /// Configure an existing token at the given address
     ConfigureToken { address: Address },
@@ -132,12 +136,12 @@ pub struct TIP20Setup {
     action: Action,
     quote_token: Option<Address>,
     admin: Option<Address>,
-    fee_recipient: Address,
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
     reward_opt_ins: Vec<Address>,
-    reward_streams: Vec<(U256, u32)>,
+    distribute_rewards: Vec<U256>,
+    clear_events: bool,
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -153,13 +157,13 @@ impl TIP20Setup {
 
     /// Create a new token via factory. Ensures that `PathUSD` and `TIP20Factory` are initialized.
     ///
-    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`, `fee_recipient: Address::ZERO`
+    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`
     pub fn create(name: &'static str, symbol: &'static str, admin: Address) -> Self {
         Self {
             action: Action::CreateToken {
                 name,
                 symbol,
-                currency: "USD",
+                currency: "USD".into(),
             },
             admin: Some(admin),
             ..Default::default()
@@ -174,14 +178,22 @@ impl TIP20Setup {
         }
     }
 
+    /// Do not clear the emitted events of the token.
+    ///
+    /// SAFETY: it is the caller's responsibility to ensure the test uses `HashMapStorageProvider`.
+    pub fn clear_events(mut self) -> Self {
+        self.clear_events = true;
+        self
+    }
+
     /// Set the token currency (default: "USD"). Only applies to new tokens.
-    pub fn currency(mut self, currency: &'static str) -> Self {
+    pub fn currency(mut self, currency: impl Into<String>) -> Self {
         if let Action::CreateToken {
             currency: ref mut c,
             ..
         } = self.action
         {
-            *c = currency;
+            *c = currency.into();
         }
         self
     }
@@ -189,12 +201,6 @@ impl TIP20Setup {
     /// Set a custom quote token (default: PathUSD).
     pub fn quote_token(mut self, token: Address) -> Self {
         self.quote_token = Some(token);
-        self
-    }
-
-    /// Set the fee recipient address.
-    pub fn fee_recipient(mut self, recipient: Address) -> Self {
-        self.fee_recipient = recipient;
         self
     }
 
@@ -229,9 +235,9 @@ impl TIP20Setup {
         self
     }
 
-    /// Start a reward stream (requires tokens minted to admin first).
-    pub fn with_reward_stream(mut self, amount: U256, duration_secs: u32) -> Self {
-        self.reward_streams.push((amount, duration_secs));
+    /// Distribute rewards (requires tokens minted to admin first).
+    pub fn with_reward(mut self, amount: U256) -> Self {
+        self.distribute_rewards.push(amount);
         self
     }
 
@@ -245,30 +251,18 @@ impl TIP20Setup {
             .admin
             .expect("pathUSD is uninitialized and requires an admin");
 
-        // In Allegretto, PathUSD is token 0 created via factory with quoteToken=0
-        if StorageCtx.spec().is_allegretto() {
-            let mut factory = Self::factory()?;
-            factory.create_token(
+        // PathUSD is token 0 created via factory with quoteToken=0
+        let mut factory = Self::factory()?;
+        factory.create_token(
+            admin,
+            tip20_factory::ITIP20Factory::createTokenCall {
+                name: "PathUSD".to_string(),
+                symbol: "PUSD".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: Address::ZERO,
                 admin,
-                tip20_factory::ITIP20Factory::createTokenCall {
-                    name: "PathUSD".to_string(),
-                    symbol: "PUSD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: Address::ZERO,
-                    admin,
-                },
-            )?;
-        } else {
-            // Pre-Allegretto: direct initialization
-            TIP20Token::from_address(PATH_USD_ADDRESS)?.initialize(
-                "PathUSD",
-                "PUSD",
-                "USD",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )?;
-        }
+            },
+        )?;
 
         TIP20Token::from_address(PATH_USD_ADDRESS)
     }
@@ -284,12 +278,7 @@ impl TIP20Setup {
 
     /// Apply the configuration, returning just the TIP20Token.
     pub fn apply(self) -> Result<TIP20Token> {
-        self.apply_with_id().map(|(_, token)| token)
-    }
-
-    /// Apply the configuration, returning both token_id and TIP20Token.
-    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
-        let mut token = match self.action {
+        let mut token = match self.action.clone() {
             Action::PathUSD => self.path_usd_inner()?,
             Action::CreateToken {
                 name,
@@ -306,7 +295,7 @@ impl TIP20Setup {
                     tip20_factory::ITIP20Factory::createTokenCall {
                         name: name.to_string(),
                         symbol: symbol.to_string(),
-                        currency: currency.to_string(),
+                        currency,
                         quoteToken: quote,
                         admin,
                     },
@@ -345,16 +334,39 @@ impl TIP20Setup {
             token.set_reward_recipient(user, ITIP20::setRewardRecipientCall { recipient: user })?;
         }
 
-        // Start reward streams
-        for (amount, secs) in self.reward_streams {
+        // Distribute rewards
+        for amount in self.distribute_rewards {
             let admin = self.admin.unwrap_or_else(|| {
                 get_tip20_admin(token.address()).expect("unable to get token admin")
             });
-            token.start_reward(admin, ITIP20::startRewardCall { amount, secs })?;
+            token.distribute_reward(admin, ITIP20::distributeRewardCall { amount })?;
         }
 
-        let token_id = tip20::address_to_token_id_unchecked(token.address());
-        Ok((token_id, token))
+        if self.clear_events {
+            token.clear_emitted_events();
+        }
+
+        Ok(token)
+    }
+
+    /// Apply the configuration, returning both token_id and TIP20Token.
+    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
+        self.apply().map(|token| {
+            let token_id = tip20::address_to_token_id_unchecked(token.address());
+            (token_id, token)
+        })
+    }
+
+    /// Apply the configuration, and expect it to fail with the given error.
+    pub fn expect_err(self, expected: TempoPrecompileError) {
+        let result = self.apply();
+        assert!(result.is_err_and(|err| err == expected));
+    }
+
+    /// Apply the configuration, and expect it to fail with the given TIP20 error.
+    pub fn expect_tip20_err(self, expected: TIP20Error) {
+        let result = self.apply();
+        assert!(result.is_err_and(|err| err == TempoPrecompileError::TIP20(expected)));
     }
 }
 

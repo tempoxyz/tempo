@@ -7,9 +7,9 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
-#[test_traced]
+#[test_traced("WARN")]
 fn validator_lost_key_but_gets_key_in_next_epoch() {
     let _ = tempo_eyre::install();
 
@@ -46,8 +46,6 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
         let mut node_is_not_signer = true;
         let mut node_got_new_share = false;
 
-        let pat = format!("{}-", crate::CONSENSUS_NODE_PREFIX);
-
         let mut success = false;
         while !success {
             context.sleep(Duration::from_secs(1)).await;
@@ -55,7 +53,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
             let metrics = context.encode();
 
             'metrics: for line in metrics.lines() {
-                if !line.starts_with(&pat) {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                     continue 'metrics;
                 }
 
@@ -85,6 +83,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                     ))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_forgot_share = value > 0;
                 }
 
@@ -94,6 +93,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_is_not_signer = value == 0;
                 }
 
@@ -105,6 +105,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_got_new_share = value > 0;
                 }
 

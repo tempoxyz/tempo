@@ -3,7 +3,6 @@
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
 use std::{
-    net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
     time::{Duration, Instant},
 };
@@ -11,21 +10,22 @@ use std::{
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    simplex::signing_scheme::{Scheme as _, bls12381_threshold::Scheme},
-    types::ViewDelta,
+    simplex::scheme::bls12381_threshold::Scheme,
+    types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::{group::Share, variant::MinSig},
+    certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
-use commonware_p2p::{Blocker, Receiver, Sender};
+use commonware_p2p::{Address, Blocker, Receiver, Sender};
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
     spawn_cell,
 };
 use commonware_storage::archive::immutable;
-use commonware_utils::ordered::Map;
+use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
@@ -33,7 +33,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
-    config::{BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES, MARSHAL_LIMIT},
+    config::BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -79,7 +79,6 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub share: Option<Share>,
-    pub delete_signing_share: bool,
 
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -108,7 +107,7 @@ where
         + Metrics
         + Network,
     TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>> + Sync,
+        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
 {
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
@@ -154,12 +153,8 @@ where
             manager: self.peer_manager.clone(),
             mailbox_size: self.mailbox_size,
             blocker: self.blocker.clone(),
-            requester_config: commonware_p2p::utils::requester::Config {
-                me: Some(self.signer.public_key()),
-                rate_limit: MARSHAL_LIMIT,
-                initial: Duration::from_secs(1),
-                timeout: Duration::from_secs(2),
-            },
+            initial: Duration::from_secs(1),
+            timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
             priority_requests: false,
             priority_responses: false,
@@ -249,13 +244,16 @@ where
         .wrap_err("failed to initialize finalizations by height archive")?;
         info!(elapsed = ?start.elapsed(), "restored finalizations by height archive");
 
-        let (marshal, marshal_mailbox) = marshal::Actor::init(
+        let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
+        // TODO(janis): forward `last_finalized_height` to application so it can
+        // forward missing blocks to EL.
+        let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
             self.context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
             marshal::Config {
-                scheme_provider: scheme_provider.clone(),
-                epoch_length,
+                provider: scheme_provider.clone(),
+                epocher: epoch_strategy.clone(),
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: ViewDelta::new(
@@ -271,7 +269,6 @@ where
                 write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
                 block_codec_config: (),
-                _marker: std::marker::PhantomData,
             },
         )
         .await;
@@ -284,20 +281,20 @@ where
             fee_recipient: self.fee_recipient,
             time_to_build_subblock: self.time_to_build_subblock,
             subblock_broadcast_interval: self.subblock_broadcast_interval,
-            epoch_length,
+            epoch_strategy: epoch_strategy.clone(),
         });
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: self.context.with_label("application"),
-            // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
+            last_finalized_height,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             scheme_provider: scheme_provider.clone(),
-            epoch_length,
+            epoch_strategy: epoch_strategy.clone(),
         })
         .await
         .wrap_err("failed initializing application actor")?;
@@ -307,7 +304,7 @@ where
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
-                epoch_length,
+                epoch_strategy: epoch_strategy.clone(),
                 time_for_peer_response: self.time_for_peer_response,
                 time_to_propose: self.time_to_propose,
                 mailbox_size: self.mailbox_size,
@@ -327,10 +324,9 @@ where
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox,
-                epoch_length,
+                epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
-                delete_signing_share: self.delete_signing_share,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
@@ -376,8 +372,7 @@ where
         + Pacer
         + Spawner
         + Storage,
-    TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>>,
+    TPeerManager: commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>>,
 {
     context: ContextCell<TContext>,
 
@@ -418,7 +413,7 @@ where
         + Spawner
         + Storage,
     TPeerManager:
-        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, SocketAddr>> + Sync,
+        commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
 {
     #[expect(
         clippy::too_many_arguments,

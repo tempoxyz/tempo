@@ -27,19 +27,21 @@ impl Deref for Digest {
     }
 }
 
-impl commonware_cryptography::Digest for Digest {
+impl commonware_math::algebra::Random for Digest {
     /// Generate a random digest.
     ///
     /// # Note
     ///
     /// One-to-one copy of [`commonware_cryptography::Digest`]
     /// for [`commonware_cryptography::sha256::Digest`].
-    fn random<R: rand::RngCore + rand::CryptoRng>(rng: &mut R) -> Self {
+    fn random(mut rng: impl rand_core::CryptoRngCore) -> Self {
         let mut array = B256::ZERO;
         rng.fill_bytes(&mut *array);
         Self(array)
     }
 }
+
+impl commonware_cryptography::Digest for Digest {}
 
 impl FixedSize for Digest {
     const SIZE: usize = 32;

@@ -1,6 +1,6 @@
 //! Tests for successful DKG ceremonies with static sets of validators.
 //!
-//! Contains test for both pre-allegretto logic, and allegretto logic active
+//! Contains test for DKG transition logic
 //! at genesis.
 use commonware_macros::test_traced;
 

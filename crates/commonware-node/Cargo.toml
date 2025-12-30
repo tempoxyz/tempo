@@ -24,9 +24,7 @@ alloy-primitives.workspace = true
 alloy-rpc-types-engine.workspace = true
 alloy-rlp.workspace = true
 
-async-lock.workspace = true
 axum.workspace = true
-blake3.workspace = true
 bytes.workspace = true
 clap.workspace = true
 
@@ -35,6 +33,7 @@ commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-macros.workspace = true
+commonware-math.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
@@ -59,7 +58,6 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-provider.workspace = true
 
-thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
 pin-project = "1.1.10"

@@ -14,20 +14,29 @@ use reth_ethereum::{
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
-use tempo_commonware_node::consensus;
+use tempo_commonware_node::{
+    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
+    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, consensus,
+};
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
-pub struct TestingNode {
+pub struct TestingNode<TClock>
+where
+    TClock: commonware_runtime::Clock,
+{
     /// Unique identifier for this node
     uid: String,
     /// Public key of the validator
     public_key: PublicKey,
     /// Simulated network oracle for test environments
-    oracle: Oracle<PublicKey>,
+    oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
-    consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+    consensus_config:
+        consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
     consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -44,15 +53,22 @@ pub struct TestingNode {
     last_db_block_on_stop: Option<u64>,
 }
 
-impl TestingNode {
+impl<TClock> TestingNode<TClock>
+where
+    TClock: commonware_runtime::Clock,
+{
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
     /// Call `start()` to start both consensus and execution.
     pub fn new(
         uid: String,
         public_key: PublicKey,
-        oracle: Oracle<PublicKey>,
-        consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+        oracle: Oracle<PublicKey, TClock>,
+        consensus_config: consensus::Builder<
+            Control<PublicKey, TClock>,
+            Context,
+            SocketManager<PublicKey, TClock>,
+        >,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
     ) -> Self {
@@ -88,19 +104,24 @@ impl TestingNode {
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+    ) -> &consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>
+    {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+    ) -> &mut consensus::Builder<
+        Control<PublicKey, TClock>,
+        Context,
+        SocketManager<PublicKey, TClock>,
+    > {
         &mut self.consensus_config
     }
 
     /// Get a reference to the oracle.
-    pub fn oracle(&self) -> &Oracle<PublicKey> {
+    pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle
     }
 
@@ -188,49 +209,49 @@ impl TestingNode {
         let pending = self
             .oracle
             .control(self.public_key.clone())
-            .register(0)
+            .register(PENDING_CHANNEL_IDENT, PENDING_LIMIT)
             .await
             .unwrap();
         let recovered = self
             .oracle
             .control(self.public_key.clone())
-            .register(1)
+            .register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT)
             .await
             .unwrap();
         let resolver = self
             .oracle
             .control(self.public_key.clone())
-            .register(2)
+            .register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT)
             .await
             .unwrap();
         let broadcast = self
             .oracle
             .control(self.public_key.clone())
-            .register(3)
+            .register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT)
             .await
             .unwrap();
         let marshal = self
             .oracle
             .control(self.public_key.clone())
-            .register(4)
+            .register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT)
             .await
             .unwrap();
         let dkg = self
             .oracle
             .control(self.public_key.clone())
-            .register(5)
+            .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
         let boundary_certs = self
             .oracle
             .control(self.public_key.clone())
-            .register(6)
+            .register(BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT)
             .await
             .unwrap();
         let subblocks = self
             .oracle
             .control(self.public_key.clone())
-            .register(7)
+            .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
             .await
             .unwrap();
 

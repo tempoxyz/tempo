@@ -47,9 +47,9 @@ contract FeeManagerTest is BaseTest {
         userToken.approve(address(amm), type(uint256).max);
         validatorToken.approve(address(amm), type(uint256).max);
 
-        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(userToken), address(pathUSD), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(validatorToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(userToken), address(validatorToken), 20_000e18, admin);
+        amm.mint(address(userToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(validatorToken), address(pathUSD), 20_000e18, admin);
         vm.stopPrank();
     }
 

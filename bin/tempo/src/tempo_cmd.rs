@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, error::ErrorKind};
-use commonware_cryptography::{PrivateKeyExt as _, Signer, ed25519::PrivateKey};
+use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
+use commonware_math::algebra::Random as _;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
@@ -42,7 +43,7 @@ struct GeneratePrivateKey {
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output } = self;
-        let signing_key = PrivateKey::from_rng(&mut rand::thread_rng());
+        let signing_key = PrivateKey::random(&mut rand::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
         signing_key

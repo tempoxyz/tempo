@@ -17,6 +17,9 @@ interface IValidatorConfig {
     /// @notice Thrown when validator is not found
     error ValidatorNotFound();
 
+    /// @notice Thrown when public key is invalid (zero)
+    error InvalidPublicKey();
+
     /// @notice Thrown when inbound address is not in valid host:port format
     /// @param field The field name that failed validation
     /// @param input The invalid input that was provided

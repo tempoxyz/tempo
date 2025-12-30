@@ -5,7 +5,8 @@ use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
-const DEFAULT_MAX_MESSAGE_SIZE_BYTES: usize = reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
+    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -41,7 +42,7 @@ pub struct Args {
     pub metrics_address: SocketAddr,
 
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
-    pub max_message_size_bytes: usize,
+    pub max_message_size_bytes: u32,
 
     // pub storage_directory: camino::Utf8PathBuf,
     /// The number of worker threads assigned to consensus.

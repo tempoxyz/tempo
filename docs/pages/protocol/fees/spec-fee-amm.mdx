@@ -95,7 +95,7 @@ function mint(
 Adds liquidity to a pool with both tokens. First provider sets initial reserves and must burn `MIN_LIQUIDITY` tokens. Subsequent providers must provide proportional amounts. Receives fungible LP tokens representing pro-rata share of pool reserves.
 
 ```solidity
-function mintWithValidatorToken(
+function mint(
     address userToken,
     address validatorToken,
     uint256 amountValidatorToken,

@@ -23,6 +23,7 @@ tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
 commonware-cryptography.workspace = true
+commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 futures = { workspace = true, features = ["executor"] }
 rand.workspace = true

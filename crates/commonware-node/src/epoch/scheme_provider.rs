@@ -5,10 +5,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use commonware_consensus::{
-    marshal, simplex::signing_scheme::bls12381_threshold::Scheme, types::Epoch,
+use commonware_consensus::{simplex::scheme::bls12381_threshold::Scheme, types::Epoch};
+use commonware_cryptography::{
+    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 
 #[derive(Clone)]
 #[expect(clippy::type_complexity)]
@@ -36,10 +36,20 @@ impl SchemeProvider {
     }
 }
 
-impl marshal::SchemeProvider for SchemeProvider {
+impl Provider for SchemeProvider {
+    type Scope = Epoch;
     type Scheme = Scheme<PublicKey, MinSig>;
 
-    fn scheme(&self, epoch: Epoch) -> Option<Arc<Self::Scheme>> {
-        self.inner.lock().unwrap().get(&epoch).cloned()
+    fn scoped(&self, scope: Self::Scope) -> Option<Arc<Self::Scheme>> {
+        self.inner.lock().unwrap().get(&scope).cloned()
+    }
+
+    /// Always returned `None`.
+    ///
+    /// While we are using bls12-381 threshold cryptography, the constant term
+    /// of the public polynomial can change in a full re-dkg and so tempo can
+    /// never verify certificates from all epochs.
+    fn all(&self) -> Option<Arc<Self::Scheme>> {
+        None
     }
 }
