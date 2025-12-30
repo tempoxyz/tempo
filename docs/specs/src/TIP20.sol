@@ -485,7 +485,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this)) || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+        if (
+            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+        ) {
             revert PolicyForbids();
         }
 
