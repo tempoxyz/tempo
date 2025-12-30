@@ -438,6 +438,7 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
             chain_id: None,
             ..Default::default()
         },
+        is_system_tx: true,
         ..Default::default()
     };
 
