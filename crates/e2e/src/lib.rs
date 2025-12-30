@@ -21,11 +21,11 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
+use commonware_codec::Encode;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_codec::Encode;
 use commonware_utils::{TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
@@ -212,8 +212,15 @@ pub async fn setup_validators(
         let oracle = oracle.clone();
         let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
 
-        execution_config.validator_key =
-            Some(private_key.public_key().encode().freeze().as_ref().try_into().unwrap());
+        execution_config.validator_key = Some(
+            private_key
+                .public_key()
+                .encode()
+                .freeze()
+                .as_ref()
+                .try_into()
+                .unwrap(),
+        );
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
