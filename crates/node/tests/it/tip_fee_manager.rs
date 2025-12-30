@@ -65,7 +65,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     // Track collected fees before this transaction
     let collected_fees_before = fee_manager
-        .collectedFeesByValidator(validator)
+        .collectedFees(validator, *validator_token.address())
         .call()
         .await?;
 
@@ -85,7 +85,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     // Fees accumulate in collected_fees and require distributeFees() call
     let collected_fees_after = fee_manager
-        .collectedFeesByValidator(validator)
+        .collectedFees(validator, *validator_token.address())
         .call()
         .await?;
     let fees_from_this_tx = collected_fees_after - collected_fees_before;
@@ -94,9 +94,9 @@ async fn test_set_user_token() -> eyre::Result<()> {
         expected_cost * U256::from(9970) / U256::from(10000)
     );
 
-    // Distribute fees to validator (this distributes ALL accumulated fees)
+    // Distribute fees to validator (this distributes ALL accumulated fees for this token)
     fee_manager
-        .distributeFees(validator)
+        .distributeFees(validator, *validator_token.address())
         .send()
         .await?
         .watch()
@@ -119,7 +119,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     // Fees from setUserToken tx also accumulated
     fee_manager
-        .distributeFees(validator)
+        .distributeFees(validator, *validator_token.address())
         .send()
         .await?
         .watch()
@@ -129,7 +129,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Send a dummy transaction and verify fee was paid in the newly configured user_token
     let user_balance_before = user_token.balanceOf(user_address).call().await?;
     let collected_fees_before = fee_manager
-        .collectedFeesByValidator(validator)
+        .collectedFees(validator, *validator_token.address())
         .call()
         .await?;
 
@@ -149,7 +149,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
 
     // Verify collected fees increased (after swap at 0.9970 rate)
     let collected_fees_after = fee_manager
-        .collectedFeesByValidator(validator)
+        .collectedFees(validator, *validator_token.address())
         .call()
         .await?;
     assert_eq!(
@@ -160,7 +160,7 @@ async fn test_set_user_token() -> eyre::Result<()> {
     // Distribute fees before checking validator balance
     let validator_balance_before = validator_token.balanceOf(validator).call().await?;
     fee_manager
-        .distributeFees(validator)
+        .distributeFees(validator, *validator_token.address())
         .send()
         .await?
         .watch()
