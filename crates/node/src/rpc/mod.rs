@@ -126,12 +126,11 @@ impl<N: FullNodeTypes<Types = TempoNode>> TempoEthApi<N> {
 
     /// Returns `true` if the given partial validator key matches this node's validator key.
     ///
-    /// Returns `true` if no validator key is configured (accepts all subblock transactions
-    /// for backwards compatibility).
+    /// Returns `false` if no validator key is configured (non-validator nodes reject
+    /// all subblock transactions).
     fn matches_validator_key(&self, partial_key: &PartialValidatorKey) -> bool {
         self.validator_key
-            .map(|key| partial_key.matches(key.as_slice()))
-            .unwrap_or(true)
+            .is_some_and(|key| partial_key.matches(key.as_slice()))
     }
 }
 
