@@ -25,6 +25,11 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::getValidatorsCall::SELECTOR => {
                 view::<IValidatorConfig::getValidatorsCall>(calldata, |_call| self.get_validators())
             }
+            IValidatorConfig::getPendingValidatorCall::SELECTOR => {
+                view::<IValidatorConfig::getPendingValidatorCall>(calldata, |call| {
+                    self.get_pending_validator(call)
+                })
+            }
 
             // Mutate functions
             IValidatorConfig::addValidatorCall::SELECTOR => {
@@ -39,6 +44,20 @@ impl Precompile for ValidatorConfig {
                     calldata,
                     msg_sender,
                     |s, call| self.update_validator(s, call),
+                )
+            }
+            IValidatorConfig::acceptValidatorCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::acceptValidatorCall>(
+                    calldata,
+                    msg_sender,
+                    |s, _call| self.accept_validator(s),
+                )
+            }
+            IValidatorConfig::cancelPendingValidatorCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::cancelPendingValidatorCall>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.cancel_pending_validator(s, call),
                 )
             }
             IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
@@ -138,7 +157,7 @@ mod tests {
             // Initialize with owner
             validator_config.initialize(owner)?;
 
-            // Add validator via dispatch
+            // Add validator via dispatch (creates pending entry)
             let public_key = FixedBytes::<32>::from([0x42; 32]);
             let add_call = IValidatorConfig::addValidatorCall {
                 newValidatorAddress: validator_addr,
@@ -154,7 +173,21 @@ mod tests {
             // HashMapStorageProvider does not have gas accounting, so we expect 0
             assert_eq!(result.gas_used, 0);
 
-            // Verify validator was added by calling getValidators
+            // Validator should NOT be added yet (pending)
+            let validators = validator_config.get_validators()?;
+            assert_eq!(
+                validators.len(),
+                0,
+                "Validator should be pending, not added yet"
+            );
+
+            // New validator accepts via dispatch
+            let accept_call = IValidatorConfig::acceptValidatorCall {};
+            let calldata = accept_call.abi_encode();
+            let result = validator_config.call(&calldata, validator_addr)?;
+            assert_eq!(result.gas_used, 0);
+
+            // Verify validator was added after acceptance
             let validators = validator_config.get_validators()?;
             assert_eq!(validators.len(), 1);
             assert_eq!(validators[0].validatorAddress, validator_addr);

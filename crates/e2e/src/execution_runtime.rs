@@ -138,15 +138,12 @@ impl Builder {
 
                 for (i, (peer, addr)) in validators.iter_pairs().enumerate() {
                     validator_config
-                        .add_validator(
-                            admin(),
-                            IValidatorConfig::addValidatorCall {
-                                newValidatorAddress: validator(i as u32),
-                                publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
-                                active: true,
-                                inboundAddress: addr.to_string(),
-                                outboundAddress: addr.to_string(),
-                            },
+                        .add_validator_internal(
+                            validator(i as u32),
+                            peer.encode().freeze().as_ref().try_into().unwrap(),
+                            true,
+                            addr.to_string(),
+                            addr.to_string(),
                         )
                         .unwrap();
                 }
@@ -334,10 +331,12 @@ impl ExecutionRuntime {
                             } = *add_validator;
                             let provider = ProviderBuilder::new()
                                 .wallet(wallet.clone())
-                                .connect_http(http_url);
+                                .connect_http(http_url.clone());
                             let validator_config =
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
-                            let receipt = validator_config
+
+                            // Step 1: Owner adds validator (creates pending entry)
+                            validator_config
                                 .addValidator(
                                     address,
                                     public_key.encode().as_ref().try_into().unwrap(),
@@ -345,6 +344,30 @@ impl ExecutionRuntime {
                                     addr.to_string(),
                                     addr.to_string(),
                                 )
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+
+                            // Step 2: New validator accepts (using their wallet)
+                            let new_validator_wallet = MnemonicBuilder::from_phrase(
+                                crate::execution_runtime::TEST_MNEMONIC,
+                            )
+                            .index(address_to_index(address))
+                            .unwrap()
+                            .build()
+                            .unwrap();
+                            let new_validator_provider = ProviderBuilder::new()
+                                .wallet(new_validator_wallet)
+                                .connect_http(http_url);
+                            let new_validator_config = IValidatorConfig::new(
+                                VALIDATOR_CONFIG_ADDRESS,
+                                new_validator_provider,
+                            );
+                            let receipt = new_validator_config
+                                .acceptValidator()
                                 .send()
                                 .await
                                 .unwrap()
@@ -734,6 +757,15 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
+}
+
+fn address_to_index(addr: Address) -> u32 {
+    for i in 0..1000 {
+        if address(i) == addr {
+            return i;
+        }
+    }
+    panic!("address not found in mnemonic range 0..1000")
 }
 
 fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {

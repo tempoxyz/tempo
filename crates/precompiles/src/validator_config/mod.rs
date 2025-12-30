@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::{Result, TempoPrecompileError},
+    error::Result,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -26,6 +26,17 @@ struct Validator {
     outbound_address: String,
 }
 
+/// Pending validator information for two-step addition/rotation
+#[derive(Debug, Storable)]
+struct PendingValidator {
+    public_key: B256,
+    active: bool,
+    /// The source validator address for rotations, or Address::ZERO for new additions
+    from_validator: Address,
+    inbound_address: String,
+    outbound_address: String,
+}
+
 /// Validator Config precompile for managing consensus validators
 #[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
@@ -36,6 +47,8 @@ pub struct ValidatorConfig {
     validator_count: u64,
     validators_array: Vec<Address>,
     validators: Mapping<Address, Validator>,
+    /// Pending validators awaiting acceptance (new validator address -> pending info)
+    pending_validators: Mapping<Address, PendingValidator>,
 }
 
 impl ValidatorConfig {
@@ -84,6 +97,12 @@ impl ValidatorConfig {
         Ok(!validator.public_key.is_zero())
     }
 
+    /// Check if a pending validator exists by checking if their publicKey is non-zero
+    fn pending_validator_exists(&self, pending_address: Address) -> Result<bool> {
+        let pending = self.pending_validators.at(pending_address).read()?;
+        Ok(!pending.public_key.is_zero())
+    }
+
     /// Get all validators (view function)
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
         let count = self.validator_count()?;
@@ -115,7 +134,25 @@ impl ValidatorConfig {
         Ok(validators)
     }
 
-    /// Add a new validator (owner only)
+    /// Get pending validator information
+    pub fn get_pending_validator(
+        &self,
+        call: IValidatorConfig::getPendingValidatorCall,
+    ) -> Result<IValidatorConfig::PendingValidator> {
+        let pending = self.pending_validators.at(call.pendingAddress).read()?;
+        if pending.public_key.is_zero() {
+            return Err(ValidatorConfigError::pending_validator_not_found())?;
+        }
+        Ok(IValidatorConfig::PendingValidator {
+            publicKey: pending.public_key,
+            active: pending.active,
+            fromValidator: pending.from_validator,
+            inboundAddress: pending.inbound_address,
+            outboundAddress: pending.outbound_address,
+        })
+    }
+
+    /// Add a new validator (owner only) - creates pending entry requiring acceptance
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -132,6 +169,11 @@ impl ValidatorConfig {
         // Check if validator already exists
         if self.validator_exists(call.newValidatorAddress)? {
             return Err(ValidatorConfigError::validator_already_exists())?;
+        }
+
+        // Check if pending entry already exists for this address
+        if self.pending_validator_exists(call.newValidatorAddress)? {
+            return Err(ValidatorConfigError::pending_validator_already_exists())?;
         }
 
         // Validate addresses
@@ -151,32 +193,45 @@ impl ValidatorConfig {
             )
         })?;
 
-        // Store the new validator in the validators mapping
-        let count = self.validator_count()?;
-        let validator = Validator {
+        // Create pending entry - requires acceptance by the new validator address
+        let pending = PendingValidator {
             public_key: call.publicKey,
             active: call.active,
-            index: count,
-            validator_address: call.newValidatorAddress,
+            from_validator: Address::ZERO,
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
-        self.validators
+        self.pending_validators
             .at(call.newValidatorAddress)
-            .write(validator)?;
+            .write(pending)
+    }
 
-        // Add the validator public key to the validators array
-        self.validators_array.push(call.newValidatorAddress)?;
-
-        // Increment the validator count
-        self.validator_count.write(
-            count
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )
+    /// Internal method to directly add a validator without pending step
+    /// Used for genesis initialization and testing
+    pub fn add_validator_internal(
+        &mut self,
+        validator_address: Address,
+        public_key: B256,
+        active: bool,
+        inbound_address: String,
+        outbound_address: String,
+    ) -> Result<()> {
+        let count = self.validator_count()?;
+        let validator = Validator {
+            public_key,
+            active,
+            index: count,
+            validator_address,
+            inbound_address,
+            outbound_address,
+        };
+        self.validators.at(validator_address).write(validator)?;
+        self.validators_array.push(validator_address)?;
+        self.validator_count.write(count + 1)
     }
 
     /// Update validator information (and optionally rotate to new address)
+    /// Rotations to new addresses create pending entries requiring acceptance
     pub fn update_validator(
         &mut self,
         sender: Address,
@@ -195,21 +250,7 @@ impl ValidatorConfig {
         // Load the current validator info
         let old_validator = self.validators.at(sender).read()?;
 
-        // Check if rotating to a new address
-        if call.newValidatorAddress != sender {
-            if self.validator_exists(call.newValidatorAddress)? {
-                return Err(ValidatorConfigError::validator_already_exists())?;
-            }
-
-            // Update the validators array to point at the new validator address
-            self.validators_array
-                .at_unchecked(old_validator.index as usize)
-                .write(call.newValidatorAddress)?;
-
-            // Clear the old validator
-            self.validators.at(sender).delete()?;
-        }
-
+        // Validate addresses
         ensure_address_is_ip_port(&call.inboundAddress).map_err(|err| {
             ValidatorConfigError::not_host_port(
                 "inboundAddress".to_string(),
@@ -226,18 +267,111 @@ impl ValidatorConfig {
             )
         })?;
 
+        // Check if rotating to a new address
+        if call.newValidatorAddress != sender {
+            if self.validator_exists(call.newValidatorAddress)? {
+                return Err(ValidatorConfigError::validator_already_exists())?;
+            }
+
+            // Check if pending entry already exists for this address
+            if self.pending_validator_exists(call.newValidatorAddress)? {
+                return Err(ValidatorConfigError::pending_validator_already_exists())?;
+            }
+
+            // Create pending entry - rotation is not finalized until accepted
+            let pending = PendingValidator {
+                public_key: call.publicKey,
+                active: old_validator.active,
+                from_validator: sender,
+                inbound_address: call.inboundAddress,
+                outbound_address: call.outboundAddress,
+            };
+            return self
+                .pending_validators
+                .at(call.newValidatorAddress)
+                .write(pending);
+        }
+
+        // Non-rotation update: update in place
         let updated_validator = Validator {
             public_key: call.publicKey,
             active: old_validator.active,
             index: old_validator.index,
-            validator_address: call.newValidatorAddress,
+            validator_address: sender,
             inbound_address: call.inboundAddress,
             outbound_address: call.outboundAddress,
         };
 
-        self.validators
-            .at(call.newValidatorAddress)
-            .write(updated_validator)
+        self.validators.at(sender).write(updated_validator)
+    }
+
+    /// Accept pending validator addition or rotation
+    /// Must be called by the new validator address
+    pub fn accept_validator(&mut self, sender: Address) -> Result<()> {
+        // Check if there's a pending entry for this sender
+        if !self.pending_validator_exists(sender)? {
+            return Err(ValidatorConfigError::pending_validator_not_found())?;
+        }
+
+        let pending = self.pending_validators.at(sender).read()?;
+
+        // Check if this is a new validator addition (from_validator is zero)
+        // or a rotation (from_validator is the existing validator)
+        if pending.from_validator.is_zero() {
+            // New validator addition
+            let count = self.validator_count()?;
+            let validator = Validator {
+                public_key: pending.public_key,
+                active: pending.active,
+                index: count,
+                validator_address: sender,
+                inbound_address: pending.inbound_address,
+                outbound_address: pending.outbound_address,
+            };
+            self.validators.at(sender).write(validator)?;
+            self.validators_array.push(sender)?;
+            self.validator_count.write(count + 1)?;
+        } else {
+            // Rotation from existing validator
+            let old_validator = self.validators.at(pending.from_validator).read()?;
+
+            // Update the validators array to point at the new validator address
+            self.validators_array
+                .at_unchecked(old_validator.index as usize)
+                .write(sender)?;
+
+            // Clear the old validator
+            self.validators.at(pending.from_validator).delete()?;
+
+            // Create the new validator entry
+            let new_validator = Validator {
+                public_key: pending.public_key,
+                active: pending.active,
+                index: old_validator.index,
+                validator_address: sender,
+                inbound_address: pending.inbound_address,
+                outbound_address: pending.outbound_address,
+            };
+            self.validators.at(sender).write(new_validator)?;
+        }
+
+        // Clear the pending entry
+        self.pending_validators.at(sender).delete()
+    }
+
+    /// Cancel a pending validator addition or rotation (owner only)
+    pub fn cancel_pending_validator(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::cancelPendingValidatorCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
+
+        if !self.pending_validator_exists(call.pendingAddress)? {
+            return Err(ValidatorConfigError::pending_validator_not_found())?;
+        }
+
+        self.pending_validators.at(call.pendingAddress).delete()
     }
 
     /// Change validator active status (owner only)
@@ -323,17 +457,14 @@ mod tests {
             // Initialize with owner1
             validator_config.initialize(owner1)?;
 
-            // Owner1 adds a validator - should succeed
+            // Owner1 adds a validator - should succeed (use internal for direct add)
             let public_key = FixedBytes::<32>::from([0x44; 32]);
-            validator_config.add_validator(
-                owner1,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator1,
-                    publicKey: public_key,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator1,
+                public_key,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
             )?;
 
             // Verify validator was added
@@ -396,18 +527,15 @@ mod tests {
             let public_key1 = FixedBytes::<32>::from([0x21; 32]);
             let inbound1 = "192.168.1.1:8000".to_string();
             let outbound1 = "192.168.1.1:9000".to_string();
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator1,
-                    publicKey: public_key1,
-                    inboundAddress: inbound1.clone(),
-                    active: true,
-                    outboundAddress: outbound1,
-                },
+            validator_config.add_validator_internal(
+                validator1,
+                public_key1,
+                true,
+                inbound1.clone(),
+                outbound1,
             )?;
 
-            // Try adding duplicate validator - should fail
+            // Try adding duplicate validator - should fail with ValidatorAlreadyExists
             let result = validator_config.add_validator(
                 owner,
                 IValidatorConfig::addValidatorCall {
@@ -424,57 +552,45 @@ mod tests {
                 "Should return ValidatorAlreadyExists error"
             );
 
-            // Add 4 more unique validators
+            // Add 4 more unique validators using internal method
             let validator2 = Address::from([0x12; 20]);
             let public_key2 = FixedBytes::<32>::from([0x22; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator2,
-                    publicKey: public_key2,
-                    inboundAddress: "192.168.1.2:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.2:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator2,
+                public_key2,
+                true,
+                "192.168.1.2:8000".to_string(),
+                "192.168.1.2:9000".to_string(),
             )?;
 
             let validator3 = Address::from([0x13; 20]);
             let public_key3 = FixedBytes::<32>::from([0x23; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator3,
-                    publicKey: public_key3,
-                    inboundAddress: "192.168.1.3:8000".to_string(),
-                    active: false,
-                    outboundAddress: "192.168.1.3:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator3,
+                public_key3,
+                false,
+                "192.168.1.3:8000".to_string(),
+                "192.168.1.3:9000".to_string(),
             )?;
 
             let validator4 = Address::from([0x14; 20]);
             let public_key4 = FixedBytes::<32>::from([0x24; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator4,
-                    publicKey: public_key4,
-                    inboundAddress: "192.168.1.4:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.4:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator4,
+                public_key4,
+                true,
+                "192.168.1.4:8000".to_string(),
+                "192.168.1.4:9000".to_string(),
             )?;
 
             let validator5 = Address::from([0x15; 20]);
             let public_key5 = FixedBytes::<32>::from([0x25; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator5,
-                    publicKey: public_key5,
-                    inboundAddress: "192.168.1.5:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.5:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator5,
+                public_key5,
+                true,
+                "192.168.1.5:8000".to_string(),
+                "192.168.1.5:9000".to_string(),
             )?;
 
             // Get all validators
@@ -512,7 +628,7 @@ mod tests {
             assert_eq!(validators[4].inboundAddress, "192.168.1.5:8000");
             assert!(validators[4].active);
 
-            // Validator1 updates from long to short address (tests update_string slot clearing)
+            // Validator1 updates in place (no rotation - same address)
             let public_key1_new = FixedBytes::<32>::from([0x31; 32]);
             let short_inbound1 = "10.0.0.1:8000".to_string();
             let short_outbound1 = "10.0.0.1:9000".to_string();
@@ -527,6 +643,7 @@ mod tests {
             )?;
 
             // Validator2 rotates to new address, keeps IP and publicKey
+            // Rotation creates pending entry, then new address accepts
             let validator2_new = Address::from([0x22; 20]);
             validator_config.update_validator(
                 validator2,
@@ -537,8 +654,9 @@ mod tests {
                     outboundAddress: "192.168.1.2:9000".to_string(),
                 },
             )?;
+            validator_config.accept_validator(validator2_new)?;
 
-            // Validator3 rotates to new address with long host (tests delete_string on old slot)
+            // Validator3 rotates to new address with long host
             let validator3_new = Address::from([0x23; 20]);
             let long_inbound3 = "192.169.1.3:8000".to_string();
             let long_outbound3 = "192.168.1.3:9000".to_string();
@@ -551,6 +669,7 @@ mod tests {
                     outboundAddress: long_outbound3,
                 },
             )?;
+            validator_config.accept_validator(validator3_new)?;
 
             // Get all validators again
             let mut validators = validator_config.get_validators()?;
@@ -622,17 +741,14 @@ mod tests {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            // Owner adds a validator
+            // Owner adds a validator (use internal for direct add)
             let public_key = FixedBytes::<32>::from([0x21; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: public_key,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator,
+                public_key,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
             )?;
 
             // Owner tries to update validator - should fail
@@ -671,15 +787,12 @@ mod tests {
             let long_outbound = "192.168.1.1:9000".to_string();
             let public_key = FixedBytes::<32>::from([0x21; 32]);
 
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator1,
-                    publicKey: public_key,
-                    inboundAddress: long_inbound,
-                    active: true,
-                    outboundAddress: long_outbound,
-                },
+            validator_config.add_validator_internal(
+                validator1,
+                public_key,
+                true,
+                long_inbound,
+                long_outbound,
             )?;
 
             // Rotate to new address with shorter addresses
@@ -692,6 +805,7 @@ mod tests {
                     outboundAddress: "10.0.0.1:9000".to_string(),
                 },
             )?;
+            validator_config.accept_validator(validator2)?;
 
             // Verify old slots are cleared by checking storage directly
             let validator = validator_config.validators.at(validator1).read()?;
@@ -779,15 +893,12 @@ mod tests {
             validator_config.initialize(owner)?;
 
             let original_public_key = FixedBytes::<32>::from([0x44; 32]);
-            validator_config.add_validator(
-                owner,
-                IValidatorConfig::addValidatorCall {
-                    newValidatorAddress: validator,
-                    publicKey: original_public_key,
-                    inboundAddress: "192.168.1.1:8000".to_string(),
-                    active: true,
-                    outboundAddress: "192.168.1.1:9000".to_string(),
-                },
+            validator_config.add_validator_internal(
+                validator,
+                original_public_key,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
             )?;
 
             let zero_public_key = FixedBytes::<32>::ZERO;
@@ -813,6 +924,298 @@ mod tests {
             assert_eq!(
                 validators[0].publicKey, original_public_key,
                 "Original public key should be preserved"
+            );
+
+            Ok(())
+        })
+    }
+
+    // ============ Two-Step Validator Addition Tests ============
+
+    #[test]
+    fn test_add_validator_creates_pending_entry() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let new_validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: new_validator,
+                    publicKey: public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Validator should NOT be immediately added - it should be pending
+            let validators = validator_config.get_validators()?;
+            assert_eq!(
+                validators.len(),
+                0,
+                "Validator should not be immediately added"
+            );
+
+            // Check that pending entry exists
+            let pending = validator_config.get_pending_validator(
+                IValidatorConfig::getPendingValidatorCall {
+                    pendingAddress: new_validator,
+                },
+            )?;
+            assert_eq!(pending.publicKey, public_key);
+            assert!(pending.active);
+            assert_eq!(pending.fromValidator, Address::ZERO);
+            assert_eq!(pending.inboundAddress, "192.168.1.1:8000");
+            assert_eq!(pending.outboundAddress, "192.168.1.1:9000");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_update_validator_rotation_creates_pending_entry() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let existing_validator = Address::random();
+        let new_validator_address = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // First, we need an existing validator - use internal method to add directly
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator_internal(
+                existing_validator,
+                public_key,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
+            )?;
+
+            // Now update_validator with rotation should create pending entry
+            let new_public_key = FixedBytes::<32>::from([0x55; 32]);
+            validator_config.update_validator(
+                existing_validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: new_validator_address,
+                    publicKey: new_public_key,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            // Original validator should still exist
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1, "Original validator should still exist");
+            assert_eq!(validators[0].validatorAddress, existing_validator);
+
+            // Check that pending entry exists for the new address
+            let pending = validator_config.get_pending_validator(
+                IValidatorConfig::getPendingValidatorCall {
+                    pendingAddress: new_validator_address,
+                },
+            )?;
+            assert_eq!(pending.publicKey, new_public_key);
+            assert_eq!(pending.fromValidator, existing_validator);
+            assert_eq!(pending.inboundAddress, "192.168.1.2:8000");
+            assert_eq!(pending.outboundAddress, "192.168.1.2:9000");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_accept_validator_for_new_validator() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let new_validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: new_validator,
+                    publicKey: public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // New validator accepts the pending entry
+            validator_config.accept_validator(new_validator)?;
+
+            // Validator should now be added
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1, "Validator should now be added");
+            assert_eq!(validators[0].validatorAddress, new_validator);
+            assert_eq!(validators[0].publicKey, public_key);
+            assert!(validators[0].active);
+
+            // Pending entry should be cleared
+            let pending_result =
+                validator_config.get_pending_validator(IValidatorConfig::getPendingValidatorCall {
+                    pendingAddress: new_validator,
+                });
+            assert!(
+                pending_result.is_err(),
+                "Pending entry should be cleared after acceptance"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_accept_validator_for_rotation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let existing_validator = Address::random();
+        let new_validator_address = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add an existing validator directly
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator_internal(
+                existing_validator,
+                public_key,
+                true,
+                "192.168.1.1:8000".to_string(),
+                "192.168.1.1:9000".to_string(),
+            )?;
+
+            // Request rotation to new address
+            let new_public_key = FixedBytes::<32>::from([0x55; 32]);
+            validator_config.update_validator(
+                existing_validator,
+                IValidatorConfig::updateValidatorCall {
+                    newValidatorAddress: new_validator_address,
+                    publicKey: new_public_key,
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+
+            // New validator address accepts the rotation
+            validator_config.accept_validator(new_validator_address)?;
+
+            // Should still have 1 validator, but at new address
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 1, "Should have 1 validator");
+            assert_eq!(validators[0].validatorAddress, new_validator_address);
+            assert_eq!(validators[0].publicKey, new_public_key);
+            assert_eq!(validators[0].inboundAddress, "192.168.1.2:8000");
+
+            // Old validator should no longer exist
+            assert!(
+                !validator_config.validator_exists(existing_validator)?,
+                "Old validator should not exist"
+            );
+
+            // Pending entry should be cleared
+            let pending_result =
+                validator_config.get_pending_validator(IValidatorConfig::getPendingValidatorCall {
+                    pendingAddress: new_validator_address,
+                });
+            assert!(
+                pending_result.is_err(),
+                "Pending entry should be cleared after acceptance"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_pending_validator() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let new_validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: new_validator,
+                    publicKey: public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Owner cancels the pending validator
+            validator_config.cancel_pending_validator(
+                owner,
+                IValidatorConfig::cancelPendingValidatorCall {
+                    pendingAddress: new_validator,
+                },
+            )?;
+
+            // Pending entry should be cleared
+            let pending_result =
+                validator_config.get_pending_validator(IValidatorConfig::getPendingValidatorCall {
+                    pendingAddress: new_validator,
+                });
+            assert!(
+                pending_result.is_err(),
+                "Pending entry should be cleared after cancellation"
+            );
+
+            // No validators should exist
+            let validators = validator_config.get_validators()?;
+            assert_eq!(validators.len(), 0, "Should have no validators");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_pending_validator_non_owner_fails() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        let new_validator = Address::random();
+        let non_owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            let public_key = FixedBytes::<32>::from([0x44; 32]);
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: new_validator,
+                    publicKey: public_key,
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+
+            // Non-owner tries to cancel - should fail
+            let result = validator_config.cancel_pending_validator(
+                non_owner,
+                IValidatorConfig::cancelPendingValidatorCall {
+                    pendingAddress: new_validator,
+                },
+            );
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::unauthorized().into()),
+                "Non-owner should not be able to cancel"
             );
 
             Ok(())
