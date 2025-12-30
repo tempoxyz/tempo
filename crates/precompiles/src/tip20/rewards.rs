@@ -453,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_pending_rewards_immediate_distribution() -> eyre::Result<()> {
+    fn test_get_pending_rewards() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let alice = Address::random();
