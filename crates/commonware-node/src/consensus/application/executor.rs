@@ -432,9 +432,7 @@ where
                 "hole detected; consensus attempts to finalize block with gaps \
                 on the execution layer; filling them in first",
             );
-            self.fill_holes(execution_height + 1, block.height())
-                .await
-                .wrap_err("failed to fill holes during block finalization")?;
+            let _ = self.fill_holes(execution_height + 1, block.height()).await;
         }
 
         let block = block.into_inner();
