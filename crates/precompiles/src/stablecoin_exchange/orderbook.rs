@@ -289,10 +289,6 @@ impl OrderbookHandler {
         }
 
         let mut next_tick = tick + 1;
-        if next_tick > MAX_TICK {
-            return (next_tick, false);
-        }
-
         let max_word_index = MAX_TICK >> 8;
 
         loop {
@@ -346,10 +342,6 @@ impl OrderbookHandler {
         }
 
         let mut next_tick = tick - 1;
-        if next_tick < MIN_TICK {
-            return (next_tick, false);
-        }
-
         let min_word_index = MIN_TICK >> 8;
 
         loop {
