@@ -178,6 +178,14 @@ function cancel(uint128 orderId) external;
 Cancels an order owned by the caller. When canceled, the order is removed from the tick queue, liquidity is decremented, and remaining escrow is refunded to the order owner's exchange balance which can then be withdrawn.
 
 ```solidity
+function cancelStaleOrder(uint128 orderId) external;
+```
+
+Cancels an order where the maker is forbidden by the escrowed token's [TIP-403 transfer policy](/protocol/tip403/overview). Unlike `cancel`, this function can be called by anyone—not just the order maker—but only succeeds if the maker is no longer authorized to transfer the escrowed token (e.g., the maker has been blacklisted). This allows third parties to clean up stale orders from the book.
+
+When canceled, the order is removed from the tick queue, liquidity is decremented, and remaining escrow is refunded to the order maker's exchange balance. Reverts with `OrderNotStale` if the maker is still authorized.
+
+```solidity
 function nextOrderId() external view returns (uint128);
 ```
 
@@ -228,6 +236,7 @@ error Unauthorized();
 - Bounds: `TICK_OUT_OF_BOUNDS`, `FLIP_TICK_OUT_OF_BOUNDS`, `FLIP_TICK_MUST_BE_GREATER_FOR_BID`, `FLIP_TICK_MUST_BE_LESS_FOR_ASK`, "Price out of bounds"
 - Tick spacing: `TICK_NOT_MULTIPLE_OF_SPACING`, `FLIP_TICK_NOT_MULTIPLE_OF_SPACING`
 - Liquidity and limits: `INSUFFICIENT_LIQUIDITY`, `MAX_IN_EXCEEDED`, `INSUFFICIENT_OUTPUT`
-- Authorization: `UNAUTHORIZED` (cancel not by maker) 
+- Authorization: `UNAUTHORIZED` (cancel not by maker)
+- Stale orders: `ORDER_NOT_STALE` (cancelStaleOrder when maker is still authorized)
 - Balance: `INSUFFICIENT_BALANCE` (withdraw)
 
