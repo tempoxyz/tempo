@@ -109,7 +109,7 @@ export function StartReward() {
     token: tokenAddress,
   })
 
-  const start = Hooks.reward.useDistributeSync()
+  const start = Hooks.reward.useStartSync()
 
   const handleStart = () => { // [!code hl]
     if (!metadata) return // [!code hl]
@@ -218,7 +218,7 @@ import { Hooks } from 'tempo.ts/wagmi'
 function WatchRewards() {
   const tokenAddress = '0x...' // Your token address
 
-  Hooks.reward.useWatchRewardDistributed({ // [!code hl]
+  Hooks.reward.useWatchRewardScheduled({ // [!code hl]
     token: tokenAddress, // [!code hl]
     onRewardDistributed(args) { // [!code hl]
       console.log('New reward scheduled:', args) // [!code hl]

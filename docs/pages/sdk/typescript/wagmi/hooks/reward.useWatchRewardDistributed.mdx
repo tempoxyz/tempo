@@ -17,7 +17,7 @@ declare module 'wagmi' {
 // ---cut---
 import { Hooks } from 'tempo.ts/wagmi'
 
-Hooks.reward.useWatchRewardDistributed({
+Hooks.reward.useWatchRewardScheduled({
   onRewardDistributed: (args, log) => {
     console.log('Funder:', args.funder)
     console.log('Amount:', args.amount)

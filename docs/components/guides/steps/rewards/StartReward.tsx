@@ -32,7 +32,7 @@ export function StartReward(props: DemoStepProps) {
     account: address,
   })
 
-  const start = Hooks.reward.useDistributeSync({
+  const start = Hooks.reward.useStartSync({
     mutation: {
       onSettled(data) {
         queryClient.refetchQueries({ queryKey: ['getUserRewardInfo'] })

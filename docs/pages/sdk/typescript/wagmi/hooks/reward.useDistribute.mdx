@@ -18,7 +18,7 @@ declare module 'wagmi' {
 import { Hooks } from 'tempo.ts/wagmi'
 import { parseEther } from 'viem'
 
-const { data: result, mutate } = Hooks.reward.useDistributeSync()
+const { data: result, mutate } = Hooks.reward.useStartSync()
 
 // Call `mutate` in response to user action (e.g. button click, form submission)
 mutate({
@@ -60,7 +60,7 @@ import { parseEther } from 'viem'
 import { useWaitForTransactionReceipt } from 'wagmi'
 import { config } from './wagmi.config'
 
-const { data: hash, mutate } = Hooks.reward.useDistribute()
+const { data: hash, mutate } = Hooks.reward.useStart()
 const { data: receipt } = useWaitForTransactionReceipt({ hash })
 
 // Call `mutate` in response to user action (e.g. button click, form submission)
@@ -72,7 +72,7 @@ mutate({
 
 if (receipt) {
   const { args: { id, funder, amount } }
-    = Actions.reward.distribute.extractEvent(receipt.logs)
+    = Actions.reward.start.extractEvent(receipt.logs)
 }
 ```
 

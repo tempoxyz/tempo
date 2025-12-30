@@ -10,7 +10,7 @@ Watches for reward scheduled events when new reward streams are started.
 import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
-const unwatch = Actions.reward.watchRewardDistributed(config, {
+const unwatch = Actions.reward.watchRewardScheduled(config, {
   onRewardDistributed: (args, log) => {
     console.log('Funder:', args.funder)
     console.log('Amount:', args.amount)

@@ -14,7 +14,7 @@ import { parseEther } from 'viem'
 import { config } from './wagmi.config'
 
 const { amount, funder, id, receipt } =
-  await Actions.reward.distributeSync(config, {
+  await Actions.reward.startSync(config, {
     amount: parseEther('1000'),
     token: '0x20c0000000000000000000000000000000000000',
   })
@@ -45,14 +45,14 @@ import { parseEther } from 'viem'
 import { waitForTransactionReceipt } from 'wagmi/actions'
 import { config } from './wagmi.config'
 
-const hash = await Actions.reward.distribute(config, {
+const hash = await Actions.reward.start(config, {
   amount: parseEther('1000'),
   token: '0x20c0000000000000000000000000000000000000',
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
 
 const { args: { id, funder, amount } }
-  = viem_Actions.reward.distribute.extractEvent(receipt.logs)
+  = viem_Actions.reward.start.extractEvent(receipt.logs)
 ```
 
 ## Return Type
