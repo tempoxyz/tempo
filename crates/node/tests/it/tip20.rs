@@ -778,8 +778,8 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 /// and subsequent transactions fail at fee collection.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
-    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth};
-    use tempo_precompiles::{TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
+    use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIPFeeAMM};
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::PAUSE_ROLE};
 
     reth_tracing::init_test_tracing();
 
@@ -813,6 +813,17 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     // Mint tokens to user
     token
         .mint(user, U256::from(1_000_000e18))
+        .gas(gas)
+        .gas_price(gas_price)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    // Add liquidity to the AMM pool so the token can be used for fees
+    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
+    fee_amm
+        .mint(*token.address(), PATH_USD_ADDRESS, U256::from(1e18), admin)
         .gas(gas)
         .gas_price(gas_price)
         .send()
