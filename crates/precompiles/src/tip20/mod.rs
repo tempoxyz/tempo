@@ -756,6 +756,7 @@ impl TIP20Token {
 
     /// Transfers fee tokens from user to fee manager before transaction execution
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
@@ -1112,6 +1113,33 @@ pub(crate) mod tests {
                 Err(TempoPrecompileError::TIP20(
                     TIP20Error::insufficient_balance(U256::ZERO, fee_amount, token.address)
                 ))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_fee_pre_tx_paused() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let amount = U256::from(100);
+        let fee_amount = amount / U256::from(2);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_role(admin, *PAUSE_ROLE)
+                .with_mint(user, amount)
+                .apply()?;
+
+            // Pause the token
+            token.pause(admin, ITIP20::pauseCall {})?;
+
+            // transfer_fee_pre_tx should fail when paused
+            assert_eq!(
+                token.transfer_fee_pre_tx(user, fee_amount),
+                Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
             );
             Ok(())
         })
