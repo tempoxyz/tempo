@@ -376,7 +376,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                             FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function transferFeePreTx(address from, uint256 amount) external {
+    function transferFeePreTx(address from, uint256 amount) external notPaused {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
         require(from != address(0));
 
