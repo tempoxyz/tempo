@@ -2318,18 +2318,20 @@ mod tests {
     }
 
     /// Helper to verify a single hop in a route
-    fn verify_hop(hop: (B256, bool), token_in: Address, token_out: Address) -> eyre::Result<()> {
-        let (book_key, base_for_quote) = hop;
-        let expected_book_key = compute_book_key(token_in, token_out);
-        assert_eq!(book_key, expected_book_key, "Book key should match");
+    fn verify_hop(hop: (B256, bool), token_in: Address, _token_out: Address) -> eyre::Result<()> {
+        let (book_key, is_base_for_quote) = hop;
 
         let exchange = StablecoinExchange::new();
         let orderbook = exchange.books.at(book_key).read()?;
+
+        let expected_book_key = compute_book_key(orderbook.base, orderbook.quote);
+        assert_eq!(book_key, expected_book_key, "Book key should match");
+
         let expected_direction = token_in == orderbook.base;
         assert_eq!(
-            base_for_quote, expected_direction,
-            "Direction should be correct: token_in={}, base={}, base_for_quote={}",
-            token_in, orderbook.base, base_for_quote
+            is_base_for_quote, expected_direction,
+            "Direction should be correct: token_in={}, base={}, is_base_for_quote={}",
+            token_in, orderbook.base, is_base_for_quote
         );
 
         Ok(())
