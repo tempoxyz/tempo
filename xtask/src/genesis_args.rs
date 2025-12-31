@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::{Bytes, TxKind};
+use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -22,7 +22,7 @@ use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
     revm::{
-        context::TxEnv,
+        DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
@@ -57,7 +57,6 @@ use tempo_precompiles::{
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
-use tempo_revm::TempoTxEnv;
 
 /// Generate genesis allocation file for testing
 #[derive(Debug, clap::Args)]
@@ -429,24 +428,14 @@ fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
 
     println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
 
-    let tx = TempoTxEnv {
-        inner: TxEnv {
-            caller: Address::ZERO,
-            kind: TxKind::Call(ARACHNID_CREATE2_FACTORY_ADDRESS),
-            data: calldata,
-            gas_limit: 10_000_000,
-            chain_id: None,
-            ..Default::default()
-        },
-        is_system_tx: true,
-        ..Default::default()
-    };
+    let result =
+        evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
 
-    let result = evm.transact_commit(tx)?;
-
-    if !result.is_success() {
+    if !result.result.is_success() {
         return Err(eyre!("Permit2 deployment failed: {:?}", result));
     }
+
+    evm.db_mut().commit(result.state);
 
     println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
     Ok(())
