@@ -807,10 +807,10 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
         let first_is_create = calls.first().map(|c| c.to.is_create()).unwrap_or(false);
         if first_is_create {
             // Keep the first CREATE, remove all other CREATEs
-            for i in 1..calls.len() {
-                if calls[i].to.is_create() {
+            for call in calls.iter_mut().skip(1) {
+                if call.to.is_create() {
                     // Replace with a CALL to a random address
-                    calls[i].to = TxKind::Call(u.arbitrary()?);
+                    call.to = TxKind::Call(u.arbitrary()?);
                 }
             }
         } else {
