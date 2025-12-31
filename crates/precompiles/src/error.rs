@@ -204,35 +204,6 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         gas: u64,
         _encode_ok: impl FnOnce(T) -> alloy::primitives::Bytes,
     ) -> PrecompileResult {
-        let bytes = match self {
-            Self::StablecoinExchange(e) => e.abi_encode().into(),
-            Self::TIP20(e) => e.abi_encode().into(),
-            Self::RolesAuthError(e) => e.abi_encode().into(),
-            Self::TIP403RegistryError(e) => e.abi_encode().into(),
-            Self::FeeManagerError(e) => e.abi_encode().into(),
-            Self::TIPFeeAMMError(e) => e.abi_encode().into(),
-            Self::NonceError(e) => e.abi_encode().into(),
-            Self::AccountKeychainError(e) => e.abi_encode().into(),
-            Self::Panic(kind) => {
-                let panic = Panic {
-                    code: U256::from(kind as u32),
-                };
-
-                panic.abi_encode().into()
-            }
-            Self::ValidatorConfigError(e) => e.abi_encode().into(),
-            Self::OutOfGas => {
-                return Err(PrecompileError::OutOfGas);
-            }
-            Self::UnknownFunctionSelector(selector) => UnknownFunctionSelector {
-                selector: selector.into(),
-            }
-            .abi_encode()
-            .into(),
-            Self::Fatal(msg) => {
-                return Err(PrecompileError::Fatal(msg));
-            }
-        };
-        Ok(PrecompileOutput::new_reverted(gas, bytes))
+        Self::into_precompile_result(self, gas)
     }
 }
