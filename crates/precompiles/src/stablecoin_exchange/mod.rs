@@ -3927,8 +3927,9 @@ mod tests {
             )?;
 
             // Set up base and quote tokens
-            let (base_addr, quote_addr) = setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
-            
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
             // Get the base token and apply blacklist policy
             let mut base = TIP20Token::from_address(base_addr)?;
             base.change_transfer_policy_id(
@@ -3959,7 +3960,8 @@ mod tests {
             ));
 
             // Test placeFlip bid order - should also fail
-            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
@@ -3991,8 +3993,9 @@ mod tests {
             )?;
 
             // Set up base and quote tokens
-            let (base_addr, quote_addr) = setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
-            
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
             // Get the quote token and apply blacklist policy
             let mut quote = TIP20Token::from_address(quote_addr)?;
             quote.change_transfer_policy_id(
@@ -4023,7 +4026,8 @@ mod tests {
             ));
 
             // Test placeFlip ask order - should also fail
-            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
