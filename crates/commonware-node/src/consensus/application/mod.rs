@@ -39,6 +39,9 @@ pub(super) struct Config<TContext> {
     /// Used as PayloadAttributes.suggested_fee_recipient
     pub(super) fee_recipient: alloy_primitives::Address,
 
+    /// The last finalized height according to the consensus layer.
+    pub(super) last_finalized_height: u64,
+
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
     pub(super) mailbox_size: usize,
