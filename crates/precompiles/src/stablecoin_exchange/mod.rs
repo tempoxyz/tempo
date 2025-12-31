@@ -689,9 +689,11 @@ impl StablecoinExchange {
             // to ensure consistent rounding and prevent silent failures
             let flip_amount = if order.is_bid() {
                 // Bid filled: maker received base tokens (exact amount)
-                // Flip creates ask: escrows base tokens (exact amount)
-                // No rounding issue - use the received amount
-                fill_amount
+                // Flip creates ask: escrows base tokens
+                // Use the original order amount to try to flip the full position.
+                // If maker withdrew after partial fills, the flip will silently fail
+                // due to insufficient internal balance.
+                order.amount()
             } else {
                 // Ask filled: maker received quote tokens (rounded down)
                 // Flip creates bid: escrows quote tokens (rounded up)
@@ -3977,6 +3979,88 @@ mod tests {
             assert!(
                 flip_escrow_actual <= alice_receives,
                 "Flip escrow should not exceed received quote"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_flip_order_does_not_flip_when_maker_withdraws_balance() -> eyre::Result<()> {
+        // When a maker withdraws their internal balance after a partial fill,
+        // the flip order should NOT be created when the remaining order is filled,
+        // because flip orders should only use pre-existing internal balance.
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+
+            // Alice places a flip bid order: buying 2e18 base at tick 100, flip to ask at tick 200
+            let order_amount: u128 = 2_000_000_000_000_000_000; // 2e18
+            let tick = 100i16;
+            let flip_tick = 200i16;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, order_amount * 2)?;
+
+            exchange.create_pair(base_token)?;
+
+            // Alice places flip bid order
+            let flip_order_id = exchange.place_flip(
+                alice,
+                base_token,
+                order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
+
+            // Bob partially fills the order (sells 1e18 base tokens)
+            // This credits Alice's internal balance with 1e18 base tokens
+            let partial_amount: u128 = 1_000_000_000_000_000_000; // 1e18
+            exchange.set_balance(bob, base_token, partial_amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, partial_amount, 0)?;
+
+            // Verify Alice has received base tokens in her internal balance
+            let alice_base_balance = exchange.balance_of(alice, base_token)?;
+            assert_eq!(
+                alice_base_balance, partial_amount,
+                "Alice should have 1e18 base tokens in internal balance"
+            );
+
+            // Alice withdraws all her internal base token balance
+            exchange.set_balance(alice, base_token, 0)?;
+
+            // Verify Alice's internal balance is now 0
+            assert_eq!(
+                exchange.balance_of(alice, base_token)?,
+                0,
+                "Alice's internal balance should be 0"
+            );
+
+            let next_order_id_before = exchange.next_order_id()?;
+
+            // Bob fills the remaining order (sells another 1e18 base tokens)
+            // The flip order should NOT be created because Alice's internal balance is insufficient
+            // and we don't use the tokens from the current fill for flip orders
+            exchange.set_balance(bob, base_token, partial_amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, partial_amount, 0)?;
+
+            // The original flip order should be fully filled
+            let filled_order = exchange.orders.at(flip_order_id).read()?;
+            assert_eq!(filled_order.remaining(), 0, "Order should be fully filled");
+
+            // No new flip order should have been created
+            // If a flip order was created, nextOrderId would have incremented
+            assert_eq!(
+                exchange.next_order_id()?,
+                next_order_id_before,
+                "No new order should be created - flip should not execute when internal balance is insufficient"
             );
 
             Ok(())
