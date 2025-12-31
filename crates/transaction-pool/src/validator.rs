@@ -211,7 +211,7 @@ where
     /// This prevents transactions from being admitted to the mempool that would fail during execution
     /// due to insufficient gas for:
     /// - Per-call cold account access (2600 gas per call target)
-    /// - Calldata gas for ALL calls in the batch (not just the first)
+    /// - Calldata gas for ALL calls in the batch
     /// - Signature verification gas (P256/WebAuthn signatures)
     /// - Per-call CREATE costs
     /// - Key authorization costs
