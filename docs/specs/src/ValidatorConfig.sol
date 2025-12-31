@@ -154,12 +154,12 @@ contract ValidatorConfig is IValidatorConfig {
     }
 
     /// @inheritdoc IValidatorConfig
-    function getNextDkgCeremony() external view returns (uint64) {
+    function getNextFullDkgCeremony() external view returns (uint64) {
         return nextDkgCeremony;
     }
 
     /// @inheritdoc IValidatorConfig
-    function setNextDkgCeremony(uint64 epoch) external onlyOwner {
+    function setNextFullDkgCeremony(uint64 epoch) external onlyOwner {
         nextDkgCeremony = epoch;
     }
 

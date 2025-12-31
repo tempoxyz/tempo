@@ -25,9 +25,9 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::getValidatorsCall::SELECTOR => {
                 view::<IValidatorConfig::getValidatorsCall>(calldata, |_call| self.get_validators())
             }
-            IValidatorConfig::getNextDkgCeremonyCall::SELECTOR => {
-                view::<IValidatorConfig::getNextDkgCeremonyCall>(calldata, |_call| {
-                    self.get_next_dkg_ceremony()
+            IValidatorConfig::getNextFullDkgCeremonyCall::SELECTOR => {
+                view::<IValidatorConfig::getNextFullDkgCeremonyCall>(calldata, |_call| {
+                    self.get_next_full_dkg_ceremony()
                 })
             }
 
@@ -58,11 +58,11 @@ impl Precompile for ValidatorConfig {
                     self.change_owner(s, call)
                 })
             }
-            IValidatorConfig::setNextDkgCeremonyCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::setNextDkgCeremonyCall>(
+            IValidatorConfig::setNextFullDkgCeremonyCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::setNextFullDkgCeremonyCall>(
                     calldata,
                     msg_sender,
-                    |s, call| self.set_next_dkg_ceremony(s, call),
+                    |s, call| self.set_next_full_dkg_ceremony(s, call),
                 )
             }
 
