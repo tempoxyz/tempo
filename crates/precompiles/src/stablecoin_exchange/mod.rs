@@ -692,14 +692,16 @@ impl StablecoinExchange {
                 order.amount()
             } else {
                 // Ask filled: maker received quote tokens (rounded down)
-                // Flip creates bid: escrows quote tokens (rounded up)
+                // Flip creates bid: escrows quote tokens
                 // Calculate max base affordable with the quote received
+                //
+                // Note: Maker profits from the spread (sell high at tick, buy low at flip_tick),
+                // but order quantity decreases slightly each flip due to double rounding down
+                // (base->quote->base). This ensures we never exceed available funds.
                 let quote_received =
                     base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                         .ok_or(TempoPrecompileError::under_overflow())?;
 
-                // Calculate how much base can be bought with quote_received at flip_tick
-                // Round down to ensure we don't exceed available quote
                 quote_to_base(quote_received, order.flip_tick(), RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
             };
