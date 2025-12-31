@@ -34,9 +34,6 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Minimum order amount (100 units with 6 decimals)
     uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
 
-    /// @notice TIP20 token address prefix (12 bytes)
-    bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
-
     /// @notice Orderbook for token pair with price-time priority
     /// @dev Uses tick-based pricing with bitmaps for price discovery
     /// @dev Order and TickLevel structs are inherited from IStablecoinExchange
