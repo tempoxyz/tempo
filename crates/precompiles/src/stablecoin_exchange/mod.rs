@@ -19,8 +19,11 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
+    },
     tip20_factory::TIP20Factory,
+    tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -1023,6 +1026,40 @@ impl StablecoinExchange {
         ))
     }
 
+    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
+    /// Allows anyone to clean up stale orders from blacklisted makers
+    pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
+        let order = self.orders.at(order_id).read()?;
+
+        if order.maker().is_zero() {
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
+        }
+
+        let book = self.books.at(order.book_key()).read()?;
+        let token = if order.is_bid() {
+            book.quote
+        } else {
+            book.base
+        };
+
+        // Check if maker is forbidden by the token's transfer policy
+        let token_id = address_to_token_id_unchecked(token);
+        let token_contract = TIP20Token::new(token_id);
+        let policy_id = token_contract.transfer_policy_id()?;
+
+        let registry = TIP403Registry::new();
+        let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: order.maker(),
+        })?;
+
+        if is_authorized {
+            return Err(StablecoinExchangeError::order_not_stale().into());
+        }
+
+        self.cancel_active_order(order)
+    }
+
     /// Withdraw tokens from exchange balance
     pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
@@ -1318,6 +1355,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     use super::*;
@@ -3708,6 +3746,105 @@ mod tests {
                 "Expected PolicyForbids error, got: {err:?}"
             );
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_order() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let mut base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .apply()?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base.address())?;
+            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.cancel_stale_order(order_id)?;
+
+            assert_eq!(
+                exchange.balance_of(alice, base.address())?,
+                MIN_ORDER_AMOUNT
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_not_stale() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let mut base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .apply()?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base.address())?;
+            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+
+            let result = exchange.cancel_stale_order(order_id);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
+            ));
 
             Ok(())
         })
