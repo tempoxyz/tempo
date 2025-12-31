@@ -1255,8 +1255,11 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
 
         // The original flip order should be fully filled and deleted
-        vm.expectRevert(IStablecoinExchange.OrderDoesNotExist.selector);
-        exchange.getOrder(flipOrderId);
+        try exchange.getOrder(flipOrderId) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.OrderDoesNotExist.selector));
+        }
 
         // No new flip order should have been created
         // If a flip order was created, nextOrderId would have incremented
