@@ -333,6 +333,17 @@ where
                 // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
+                // For AA transactions with CREATE as the first call, the nonce was bumped by
+                // make_create_frame during execution. Since checkpoint_revert rolled that back,
+                // we need to manually bump the nonce here to ensure it persists even on failure.
+                // This maintains the invariant that nonces always increment regardless of tx outcome.
+                if calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+                    let caller = evm.ctx().tx().caller();
+                    if let Ok(mut caller_acc) = evm.ctx().journal_mut().load_account_with_code_mut(caller) {
+                        caller_acc.data.bump_nonce();
+                    }
+                }
+
                 // Include gas from all previous successful calls + failed call
                 let gas_used_by_failed_call = frame_result.gas().used();
                 let total_gas_used = (gas_limit - remaining_gas) + gas_used_by_failed_call;
