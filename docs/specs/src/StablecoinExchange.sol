@@ -30,8 +30,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Maximum valid price (PRICE_SCALE + int16.max)
     uint32 public constant MAX_PRICE = 132_767;
 
-    /// @notice Minimum order amount (10 units with 6 decimals)
-    uint128 public constant MIN_ORDER_AMOUNT = 10_000_000;
+    /// @notice Minimum order amount (100 units with 6 decimals)
+    uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
 
     /// @notice TIP20 token address prefix (12 bytes)
     bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
@@ -119,11 +119,21 @@ contract StablecoinExchange is IStablecoinExchange {
         }
     }
 
-    /// @notice Generate deterministic key for token pair
-    /// @return key Deterministic pair key
-    function pairKey(address tokenA, address tokenB) public pure returns (bytes32 key) {
-        (tokenA, tokenB) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        key = keccak256(abi.encodePacked(tokenA, tokenB));
+    /// @notice Check if an account is authorized by a token's transfer policy
+    /// @param token The token to check the policy of
+    /// @param account The account to check authorization for
+    /// @return True if both the account and this contract are authorized
+    function _checkTransferPolicy(address token, address account) internal view returns (bool) {
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        return TIP403_REGISTRY.isAuthorized(policyId, account)
+            && TIP403_REGISTRY.isAuthorized(policyId, address(this));
+    }
+
+    /// @notice Generate deterministic key for ordered (base, quote) token pair
+    /// @return key pair key
+    /// @dev The first argument MUST be the base token and the second the quote token.
+    function pairKey(address base, address quote) public pure returns (bytes32 key) {
+        key = keccak256(abi.encodePacked(base, quote));
     }
 
     /// @notice Creates a new trading pair between base and quote tokens
@@ -230,31 +240,25 @@ contract StablecoinExchange is IStablecoinExchange {
                 escrowAmount = amount;
             }
 
-            // Check if maker is authorized by the token's transfer policy before operating on internal balance
-            uint64 policyId = ITIP20(escrowToken).transferPolicyId();
-            if (
-                !TIP403_REGISTRY.isAuthorized(policyId, maker)
-                    || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
-            ) {
-                revert ITIP20.PolicyForbids();
+            // Check if maker and DEX are authorized by both tokens' transfer policies
+            if (!_checkTransferPolicy(base, maker) || !_checkTransferPolicy(quote, maker)) {
+                if (revertOnTransferFail) {
+                    revert ITIP20.PolicyForbids();
+                } else {
+                    return 0;
+                }
             }
 
             // Check if the user has a balance, transfer the rest
             uint128 userBalance = balances[maker][escrowToken];
             if (userBalance >= escrowAmount) {
                 balances[maker][escrowToken] -= escrowAmount;
-            } else {
+            } else if (revertOnTransferFail) {
                 balances[maker][escrowToken] = 0;
-                if (revertOnTransferFail) {
-                    ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance);
-                } else {
-                    try ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance) { }
-                    catch {
-                        return 0;
-                    }
-                }
+                ITIP20(escrowToken).transferFrom(maker, address(this), escrowAmount - userBalance);
+            } else {
+                // For flip orders (revertOnTransferFail = false), only use internal balance
+                return 0;
             }
         }
         orderId = nextOrderId;
@@ -362,6 +366,35 @@ contract StablecoinExchange is IStablecoinExchange {
             revert IStablecoinExchange.Unauthorized();
         }
 
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Cancel an order where the maker is forbidden by TIP-403 policy
+    /// @dev Allows anyone to clean up stale orders from blacklisted makers
+    /// @param orderId The order ID to cancel
+    function cancelStaleOrder(uint128 orderId) external {
+        IStablecoinExchange.Order storage order = orders[orderId];
+        if (order.maker == address(0)) {
+            revert IStablecoinExchange.OrderDoesNotExist();
+        }
+
+        Orderbook storage book = books[order.bookKey];
+        address token = order.isBid ? book.quote : book.base;
+
+        // Check if maker is forbidden by the token's transfer policy
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (TIP403_REGISTRY.isAuthorized(policyId, order.maker)) {
+            revert IStablecoinExchange.OrderNotStale();
+        }
+
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Internal function to cancel an order and refund escrow
+    /// @dev Caller must validate authorization before calling
+    /// @param orderId The order ID to cancel
+    /// @param order Storage reference to the order
+    function _cancelOrder(uint128 orderId, IStablecoinExchange.Order storage order) internal {
         Orderbook storage book = books[order.bookKey];
         address token = order.isBid ? book.quote : book.base;
         bool isBid = order.isBid;
@@ -1198,20 +1231,53 @@ contract StablecoinExchange is IStablecoinExchange {
         bookKeys = new bytes32[](path.length - 1);
         baseForQuote = new bool[](path.length - 1);
 
+        // Track whether we are currently moving "up" the quote tree (child -> parent)
+        // or "down" (parent -> child). We start with the natural direction from
+        // `tokenIn` towards the LCA and flip once when we cross the LCA so that
+        // at most one hop has to check both orientations.
+        bool isBaseForQuote = true;
+
         for (uint256 i = 0; i < path.length - 1; i++) {
             address hopTokenIn = path[i];
             address hopTokenOut = path[i + 1];
 
-            bytes32 bookKey = pairKey(hopTokenIn, hopTokenOut);
+            address base;
+            address quote;
+            // Determine which token is base and which is quote using the current
+            // TIP-20 quoteToken relationships. While we are "going up" the tree,
+            // we expect hopTokenIn.quoteToken() == hopTokenOut; once this no longer
+            // holds, we flip to "going down" and expect hopTokenOut.quoteToken() == hopTokenIn
+            // for all remaining hops. This guarantees at most one hop checks both.
+            // First, try the "upward" direction (child -> parent) while we are goingUp.
+            if (isBaseForQuote && address(ITIP20(hopTokenIn).quoteToken()) == hopTokenOut) {
+                // hopTokenIn quotes hopTokenOut => base = hopTokenIn, quote = hopTokenOut
+                base = hopTokenIn;
+                quote = hopTokenOut;
+            } else {
+                // Upward match failed or we've already flipped; we now only accept
+                // the "downward" direction (parent -> child).
+                if (isBaseForQuote) {
+                    // Flip direction at most once when we cross the LCA
+                    isBaseForQuote = false;
+                }
+
+                // This check may not be strictly needed given how path is constructed
+                if (address(ITIP20(hopTokenOut).quoteToken()) == hopTokenIn) {
+                    // hopTokenOut quotes hopTokenIn => base = hopTokenOut, quote = hopTokenIn
+                    base = hopTokenOut;
+                    quote = hopTokenIn;
+                } else {
+                    revert IStablecoinExchange.PairDoesNotExist();
+                }
+            }
+
+            bytes32 bookKey = pairKey(base, quote);
             Orderbook storage orderbook = books[bookKey];
 
             // Validate pair exists
             if (orderbook.base == address(0)) {
                 revert IStablecoinExchange.PairDoesNotExist();
             }
-
-            // Determine direction
-            bool isBaseForQuote = (hopTokenIn == orderbook.base);
 
             bookKeys[i] = bookKey;
             baseForQuote[i] = isBaseForQuote;

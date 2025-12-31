@@ -15,34 +15,32 @@ use governor::Quota;
 
 // Hardcoded values to configure commonware's alto toy chain. These could be made into
 // configuration variables at some point.
-pub(crate) const PENDING_CHANNEL_IDENT: commonware_p2p::Channel = 0;
-pub(crate) const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
-pub(crate) const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
-pub(crate) const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
-pub(crate) const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
-pub(crate) const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
-pub(crate) const BOUNDARY_CERT_CHANNEL_IDENT: commonware_p2p::Channel = 6;
-pub(crate) const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 7;
+pub const PENDING_CHANNEL_IDENT: commonware_p2p::Channel = 0;
+pub const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
+pub const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
+pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
+pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
+pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
+pub const BOUNDARY_CERT_CHANNEL_IDENT: commonware_p2p::Channel = 6;
+pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 7;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 
 pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); // 100MB
 
-pub(crate) const BROADCASTER_LIMIT: Quota =
+pub const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub(crate) const BOUNDARY_CERT_LIMIT: Quota =
+pub const BOUNDARY_CERT_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(1).expect("value is not zero"));
-pub(crate) const DKG_LIMIT: Quota =
+pub const DKG_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
+pub const MARSHAL_LIMIT: Quota = Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
+pub const PENDING_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub(crate) const MARSHAL_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub(crate) const PENDING_LIMIT: Quota =
+pub const RECOVERED_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub(crate) const RECOVERED_LIMIT: Quota =
+pub const RESOLVER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub(crate) const RESOLVER_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub(crate) const SUBBLOCKS_LIMIT: Quota =
+pub const SUBBLOCKS_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 
 pub(crate) const NAMESPACE: &[u8] = b"TEMPO";

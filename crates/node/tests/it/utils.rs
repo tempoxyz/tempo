@@ -73,17 +73,6 @@ where
     Ok(token)
 }
 
-/// Creates a test TIP20 token (same as setup_test_token, kept for compatibility)
-pub(crate) async fn setup_test_token_pre_allegretto<P>(
-    provider: P,
-    caller: Address,
-) -> eyre::Result<ITIP20Instance<impl Clone + Provider>>
-where
-    P: Provider + Clone,
-{
-    setup_test_token(provider, caller).await
-}
-
 /// Node source for integration testing
 pub(crate) enum NodeSource {
     ExternalRpc(Url),
@@ -165,9 +154,6 @@ pub(crate) struct HttpOnlySetup {
 pub(crate) struct TestNodeBuilder {
     genesis_content: String,
     custom_gas_limit: Option<String>,
-    moderato_time: Option<u64>,
-    allegretto_time: Option<u64>,
-    allegro_moderato_time: Option<u64>,
     node_count: usize,
     is_dev: bool,
     external_rpc: Option<Url>,
@@ -182,9 +168,6 @@ impl TestNodeBuilder {
             node_count: 1,
             is_dev: true,
             external_rpc: None,
-            allegretto_time: None,
-            moderato_time: None,
-            allegro_moderato_time: None,
         }
     }
 
@@ -210,39 +193,6 @@ impl TestNodeBuilder {
     pub(crate) fn with_external_rpc(mut self, url: Url) -> Self {
         self.external_rpc = Some(url);
         self
-    }
-
-    /// Set Moderato hardfork activation time
-    pub(crate) fn with_moderato_time(mut self, time: u64) -> Self {
-        self.moderato_time = Some(time);
-        self
-    }
-
-    /// Set Allegretto hardfork activation time
-    pub(crate) fn with_allegretto_time(mut self, time: u64) -> Self {
-        self.allegretto_time = Some(time);
-        self
-    }
-
-    /// Set Allegro Moderato hardfork activation time
-    pub(crate) fn with_allegro_moderato_time(mut self, time: u64) -> Self {
-        self.allegro_moderato_time = Some(time);
-        self
-    }
-
-    /// Set Moderato hardfork activation time to 0.
-    pub(crate) fn moderato_activated(self) -> Self {
-        self.with_moderato_time(0)
-    }
-
-    /// Set Allegretto hardfork activation time to 0.
-    pub(crate) fn allegretto_activated(self) -> Self {
-        self.moderato_activated().with_allegretto_time(0)
-    }
-
-    /// Set Allegro Moderato hardfork activation time to 0
-    pub(crate) fn allegro_moderato_activated(self) -> Self {
-        self.allegretto_activated().with_allegro_moderato_time(0)
     }
 
     /// Build a single node with direct access (NodeHelperType)
@@ -361,16 +311,6 @@ impl TestNodeBuilder {
         let mut genesis: serde_json::Value = serde_json::from_str(&self.genesis_content)?;
         if let Some(gas_limit) = &self.custom_gas_limit {
             genesis["gasLimit"] = serde_json::json!(gas_limit);
-        }
-        if let Some(moderato_time) = &self.moderato_time {
-            genesis["config"]["moderatoTime"] = serde_json::json!(moderato_time);
-        }
-        if let Some(allegretto_time) = &self.allegretto_time {
-            genesis["config"]["allegrettoTime"] = serde_json::json!(allegretto_time);
-        }
-
-        if let Some(allegro_moderato_time) = &self.allegro_moderato_time {
-            genesis["config"]["allegroModeratoTime"] = serde_json::json!(allegro_moderato_time);
         }
 
         Ok(TempoChainSpec::from_genesis(serde_json::from_value(

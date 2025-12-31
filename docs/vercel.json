@@ -8,12 +8,22 @@
     },
     {
       "source": "/sdk/typescript/api",
-      "destination": "/sdk/typescript/viem",
+      "destination": "https://viem.sh/tempo",
       "permanent": true
     },
     {
       "source": "/sdk/typescript/api/:path*",
-      "destination": "/sdk/typescript/viem/:path*",
+      "destination": "https://viem.sh/tempo",
+      "permanent": true
+    },
+    {
+      "source": "/sdk/typescript/viem",
+      "destination": "https://viem.sh/tempo",
+      "permanent": true
+    },
+    {
+      "source": "/sdk/typescript/viem/:path*",
+      "destination": "https://viem.sh/tempo",
       "permanent": true
     },
     {
@@ -29,11 +39,6 @@
     {
       "source": "/errors/tx/ExceedsNonPaymentLimit",
       "destination": "/protocol/blockspace/payment-lane-specification",
-      "permanent": false
-    },
-    {
-      "source": "/errors/tx/Keychain",
-      "destination": "/protocol/transactions/spec-default-delegation",
       "permanent": false
     },
     {

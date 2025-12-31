@@ -6,7 +6,7 @@ Connector for a WebAuthn EOA.
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code focus]
 import { createConfig, http } from 'wagmi'
 
@@ -16,10 +16,10 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(), // [!code focus]
     }), // [!code focus]
   ],
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempo.id]: http(),
+    [tempoTestnet.id]: http(),
   },
 })
 ```

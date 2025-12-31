@@ -1,5 +1,5 @@
 use commonware_consensus::{
-    Automaton, Relay, Reporter,
+    Automaton, CertifiableAutomaton, Relay, Reporter,
     marshal::Update,
     simplex::types::Context,
     types::{Epoch, Round, View},
@@ -175,6 +175,16 @@ impl Automaton for Mailbox {
             .expect("application is present and ready to receive verify requests");
         rx
     }
+}
+
+// TODO: figure out if this can be useful for tempo. The original PR implementing
+// this trait:
+// https://github.com/commonwarexyz/monorepo/pull/2565
+// Associated issue:
+// https://github.com/commonwarexyz/monorepo/issues/1767
+impl CertifiableAutomaton for Mailbox {
+    // NOTE: uses the default impl for CertifiableAutomaton which always
+    // returns true.
 }
 
 impl Relay for Mailbox {
