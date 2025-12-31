@@ -3927,7 +3927,7 @@ mod tests {
             )?;
 
             // Set up base and quote tokens
-            let (base_addr, quote_addr) =
+            let (base_addr, _quote_addr) =
                 setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
 
             // Get the base token and apply blacklist policy
