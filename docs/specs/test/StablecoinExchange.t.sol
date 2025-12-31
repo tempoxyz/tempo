@@ -1206,6 +1206,74 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(askLiquidity, 0);
     }
 
+    function test_FlipOrder_DoesNotFlipWhenMakerWithdrawsBalance() public {
+        // Alice places a flip bid order: buying 2e18 base tokens at tick 100, will flip to ask at tick 200
+        uint128 orderAmount = 2e18;
+        int16 tick = 100;
+        int16 flipTick = 200;
+
+        vm.prank(alice);
+        uint128 flipOrderId = exchange.placeFlip(address(token1), orderAmount, true, tick, flipTick);
+
+        // Bob partially fills the order (sells 1e18 base tokens)
+        // This credits Alice's internal balance with 1e18 base tokens
+        vm.prank(bob);
+        exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
+
+        // Verify Alice has received base tokens in her internal balance
+        uint128 aliceBaseBalance = exchange.balanceOf(alice, address(token1));
+        assertEq(aliceBaseBalance, 1e18, "Alice should have 1e18 base tokens in internal balance");
+
+        // Alice withdraws all her internal base token balance
+        vm.prank(alice);
+        exchange.withdraw(address(token1), aliceBaseBalance);
+
+        // Verify Alice's internal balance is now 0
+        assertEq(
+            exchange.balanceOf(alice, address(token1)), 0, "Alice's internal balance should be 0"
+        );
+
+        // Verify Alice still has sufficient external token balance and approval for a flip order
+        // For a flip ask at tick 200, she would need to escrow base tokens
+        assertGt(
+            token1.balanceOf(alice),
+            orderAmount,
+            "Alice should have sufficient external token balance"
+        );
+        assertGt(
+            token1.allowance(alice, address(exchange)),
+            orderAmount,
+            "Alice should have sufficient approval"
+        );
+
+        uint128 nextOrderIdBefore = exchange.nextOrderId();
+
+        // Bob fills the remaining order (sells another 1e18 base tokens)
+        // The flip order should NOT be created because Alice's internal balance is insufficient
+        // and we don't resort to transferFrom for flip orders
+        vm.prank(bob);
+        exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
+
+        // The original flip order should be fully filled and deleted
+        vm.expectRevert(IStablecoinExchange.OrderDoesNotExist.selector);
+        exchange.getOrder(flipOrderId);
+
+        // No new flip order should have been created
+        // If a flip order was created, nextOrderId would have incremented
+        assertEq(
+            exchange.nextOrderId(),
+            nextOrderIdBefore,
+            "No new order should be created - flip should not execute when internal balance is insufficient"
+        );
+
+        // Verify no liquidity exists at the flip tick (ask at tick 200)
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), flipTick, false);
+        assertEq(askHead, 0, "No ask order should exist at flip tick");
+        assertEq(askTail, 0, "No ask order should exist at flip tick");
+        assertEq(askLiquidity, 0, "No liquidity should exist at flip tick");
+    }
+
     /*//////////////////////////////////////////////////////////////
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/

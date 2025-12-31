@@ -498,6 +498,21 @@ impl StablecoinExchange {
         tick: i16,
         flip_tick: i16,
     ) -> Result<u128> {
+        self.place_flip_impl(sender, token, amount, is_bid, tick, flip_tick, false)
+    }
+
+    /// Internal implementation of place_flip with internal_balance_only flag.
+    /// When `internal_balance_only` is true, only internal balance is used (no transferFrom fallback).
+    fn place_flip_impl(
+        &mut self,
+        sender: Address,
+        token: Address,
+        amount: u128,
+        is_bid: bool,
+        tick: i16,
+        flip_tick: i16,
+        internal_balance_only: bool,
+    ) -> Result<u128> {
         let quote_token = TIP20Token::from_address(token)?.quote_token()?;
 
         // Compute book_key from token pair
@@ -547,8 +562,18 @@ impl StablecoinExchange {
             (token, amount)
         };
 
-        // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        // Debit from user's balance (or transfer from wallet if not internal_balance_only)
+        if internal_balance_only {
+            TIP20Token::from_address(escrow_token)?
+                .ensure_transfer_authorized(sender, self.address)?;
+            let user_balance = self.balance_of(sender, escrow_token)?;
+            if user_balance < escrow_amount {
+                return Err(StablecoinExchangeError::insufficient_balance().into());
+            }
+            self.sub_balance(sender, escrow_token, escrow_amount)?;
+        } else {
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        }
 
         // Create the flip order
         let order_id = self.next_order_id()?;
@@ -668,13 +693,15 @@ impl StablecoinExchange {
             // Create a new flip order with flipped side and swapped ticks
             // Bid becomes Ask, Ask becomes Bid
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            let _ = self.place_flip(
+            // Uses internal balance only - does not transfer from wallet
+            let _ = self.place_flip_impl(
                 order.maker(),
                 orderbook.base,
                 order.amount(),
                 !order.is_bid(),
                 order.flip_tick(),
                 order.tick(),
+                true, // internal_balance_only
             );
         }
 

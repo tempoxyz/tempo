@@ -247,18 +247,12 @@ contract StablecoinExchange is IStablecoinExchange {
             uint128 userBalance = balances[maker][escrowToken];
             if (userBalance >= escrowAmount) {
                 balances[maker][escrowToken] -= escrowAmount;
-            } else {
+            } else if (revertOnTransferFail) {
                 balances[maker][escrowToken] = 0;
-                if (revertOnTransferFail) {
-                    ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance);
-                } else {
-                    try ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance) { }
-                    catch {
-                        return 0;
-                    }
-                }
+                ITIP20(escrowToken).transferFrom(maker, address(this), escrowAmount - userBalance);
+            } else {
+                // For flip orders (revertOnTransferFail = false), only use internal balance
+                return 0;
             }
         }
         orderId = nextOrderId;
