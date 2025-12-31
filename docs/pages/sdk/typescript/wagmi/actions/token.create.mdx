@@ -14,7 +14,7 @@ Use the `token.create` action on the Wagmi `config` to create and deploy a new T
 import { Actions } from 'tempo.ts/wagmi'
 import { config } from './wagmi.config'
 
-const { admin, receipt, token, tokenId } = await Actions.token.createSync(config, {
+const { admin, receipt, token, salt } = await Actions.token.createSync(config, {
   admin: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
   currency: 'USD',
   name: 'My Company USD',
@@ -22,11 +22,11 @@ const { admin, receipt, token, tokenId } = await Actions.token.createSync(config
 })
 
 console.log('Address:', token)
-// @log: Address: 0x20c0000000000000000000000000000000000004
+// @log: Address: 0x20c0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8
 console.log('Admin:', admin)
 // @log: Admin: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb
-console.log('ID:', tokenId)
-// @log: ID: 4n
+console.log('Salt:', salt)
+// @log: Salt: 0x...
 ```
 
 ```ts twoslash [wagmi.config.ts] filename="wagmi.config.ts"
@@ -56,7 +56,7 @@ const hash = await Actions.token.create(config, {
 })
 const receipt = await waitForTransactionReceipt(config, { hash })
 
-const { args: { token, tokenId } } 
+const { args: { token, salt } }
   = viem_Actions.token.create.extractEvent(receipt.logs)
 ```
 
@@ -78,8 +78,8 @@ type ReturnType = {
   symbol: string
   /** Address of the deployed TIP-20 token */
   token: Address
-  /** ID of the deployed TIP-20 token */
-  tokenId: bigint
+  /** Salt used for deterministic address derivation */
+  salt: Hex
 }
 ```
 
