@@ -95,9 +95,13 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_CreatePair() public {
-        ITIP20 newQuote = ITIP20(factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin));
+        ITIP20 newQuote = ITIP20(
+            factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin, bytes32("newquote"))
+        );
 
-        ITIP20 newBase = ITIP20(factory.createToken("New Base", "NBASE", "USD", newQuote, admin));
+        ITIP20 newBase = ITIP20(
+            factory.createToken("New Base", "NBASE", "USD", newQuote, admin, bytes32("newbase"))
+        );
         bytes32 expectedKey = exchange.pairKey(address(newBase), address(newQuote));
 
         if (!isTempo) {
@@ -693,7 +697,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test pair creation validation
     function test_CreatePair_RevertIf_NonUsdToken() public {
         // Create a non-USD token
-        ITIP20 eurToken = ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin));
+        ITIP20 eurToken =
+            ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try exchange.createPair(address(eurToken)) {
             revert CallShouldHaveReverted();
@@ -774,7 +779,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test swap validation
     function test_Swap_RevertIf_PairNotExists() public {
         // Try to swap between two tokens that don't have a trading pair
-        ITIP20 token3 = ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin));
+        ITIP20 token3 =
+            ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin, bytes32("token3")));
 
         try exchange.swapExactAmountIn(address(token3), address(token2), 100, 0) {
             revert CallShouldHaveReverted();
@@ -1027,7 +1033,9 @@ contract StablecoinExchangeTest is BaseTest {
         // The path algorithm will find token1 -> pathUSD -> isolatedToken
         // But the swap will fail because the isolatedToken pair doesn't exist
 
-        ITIP20 isolatedToken = ITIP20(factory.createToken("Isolated", "ISO", "USD", pathUSD, admin));
+        ITIP20 isolatedToken = ITIP20(
+            factory.createToken("Isolated", "ISO", "USD", pathUSD, admin, bytes32("isolated"))
+        );
 
         // Don't create a pair for isolatedToken - this means the orderbook doesn't exist
 
