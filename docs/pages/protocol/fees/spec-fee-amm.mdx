@@ -114,7 +114,7 @@ function burn(
 ) external returns (uint256 amountUserToken, uint256 amountValidatorToken)
 ```
 
-Burns LP tokens and receives pro-rata share of reserves. Reverts if withdrawal would prevent pending swaps at the end of the block. Emits `Burn` event.
+Burns LP tokens and receives pro-rata share of reserves. Emits `Burn` event.
 
 ```solidity
 function executeFeeSwap(
