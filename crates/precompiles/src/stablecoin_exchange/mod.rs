@@ -503,6 +503,7 @@ impl StablecoinExchange {
 
     /// Internal implementation of place_flip with internal_balance_only flag.
     /// When `internal_balance_only` is true, only internal balance is used (no transferFrom fallback).
+    #[allow(clippy::too_many_arguments)]
     fn place_flip_impl(
         &mut self,
         sender: Address,
