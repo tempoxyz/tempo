@@ -9,9 +9,9 @@ interface IFeeManager is IFeeAMM {
     event ValidatorTokenSet(address indexed validator, address indexed token);
     event FeesDistributed(address indexed validator, address indexed token, uint256 amount);
 
-    function distributeFees(address validator) external;
+    function distributeFees(address validator, address token) external;
 
-    function collectedFeesByValidator(address validator) external view returns (uint256);
+    function collectedFees(address validator, address token) external view returns (uint256);
 
     function setUserToken(address token) external;
 

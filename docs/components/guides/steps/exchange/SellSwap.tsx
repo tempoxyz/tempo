@@ -1,4 +1,4 @@
-import { Actions, Addresses } from 'tempo.ts/viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
@@ -80,6 +80,11 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
           {sendCalls.isPending ? 'Selling...' : 'Sell'}
         </Button>
       </div>
+      {sendCalls.error && (
+        <div className="text-red-500 text-[14px]">
+          {sendCalls.error.message}
+        </div>
+      )}
       {quote && address && (
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-start gap-1">

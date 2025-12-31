@@ -7,19 +7,10 @@ use commonware_runtime::{
 };
 use futures::future::join_all;
 
-use crate::{Setup, setup_validators};
+use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
-#[test_traced]
-fn pre_hardfork_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(false)
-}
-
-#[test_traced]
-fn allegretto_at_genesis_validator_lost_key_but_gets_key_in_next_epoch() {
-    assert_validator_lost_key_but_gets_key_in_next_epoch(true)
-}
-
-fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: bool) {
+#[test_traced("WARN")]
+fn validator_lost_key_but_gets_key_in_next_epoch() {
     let _ = tempo_eyre::install();
 
     let seed = 0;
@@ -30,11 +21,6 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
     executor.start(|context| async move {
         let epoch_length = 30;
         let setup = Setup::new().seed(seed).epoch_length(epoch_length);
-        let setup = if allegretto_at_genesis {
-            setup.allegretto_time(0)
-        } else {
-            setup
-        };
 
         let (mut validators, _execution_runtime) =
             setup_validators(context.clone(), setup.clone()).await;
@@ -60,8 +46,6 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
         let mut node_is_not_signer = true;
         let mut node_got_new_share = false;
 
-        let pat = format!("{}-", crate::CONSENSUS_NODE_PREFIX);
-
         let mut success = false;
         while !success {
             context.sleep(Duration::from_secs(1)).await;
@@ -69,7 +53,7 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
             let metrics = context.encode();
 
             'metrics: for line in metrics.lines() {
-                if !line.starts_with(&pat) {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                     continue 'metrics;
                 }
 
@@ -99,6 +83,7 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
                     ))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_forgot_share = value > 0;
                 }
 
@@ -108,6 +93,7 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_is_not_signer = value == 0;
                 }
 
@@ -119,6 +105,7 @@ fn assert_validator_lost_key_but_gets_key_in_next_epoch(allegretto_at_genesis: b
                         .ends_with(&format!("{last_node}_epoch_manager_how_often_signer_total"))
                 {
                     let value = value.parse::<u64>().unwrap();
+                    tracing::warn!(metric, value,);
                     node_got_new_share = value > 0;
                 }
 

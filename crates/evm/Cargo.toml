@@ -14,10 +14,8 @@ workspace = true
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
-tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
 tempo-primitives.workspace = true
-tempo-precompiles.workspace = true
 tempo-revm.workspace = true
 
 commonware-cryptography.workspace = true
@@ -31,13 +29,11 @@ reth-revm.workspace = true
 reth-primitives-traits.workspace = true
 reth-rpc-eth-api = { workspace = true, optional = true }
 
-rayon.workspace = true
-revm.workspace = true
+rayon = { workspace = true, optional = true }
 alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-sol-types.workspace = true
 
 derive_more.workspace = true
 thiserror.workspace = true
@@ -48,5 +44,5 @@ revm.workspace = true
 
 [features]
 default = ["rpc", "engine"]
-rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc"]
-engine = ["dep:tempo-payload-types"]
+rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
+engine = ["dep:tempo-payload-types", "dep:rayon"]

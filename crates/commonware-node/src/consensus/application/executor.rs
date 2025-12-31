@@ -7,23 +7,25 @@
 //! If the agent detects that the execution layer is missing blocks it attempts
 //! to backfill them from the consensus layer.
 
-use std::{sync::Arc, time::Duration};
+use std::{pin::pin, sync::Arc, time::Duration};
 
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Block as _, marshal::Update};
 
-use commonware_macros::select;
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
+    select_biased,
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, info, instrument, warn};
+use tracing::{
+    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
+};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -36,19 +38,26 @@ pub(super) struct Builder {
     /// the send the initial forkchoice state.
     pub(super) genesis_block: Arc<Block>,
 
+    /// The last finalized height according to the consensus layer.
+    /// If on startup there is a mismatch between the execution layer and the
+    /// consensus, then the node will fill the gap by backfilling blocks to
+    /// the execution layer until `last_finalized_height` is reached.
+    pub(super) last_finalized_height: u64,
+
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(super) marshal: crate::alias::marshal::Mailbox,
 }
 
 impl Builder {
     /// Constructs the [`Executor`].
-    pub(super) fn build<TContext>(self, context: TContext) -> Executor<TContext>
+    pub(super) fn build<TContext>(self, context: TContext) -> eyre::Result<Executor<TContext>>
     where
         TContext: Spawner,
     {
         let Self {
             execution_node,
             genesis_block,
+            last_finalized_height,
             marshal,
         } = self;
 
@@ -56,10 +65,17 @@ impl Builder {
 
         let my_mailbox = ExecutorMailbox { inner: to_me };
 
+        let last_execution_finalized_height = execution_node
+            .provider
+            .last_block_number()
+            .wrap_err("unable to read latest block number from execution layer")?;
+
         let genesis_hash = genesis_block.block_hash();
-        Executor {
+        Ok(Executor {
             context: ContextCell::new(context),
             execution_node,
+            last_consensus_finalized_height: last_finalized_height,
+            last_execution_finalized_height,
             mailbox: from_app,
             marshal,
             my_mailbox,
@@ -72,7 +88,7 @@ impl Builder {
                 head_height: 0,
                 finalized_height: 0,
             },
-        }
+        })
     }
 }
 
@@ -138,6 +154,9 @@ pub(super) struct Executor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
 
+    last_consensus_finalized_height: u64,
+    last_execution_finalized_height: u64,
+
     /// The channel over which the agent will receive new commands from the
     /// application actor.
     mailbox: mpsc::UnboundedReceiver<Message>,
@@ -165,8 +184,58 @@ where
     }
 
     async fn run(mut self) {
+        let mut backfill_on_start = {
+            if self.last_consensus_finalized_height > self.last_execution_finalized_height {
+                info!(
+                    last_finalized_consensus_height = self.last_consensus_finalized_height,
+                    last_finalized_execution_height = self.last_execution_finalized_height,
+                    "the last finalized height according to the consensus layer \
+                    is ahead of the execution layer, will backfill blocks",
+                );
+            }
+
+            let marshal = self.marshal.clone();
+            pin!(
+                futures::stream::iter(
+                    self.last_execution_finalized_height + 1..=self.last_consensus_finalized_height,
+                )
+                .then(move |height| {
+                    let mut marshal = marshal.clone();
+                    async move { (height, marshal.get_block(height).await) }
+                })
+                .fuse()
+            )
+        };
         loop {
-            select! {
+            select_biased! {
+                backfill = backfill_on_start.next() => {
+                    match backfill {
+                        Some((height, Some(block))) => {
+                            let (ack, _wait) = Exact::handle();
+                            let span = info_span!("backfill_on_start", height);
+                            let _ = self.forward_finalized(
+                                span,
+                                block,
+                                ack,
+                            ).await;
+                        }
+                        Some((height, None)) => {
+                            warn_span!("backfill_on_start", height)
+                            .in_scope(|| warn!(
+                                "marshal actor did not have block even though \
+                                it must have finalized it previously",
+                            ));
+                        }
+                        None => {
+                            info_span!("backfill_on_start")
+                            .in_scope(|| info!(
+                                "no more blocks to backfill from consensus to \
+                                execution layer")
+                            );
+                        }
+                    }
+                },
+
                 msg = self.mailbox.next() => {
                     let Some(msg) = msg else { break; };
                     // XXX: updating forkchoice and finalizing blocks must
@@ -175,13 +244,20 @@ where
                     //
                     // Backfills will be spawned as tasks and will also send
                     // resolved the blocks to this queue.
-                    self.handle_message(msg).await;
+                    if let Err(error) = self.handle_message(msg).await {
+                        error_span!("shutdown").in_scope(|| error!(
+                            %error,
+                            "executor encountered fatal fork choice update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        ));
+                        break;
+                    }
                 },
             }
         }
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
             Command::CanonicalizeHead {
@@ -189,14 +265,19 @@ where
                 digest,
                 ack,
             } => {
+                // Errors are logged inside canonicalize; head canonicalization failures
+                // are non-fatal and will be retried on the next block.
                 let _ = self
                     .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
                     .await;
             }
             Command::Finalize(finalized) => {
-                let _ = self.finalize(cause, *finalized).await;
+                self.finalize(cause, *finalized)
+                    .await
+                    .wrap_err("failed handling finalization")?;
             }
         }
+        Ok(())
     }
 
     /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
@@ -269,25 +350,30 @@ where
 
     #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
-    async fn finalize(&mut self, cause: Span, finalized: super::ingress::Finalized) {
+    async fn finalize(
+        &mut self,
+        cause: Span,
+        finalized: super::ingress::Finalized,
+    ) -> eyre::Result<()> {
         match finalized.inner {
             Update::Tip(height, digest) => {
-                let _: Result<_, _> = self
-                    .canonicalize(
-                        Span::current(),
-                        HeadOrFinalized::Finalized,
-                        height,
-                        digest,
-                        oneshot::channel().0,
-                    )
-                    .await;
+                self.canonicalize(
+                    Span::current(),
+                    HeadOrFinalized::Finalized,
+                    height,
+                    digest,
+                    oneshot::channel().0,
+                )
+                .await
+                .wrap_err("failed canonicalizing finalization tip")?;
             }
             Update::Block(block, acknowledgment) => {
-                let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), block, acknowledgment)
-                    .await;
+                self.forward_finalized(Span::current(), block, acknowledgment)
+                    .await
+                    .wrap_err("failed forwarding finalized block to execution layer")?;
             }
         }
+        Ok(())
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -325,27 +411,20 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        if let Err(error) = self
-            .canonicalize(
-                Span::current(),
-                HeadOrFinalized::Finalized,
-                block.height(),
-                block.digest(),
-                oneshot::channel().0,
-            )
-            .await
-        {
-            warn!(
-                %error,
-                "failed canonicalizing finalized block; will still attempt \
-                forwarding it to the execution layer",
-            );
-        }
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            block.height(),
+            block.digest(),
+            oneshot::channel().0,
+        )
+        .await
+        .wrap_err("failed canonicalizing finalized block")?;
 
         if let Ok(execution_height) = self
             .execution_node
             .provider
-            .last_block_number()
+            .best_block_number()
             .map_err(Report::new)
             .inspect_err(|error| {
                 warn!(
