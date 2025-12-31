@@ -19,7 +19,9 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
+    },
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -1041,9 +1043,10 @@ impl StablecoinExchange {
         };
 
         // Check if maker is forbidden by the token's transfer policy
-        let token_contract = TIP20Token::at(token);
+        let token_id = address_to_token_id_unchecked(token);
+        let token_contract = TIP20Token::new(token_id);
         let policy_id = token_contract.transfer_policy_id()?;
-        
+
         let registry = TIP403Registry::new();
         let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
             policyId: policy_id,
@@ -3772,7 +3775,12 @@ mod tests {
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
-            base.change_transfer_policy_id(policy_id)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -3788,7 +3796,10 @@ mod tests {
 
             exchange.cancel_stale_order(order_id)?;
 
-            assert_eq!(exchange.balance_of(alice, base.address())?, MIN_ORDER_AMOUNT);
+            assert_eq!(
+                exchange.balance_of(alice, base.address())?,
+                MIN_ORDER_AMOUNT
+            );
 
             Ok(())
         })
@@ -3818,7 +3829,12 @@ mod tests {
                 .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
                 .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
                 .apply()?;
-            base.change_transfer_policy_id(policy_id)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
 
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
@@ -3827,9 +3843,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::StablecoinExchange(
-                    StablecoinExchangeError::OrderNotStale(_)
-                )
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
             ));
 
             Ok(())
