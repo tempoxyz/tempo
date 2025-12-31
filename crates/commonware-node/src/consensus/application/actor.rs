@@ -273,8 +273,6 @@ impl Inner<Init> {
                     // so we know it must be available and indexed
                     // by the marshaller.
                     // 3. this means this call should always succeed.
-                    //
-                    // TODO(janis): should we panic instead?
                     bail!(
                         "no information on the source block at height `{height}` \
                     exists yet; this is a problem and will likely cause the \

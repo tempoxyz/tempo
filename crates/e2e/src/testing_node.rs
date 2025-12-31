@@ -15,10 +15,10 @@ use reth_ethereum::{
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
 use tempo_commonware_node::{
-    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
-    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, consensus,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
+    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
+    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, consensus,
 };
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
@@ -242,12 +242,6 @@ where
             .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
-        let boundary_certs = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT)
-            .await
-            .unwrap();
         let subblocks = self
             .oracle
             .control(self.public_key.clone())
@@ -256,14 +250,7 @@ where
             .unwrap();
 
         let consensus_handle = engine.start(
-            pending,
-            recovered,
-            resolver,
-            broadcast,
-            marshal,
-            dkg,
-            boundary_certs,
-            subblocks,
+            pending, recovered, resolver, broadcast, marshal, dkg, subblocks,
         );
 
         self.consensus_handle = Some(consensus_handle);
