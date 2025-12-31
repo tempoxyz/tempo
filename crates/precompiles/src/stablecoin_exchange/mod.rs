@@ -19,9 +19,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
-    },
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -1060,9 +1058,7 @@ impl StablecoinExchange {
             book.base
         };
 
-        // Check if maker is forbidden by the token's transfer policy
-        let token_id = address_to_token_id_unchecked(token);
-        let token_contract = TIP20Token::new(token_id);
+        let token_contract = TIP20Token::from_address(token)?;
         let policy_id = token_contract.transfer_policy_id()?;
 
         let registry = TIP403Registry::new();
@@ -1875,7 +1871,7 @@ mod tests {
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
-            let mut base = TIP20Token::new(1);
+            let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
                 user,
                 ITIP20::transferCall {
@@ -3050,10 +3046,12 @@ mod tests {
 
             // Give bob base tokens and carol quote tokens
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(bob, U256::from(AMOUNT))
                 .with_approval(bob, exchange.address, U256::from(AMOUNT))
                 .apply()?;
             TIP20Setup::config(quote_token)
+                .with_admin(admin)
                 .with_mint(carol, U256::from(AMOUNT))
                 .with_approval(carol, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3129,6 +3127,7 @@ mod tests {
 
             // Place ask orders at two different ticks
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
@@ -3203,6 +3202,7 @@ mod tests {
 
             // Place 2 ask orders at tick 50 and tick 60
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
@@ -3271,6 +3271,7 @@ mod tests {
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(alice, U256::from(AMOUNT))
                 .with_approval(alice, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3312,6 +3313,7 @@ mod tests {
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(alice, U256::from(AMOUNT))
                 .with_approval(alice, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3421,6 +3423,7 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
 
             TIP20Setup::config(base_token)
+                .with_admin(admin)
                 .with_mint(alice, U256::from(amount))
                 .with_approval(alice, exchange.address, U256::from(amount))
                 .apply()?;
@@ -3480,7 +3483,7 @@ mod tests {
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
-            let mut base = TIP20Token::new(1);
+            let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
                 user,
                 ITIP20::transferCall {

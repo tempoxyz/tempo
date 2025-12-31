@@ -17,7 +17,7 @@ use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -46,10 +46,9 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .watch()
         .await?;
 
-    // Initial token should be predeployed token
     assert_eq!(
         fee_manager.userTokens(user_address).call().await?,
-        token_id_to_address(1)
+        PATH_USD_ADDRESS
     );
 
     let validator = provider
@@ -202,8 +201,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    // Initial token should be PathUSD (token_id 0)
-    assert_eq!(initial_token, token_id_to_address(0));
+    assert_eq!(initial_token, PATH_USD_ADDRESS);
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())

@@ -17,9 +17,10 @@ use std::{
     sync::Arc,
 };
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Mint, Pool},
     tip20::ITIP20,
+    tip20_factory::ITIP20Factory,
 };
 use tracing::{debug, error, info, instrument};
 

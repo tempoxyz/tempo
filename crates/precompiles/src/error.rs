@@ -11,7 +11,8 @@ use alloy::{
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
-    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -26,6 +27,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    /// Error from TIP20 factory
+    #[error("TIP20 factory error: {0:?}")]
+    TIP20Factory(TIP20FactoryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -149,6 +154,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
 
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinExchange);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);

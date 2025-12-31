@@ -37,7 +37,7 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending,
@@ -1317,11 +1317,13 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated
-    let token_id = tip20::address_to_token_id_unchecked(token);
-
+    // Address has already been validated as having TIP20 prefix
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::new(token_id).balances.at(sender).slot();
+    let balance_slot = TIP20Token::from_address(token)
+        .expect("TIP20 prefix already validated")
+        .balances
+        .at(sender)
+        .slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
@@ -1427,7 +1429,7 @@ mod tests {
     use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1437,13 +1439,13 @@ mod tests {
     #[test]
     fn test_get_token_balance() -> eyre::Result<()> {
         let mut journal = create_test_journal();
-        let token = Address::random();
+        // Use PATH_USD_ADDRESS which has the TIP20 prefix
+        let token = PATH_USD_ADDRESS;
         let account = Address::random();
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let token_id = tip20::address_to_token_id_unchecked(token);
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::from_address(token)?.balances.at(account).slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)

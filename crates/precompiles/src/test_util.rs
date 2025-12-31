@@ -204,6 +204,12 @@ impl TIP20Setup {
         self
     }
 
+    /// Set the admin address explicitly. Required for `config()` when using `with_mint()`.
+    pub fn with_admin(mut self, admin: Address) -> Self {
+        self.admin = Some(admin);
+        self
+    }
+
     /// Grant ISSUER_ROLE to an account.
     pub fn with_issuer(self, account: Address) -> Self {
         self.with_role(account, *tip20::ISSUER_ROLE)
@@ -241,7 +247,10 @@ impl TIP20Setup {
         self
     }
 
-    /// Initialize PathUSD (token 0) if needed and return it.
+    /// Initialize PathUSD if needed and return it.
+    ///
+    /// PathUSD is initialized directly (not via factory) since it's at a reserved address
+    /// and uses itself as quote token.
     fn path_usd_inner(&self) -> Result<TIP20Token> {
         if is_initialized(PATH_USD_ADDRESS) {
             return TIP20Token::from_address(PATH_USD_ADDRESS);
@@ -251,20 +260,12 @@ impl TIP20Setup {
             .admin
             .expect("pathUSD is uninitialized and requires an admin");
 
-        // PathUSD is token 0 created via factory with quoteToken=0
-        let mut factory = Self::factory()?;
-        factory.create_token(
-            admin,
-            tip20_factory::ITIP20Factory::createTokenCall {
-                name: "PathUSD".to_string(),
-                symbol: "PUSD".to_string(),
-                currency: "USD".to_string(),
-                quoteToken: Address::ZERO,
-                admin,
-            },
-        )?;
+        // PathUSD is at a reserved address, so we initialize it directly
+        // (not via factory). It uses itself as quote token.
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+        path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
 
-        TIP20Token::from_address(PATH_USD_ADDRESS)
+        Ok(path_usd)
     }
 
     /// Initialize the TIP20 factory if needed.
@@ -290,6 +291,8 @@ impl TIP20Setup {
 
                 let admin = self.admin.expect("initializing a token requires an admin");
                 let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
+                // Generate a random salt for token deployment
+                let salt = B256::random();
                 let token_address = factory.create_token(
                     admin,
                     tip20_factory::ITIP20Factory::createTokenCall {
@@ -298,6 +301,7 @@ impl TIP20Setup {
                         currency,
                         quoteToken: quote,
                         admin,
+                        salt,
                     },
                 )?;
                 TIP20Token::from_address(token_address)?
@@ -349,14 +353,6 @@ impl TIP20Setup {
         Ok(token)
     }
 
-    /// Apply the configuration, returning both token_id and TIP20Token.
-    pub fn apply_with_id(self) -> Result<(u64, TIP20Token)> {
-        self.apply().map(|token| {
-            let token_id = tip20::address_to_token_id_unchecked(token.address());
-            (token_id, token)
-        })
-    }
-
     /// Apply the configuration, and expect it to fail with the given error.
     pub fn expect_err(self, expected: TempoPrecompileError) {
         let result = self.apply();
@@ -378,12 +374,18 @@ fn is_initialized(address: Address) -> bool {
 
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
+    use alloy::primitives::Log;
     use alloy::sol_types::SolEvent;
     use tempo_contracts::precompiles::ITIP20Factory;
 
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
-    for log in events {
-        if let Ok(event) = ITIP20Factory::TokenCreated::decode_log_data(log)
+    for log_data in events {
+        let log = Log::new_unchecked(
+            TIP20_FACTORY_ADDRESS,
+            log_data.topics().to_vec(),
+            log_data.data.clone(),
+        );
+        if let Ok(event) = ITIP20Factory::TokenCreated::decode_log(&log)
             && event.token == token
         {
             return Some(event.admin);

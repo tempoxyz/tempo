@@ -25,7 +25,7 @@ use crate::{
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
+    tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
@@ -152,9 +152,9 @@ impl TIP20FactoryPrecompile {
 pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", chain_id, spec, |input| {
-            TIP20Token::new(token_id)
+            // SAFETY: This is only called after is_tip20_prefix check in extend_tempo_precompiles
+            TIP20Token::from_address(address).expect("TIP20 prefix already verified")
         })
     }
 }
@@ -302,8 +302,9 @@ mod tests {
     #[test]
     fn test_precompile_delegatecall() {
         let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile =
-            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
@@ -337,12 +338,12 @@ mod tests {
 
     #[test]
     fn test_precompile_static_call() {
-        const ID: u64 = 1;
         let (chain_id, spec) = (1, TempoHardfork::default());
-        let (precompile, token_address) = (
-            tempo_precompile!("TIP20Token", chain_id, spec, |i| { TIP20Token::new(ID) }),
-            token_id_to_address(ID),
-        );
+        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
+
+        let target_address = Address::random();
 
         let call_static = |calldata: Bytes| {
             let mut db = CacheDB::new(EmptyDB::new());
