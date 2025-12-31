@@ -12,15 +12,11 @@ contract FeeManager is IFeeManager, FeeAMM {
 
     mapping(address => address) public validatorTokens;
     mapping(address => address) public userTokens;
-    mapping(address => uint256) public collectedFees;
+    mapping(address => mapping(address => uint256)) public collectedFees;
 
     modifier onlyDirectCall() {
         require(msg.sender == tx.origin, "ONLY_DIRECT_CALL");
         _;
-    }
-
-    function collectedFeesByValidator(address validator) external view returns (uint256) {
-        return collectedFees[validator];
     }
 
     function setValidatorToken(address token) external onlyDirectCall {
@@ -70,28 +66,23 @@ contract FeeManager is IFeeManager, FeeAMM {
 
         if (userToken != validatorToken && actualUsed > 0) {
             uint256 amountOut = executeFeeSwap(userToken, validatorToken, actualUsed);
-            collectedFees[feeRecipient] += amountOut;
+            collectedFees[feeRecipient][validatorToken] += amountOut;
         } else if (userToken == validatorToken && actualUsed > 0) {
-            collectedFees[feeRecipient] += actualUsed;
+            collectedFees[feeRecipient][validatorToken] += actualUsed;
         }
     }
 
-    function distributeFees(address validator) external {
-        uint256 amount = collectedFees[validator];
+    function distributeFees(address validator, address token) external {
+        uint256 amount = collectedFees[validator][token];
         if (amount == 0) {
             return;
         }
 
-        collectedFees[validator] = 0;
+        collectedFees[validator][token] = 0;
 
-        address validatorToken = validatorTokens[validator];
-        if (validatorToken == address(0)) {
-            validatorToken = PATH_USD;
-        }
+        IERC20(token).transfer(validator, amount);
 
-        IERC20(validatorToken).transfer(validator, amount);
-
-        emit FeesDistributed(validator, validatorToken, amount);
+        emit FeesDistributed(validator, token, amount);
     }
 
 }

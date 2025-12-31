@@ -152,6 +152,11 @@ impl Precompile for StablecoinExchange {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
                 })
             }
+            IStablecoinExchange::MIN_ORDER_AMOUNTCall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_ORDER_AMOUNTCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_ORDER_AMOUNT)
+                })
+            }
             IStablecoinExchange::MIN_PRICECall::SELECTOR => {
                 view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| Ok(self.min_price()))
             }

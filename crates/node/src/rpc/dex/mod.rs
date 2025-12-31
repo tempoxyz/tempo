@@ -502,9 +502,9 @@ impl<'b> BookIterator<'b> {
     }
 
     /// Get the next initialized tick after the given tick
-    /// Returns None if there are no more ticks
+    /// Returns None if there are no more ticks or on error
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let (next_tick, more_ticks) = self.handler.next_initialized_tick(tick, self.bids);
+        let (next_tick, more_ticks) = self.handler.next_initialized_tick(tick, self.bids).ok()?;
 
         if more_ticks { Some(next_tick) } else { None }
     }

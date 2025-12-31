@@ -536,12 +536,8 @@ contract StablecoinExchangeTest is BaseTest {
                         MINIMUM ORDER SIZE TESTS
     //////////////////////////////////////////////////////////////*/
 
-    // MIN_ORDER_AMOUNT = 10_000_000 (10 units with 6 decimals)
-    // Note: The Rust impl doesn't expose this as a view function, so we hardcode it
-    uint128 constant MIN_ORDER_AMOUNT = 10_000_000;
-
     function test_PlaceOrder_RevertIf_BelowMinimumOrderSize(uint128 amount) public {
-        vm.assume(amount < MIN_ORDER_AMOUNT);
+        vm.assume(amount < exchange.MIN_ORDER_AMOUNT());
 
         vm.prank(alice);
         try exchange.place(address(token1), amount, true, 100) {
@@ -552,8 +548,9 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PlaceOrder_SucceedsAt_MinimumOrderSize() public {
+        uint128 minOrderAmount = exchange.MIN_ORDER_AMOUNT();
         vm.prank(alice);
-        uint128 orderId = exchange.place(address(token1), MIN_ORDER_AMOUNT, true, 100);
+        uint128 orderId = exchange.place(address(token1), minOrderAmount, true, 100);
 
         assertEq(orderId, 1);
         assertEq(exchange.nextOrderId(), 2);
@@ -568,7 +565,7 @@ contract StablecoinExchangeTest is BaseTest {
         // So: amount * 1000100 / 1000000 <= INITIAL_BALANCE
         // Therefore: amount <= INITIAL_BALANCE * 1000000 / 1000100
         uint128 maxAmount = uint128((uint256(INITIAL_BALANCE) * 1_000_000) / 1_000_100);
-        vm.assume(amount >= MIN_ORDER_AMOUNT && amount <= maxAmount);
+        vm.assume(amount >= exchange.MIN_ORDER_AMOUNT() && amount <= maxAmount);
 
         vm.prank(alice);
         uint128 orderId = exchange.place(address(token1), amount, true, 100);
@@ -578,7 +575,7 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PlaceFlipOrder_RevertIf_BelowMinimumOrderSize(uint128 amount) public {
-        vm.assume(amount < MIN_ORDER_AMOUNT);
+        vm.assume(amount < exchange.MIN_ORDER_AMOUNT());
 
         vm.prank(alice);
         try exchange.placeFlip(address(token1), amount, true, 100, 200) {
@@ -612,7 +609,7 @@ contract StablecoinExchangeTest is BaseTest {
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
-        } else if (amount < MIN_ORDER_AMOUNT) {
+        } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
             expectedError = abi.encodeWithSelector(
                 IStablecoinExchange.BelowMinimumOrderSize.selector, amount
@@ -658,7 +655,7 @@ contract StablecoinExchangeTest is BaseTest {
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
             expectedSelector = IStablecoinExchange.InvalidTick.selector;
-        } else if (amount < MIN_ORDER_AMOUNT) {
+        } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
             expectedSelector = IStablecoinExchange.BelowMinimumOrderSize.selector;
         } else if (flipTick < exchange.MIN_TICK() || flipTick > exchange.MAX_TICK()) {
@@ -721,8 +718,9 @@ contract StablecoinExchangeTest is BaseTest {
         vm.assume(caller != address(0));
 
         // Place an order as alice
+        uint128 minOrderAmount = exchange.MIN_ORDER_AMOUNT();
         vm.prank(alice);
-        uint128 validOrderId = exchange.place(address(token1), MIN_ORDER_AMOUNT, true, 100);
+        uint128 validOrderId = exchange.place(address(token1), minOrderAmount, true, 100);
 
         bool shouldRevert = false;
         bytes4 expectedSelector;
@@ -755,8 +753,9 @@ contract StablecoinExchangeTest is BaseTest {
         withdrawAmount = uint128(bound(withdrawAmount, balance + 1, type(uint128).max));
 
         // Give alice some balance by canceling an order
+        uint128 minOrderAmount = exchange.MIN_ORDER_AMOUNT();
         vm.prank(alice);
-        uint128 orderId = exchange.place(address(token1), MIN_ORDER_AMOUNT, true, 100);
+        uint128 orderId = exchange.place(address(token1), minOrderAmount, true, 100);
         vm.prank(alice);
         exchange.cancel(orderId);
 
@@ -863,7 +862,7 @@ contract StablecoinExchangeTest is BaseTest {
     function test_ImmediateOrderActivation_MultipleOrders(uint8 numOrders) public {
         vm.assume(numOrders > 0 && numOrders <= 10);
 
-        uint128 minAmount = MIN_ORDER_AMOUNT;
+        uint128 minAmount = exchange.MIN_ORDER_AMOUNT();
         int16 tickSpacing = exchange.TICK_SPACING();
 
         // Place several orders - use multiples of TICK_SPACING for valid ticks
@@ -885,7 +884,7 @@ contract StablecoinExchangeTest is BaseTest {
         vm.assume(batch1 > 0 && batch1 <= 5);
         vm.assume(batch2 > 0 && batch2 <= 5);
 
-        uint128 minAmount = MIN_ORDER_AMOUNT;
+        uint128 minAmount = exchange.MIN_ORDER_AMOUNT();
         int16 tickSpacing = exchange.TICK_SPACING();
 
         // First batch of orders - use multiples of TICK_SPACING for valid ticks
@@ -969,17 +968,18 @@ contract StablecoinExchangeTest is BaseTest {
     // Fuzz test: verify routing finds valid paths
     function testFuzz_Routing_FindsValidPath(uint8 scenario) public {
         scenario = uint8(bound(scenario, 0, 2));
+        uint128 minOrderAmount = exchange.MIN_ORDER_AMOUNT();
 
         if (scenario == 0) {
             // Direct pair: token1 <-> pathUSD
             vm.prank(bob);
-            exchange.place(address(token1), MIN_ORDER_AMOUNT * 100, false, 0);
+            exchange.place(address(token1), minOrderAmount * 100, false, 0);
 
             // Orders are immediately active
 
             // Should find direct path
             uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(pathUSD), address(token1), MIN_ORDER_AMOUNT
+                address(pathUSD), address(token1), minOrderAmount
             );
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
@@ -995,28 +995,27 @@ contract StablecoinExchangeTest is BaseTest {
 
             // For token1 -> pathUSD: Bob bids for token1 (buys token1 with pathUSD)
             vm.prank(bob);
-            exchange.place(address(token1), MIN_ORDER_AMOUNT * 100, true, 0);
+            exchange.place(address(token1), minOrderAmount * 100, true, 0);
             // For pathUSD -> token2: Bob asks for token2 (sells token2 for pathUSD)
             vm.prank(bob);
-            exchange.place(address(token2), MIN_ORDER_AMOUNT * 100, false, 0);
+            exchange.place(address(token2), minOrderAmount * 100, false, 0);
 
             // Orders are immediately active
 
             // Should route token1 -> pathUSD -> token2
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(token2), MIN_ORDER_AMOUNT
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(token2), minOrderAmount);
             assertGt(amountOut, 0);
         } else {
             // Reverse direction
             vm.prank(bob);
-            exchange.place(address(token1), MIN_ORDER_AMOUNT * 100, true, 0);
+            exchange.place(address(token1), minOrderAmount * 100, true, 0);
 
             // Orders are immediately active
 
             // Should find path in reverse
             uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(pathUSD), MIN_ORDER_AMOUNT
+                address(token1), address(pathUSD), minOrderAmount
             );
             assertGt(amountOut, 0);
         }
@@ -1036,7 +1035,7 @@ contract StablecoinExchangeTest is BaseTest {
         // Path exists in token tree, but orderbook pair doesn't exist
         // Expect any revert (specifically PairDoesNotExist but exact error encoding varies)
         try exchange.quoteSwapExactAmountIn(
-            address(token1), address(isolatedToken), MIN_ORDER_AMOUNT
+            address(token1), address(isolatedToken), exchange.MIN_ORDER_AMOUNT()
         ) {
             revert CallShouldHaveReverted();
         } catch {
@@ -1060,14 +1059,16 @@ contract StablecoinExchangeTest is BaseTest {
         vm.prank(bob);
         token2.approve(address(exchange), type(uint256).max);
 
+        uint128 minOrderAmount = exchange.MIN_ORDER_AMOUNT();
+
         // Add liquidity
         if (useToken1) {
             vm.prank(bob);
-            exchange.place(address(token1), MIN_ORDER_AMOUNT * 100, false, 0);
+            exchange.place(address(token1), minOrderAmount * 100, false, 0);
         }
         if (useToken2) {
             vm.prank(bob);
-            exchange.place(address(token2), MIN_ORDER_AMOUNT * 100, false, 0);
+            exchange.place(address(token2), minOrderAmount * 100, false, 0);
         }
 
         // Orders are immediately active
@@ -1077,7 +1078,7 @@ contract StablecoinExchangeTest is BaseTest {
         address tokenOut = swapDirection ? address(pathUSD) : address(token1);
 
         // Always use try/catch since liquidity setup varies and may not support this direction
-        try exchange.quoteSwapExactAmountIn(tokenIn, tokenOut, MIN_ORDER_AMOUNT) returns (
+        try exchange.quoteSwapExactAmountIn(tokenIn, tokenOut, minOrderAmount) returns (
             uint128 amountOut
         ) {
             // Success - verify output
@@ -1091,7 +1092,7 @@ contract StablecoinExchangeTest is BaseTest {
     function testFuzz_Routing_RevertIf_IdenticalTokens(address token) public view {
         vm.assume(token != address(0));
 
-        try exchange.quoteSwapExactAmountIn(token, token, MIN_ORDER_AMOUNT) {
+        try exchange.quoteSwapExactAmountIn(token, token, exchange.MIN_ORDER_AMOUNT()) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IStablecoinExchange.IdenticalTokens.selector));
@@ -1107,14 +1108,18 @@ contract StablecoinExchangeTest is BaseTest {
         // Test with non-TIP20 token (should fail when trying to get quote token)
         address invalidToken = address(0x123456);
 
-        try exchange.quoteSwapExactAmountIn(invalidToken, address(token1), MIN_ORDER_AMOUNT) {
+        try exchange.quoteSwapExactAmountIn(
+            invalidToken, address(token1), exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted - exact error depends on whether token implements interface
         }
 
         // Test swap to non-TIP20 token
-        try exchange.quoteSwapExactAmountIn(address(token1), invalidToken, MIN_ORDER_AMOUNT) {
+        try exchange.quoteSwapExactAmountIn(
+            address(token1), invalidToken, exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted
@@ -1140,7 +1145,7 @@ contract StablecoinExchangeTest is BaseTest {
         pathUSD.changeTransferPolicyId(policyId);
 
         // Give alice some internal balance by placing and canceling an order
-        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
         vm.prank(alice);
         uint128 orderId = exchange.place(address(token1), orderAmount, false, 100);
 
@@ -1188,7 +1193,7 @@ contract StablecoinExchangeTest is BaseTest {
         pathUSD.changeTransferPolicyId(policyId);
 
         // Give alice some internal pathUSD balance by placing and canceling a bid order
-        uint128 bidAmount = MIN_ORDER_AMOUNT * 10;
+        uint128 bidAmount = exchange.MIN_ORDER_AMOUNT() * 10;
         vm.prank(alice);
         uint128 orderId = exchange.place(address(token1), bidAmount, true, 100);
 
@@ -1217,6 +1222,47 @@ contract StablecoinExchangeTest is BaseTest {
             aliceInternalBalance,
             "Alice's internal balance should be unchanged"
         );
+    }
+
+    function test_FlipOrder_BlacklistedMakerDoesNotRevertSwap() public {
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        uint128 orderAmount = 100e18;
+        int16 bidTick = 100;
+        int16 flipTick = 200;
+
+        vm.prank(alice);
+        uint128 flipOrderId =
+            exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
+        assertEq(flipOrderId, 1);
+
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+        assertFalse(registry.isAuthorized(policyId, alice));
+
+        uint256 bobInitialToken1 = token1.balanceOf(bob);
+        uint256 bobInitialPathUSD = pathUSD.balanceOf(bob);
+
+        vm.prank(bob);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(pathUSD), orderAmount, 0);
+
+        assertGt(amountOut, 0);
+        assertEq(token1.balanceOf(bob), bobInitialToken1 - orderAmount);
+        assertEq(pathUSD.balanceOf(bob), bobInitialPathUSD + amountOut);
+
+        uint128 aliceInternalToken1 = exchange.balanceOf(alice, address(token1));
+        assertEq(aliceInternalToken1, orderAmount);
+
+        assertEq(exchange.nextOrderId(), 2);
+
+        (uint128 askHead,, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), flipTick, false);
+        assertEq(askHead, 0);
+        assertEq(askLiquidity, 0);
     }
 
     /*//////////////////////////////////////////////////////////////

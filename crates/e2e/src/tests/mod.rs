@@ -36,6 +36,7 @@ fn spawning_execution_node_works() {
             secret_key: alloy_primitives::B256::random(),
             trusted_peers: vec![],
             port: 0,
+            validator_key: None,
         };
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
