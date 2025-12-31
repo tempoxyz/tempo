@@ -74,11 +74,11 @@ export function OptInToRewards() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -134,11 +134,11 @@ export function StartReward() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -187,11 +187,11 @@ export function ClaimReward() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -209,7 +209,7 @@ export const config = createConfig({
 
 ### Watch for new reward distributions
 
-Use `useWatchRewardScheduled` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
+Use `useWatchRewardDistributed` to listen for new reward distributions on a token. This is useful for updating your UI when a reward is distributed.
 
 ```tsx twoslash
 import { Hooks } from 'tempo.ts/wagmi'
@@ -218,9 +218,9 @@ import { Hooks } from 'tempo.ts/wagmi'
 function WatchRewards() {
   const tokenAddress = '0x...' // Your token address
 
-  Hooks.reward.useWatchRewardScheduled({ // [!code hl]
+  Hooks.reward.useWatchRewardDistributed({ // [!code hl]
     token: tokenAddress, // [!code hl]
-    onRewardScheduled(args) { // [!code hl]
+    onRewardDistributed(args) { // [!code hl]
       console.log('New reward scheduled:', args) // [!code hl]
       // Update UI, refetch balances, show notification, etc. // [!code hl]
     }, // [!code hl]

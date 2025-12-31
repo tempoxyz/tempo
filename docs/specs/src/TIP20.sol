@@ -376,7 +376,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                             FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function transferFeePreTx(address from, uint256 amount) external {
+    function transferFeePreTx(address from, uint256 amount) external notPaused {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
         require(from != address(0));
 
@@ -443,14 +443,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    /// @notice Starts a reward distribution. Post-Moderato, only immediate rewards (seconds_ == 0) are allowed.
-    /// Scheduled/streaming rewards (seconds_ > 0) are disabled and will revert with ScheduledRewardsDisabled.
-    function startReward(uint256 amount, uint32 seconds_)
-        external
-        virtual
-        notPaused
-        returns (uint64)
-    {
+    /// @notice Distributes rewards to opted-in token holders.
+    function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
         if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
             revert PolicyForbids();
@@ -459,19 +453,13 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // Transfer tokens from sender to this contract
         _transfer(msg.sender, address(this), amount);
 
-        if (seconds_ == 0) {
-            // Immediate payout
-            if (optedInSupply == 0) {
-                revert NoOptedInSupply();
-            }
-            uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
-            globalRewardPerToken += deltaRPT;
-            emit RewardScheduled(msg.sender, 0, amount, 0);
-            return 0;
-        } else {
-            // Scheduled/streaming rewards are disabled post-Moderato
-            revert ScheduledRewardsDisabled();
+        // Immediate payout
+        if (optedInSupply == 0) {
+            revert NoOptedInSupply();
         }
+        uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
+        globalRewardPerToken += deltaRPT;
+        emit RewardDistributed(msg.sender, amount);
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
@@ -497,7 +485,10 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
+        if (
+            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+        ) {
             revert PolicyForbids();
         }
 
@@ -521,5 +512,26 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Calculates the pending claimable rewards for an account without modifying state.
+    /// @param account The address to query pending rewards for.
+    /// @return pending The total pending claimable reward amount (stored balance + accrued pending rewards).
+    function getPendingRewards(address account) external view returns (uint256 pending) {
+        UserRewardInfo storage info = userRewardInfo[account];
+
+        // Start with the stored reward balance
+        pending = info.rewardBalance;
+
+        // If this account is self-delegated, calculate pending rewards from their own holdings
+        if (info.rewardRecipient == account) {
+            uint256 holderBalance = balanceOf[account];
+            if (holderBalance > 0) {
+                uint256 rewardPerTokenDelta = globalRewardPerToken - info.rewardPerToken;
+                if (rewardPerTokenDelta > 0) {
+                    uint256 accrued = (holderBalance * rewardPerTokenDelta) / ACC_PRECISION;
+                    pending += accrued;
+                }
+            }
+        }
+    }
 
     }

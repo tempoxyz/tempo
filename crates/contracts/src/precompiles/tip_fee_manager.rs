@@ -31,10 +31,8 @@ crate::sol! {
 
         // Fee functions
         function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
-        /// @dev Deprecated Post-AllegroModerato: This function is kept for backwards compatibility pre-AllegroModerato
-        function executeBlock() external;
-        function distributeFees(address validator) external;
-        function collectedFeesByValidator(address validator) external view returns (uint256);
+        function distributeFees(address validator, address token) external;
+        function collectedFees(address validator, address token) external view returns (uint256);
         // NOTE: collectFeePreTx is a protocol-internal function called directly by the
         // execution handler, not exposed via the dispatch interface.
 
@@ -90,8 +88,7 @@ sol! {
         function pools(bytes32 poolId) external view returns (Pool memory);
 
         // Liquidity Operations
-        function mint(address userToken, address validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
-        function mintWithValidatorToken(address userToken, address validatorToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
+        function mint(address userToken, address validatorToken, uint256 amountValidatorToken, address to) external returns (uint256 liquidity);
         function burn(address userToken, address validatorToken, uint256 liquidity, address to) external returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
         // Liquidity Balances
@@ -102,7 +99,7 @@ sol! {
         function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to) external returns (uint256 amountIn);
 
         // Events
-        event Mint(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity);
+        event Mint(address sender, address indexed to, address indexed userToken, address indexed validatorToken, uint256 amountValidatorToken, uint256 liquidity);
         event Burn(address indexed sender, address indexed userToken, address indexed validatorToken, uint256 amountUserToken, uint256 amountValidatorToken, uint256 liquidity, address to);
         event RebalanceSwap(address indexed userToken, address indexed validatorToken, address indexed swapper, uint256 amountIn, uint256 amountOut);
         event FeeSwap(

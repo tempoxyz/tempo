@@ -1,12 +1,12 @@
 // [!region client]
 import { createClient, http, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempo } from 'tempo.ts/chains'
-import { withFeePayer } from 'tempo.ts/viem'
+import { tempoTestnet } from 'viem/chains'
+import { withFeePayer } from 'viem/tempo'
 
 const client = createClient({
   account: privateKeyToAccount('0x...'),
-  chain: tempo({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+  chain: tempoTestnet,
   transport: withFeePayer( // [!code hl]
     http(), // [!code hl]
     http('http://localhost:3000'), // [!code hl]
@@ -31,11 +31,13 @@ const receipt2 = await client.sendTransactionSync({ // [!code hl]
 // [!region server]
 import { createClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 import { Handler } from 'tempo.ts/server'
 
 const client = createClient({
-  chain: tempo({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+  chain: tempoTestnet.extend({ 
+    feeToken: '0x20c0000000000000000000000000000000000001' 
+  }),
   transport: http(),
 })
 

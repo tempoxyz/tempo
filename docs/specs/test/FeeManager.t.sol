@@ -47,9 +47,9 @@ contract FeeManagerTest is BaseTest {
         userToken.approve(address(amm), type(uint256).max);
         validatorToken.approve(address(amm), type(uint256).max);
 
-        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(userToken), address(pathUSD), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(validatorToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(userToken), address(validatorToken), 20_000e18, admin);
+        amm.mint(address(userToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(validatorToken), address(pathUSD), 20_000e18, admin);
         vm.stopPrank();
     }
 
@@ -266,11 +266,11 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            uint256 validatorBalanceBefore = amm.collectedFeesByValidator(validator);
+            uint256 validatorBalanceBefore = amm.collectedFees(validator, _PATH_USD);
 
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
-            uint256 validatorBalanceAfter = amm.collectedFeesByValidator(validator);
+            uint256 validatorBalanceAfter = amm.collectedFees(validator, _PATH_USD);
             vm.stopPrank();
 
             assertGt(validatorBalanceAfter, validatorBalanceBefore);

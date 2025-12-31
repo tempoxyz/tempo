@@ -5,7 +5,7 @@ import { formatUnits, isAddress, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { TokenSelector } from '../../../TokenSelector'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd, betaUsd } from '../../tokens'
+import { alphaUsd, betaUsd, thetaUsd, pathUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 // Current validator token on testnet
@@ -143,7 +143,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">Fee Token</span>
                   <TokenSelector
-                    tokens={[alphaUsd, betaUsd]}
+                    tokens={[alphaUsd, betaUsd, thetaUsd, pathUsd]}
                     value={feeToken}
                     onChange={setFeeToken}
                     name="feeToken"
