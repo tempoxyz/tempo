@@ -3905,4 +3905,132 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_place_when_base_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, quote_addr) = setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+            
+            // Get the base token and apply blacklist policy
+            let mut base = TIP20Token::from_address(base_addr)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the base token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place bid order (alice wants to buy base token) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, true, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip bid order - should also fail
+            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_when_quote_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, quote_addr) = setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+            
+            // Get the quote token and apply blacklist policy
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the quote token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place ask order (alice wants to sell base for quote) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip ask order - should also fail
+            let result = exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            Ok(())
+        })
+    }
 }
