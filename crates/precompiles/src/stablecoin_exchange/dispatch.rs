@@ -39,6 +39,7 @@ impl Precompile for StablecoinExchange {
                         call.isBid,
                         call.tick,
                         call.flipTick,
+                        false,
                     )
                 })
             }

@@ -489,22 +489,8 @@ impl StablecoinExchange {
     /// Flip orders automatically create a new order on the opposite side when completely filled.
     /// For bids: flip_tick must be > tick
     /// For asks: flip_tick must be < tick
-    pub fn place_flip(
-        &mut self,
-        sender: Address,
-        token: Address,
-        amount: u128,
-        is_bid: bool,
-        tick: i16,
-        flip_tick: i16,
-    ) -> Result<u128> {
-        self.place_flip_impl(sender, token, amount, is_bid, tick, flip_tick, false)
-    }
-
-    /// Internal implementation of place_flip with internal_balance_only flag.
-    /// When `internal_balance_only` is true, only internal balance is used (no transferFrom fallback).
     #[allow(clippy::too_many_arguments)]
-    fn place_flip_impl(
+    pub fn place_flip(
         &mut self,
         sender: Address,
         token: Address,
@@ -563,7 +549,8 @@ impl StablecoinExchange {
             (token, amount)
         };
 
-        // Debit from user's balance (or transfer from wallet if not internal_balance_only)
+        // Debit from user's balance only. This is set to true after a flip order is filled and the
+        // subsequent flip order is being placed.
         if internal_balance_only {
             TIP20Token::from_address(escrow_token)?
                 .ensure_transfer_authorized(sender, self.address)?;
@@ -694,15 +681,15 @@ impl StablecoinExchange {
             // Create a new flip order with flipped side and swapped ticks
             // Bid becomes Ask, Ask becomes Bid
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            // Uses internal balance only - does not transfer from wallet
-            let _ = self.place_flip_impl(
+            // Uses internal balance only, does not transfer from wallet
+            let _ = self.place_flip(
                 order.maker(),
                 orderbook.base,
                 order.amount(),
                 !order.is_bid(),
                 order.flip_tick(),
                 order.tick(),
-                true, // internal_balance_only
+                true,
             );
         }
 
@@ -1798,8 +1785,15 @@ mod tests {
                 .expect("Could not create pair");
 
             // Try to place a flip order below minimum amount
-            let result =
-                exchange.place_flip(alice, base_token, below_minimum, true, tick, flip_tick);
+            let result = exchange.place_flip(
+                alice,
+                base_token,
+                below_minimum,
+                true,
+                tick,
+                flip_tick,
+                false,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
@@ -1840,7 +1834,7 @@ mod tests {
             .expect("Base token transfer failed");
 
             // Place a flip order which should also create the pair
-            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
+            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
 
             let book_after = exchange.books.at(book_key).read()?;
             assert_eq!(book_after.base, base_token);
@@ -1888,7 +1882,15 @@ mod tests {
                 .expect("Could not create pair");
 
             let order_id = exchange
-                .place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)
+                .place_flip(
+                    alice,
+                    base_token,
+                    min_order_amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )
                 .expect("Place flip bid order should succeed");
 
             assert_eq!(order_id, 1);
@@ -2246,7 +2248,7 @@ mod tests {
 
             // Place a flip bid order
             let flip_order_id = exchange
-                .place_flip(alice, base_token, amount, true, tick, flip_tick)
+                .place_flip(alice, base_token, amount, true, tick, flip_tick, false)
                 .expect("Place flip order should succeed");
 
             exchange
@@ -3270,6 +3272,7 @@ mod tests {
                 true,
                 invalid_tick,
                 invalid_flip_tick,
+                false,
             );
 
             let error = result.unwrap_err();
@@ -3288,6 +3291,7 @@ mod tests {
                 true,
                 valid_tick,
                 invalid_flip_tick,
+                false,
             );
 
             let error = result.unwrap_err();
@@ -3306,6 +3310,7 @@ mod tests {
                 true,
                 valid_tick,
                 valid_flip_tick,
+                false,
             );
             assert!(result.is_ok());
 
@@ -3565,8 +3570,15 @@ mod tests {
 
             exchange.create_pair(base_token)?;
 
-            let order_id =
-                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+            let order_id = exchange.place_flip(
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
 
             assert_eq!(order_id, 1);
 
