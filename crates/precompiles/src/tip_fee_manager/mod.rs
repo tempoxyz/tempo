@@ -245,9 +245,8 @@ impl TipFeeManager {
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> Result<IFeeManager::getFeeTokenBalanceReturn> {
         let mut token = self.user_tokens.at(call.sender).read()?;
-
         if token.is_zero() {
-            token = self.get_validator_token(call.validator)?;
+            token = DEFAULT_FEE_TOKEN;
         }
 
         let token_balance = TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall {
@@ -825,7 +824,7 @@ mod tests {
 
     #[test]
     fn test_get_fee_token_balance_fallback() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Allegretto);
+        let mut storage = HashMapStorageProvider::new(1);
         let user = Address::random();
         let validator = Address::random();
         let admin = Address::random();
@@ -837,7 +836,6 @@ mod tests {
                 .with_mint(user, balance)
                 .apply()?;
 
-            // DO NOT set any user or validator tokens to the default fallback
             let fee_manager = TipFeeManager::new();
             let call = IFeeManager::getFeeTokenBalanceCall {
                 sender: user,
@@ -845,8 +843,7 @@ mod tests {
             };
             let result = fee_manager.get_fee_token_balance(call)?;
 
-            // returns PathUSD as a fallback
-            assert_eq!(result._0, path_usd.address());
+            assert_eq!(result._0, DEFAULT_FEE_TOKEN);
             assert_eq!(result._1, balance);
 
             Ok(())
