@@ -290,11 +290,6 @@ impl StablecoinExchange {
         Ok(amount)
     }
 
-    /// Generate deterministic key for token pair
-    pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
-        compute_book_key(token_a, token_b)
-    }
-
     /// Get price level information
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
@@ -1195,21 +1190,32 @@ impl StablecoinExchange {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
+            let token_in = path[i];
+            let token_out = path[i + 1];
 
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let (base, quote) = {
+                let token_in_tip20 = TIP20Token::from_address(token_in)?;
+                if token_in_tip20.quote_token()? == token_out {
+                    (token_in, token_out)
+                } else {
+                    let token_out_tip20 = TIP20Token::from_address(token_out)?;
+                    if token_out_tip20.quote_token()? == token_in {
+                        (token_out, token_in)
+                    } else {
+                        return Err(StablecoinExchangeError::pair_does_not_exist().into());
+                    }
+                }
+            };
+
+            let book_key = compute_book_key(base, quote);
             let orderbook = self.books.at(book_key).read()?;
 
-            // Validate pair exists
             if orderbook.base.is_zero() {
                 return Err(StablecoinExchangeError::pair_does_not_exist().into());
             }
 
-            // Determine direction
-            let base_for_quote = hop_token_in == orderbook.base;
-
-            route.push((book_key, base_for_quote));
+            let is_base_for_quote = token_in == base;
+            route.push((book_key, is_base_for_quote));
         }
 
         Ok(route)

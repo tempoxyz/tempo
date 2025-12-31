@@ -392,19 +392,12 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
     }
 }
 
-/// Compute deterministic book key from base, quote token pair
-pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
-    // Sort tokens to ensure deterministic key
-    let (token_a, token_b) = if token_a < token_b {
-        (token_a, token_b)
-    } else {
-        (token_b, token_a)
-    };
-
-    // Compute keccak256(abi.encodePacked(tokenA, tokenB))
+/// Compute deterministic book key from ordered (base, quote) token pair
+pub fn compute_book_key(base: Address, quote: Address) -> B256 {
+    // Compute keccak256(abi.encodePacked(base, quote))
     let mut buf = [0u8; 40];
-    buf[..20].copy_from_slice(token_a.as_slice());
-    buf[20..].copy_from_slice(token_b.as_slice());
+    buf[..20].copy_from_slice(base.as_slice());
+    buf[20..].copy_from_slice(quote.as_slice());
     keccak256(buf)
 }
 
