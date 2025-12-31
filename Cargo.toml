@@ -157,6 +157,7 @@ reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10
 reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-storage-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2" }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", tag = "v1.10.0-rc.2", features = [

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet,
+    generate_localnet::GenerateLocalnet, state_bloat::StateBloat,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -15,6 +15,7 @@ mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
 mod genesis_args;
+mod state_bloat;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
@@ -30,6 +31,7 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::StateBloat(args) => args.run().await.wrap_err("failed to bloat state"),
     }
 }
 
@@ -44,15 +46,12 @@ struct Args {
 }
 
 #[derive(Debug, clap::Subcommand)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "the variant names map to actual cli inputs and are desired"
-)]
 enum Action {
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    StateBloat(StateBloat),
 }
 
 #[derive(Debug, clap::Args)]
