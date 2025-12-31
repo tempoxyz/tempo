@@ -253,13 +253,8 @@ where
             .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         // Calculate the intrinsic gas for the AA transaction
-        let gas_result =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()), spec);
-
-        // The only error calculate_aa_batch_intrinsic_gas can return is ValueTransferNotAllowedInAATx
-        // (when a call in the batch has non-zero value). We map this to NonZeroValue since it's
-        // the same user-facing issue (value transfers not allowed).
-        let init_and_floor_gas = gas_result.map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+        let init_and_floor_gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()), spec).map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         let gas_limit = tx.gas_limit;
 
