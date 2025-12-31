@@ -263,12 +263,11 @@ where
                 digest,
                 ack,
             } => {
-                if let Err(error) = self
+                // Errors are logged inside canonicalize; head canonicalization failures
+                // are non-fatal and will be retried on the next block.
+                let _ = self
                     .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
-                    .await
-                {
-                    warn!(%error, "failed canonicalizing head; will retry on next block");
-                }
+                    .await;
             }
             Command::Finalize(finalized) => {
                 self.finalize(cause, *finalized)
