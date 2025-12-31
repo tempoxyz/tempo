@@ -17,7 +17,7 @@ impl Precompile for TIP20Token {
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         // Ensure that the token is initialized (has bytecode)
-        // Note that if the initialization check fails, this is treated as uninitalized
+        // Note that if the initialization check fails, this is treated as uninitialized
         if !self.is_initialized().unwrap_or(false) {
             return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
                 .into_precompile_result(self.storage.gas_used());
