@@ -128,6 +128,7 @@ impl ConsensusConfig {
                 self.validators.iter().map(Validator::public_key),
             )
             .unwrap(),
+            is_next_full_dkg: false,
         }
     }
 }

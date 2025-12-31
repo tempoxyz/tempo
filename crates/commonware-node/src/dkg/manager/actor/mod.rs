@@ -294,6 +294,7 @@ where
                 round.clone(),
                 state.share.clone(),
                 state.seed,
+                state.is_full_dkg,
             )
             .wrap_err("unable to instantiate dealer state")?;
 
@@ -424,6 +425,7 @@ where
                                     &state,
                                     request,
                                 )
+                                .await
                             {
                                 let stream = match self.config.marshal.ancestry((None, hole)).await {
                                     Some(stream) => stream,
@@ -453,6 +455,7 @@ where
                             .expect("if the stream is yielding blocks, there must be a receiver");
                         if let Some((hole, request)) = self
                             .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
+                            .await
                         {
                             let stream = match self.config.marshal.ancestry((None, hole)).await {
                                 Some(stream) => stream,
@@ -726,8 +729,14 @@ where
         // state), then we know the DKG failed.
         if onchain_outcome.output == state.output {
             self.metrics.failures.inc();
+            if state.is_full_dkg {
+                self.metrics.full_failures.inc();
+            }
         } else {
             self.metrics.successes.inc();
+            if state.is_full_dkg {
+                self.metrics.full_successes.inc();
+            }
         }
 
         Ok(Some(state::State {
@@ -743,6 +752,7 @@ where
                     .filter(|(_, v)| v.active)
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
+            is_full_dkg: onchain_outcome.is_next_full_dkg,
         }))
     }
 
@@ -903,7 +913,7 @@ where
             our.epoch = %round.epoch(),
         ),
     )]
-    fn handle_get_dkg_outcome<TStorageContext>(
+    async fn handle_get_dkg_outcome<TStorageContext>(
         &mut self,
         cause: &Span,
         storage: &mut state::Storage<TStorageContext>,
@@ -1011,12 +1021,27 @@ where
             output
         };
 
+        // Check if next ceremony should be full
+        let next_epoch = state.epoch.next();
+        let is_next_full_dkg = validators::read_next_full_dkg_ceremony(
+            1,
+            &self.config.execution_node,
+            request.height.saturating_sub(1),
+        )
+        .await
+        // in theory it should never fail, but if it does, just stick to reshare.
+        .is_ok_and(|epoch| epoch == next_epoch.get());
+        if is_next_full_dkg {
+            info!(%next_epoch, "next DKG ceremony will be full");
+        }
+
         if request
             .response
             .send(OnchainDkgOutcome {
-                epoch: state.epoch.next(),
+                epoch: next_epoch,
                 output,
                 next_players: state.syncers.keys().clone(),
+                is_next_full_dkg,
             })
             .is_err()
         {
@@ -1061,6 +1086,7 @@ where
                 .filter(|(_, v)| v.active)
                 .map(|(k, v)| (k.clone(), v.inbound)),
         ),
+        is_full_dkg: false,
     })
 }
 
@@ -1077,6 +1103,9 @@ struct Metrics {
 
     failures: Counter,
     successes: Counter,
+
+    full_successes: Counter,
+    full_failures: Counter,
 
     dealers: Gauge,
     players: Gauge,
@@ -1187,6 +1216,20 @@ impl Metrics {
             bad_dealings.clone(),
         );
 
+        let full_successes = Counter::default();
+        context.register(
+            "full_ceremony_successes",
+            "the number of successful full DKG ceremonies a node participated in",
+            full_successes.clone(),
+        );
+
+        let full_failures = Counter::default();
+        context.register(
+            "full_ceremony_failures",
+            "the number of failed full DKG ceremonies a node participated in",
+            full_failures.clone(),
+        );
+
         Self {
             peers,
             syncing_players,
@@ -1202,6 +1245,8 @@ impl Metrics {
             how_often_player,
             failures,
             successes,
+            full_successes,
+            full_failures,
         }
     }
 
