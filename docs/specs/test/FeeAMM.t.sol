@@ -50,7 +50,7 @@ contract FeeAMMTest is BaseTest {
 
         // Expect Mint event with correct args
         vm.expectEmit(true, true, true, true);
-        emit IFeeAMM.MintWithValidatorToken(
+        emit IFeeAMM.Mint(
             alice, // sender
             alice, // recipient
             address(userToken), // userToken

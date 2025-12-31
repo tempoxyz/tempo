@@ -140,7 +140,7 @@ contract FeeAMM is IFeeAMM {
         totalSupply[poolId] += liquidity;
         liquidityBalances[poolId][to] += liquidity;
 
-        emit MintWithValidatorToken(
+        emit Mint(
             msg.sender, to, userToken, validatorToken, amountValidatorToken, liquidity
         );
     }
