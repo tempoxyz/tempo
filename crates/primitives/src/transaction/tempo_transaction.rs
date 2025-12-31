@@ -2071,7 +2071,7 @@ mod tests {
 
         // Invalid: CREATE as second call
         let tx_invalid = TempoTransaction {
-            calls: vec![call_call.clone(), create_call.clone()],
+            calls: vec![call_call, create_call],
             ..Default::default()
         };
         assert!(tx_invalid.validate().is_err());
@@ -2100,7 +2100,7 @@ mod tests {
 
         // Invalid: Multiple CREATEs (both at first position, second one triggers error)
         let tx_invalid = TempoTransaction {
-            calls: vec![create_call.clone(), create_call.clone()],
+            calls: vec![create_call.clone(), create_call],
             ..Default::default()
         };
         assert!(tx_invalid.validate().is_err());
