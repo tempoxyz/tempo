@@ -2318,7 +2318,7 @@ mod tests {
     }
 
     /// Helper to verify a single hop in a route
-    fn verify_hop(hop: (B256, bool), token_in: Address, _token_out: Address) -> eyre::Result<()> {
+    fn verify_hop(hop: (B256, bool), token_in: Address) -> eyre::Result<()> {
         let (book_key, is_base_for_quote) = hop;
 
         let exchange = StablecoinExchange::new();
@@ -2415,7 +2415,7 @@ mod tests {
 
             // Expected: 1 hop (token -> path_usd)
             assert_eq!(route.len(), 1, "Should have 1 hop for direct pair");
-            verify_hop(route[0], token, path_usd)?;
+            verify_hop(route[0], token)?;
 
             Ok(())
         })
@@ -2446,7 +2446,7 @@ mod tests {
 
             // Expected: 1 hop (path_usd -> token)
             assert_eq!(route.len(), 1, "Should have 1 hop for reverse pair");
-            verify_hop(route[0], path_usd, token)?;
+            verify_hop(route[0], path_usd)?;
 
             Ok(())
         })
@@ -2476,8 +2476,8 @@ mod tests {
 
             // Expected: 2 hops (USDC -> PathUSD, PathUSD -> EURC)
             assert_eq!(route.len(), 2, "Should have 2 hops for sibling tokens");
-            verify_hop(route[0], usdc.address(), PATH_USD_ADDRESS)?;
-            verify_hop(route[1], PATH_USD_ADDRESS, eurc.address())?;
+            verify_hop(route[0], usdc.address())?;
+            verify_hop(route[1], PATH_USD_ADDRESS)?;
 
             Ok(())
         })
