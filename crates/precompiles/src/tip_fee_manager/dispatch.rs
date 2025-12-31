@@ -96,12 +96,12 @@ impl Precompile for TipFeeManager {
             }
             IFeeManager::distributeFeesCall::SELECTOR => {
                 mutate_void::<IFeeManager::distributeFeesCall>(calldata, msg_sender, |_s, call| {
-                    self.distribute_fees(call.validator)
+                    self.distribute_fees(call.validator, call.token)
                 })
             }
-            IFeeManager::collectedFeesByValidatorCall::SELECTOR => {
-                view::<IFeeManager::collectedFeesByValidatorCall>(calldata, |call| {
-                    self.collected_fees.at(call.validator).read()
+            IFeeManager::collectedFeesCall::SELECTOR => {
+                view::<IFeeManager::collectedFeesCall>(calldata, |call| {
+                    self.collected_fees.at(call.validator).at(call.token).read()
                 })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {

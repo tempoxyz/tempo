@@ -25,8 +25,8 @@ use crate::{
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
 
-/// Minimum order size of $10 USD
-pub const MIN_ORDER_AMOUNT: u128 = 10_000_000;
+/// Minimum order size of $100 USD
+pub const MIN_ORDER_AMOUNT: u128 = 100_000_000;
 
 /// Allowed tick spacing for order placement
 pub const TICK_SPACING: i16 = 10;
@@ -689,7 +689,7 @@ impl StablecoinExchange {
             book_handler_order.delete_tick_bit(order.tick(), order.is_bid())?;
 
             let (tick, has_liquidity) =
-                book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                book_handler.next_initialized_tick(order.tick(), order.is_bid())?;
 
             // Update best_tick when tick is exhausted
             if order.is_bid() {
@@ -977,7 +977,7 @@ impl StablecoinExchange {
 
             if best_tick == order.tick() {
                 let (next_tick, has_liquidity) =
-                    book_handler.next_initialized_tick(order.tick(), order.is_bid());
+                    book_handler.next_initialized_tick(order.tick(), order.is_bid())?;
 
                 if order.is_bid() {
                     let new_best = if has_liquidity { next_tick } else { i16::MIN };
@@ -997,12 +997,13 @@ impl StablecoinExchange {
 
         level_handler.write(level)?;
 
-        // Refund tokens to maker - round DOWN to favor protocol
+        // Refund tokens to maker - must match the escrow amount
         let orderbook = self.books.at(order.book_key()).read()?;
         if order.is_bid() {
-            // Bid orders are in quote token, refund quote amount - round DOWN
+            // Bid orders escrowed quote tokens using RoundingDirection::Up,
+            // so refund must also use Up to return the exact escrowed amount
             let quote_amount =
-                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Down)
+                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
@@ -1059,7 +1060,7 @@ impl StablecoinExchange {
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1112,7 +1113,7 @@ impl StablecoinExchange {
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized && remaining_out > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1253,7 +1254,7 @@ impl StablecoinExchange {
             // If no liquidity at this level, move to next tick
             if level.total_liquidity == 0 {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1293,7 +1294,7 @@ impl StablecoinExchange {
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
                 let (next_tick, initialized) =
-                    book_handler.next_initialized_tick(current_tick, is_bid);
+                    book_handler.next_initialized_tick(current_tick, is_bid)?;
 
                 if !initialized && remaining_in > 0 {
                     return Err(StablecoinExchangeError::insufficient_liquidity().into());
@@ -1446,7 +1447,8 @@ mod tests {
             let bob = Address::random();
             let admin = Address::random();
 
-            let base_amount = 10_000_003u128;
+            // Use an amount above MIN_ORDER_AMOUNT that causes rounding
+            let base_amount = 100_000_003u128;
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
@@ -1500,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancellation_refund_rounding_favors_protocol() -> eyre::Result<()> {
+    fn test_cancellation_refund_equals_escrow_for_bid_orders() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
@@ -1509,12 +1511,12 @@ mod tests {
             let alice = Address::random();
             let admin = Address::random();
 
-            let base_amount = 10_000_003u128;
+            // Use an amount above MIN_ORDER_AMOUNT that causes rounding (not evenly divisible)
+            let base_amount = 100_000_003u128;
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick) as u128;
             let escrow_ceil = (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
-            let refund_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)
@@ -1532,18 +1534,22 @@ mod tests {
 
             let order_id = exchange.place(alice, base_token, base_amount, true, tick)?;
 
+            // Verify escrow was taken
+            let alice_balance_after_place = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(
+                alice_balance_after_place, 0,
+                "All quote tokens should be escrowed"
+            );
+
             exchange.cancel(alice, order_id)?;
 
             let alice_refund = exchange.balance_of(alice, quote_token)?;
 
+            // The refund should equal the escrow amount - user should not lose tokens
+            // when placing and immediately canceling an order
             assert_eq!(
-                alice_refund, refund_floor,
-                "Cancellation refund should round DOWN to favor protocol. Got {alice_refund}, expected floor {refund_floor}"
-            );
-
-            assert!(
-                escrow_ceil > refund_floor,
-                "Protocol should keep the rounding difference: escrowed {escrow_ceil} but refunded {refund_floor}"
+                alice_refund, escrow_ceil,
+                "Cancellation refund must equal escrow amount. User escrowed {escrow_ceil} but got back {alice_refund}"
             );
 
             Ok(())
