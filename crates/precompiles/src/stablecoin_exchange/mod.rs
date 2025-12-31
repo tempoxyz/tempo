@@ -400,15 +400,18 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
+        TIP20Token::from_address(non_escrow_token)?.ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
@@ -542,15 +545,18 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        TIP20Token::from_address(non_escrow_token)?.ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
