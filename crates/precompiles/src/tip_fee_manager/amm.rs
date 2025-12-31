@@ -278,27 +278,16 @@ impl TipFeeManager {
         )?;
 
         // Emit Mint event
-        if !self.storage.spec().is_allegro_moderato() {
-            self.emit_event(TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
+        self.emit_event(TIPFeeAMMEvent::Mint(
+            ITIPFeeAMM::Mint {
                 sender: msg_sender,
+                to,
                 userToken: user_token,
                 validatorToken: validator_token,
-                amountUserToken: U256::ZERO,
                 amountValidatorToken: amount_validator_token,
                 liquidity,
-            }))?;
-        } else {
-            self.emit_event(TIPFeeAMMEvent::MintWithValidatorToken(
-                ITIPFeeAMM::MintWithValidatorToken {
-                    sender: msg_sender,
-                    to,
-                    userToken: user_token,
-                    validatorToken: validator_token,
-                    amountValidatorToken: amount_validator_token,
-                    liquidity,
-                },
-            ))?;
-        }
+            },
+        ))?;
 
         Ok(liquidity)
     }

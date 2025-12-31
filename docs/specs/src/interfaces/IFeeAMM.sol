@@ -23,7 +23,7 @@ interface IFeeAMM {
         uint256 amountIn,
         uint256 amountOut
     );
-    event MintWithValidatorToken(
+    event Mint(
         address sender,
         address indexed to,
         address indexed userToken,
