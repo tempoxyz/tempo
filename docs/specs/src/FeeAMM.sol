@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
+import { TempoUtilities } from "./TempoUtilities.sol";
 import { IERC20 } from "./interfaces/IERC20.sol";
 import { IFeeAMM } from "./interfaces/IFeeAMM.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
@@ -22,7 +23,7 @@ contract FeeAMM is IFeeAMM {
 
     function _requireUSDTIP20(address token) internal view {
         // Check that the token is a deployed TIP20 (prefix + tokenIdCounter check)
-        if (!TIP20_FACTORY.isTIP20(token)) revert InvalidToken();
+        if (!TempoUtilities.isTIP20(token)) revert InvalidToken();
         if (keccak256(bytes(ITIP20(token).currency())) != keccak256(bytes("USD"))) {
             revert InvalidCurrency();
         }

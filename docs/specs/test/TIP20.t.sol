@@ -33,11 +33,19 @@ contract TIP20Test is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        linkedToken =
-            TIP20(factory.createToken("Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin));
-        anotherToken =
-            TIP20(factory.createToken("Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin));
-        token = TIP20(factory.createToken("Test Token", "TST", "USD", linkedToken, admin));
+        linkedToken = TIP20(
+            factory.createToken(
+                "Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin, bytes32("linked")
+            )
+        );
+        anotherToken = TIP20(
+            factory.createToken(
+                "Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin, bytes32("another")
+            )
+        );
+        token = TIP20(
+            factory.createToken("Test Token", "TST", "USD", linkedToken, admin, bytes32("token"))
+        );
 
         // Setup roles and mint tokens
         vm.startPrank(admin);
@@ -746,11 +754,17 @@ contract TIP20Test is BaseTest {
     }
 
     function testSetNextQuoteTokenUsdRequiresUsdQuote() public {
-        TIP20 usdToken =
-            TIP20(factory.createToken("USD Token", "USD", "USD", TIP20(_PATH_USD), admin));
+        TIP20 usdToken = TIP20(
+            factory.createToken(
+                "USD Token", "USD", "USD", TIP20(_PATH_USD), admin, bytes32("usdtoken")
+            )
+        );
 
-        TIP20 nonUsdToken =
-            TIP20(factory.createToken("Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin));
+        TIP20 nonUsdToken = TIP20(
+            factory.createToken(
+                "Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin, bytes32("eurotok")
+            )
+        );
 
         vm.prank(admin);
         try usdToken.setNextQuoteToken(nonUsdToken) {
@@ -1052,7 +1066,9 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateIndirectLoop() public {
-        TIP20 newToken = TIP20(factory.createToken("New Token", "NEW", "USD", token, admin));
+        TIP20 newToken = TIP20(
+            factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken"))
+        );
 
         // Try to set token's quote token to newToken (which would create a loop)
         vm.startPrank(admin);
@@ -1073,8 +1089,10 @@ contract TIP20Test is BaseTest {
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
         // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
-        TIP20 token2 = TIP20(factory.createToken("Token 2", "TK2", "USD", token, admin));
-        TIP20 token3 = TIP20(factory.createToken("Token 3", "TK3", "USD", token2, admin));
+        TIP20 token2 =
+            TIP20(factory.createToken("Token 2", "TK2", "USD", token, admin, bytes32("token2")));
+        TIP20 token3 =
+            TIP20(factory.createToken("Token 3", "TK3", "USD", token2, admin, bytes32("token3")));
 
         // Try to set linkedToken's quote token to token3 (would create loop)
         vm.startPrank(admin);
