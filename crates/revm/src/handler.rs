@@ -339,7 +339,9 @@ where
                 // This maintains the invariant that nonces always increment regardless of tx outcome.
                 if calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
                     let caller = evm.ctx().tx().caller();
-                    if let Ok(mut caller_acc) = evm.ctx().journal_mut().load_account_with_code_mut(caller) {
+                    if let Ok(mut caller_acc) =
+                        evm.ctx().journal_mut().load_account_with_code_mut(caller)
+                    {
                         caller_acc.data.bump_nonce();
                     }
                 }
