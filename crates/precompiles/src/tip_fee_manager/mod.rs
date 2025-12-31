@@ -831,7 +831,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let balance = U256::from(1000);
-            let path_usd = TIP20Setup::path_usd(admin)
+            let _path_usd = TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 .with_mint(user, balance)
                 .apply()?;
