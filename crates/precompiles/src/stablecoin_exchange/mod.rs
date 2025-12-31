@@ -395,15 +395,19 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
@@ -537,15 +541,19 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
@@ -3892,6 +3900,138 @@ mod tests {
             assert!(matches!(
                 result.unwrap_err(),
                 TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_when_base_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, _quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Get the base token and apply blacklist policy
+            let mut base = TIP20Token::from_address(base_addr)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the base token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place bid order (alice wants to buy base token) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, true, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip bid order - should also fail
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_when_quote_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Get the quote token and apply blacklist policy
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the quote token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place ask order (alice wants to sell base for quote) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip ask order - should also fail
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
             ));
 
             Ok(())
