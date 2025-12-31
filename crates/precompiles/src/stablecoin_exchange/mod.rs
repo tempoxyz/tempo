@@ -688,11 +688,7 @@ impl StablecoinExchange {
             // For ask->bid flips: Calculate the max base amount affordable with received quote
             // to ensure consistent rounding and prevent silent failures
             let flip_amount = if order.is_bid() {
-                // Bid filled: maker received base tokens (exact amount)
-                // Flip creates ask: escrows base tokens
-                // Use the original order amount to try to flip the full position.
-                // If maker withdrew after partial fills, the flip will silently fail
-                // due to insufficient internal balance.
+                // Use original amount; flip fails silently if maker withdrew after partial fills
                 order.amount()
             } else {
                 // Ask filled: maker received quote tokens (rounded down)
