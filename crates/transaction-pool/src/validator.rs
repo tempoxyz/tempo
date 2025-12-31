@@ -235,15 +235,9 @@ where
             override_key_id: None,
         };
 
-        // Get the current hardfork spec for accurate gas calculation
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
-
         // Calculate the intrinsic gas for the AA transaction
         let init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()), spec)
+            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         let gas_limit = tx.gas_limit;
