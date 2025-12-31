@@ -23,7 +23,9 @@ use futures::{
 };
 use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, error, info, info_span, instrument, warn, warn_span};
+use tracing::{
+    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
+};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -243,11 +245,11 @@ where
                     // Backfills will be spawned as tasks and will also send
                     // resolved the blocks to this queue.
                     if let Err(error) = self.handle_message(msg).await {
-                        error!(
+                        error_span!("shutdown").in_scope(|| error!(
                             %error,
                             "executor encountered fatal fork choice update error; \
                             shutting down to prevent consensus-execution divergence"
-                        );
+                        ));
                         break;
                     }
                 },
