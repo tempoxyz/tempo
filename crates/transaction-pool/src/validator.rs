@@ -254,7 +254,8 @@ where
 
         // Calculate the intrinsic gas for the AA transaction
         let init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()), spec).map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()), spec)
+                .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         let gas_limit = tx.gas_limit;
 
