@@ -30,8 +30,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Maximum valid price (PRICE_SCALE + int16.max)
     uint32 public constant MAX_PRICE = 132_767;
 
-    /// @notice Minimum order amount (10 units with 6 decimals)
-    uint128 public constant MIN_ORDER_AMOUNT = 10_000_000;
+    /// @notice Minimum order amount (100 units with 6 decimals)
+    uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
 
     /// @notice TIP20 token address prefix (12 bytes)
     bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
@@ -236,25 +236,23 @@ contract StablecoinExchange is IStablecoinExchange {
                 !TIP403_REGISTRY.isAuthorized(policyId, maker)
                     || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
             ) {
-                revert ITIP20.PolicyForbids();
+                if (revertOnTransferFail) {
+                    revert ITIP20.PolicyForbids();
+                } else {
+                    return 0;
+                }
             }
 
             // Check if the user has a balance, transfer the rest
             uint128 userBalance = balances[maker][escrowToken];
             if (userBalance >= escrowAmount) {
                 balances[maker][escrowToken] -= escrowAmount;
-            } else {
+            } else if (revertOnTransferFail) {
                 balances[maker][escrowToken] = 0;
-                if (revertOnTransferFail) {
-                    ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance);
-                } else {
-                    try ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance) { }
-                    catch {
-                        return 0;
-                    }
-                }
+                ITIP20(escrowToken).transferFrom(maker, address(this), escrowAmount - userBalance);
+            } else {
+                // For flip orders (revertOnTransferFail = false), only use internal balance
+                return 0;
             }
         }
         orderId = nextOrderId;
@@ -362,6 +360,35 @@ contract StablecoinExchange is IStablecoinExchange {
             revert IStablecoinExchange.Unauthorized();
         }
 
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Cancel an order where the maker is forbidden by TIP-403 policy
+    /// @dev Allows anyone to clean up stale orders from blacklisted makers
+    /// @param orderId The order ID to cancel
+    function cancelStaleOrder(uint128 orderId) external {
+        IStablecoinExchange.Order storage order = orders[orderId];
+        if (order.maker == address(0)) {
+            revert IStablecoinExchange.OrderDoesNotExist();
+        }
+
+        Orderbook storage book = books[order.bookKey];
+        address token = order.isBid ? book.quote : book.base;
+
+        // Check if maker is forbidden by the token's transfer policy
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (TIP403_REGISTRY.isAuthorized(policyId, order.maker)) {
+            revert IStablecoinExchange.OrderNotStale();
+        }
+
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Internal function to cancel an order and refund escrow
+    /// @dev Caller must validate authorization before calling
+    /// @param orderId The order ID to cancel
+    /// @param order Storage reference to the order
+    function _cancelOrder(uint128 orderId, IStablecoinExchange.Order storage order) internal {
         Orderbook storage book = books[order.bookKey];
         address token = order.isBid ? book.quote : book.base;
         bool isBid = order.isBid;

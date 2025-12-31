@@ -114,7 +114,7 @@ function burn(
 ) external returns (uint256 amountUserToken, uint256 amountValidatorToken)
 ```
 
-Burns LP tokens and receives pro-rata share of reserves. Reverts if withdrawal would prevent pending swaps at the end of the block. Emits `Burn` event.
+Burns LP tokens and receives pro-rata share of reserves. Emits `Burn` event.
 
 ```solidity
 function executeFeeSwap(
@@ -178,16 +178,16 @@ function collectFeePostTx(
 Called by the protocol after transaction execution. The validator token and fee recipient are inferred from `block.coinbase`. Calculates refund amount: `refundAmount = maxAmount - actualUsed`. Refunds unused tokens to user. If user token differs from validator token, executes the fee swap immediately and accumulates the output for the validator. Access: Protocol only (`msg.sender == address(0)`).
 
 ```solidity
-function distributeFees(address validator) external
+function distributeFees(address validator, address token) external
 ```
 
-Allows anyone to trigger distribution of accumulated fees to a validator. Transfers all accumulated fees in the validator's preferred token to the validator address. If no fees have accumulated, this is a no-op.
+Allows anyone to trigger distribution of accumulated fees for a specific token to a validator. Transfers all accumulated fees in the specified token to the validator address. If no fees have accumulated for that token, this is a no-op.
 
 ```solidity
-function collectedFeesByValidator(address validator) external view returns (uint256)
+function collectedFees(address validator, address token) external view returns (uint256)
 ```
 
-Returns the amount of accumulated fees for a validator that can be claimed via `distributeFees()`.
+Returns the amount of accumulated fees for a validator and specific token that can be claimed via `distributeFees()`.
 
 ### Swap Mechanisms
 
