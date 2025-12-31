@@ -194,7 +194,11 @@ contract StablecoinExchange is IStablecoinExchange {
         if (tick % TICK_SPACING != 0) revert IStablecoinExchange.InvalidTick();
 
         if (amount < MIN_ORDER_AMOUNT) {
-            revert IStablecoinExchange.BelowMinimumOrderSize(amount);
+            if (revertOnTransferFail) {
+                revert IStablecoinExchange.BelowMinimumOrderSize(amount);
+            } else {
+                return 0;
+            }
         }
 
         if (isFlip) {
