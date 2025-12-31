@@ -58,6 +58,7 @@ interface IStablecoinExchange {
     error MaxInputExceeded();
     error BelowMinimumOrderSize(uint128 amount);
     error InvalidBaseToken();
+    error OrderNotStale();
 
     event FlipOrderPlaced(
         uint128 indexed orderId,
@@ -110,6 +111,8 @@ interface IStablecoinExchange {
         returns (address base, address quote, int16 bestBidTick, int16 bestAskTick);
 
     function cancel(uint128 orderId) external;
+
+    function cancelStaleOrder(uint128 orderId) external;
 
     function createPair(address base) external returns (bytes32 key);
 

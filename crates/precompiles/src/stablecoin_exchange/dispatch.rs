@@ -39,6 +39,7 @@ impl Precompile for StablecoinExchange {
                         call.isBid,
                         call.tick,
                         call.flipTick,
+                        false,
                     )
                 })
             }
@@ -91,6 +92,13 @@ impl Precompile for StablecoinExchange {
                 mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
                     self.cancel(s, call.orderId)
                 })
+            }
+            IStablecoinExchange::cancelStaleOrderCall::SELECTOR => {
+                mutate_void::<IStablecoinExchange::cancelStaleOrderCall>(
+                    calldata,
+                    msg_sender,
+                    |_s, call| self.cancel_stale_order(call.orderId),
+                )
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<IStablecoinExchange::swapExactAmountInCall>(

@@ -19,8 +19,11 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{
+        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
+    },
     tip20_factory::TIP20Factory,
+    tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -484,6 +487,7 @@ impl StablecoinExchange {
     /// Flip orders automatically create a new order on the opposite side when completely filled.
     /// For bids: flip_tick must be > tick
     /// For asks: flip_tick must be < tick
+    #[allow(clippy::too_many_arguments)]
     pub fn place_flip(
         &mut self,
         sender: Address,
@@ -492,6 +496,7 @@ impl StablecoinExchange {
         is_bid: bool,
         tick: i16,
         flip_tick: i16,
+        internal_balance_only: bool,
     ) -> Result<u128> {
         let quote_token = TIP20Token::from_address(token)?.quote_token()?;
 
@@ -542,8 +547,19 @@ impl StablecoinExchange {
             (token, amount)
         };
 
-        // Debit from user's balance or transfer from wallet
-        self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        // Debit from user's balance only. This is set to true after a flip order is filled and the
+        // subsequent flip order is being placed.
+        if internal_balance_only {
+            TIP20Token::from_address(escrow_token)?
+                .ensure_transfer_authorized(sender, self.address)?;
+            let user_balance = self.balance_of(sender, escrow_token)?;
+            if user_balance < escrow_amount {
+                return Err(StablecoinExchangeError::insufficient_balance().into());
+            }
+            self.sub_balance(sender, escrow_token, escrow_amount)?;
+        } else {
+            self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
+        }
 
         // Create the flip order
         let order_id = self.next_order_id()?;
@@ -663,6 +679,7 @@ impl StablecoinExchange {
             // Create a new flip order with flipped side and swapped ticks
             // Bid becomes Ask, Ask becomes Bid
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
+            // Uses internal balance only, does not transfer from wallet
             let _ = self.place_flip(
                 order.maker(),
                 orderbook.base,
@@ -670,6 +687,7 @@ impl StablecoinExchange {
                 !order.is_bid(),
                 order.flip_tick(),
                 order.tick(),
+                true,
             );
         }
 
@@ -1018,6 +1036,40 @@ impl StablecoinExchange {
         ))
     }
 
+    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
+    /// Allows anyone to clean up stale orders from blacklisted makers
+    pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
+        let order = self.orders.at(order_id).read()?;
+
+        if order.maker().is_zero() {
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
+        }
+
+        let book = self.books.at(order.book_key()).read()?;
+        let token = if order.is_bid() {
+            book.quote
+        } else {
+            book.base
+        };
+
+        // Check if maker is forbidden by the token's transfer policy
+        let token_id = address_to_token_id_unchecked(token);
+        let token_contract = TIP20Token::new(token_id);
+        let policy_id = token_contract.transfer_policy_id()?;
+
+        let registry = TIP403Registry::new();
+        let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: order.maker(),
+        })?;
+
+        if is_authorized {
+            return Err(StablecoinExchangeError::order_not_stale().into());
+        }
+
+        self.cancel_active_order(order)
+    }
+
     /// Withdraw tokens from exchange balance
     pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
@@ -1324,6 +1376,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
     use super::*;
@@ -1776,8 +1829,15 @@ mod tests {
                 .expect("Could not create pair");
 
             // Try to place a flip order below minimum amount
-            let result =
-                exchange.place_flip(alice, base_token, below_minimum, true, tick, flip_tick);
+            let result = exchange.place_flip(
+                alice,
+                base_token,
+                below_minimum,
+                true,
+                tick,
+                flip_tick,
+                false,
+            );
             assert_eq!(
                 result,
                 Err(StablecoinExchangeError::below_minimum_order_size(below_minimum).into())
@@ -1818,7 +1878,7 @@ mod tests {
             .expect("Base token transfer failed");
 
             // Place a flip order which should also create the pair
-            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10)?;
+            exchange.place_flip(user, base_token, MIN_ORDER_AMOUNT, true, 0, 10, false)?;
 
             let book_after = exchange.books.at(book_key).read()?;
             assert_eq!(book_after.base, base_token);
@@ -1866,7 +1926,15 @@ mod tests {
                 .expect("Could not create pair");
 
             let order_id = exchange
-                .place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)
+                .place_flip(
+                    alice,
+                    base_token,
+                    min_order_amount,
+                    true,
+                    tick,
+                    flip_tick,
+                    false,
+                )
                 .expect("Place flip bid order should succeed");
 
             assert_eq!(order_id, 1);
@@ -2224,7 +2292,7 @@ mod tests {
 
             // Place a flip bid order
             let flip_order_id = exchange
-                .place_flip(alice, base_token, amount, true, tick, flip_tick)
+                .place_flip(alice, base_token, amount, true, tick, flip_tick, false)
                 .expect("Place flip order should succeed");
 
             exchange
@@ -3250,6 +3318,7 @@ mod tests {
                 true,
                 invalid_tick,
                 invalid_flip_tick,
+                false,
             );
 
             let error = result.unwrap_err();
@@ -3268,6 +3337,7 @@ mod tests {
                 true,
                 valid_tick,
                 invalid_flip_tick,
+                false,
             );
 
             let error = result.unwrap_err();
@@ -3286,6 +3356,7 @@ mod tests {
                 true,
                 valid_tick,
                 valid_flip_tick,
+                false,
             );
             assert!(result.is_ok());
 
@@ -3545,8 +3616,15 @@ mod tests {
 
             exchange.create_pair(base_token)?;
 
-            let order_id =
-                exchange.place_flip(alice, base_token, min_order_amount, true, tick, flip_tick)?;
+            let order_id = exchange.place_flip(
+                alice,
+                base_token,
+                min_order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
 
             assert_eq!(order_id, 1);
 
@@ -3716,6 +3794,105 @@ mod tests {
                 "Expected PolicyForbids error, got: {err:?}"
             );
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_order() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let mut base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .apply()?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base.address())?;
+            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.cancel_stale_order(order_id)?;
+
+            assert_eq!(
+                exchange.balance_of(alice, base.address())?,
+                MIN_ORDER_AMOUNT
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cancel_stale_not_stale() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            let mut base = TIP20Setup::create("USDC", "USDC", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT * 2))
+                .with_approval(alice, exchange.address, U256::from(MIN_ORDER_AMOUNT * 2))
+                .apply()?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            exchange.create_pair(base.address())?;
+            let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
+
+            let result = exchange.cancel_stale_order(order_id);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
+            ));
 
             Ok(())
         })
