@@ -1220,7 +1220,7 @@ contract StablecoinExchangeTest is BaseTest {
         token1.changeTransferPolicyId(policyId);
 
         // Alice places an ask order (escrows base token)
-        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
         uint128 orderId = _placeAskOrder(alice, orderAmount, 100);
 
         // Verify order exists
@@ -1269,7 +1269,7 @@ contract StablecoinExchangeTest is BaseTest {
         pathUSD.changeTransferPolicyId(policyId);
 
         // Alice places a bid order (escrows quote token)
-        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
         uint128 orderId = _placeBidOrder(alice, orderAmount, 100);
 
         // Calculate expected escrow
@@ -1315,7 +1315,7 @@ contract StablecoinExchangeTest is BaseTest {
         token1.changeTransferPolicyId(policyId);
 
         // Alice places an ask order
-        uint128 orderId = _placeAskOrder(alice, MIN_ORDER_AMOUNT * 2, 100);
+        uint128 orderId = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
 
         // Alice is NOT blacklisted, so she's still authorized
         assertTrue(registry.isAuthorized(policyId, alice), "Alice should be authorized");
@@ -1357,7 +1357,7 @@ contract StablecoinExchangeTest is BaseTest {
         token1.changeTransferPolicyId(policyId);
 
         // Alice places an ask order while whitelisted
-        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
         uint128 orderId = _placeAskOrder(alice, orderAmount, 100);
 
         // Remove alice from whitelist
@@ -1389,7 +1389,7 @@ contract StablecoinExchangeTest is BaseTest {
         token1.changeTransferPolicyId(policyId);
 
         // Alice places an ask order
-        uint128 orderAmount = MIN_ORDER_AMOUNT * 2;
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
         uint128 orderId = _placeAskOrder(alice, orderAmount, 100);
 
         // Blacklist alice
@@ -1418,16 +1418,16 @@ contract StablecoinExchangeTest is BaseTest {
         token1.changeTransferPolicyId(policyId);
 
         // Place three ask orders at the same tick: alice, bob, alice
-        uint128 order1 = _placeAskOrder(alice, MIN_ORDER_AMOUNT, 100);
-        uint128 order2 = _placeAskOrder(bob, MIN_ORDER_AMOUNT, 100);
-        uint128 order3 = _placeAskOrder(alice, MIN_ORDER_AMOUNT, 100);
+        uint128 order1 = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT(), 100);
+        uint128 order2 = _placeAskOrder(bob, exchange.MIN_ORDER_AMOUNT(), 100);
+        uint128 order3 = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT(), 100);
 
         // Verify tick has all three orders
         (uint128 head, uint128 tail, uint128 liquidity) =
             exchange.getTickLevel(address(token1), 100, false);
         assertEq(head, order1);
         assertEq(tail, order3);
-        assertEq(liquidity, MIN_ORDER_AMOUNT * 3);
+        assertEq(liquidity, exchange.MIN_ORDER_AMOUNT() * 3);
 
         // Blacklist alice
         vm.prank(admin);
@@ -1441,7 +1441,7 @@ contract StablecoinExchangeTest is BaseTest {
         (head, tail, liquidity) = exchange.getTickLevel(address(token1), 100, false);
         assertEq(head, order2);
         assertEq(tail, order3);
-        assertEq(liquidity, MIN_ORDER_AMOUNT * 2);
+        assertEq(liquidity, exchange.MIN_ORDER_AMOUNT() * 2);
 
         // Cancel alice's second order (tail of list)
         vm.prank(bob);
@@ -1451,7 +1451,7 @@ contract StablecoinExchangeTest is BaseTest {
         (head, tail, liquidity) = exchange.getTickLevel(address(token1), 100, false);
         assertEq(head, order2);
         assertEq(tail, order2);
-        assertEq(liquidity, MIN_ORDER_AMOUNT);
+        assertEq(liquidity, exchange.MIN_ORDER_AMOUNT());
     }
 
     /*//////////////////////////////////////////////////////////////
