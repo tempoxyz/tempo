@@ -684,16 +684,40 @@ impl StablecoinExchange {
             // Create a new flip order with flipped side and swapped ticks
             // Bid becomes Ask, Ask becomes Bid
             // The current tick becomes the new flip_tick, and flip_tick becomes the new tick
-            // Uses internal balance only, does not transfer from wallet
-            let _ = self.place_flip(
-                order.maker(),
-                orderbook.base,
-                order.amount(),
-                !order.is_bid(),
-                order.flip_tick(),
-                order.tick(),
-                true,
-            );
+            //
+            // For ask->bid flips: Calculate the max base amount affordable with received quote
+            // to ensure consistent rounding and prevent silent failures
+            let flip_amount = if order.is_bid() {
+                // Bid filled: maker received base tokens (exact amount)
+                // Flip creates ask: escrows base tokens (exact amount)
+                // No rounding issue - use the received amount
+                fill_amount
+            } else {
+                // Ask filled: maker received quote tokens (rounded down)
+                // Flip creates bid: escrows quote tokens (rounded up)
+                // Calculate max base affordable with the quote received
+                let quote_received =
+                    base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+
+                // Calculate how much base can be bought with quote_received at flip_tick
+                // Round down to ensure we don't exceed available quote
+                quote_to_base(quote_received, order.flip_tick(), RoundingDirection::Down)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+            };
+
+            // Only place the flip order if it meets minimum requirements
+            if flip_amount >= MIN_ORDER_AMOUNT {
+                let _ = self.place_flip(
+                    order.maker(),
+                    orderbook.base,
+                    flip_amount,
+                    !order.is_bid(),
+                    order.flip_tick(),
+                    order.tick(),
+                    true,
+                );
+            }
         }
 
         // Delete the filled order
@@ -3885,6 +3909,75 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_flip_order_uses_consistent_rounding() -> eyre::Result<()> {
+        // This test verifies that for ask->bid flips, the flip order amount is calculated
+        // based on what the maker can actually afford with received quote tokens, not the
+        // original order amount. This prevents potential silent failures due to rounding.
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+
+            // Use amounts where quote_to_base(base_to_quote(amount)) != amount due to rounding
+            let tick = 100i16;
+            let flip_tick = 50i16;
+            let amount = MIN_ORDER_AMOUNT + 7; // Slightly above minimum to trigger rounding
+
+            let alice_receives = base_to_quote(amount, tick, RoundingDirection::Down).unwrap();
+
+            // Calculate what the fix computes: quote_to_base(alice_receives, flip_tick, Down)
+            let expected_flip_amount =
+                quote_to_base(alice_receives, flip_tick, RoundingDirection::Down).unwrap();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, amount)?;
+
+            exchange.create_pair(base_token)?;
+
+            let flip_order_id =
+                exchange.place_flip(alice, base_token, amount, false, tick, flip_tick, false)?;
+
+            // Bob swaps quote for base (fills Alice's ask order)
+            let quote_for_fill = base_to_quote(amount, tick, RoundingDirection::Up).unwrap();
+            exchange.set_balance(bob, quote_token, quote_for_fill)?;
+            exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_for_fill, 0)?;
+
+            // Original order should be filled (remaining = 0)
+            let filled_order = exchange.orders.at(flip_order_id).read()?;
+            assert_eq!(filled_order.remaining(), 0);
+
+            // The flipped order should be created with id = flip_order_id + 1
+            let new_order_id = exchange.next_order_id()? - 1;
+            let new_order = exchange.orders.at(new_order_id).read()?;
+
+            assert_eq!(new_order.maker(), alice);
+            assert!(new_order.is_bid());
+            assert_eq!(new_order.tick(), flip_tick);
+
+            // The flip order amount should match the calculated affordable amount, NOT the original order amount.
+            assert_eq!(
+                new_order.amount(),
+                expected_flip_amount,
+                "Flip order should use calculated affordable amount, not original amount"
+            );
+
+            // Verify the escrow is within what Alice received
+            let flip_escrow_actual =
+                base_to_quote(new_order.amount(), flip_tick, RoundingDirection::Up).unwrap();
+            assert!(
+                flip_escrow_actual <= alice_receives,
+                "Flip escrow should not exceed received quote"
+            );
 
             Ok(())
         })
