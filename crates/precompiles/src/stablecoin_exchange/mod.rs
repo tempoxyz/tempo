@@ -21,6 +21,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
+    tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -1021,6 +1022,39 @@ impl StablecoinExchange {
                 orderId: order.order_id(),
             },
         ))
+    }
+
+    /// Cancel a stale order where the maker is forbidden by TIP-403 policy
+    /// Allows anyone to clean up stale orders from blacklisted makers
+    pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
+        let order = self.orders.at(order_id).read()?;
+
+        if order.maker().is_zero() {
+            return Err(StablecoinExchangeError::order_does_not_exist().into());
+        }
+
+        let book = self.books.at(order.book_key()).read()?;
+        let token = if order.is_bid() {
+            book.quote
+        } else {
+            book.base
+        };
+
+        // Check if maker is forbidden by the token's transfer policy
+        let token_contract = TIP20Token::at(token);
+        let policy_id = token_contract.transfer_policy_id()?;
+        
+        let registry = TIP403Registry::new();
+        let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
+            policyId: policy_id,
+            user: order.maker(),
+        })?;
+
+        if is_authorized {
+            return Err(StablecoinExchangeError::order_not_stale().into());
+        }
+
+        self.cancel_active_order(order)
     }
 
     /// Withdraw tokens from exchange balance
