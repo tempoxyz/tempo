@@ -1,6 +1,8 @@
 use super::ITIP20;
 use crate::{
-    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
+    Precompile,
+    error::TempoPrecompileError,
+    fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     tip20::{IRolesAuth, TIP20Token},
     unknown_selector, view,
 };
@@ -14,14 +16,11 @@ impl Precompile for TIP20Token {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        // Ensure that the token is initialized (has bytecode) if the call is not static
-        if !self.storage.is_static()
-            && let Err(e) = self.is_initialized().and_then(|init| {
-                init.then_some(())
-                    .ok_or_else(|| TIP20Error::invalid_token().into())
-            })
-        {
-            return e.into_precompile_result(self.storage.gas_used());
+        // Ensure that the token is initialized (has bytecode)
+        // Note that if the initialization check fails, this is treated as uninitalized
+        if !self.is_initialized().unwrap_or(false) {
+            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
+                .into_precompile_result(self.storage.gas_used());
         }
 
         let selector: [u8; 4] = calldata
