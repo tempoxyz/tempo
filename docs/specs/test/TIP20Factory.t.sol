@@ -138,7 +138,7 @@ contract TIP20FactoryTest is BaseTest {
     /// @notice Fuzz test: Addresses without TIP20 prefix should be invalid
     function testFuzz_isTIP20WithInvalidPrefix(uint160 randomAddr) public view {
         // Ensure address doesn't have the TIP20 prefix
-        vm.assume(bytes12(bytes20(address(randomAddr))) != 0x20c000000000000000000000);
+        vm.assume(bytes10(bytes20(address(randomAddr))) != 0x20c00000000000000000);
 
         assertFalse(factory.isTIP20(address(randomAddr)));
     }
