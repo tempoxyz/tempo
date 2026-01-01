@@ -1157,9 +1157,8 @@ impl StablecoinExchange {
                 } else {
                     remaining_out
                 };
-                let quote_needed =
-                    base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, quote_needed)
             };
 
