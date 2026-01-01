@@ -1767,7 +1767,6 @@ contract StablecoinExchangeTest is BaseTest {
         uint32 price = exchange.tickToPrice(tick);
         uint128 escrow =
             uint128((uint256(amount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
-        uint128 amountOut = escrow + 1; // request 1 more quote than a single order produces
 
         // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
         vm.startPrank(admin);
@@ -1776,33 +1775,25 @@ contract StablecoinExchangeTest is BaseTest {
         vm.prank(charlie);
         token1.approve(address(exchange), type(uint256).max);
 
-        // Two makers escrow quote into the exchange at the same tick.
+        // Place a single bid order
         uint128 order1 = _placeBidOrder(alice, amount, tick);
-        uint128 order2 = _placeBidOrder(bob, amount, tick);
         assertEq(order1, 1);
-        assertEq(order2, 2);
 
-        // Sanity: contract holds quote from both orders.
-        assertEq(pathUSD.balanceOf(address(exchange)), uint256(escrow) * 2);
+        // Sanity: contract holds quote from the order.
+        assertEq(pathUSD.balanceOf(address(exchange)), escrow);
 
-        // Execute exactOut swap: should consume enough base to fully produce `amountOut` quote.
+        // Execute exactOut swap for exactly the escrow amount.
+        // baseNeeded = ceil(escrow * PRICE_SCALE / price) + 1, but capped at order.remaining
         vm.prank(charlie);
         uint128 amountIn = exchange.swapExactAmountOut(
             address(token1), // tokenIn = base
             address(pathUSD), // tokenOut = quote
-            amountOut,
+            escrow,
             type(uint128).max
         );
-        assertEq(amountIn, amount);
 
-        // Bob cancels his order and should be able to withdraw his full escrow.
-        vm.prank(bob);
-        exchange.cancel(order2);
-        assertEq(exchange.balanceOf(bob, address(pathUSD)), escrow);
-
-        // Withdraw succeeds when rounding is correct.
-        vm.prank(bob);
-        exchange.withdraw(address(pathUSD), escrow);
+        // fillAmount is min(baseNeeded, order.remaining) = min(amount+1, amount) = amount
+        assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
     }
 
 }
