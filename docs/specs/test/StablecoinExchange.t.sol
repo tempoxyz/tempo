@@ -372,9 +372,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(
-            address(pathUSD), address(token1), amountOut, maxAmountIn
-        );
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -611,9 +610,8 @@ contract StablecoinExchangeTest is BaseTest {
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(
-                IStablecoinExchange.BelowMinimumOrderSize.selector, amount
-            );
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -978,9 +976,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find direct path
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(pathUSD), address(token1), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), minOrderAmount);
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
             // Sibling tokens through pathUSD
@@ -1014,9 +1011,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find path in reverse
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(pathUSD), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), minOrderAmount);
             assertGt(amountOut, 0);
         }
     }
@@ -1702,6 +1698,111 @@ contract StablecoinExchangeTest is BaseTest {
 
         vm.prank(user);
         orderId = exchange.place(address(token1), amount, false, tick);
+    }
+
+    /// @notice Verifies that swapExactAmountOut fully consumes a bid when the taker
+    /// requests all available quote. Tests that baseNeeded rounds up correctly.
+    function test_BidExactOutRounding_FullOrderConsumption() public {
+        // Values that trigger the rounding issue
+        uint128 baseAmount = 100_000_051;
+        int16 tick = -2000; // price = 98000, p = 0.98
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor) - what taker can actually get
+        uint128 release = uint128((uint256(baseAmount) * uint256(price)) / exchange.PRICE_SCALE());
+
+        // Alice places a bid for baseAmount base tokens
+        vm.prank(alice);
+        exchange.place(address(token1), baseAmount, true, tick);
+
+        // Bob does exactOut for the full release amount
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            release, // amountOut
+            type(uint128).max // maxAmountIn
+        );
+
+        // With the fix, baseIn should equal baseAmount (order fully consumed)
+        assertEq(
+            baseIn, baseAmount, "Order should be fully filled when taker takes all available quote"
+        );
+    }
+
+    function testFuzz_BidExactOutRounding_FullOrderConsumption(uint128 amount, int16 tick) public {
+        // Bound inputs
+        amount = uint128(bound(amount, 100_000_000, 500_000_000));
+        tick = int16(bound(tick, -2000, 2000));
+        tick = tick - (tick % 10); // align to tick spacing
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor)
+        uint128 release = uint128((uint256(amount) * uint256(price)) / exchange.PRICE_SCALE());
+        if (release == 0) return; // skip if no quote to release
+
+        // Alice places a bid
+        vm.prank(alice);
+        exchange.place(address(token1), amount, true, tick);
+
+        // Bob takes all available quote
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), address(pathUSD), release, type(uint128).max
+        );
+
+        // Order should be fully consumed
+        assertEq(baseIn, amount, "Order should be fully filled");
+    }
+
+    /// @notice Verifies that swapExactAmountOut correctly rounds up amountIn when filling bids,
+    ///         ensuring the requested output is fully backed by the consumed input.
+    function test_BidExactOutRounding_RoundsUpAmountIn() public {
+        // Choose a tick where price > PRICE_SCALE to make the rounding behavior observable.
+        int16 tick = 2000; // price = 102_000
+        uint128 amount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000
+
+        uint32 price = exchange.tickToPrice(tick);
+        uint128 escrow =
+            uint128((uint256(amount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
+        uint128 amountOut = escrow + 1; // request 1 more quote than a single order produces
+
+        // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
+        vm.startPrank(admin);
+        token1.mint(charlie, INITIAL_BALANCE);
+        vm.stopPrank();
+        vm.prank(charlie);
+        token1.approve(address(exchange), type(uint256).max);
+
+        // Two makers escrow quote into the exchange at the same tick.
+        uint128 order1 = _placeBidOrder(alice, amount, tick);
+        uint128 order2 = _placeBidOrder(bob, amount, tick);
+        assertEq(order1, 1);
+        assertEq(order2, 2);
+
+        // Sanity: contract holds quote from both orders.
+        assertEq(pathUSD.balanceOf(address(exchange)), uint256(escrow) * 2);
+
+        // Execute exactOut swap: should consume enough base to fully produce `amountOut` quote.
+        vm.prank(charlie);
+        uint128 amountIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            amountOut,
+            type(uint128).max
+        );
+        assertEq(amountIn, amount);
+
+        // Bob cancels his order and should be able to withdraw his full escrow.
+        vm.prank(bob);
+        exchange.cancel(order2);
+        assertEq(exchange.balanceOf(bob, address(pathUSD)), escrow);
+
+        // Withdraw succeeds when rounding is correct.
+        vm.prank(bob);
+        exchange.withdraw(address(pathUSD), escrow);
     }
 
 }

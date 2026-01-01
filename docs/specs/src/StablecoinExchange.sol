@@ -733,8 +733,10 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
-                // For bids, we want remainingOut quote tokens
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // For bids: round UP baseNeeded and add 1 to ensure full order consumption.
+                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 // Calculate how much quote to receive for fillAmount of base
@@ -957,7 +959,10 @@ contract StablecoinExchange is IStablecoinExchange {
 
                 uint32 price = tickToPrice(currentTick);
 
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // Round UP + 1 to match execution. Note: if multiple orders are crossed
+                // within this tick, execution may charge slightly more (+1 per order boundary).
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 if (baseNeeded > level.totalLiquidity) {

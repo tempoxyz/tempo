@@ -772,9 +772,11 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in) = if bid {
                 // For bids: amount_out is quote, amount_in is base
-                // Round down base_needed (user provides less base, favors protocol)
-                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                // Round UP baseNeeded and add 1 to ensure full order consumption.
+                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+                    .saturating_add(1);
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
@@ -801,9 +803,10 @@ impl StablecoinExchange {
 
                 // Set to 0 to avoid rounding errors
                 if bid {
-                    // Round down base_needed (user provides less base, favors protocol)
-                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    // Round UP baseNeeded + 1 to match the initial calculation
+                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
+                        .ok_or(TempoPrecompileError::under_overflow())?
+                        .saturating_add(1);
                     if base_needed > order.remaining() {
                         amount_out = amount_out
                             .checked_sub(amount_out_received)
@@ -1126,10 +1129,12 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in_tick) = if is_bid {
                 // For bids: remaining_out is in quote, amount_in is in base
-                // Round down base_needed (user provides less base)
+                // Round UP + 1 to match execution. Note: if multiple orders are crossed
+                // within this tick, execution may charge slightly more (+1 per order boundary).
                 let base_needed =
-                    quote_to_base(remaining_out, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
+                        .ok_or(TempoPrecompileError::under_overflow())?
+                        .saturating_add(1);
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
