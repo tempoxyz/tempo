@@ -1131,10 +1131,9 @@ impl StablecoinExchange {
                 // For bids: remaining_out is in quote, amount_in is in base
                 // Round UP + 1 to match execution. Note: if multiple orders are crossed
                 // within this tick, execution may charge slightly more (+1 per order boundary).
-                let base_needed =
-                    quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?
-                        .saturating_add(1);
+                let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+                    .saturating_add(1);
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1157,15 +1156,15 @@ impl StablecoinExchange {
 
             let amount_out_tick = if is_bid {
                 // Round down amount_out_tick (user receives less quote)
+                // Cap at remaining_out since fill_amount includes +1 bias
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
+                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out
-                .checked_sub(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            remaining_out = remaining_out.saturating_sub(amount_out_tick);
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -2177,7 +2176,9 @@ mod tests {
                 .expect("Quote should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            // Expected: ceil(amount_out * PRICE_SCALE / price) + 1 for bid exactOut rounding
+            let expected_amount_in =
+                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128) + 1;
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2659,10 +2660,13 @@ mod tests {
             let amount_in =
                 exchange.quote_swap_exact_amount_out(usdc.address(), eurc.address(), amount_out)?;
 
-            // With 1:1 rates at each hop, input should equal output
+            // With 1:1 rates at each hop:
+            // - First hop (USDC->PathUSD): against bid, has +1 rounding adjustment
+            // - Second hop (PathUSD->EURC): against ask, no +1 adjustment
             assert_eq!(
-                amount_in, amount_out,
-                "With 1:1 rates, input should equal output"
+                amount_in,
+                amount_out + 1,
+                "With 1:1 rates, input should equal output plus rounding adjustment for bid hop"
             );
 
             Ok(())
