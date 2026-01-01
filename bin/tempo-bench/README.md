@@ -183,8 +183,27 @@ just localnet 50000
 tempo-bench run-max-tps --duration 15 --tps 20000 --faucet
 ```
 
-### Sampling
-Use the following commands to run the node with [sampling](https://github.com/mstange/samply):
+### Profiling
+
+Use the `--profile` flag to automatically start a tempo node with [samply](https://github.com/mstange/samply) profiling:
+
 ```bash
-	samply record --output tempo.samply -- just localnet 50000
+tempo-bench run-max-tps --duration 15 --tps 20000 --profile
+```
+
+This will:
+1. Generate a genesis file (or use `--genesis` to specify one)
+2. Start a tempo node wrapped with samply
+3. Run the benchmark
+4. Save the profile to `tempo.samply` (or specify with `--profile-output`)
+
+Additional profiling options:
+- `--profile-output <PATH>`: Output path for the samply profile (default: `tempo.samply`)
+- `--tempo-bin <PATH>`: Path to the tempo binary
+- `--genesis <PATH>`: Path to an existing genesis file
+- `--genesis-accounts <N>`: Number of accounts to generate (default: 1000)
+
+Alternatively, you can manually run the node with samply:
+```bash
+samply record --output tempo.samply -- just localnet 50000
 ```

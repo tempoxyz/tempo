@@ -46,6 +46,8 @@ use std::{
     fs::File,
     io::BufWriter,
     num::{NonZeroU32, NonZeroU64},
+    path::PathBuf,
+    process::{Child, Command, Stdio},
     str::FromStr,
     sync::{
         Arc, OnceLock,
@@ -189,6 +191,217 @@ pub struct MaxTpsArgs {
     /// Only used with --expiring-nonces.
     #[arg(long)]
     expiring_batch_secs: Option<u64>,
+
+    /// Enable samply profiling of the tempo node.
+    ///
+    /// When enabled, tempo-bench will spawn a tempo node wrapped with samply profiler,
+    /// run the benchmark, and save the profile on exit.
+    #[arg(long)]
+    profile: bool,
+
+    /// Output path for the samply profile (only used with --profile)
+    #[arg(long, default_value = "tempo.samply")]
+    profile_output: PathBuf,
+
+    /// Path to the tempo binary (only used with --profile).
+    ///
+    /// If not specified, uses "./target/profiling/tempo" or searches PATH.
+    #[arg(long)]
+    tempo_bin: Option<PathBuf>,
+
+    /// Path to the genesis file (only used with --profile)
+    #[arg(long)]
+    genesis: Option<PathBuf>,
+
+    /// Number of genesis accounts to generate (only used with --profile when genesis is not specified)
+    #[arg(long, default_value_t = 1000)]
+    genesis_accounts: u64,
+}
+
+/// Managed tempo node process with optional samply profiling
+struct ManagedNode {
+    child: Child,
+    _tempdir: Option<tempfile::TempDir>,
+}
+
+impl ManagedNode {
+    /// Spawn a tempo node, optionally wrapped with samply for profiling
+    fn spawn(
+        tempo_bin: Option<&PathBuf>,
+        genesis: Option<&PathBuf>,
+        genesis_accounts: u64,
+        profile: bool,
+        profile_output: &PathBuf,
+    ) -> eyre::Result<Self> {
+        // Find tempo binary
+        let tempo_path = if let Some(path) = tempo_bin {
+            path.clone()
+        } else {
+            // Try common paths
+            let candidates = [
+                PathBuf::from("./target/profiling/tempo"),
+                PathBuf::from("./target/release/tempo"),
+                PathBuf::from("tempo"),
+            ];
+            candidates
+                .into_iter()
+                .find(|p| p.exists() || which::which(p).is_ok())
+                .ok_or_else(|| eyre::eyre!(
+                    "Could not find tempo binary. Specify --tempo-bin or ensure tempo is in PATH"
+                ))?
+        };
+
+        // Handle genesis file
+        let (genesis_path, tempdir) = if let Some(genesis) = genesis {
+            (genesis.clone(), None)
+        } else {
+            // Generate a temporary genesis file
+            let tempdir = tempfile::tempdir().context("Failed to create temp directory")?;
+            let genesis_path = tempdir.path().join("genesis.json");
+
+            info!(
+                accounts = genesis_accounts,
+                path = %genesis_path.display(),
+                "Generating genesis file"
+            );
+
+            let status = Command::new("cargo")
+                .args([
+                    "run",
+                    "-p",
+                    "tempo-xtask",
+                    "--profile",
+                    "profiling",
+                    "--",
+                    "generate-genesis",
+                    "--output",
+                ])
+                .arg(tempdir.path())
+                .args(["-a", &genesis_accounts.to_string()])
+                .status()
+                .context("Failed to run tempo-xtask generate-genesis")?;
+
+            if !status.success() {
+                return Err(eyre::eyre!("Failed to generate genesis file"));
+            }
+
+            (genesis_path, Some(tempdir))
+        };
+
+        // Build datadir path
+        let datadir = tempdir
+            .as_ref()
+            .map(|t| t.path().join("reth"))
+            .unwrap_or_else(|| PathBuf::from("./localnet/reth"));
+
+        // Build tempo node command
+        let mut cmd = if profile {
+            info!(
+                tempo = %tempo_path.display(),
+                output = %profile_output.display(),
+                "Starting tempo node with samply profiler"
+            );
+
+            let mut cmd = Command::new("samply");
+            cmd.arg("record")
+                .arg("--output")
+                .arg(profile_output)
+                .arg("--")
+                .arg(&tempo_path);
+            cmd
+        } else {
+            info!(tempo = %tempo_path.display(), "Starting tempo node");
+            Command::new(&tempo_path)
+        };
+
+        let child = cmd
+            .arg("node")
+            .arg("--chain")
+            .arg(&genesis_path)
+            .arg("--dev")
+            .arg("--dev.block-time")
+            .arg("1sec")
+            .arg("--datadir")
+            .arg(&datadir)
+            .arg("--http")
+            .arg("--http.addr")
+            .arg("0.0.0.0")
+            .arg("--http.port")
+            .arg("8545")
+            .arg("--http.api")
+            .arg("all")
+            .arg("--faucet.enabled")
+            .arg("--faucet.private-key")
+            .arg("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
+            .arg("--faucet.amount")
+            .arg("1000000000000")
+            .arg("--faucet.address")
+            .arg("0x20c0000000000000000000000000000000000001")
+            .arg("--log.stdout.filter")
+            .arg("warn")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("Failed to spawn tempo node")?;
+
+        Ok(Self {
+            child,
+            _tempdir: tempdir,
+        })
+    }
+
+    /// Wait for the node's RPC endpoint to be ready
+    async fn wait_for_ready(&self, url: &Url, timeout: Duration) -> eyre::Result<()> {
+        let start = std::time::Instant::now();
+        let client = reqwest::Client::new();
+
+        info!(%url, "Waiting for node to be ready");
+
+        loop {
+            if start.elapsed() > timeout {
+                return Err(eyre::eyre!("Timeout waiting for node to be ready"));
+            }
+
+            let result = client
+                .post(url.as_str())
+                .header("Content-Type", "application/json")
+                .body(r#"{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}"#)
+                .send()
+                .await;
+
+            if result.is_ok() {
+                info!(%url, elapsed = ?start.elapsed(), "Node is ready");
+                return Ok(());
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Stop the node gracefully
+    fn stop(mut self) -> eyre::Result<()> {
+        info!("Stopping tempo node");
+
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{Signal, kill};
+            use nix::unistd::Pid;
+
+            let pid = Pid::from_raw(self.child.id() as i32);
+            let _ = kill(pid, Signal::SIGINT);
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = self.child.kill();
+        }
+
+        // Wait for the process to exit (this allows samply to save the profile)
+        let status = self.child.wait().context("Failed to wait for node to exit")?;
+        info!(?status, "Tempo node stopped");
+
+        Ok(())
+    }
 }
 
 impl MaxTpsArgs {
@@ -197,6 +410,39 @@ impl MaxTpsArgs {
     pub async fn run(self) -> eyre::Result<()> {
         RethTracer::new().init()?;
 
+        // If profiling is enabled, spawn a managed tempo node
+        let managed_node = if self.profile {
+            let node = ManagedNode::spawn(
+                self.tempo_bin.as_ref(),
+                self.genesis.as_ref(),
+                self.genesis_accounts,
+                true,
+                &self.profile_output,
+            )?;
+
+            // Wait for the node to be ready
+            let url = self.target_urls.first().cloned().unwrap_or_else(|| {
+                "http://localhost:8545".parse().unwrap()
+            });
+            node.wait_for_ready(&url, Duration::from_secs(60)).await?;
+
+            Some(node)
+        } else {
+            None
+        };
+
+        // Run the benchmark
+        let result = self.run_benchmark().await;
+
+        // Stop the managed node if we started one
+        if let Some(node) = managed_node {
+            node.stop()?;
+        }
+
+        result
+    }
+
+    async fn run_benchmark(self) -> eyre::Result<()> {
         let accounts = self.accounts.get();
 
         // Set file descriptor limit if provided
