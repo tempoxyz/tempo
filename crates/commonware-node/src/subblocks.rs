@@ -711,15 +711,23 @@ async fn build_subblock(
             let mut gas_left =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
-            let txs = transactions.lock().clone();
+            let txs: Vec<(TxHash, Arc<Recovered<TempoTxEnvelope>>)> = {
+                let locked = transactions.lock();
+                locked
+                    .iter()
+                    .map(|(hash, tx)| (*hash, Arc::clone(tx)))
+                    .collect()
+            };
+
+            let mut invalid_hashes = Vec::new();
+
             for (tx_hash, tx) in txs {
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
                 if let Err(err) = evm.transact_commit(&*tx) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
-                    // Remove invalid transactions from the set.
-                    transactions.lock().swap_remove(&tx_hash);
+                    invalid_hashes.push(tx_hash);
                     continue;
                 }
 
@@ -729,6 +737,13 @@ async fn build_subblock(
 
                 if start.elapsed() > timeout {
                     break;
+                }
+            }
+
+            if !invalid_hashes.is_empty() {
+                let mut locked = transactions.lock();
+                for hash in invalid_hashes {
+                    locked.swap_remove(&hash);
                 }
             }
 
