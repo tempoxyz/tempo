@@ -14,7 +14,6 @@ use tempo_contracts::precompiles::{
     TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
 };
 
-// TODO: add error type for overflow/underflow
 /// Top-level error type for all Tempo precompile operations
 #[derive(
     Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From, derive_more::TryInto,

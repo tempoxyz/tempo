@@ -86,16 +86,12 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(tick, expectedTick);
     }
 
-    function test_PairKey(address tokenA, address tokenB) public view {
-        (address _token0, address _token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        bytes32 expectedKey = keccak256(abi.encodePacked(_token0, _token1));
+    function test_PairKey(address base, address quote) public view {
+        bytes32 expectedKey = keccak256(abi.encodePacked(base, quote));
 
-        bytes32 key1 = exchange.pairKey(tokenA, tokenB);
-        bytes32 key2 = exchange.pairKey(tokenB, tokenA);
+        bytes32 key = exchange.pairKey(base, quote);
 
-        assertEq(key1, key2);
-        assertEq(key1, expectedKey);
-        assertEq(key2, expectedKey);
+        assertEq(key, expectedKey);
     }
 
     function test_CreatePair() public {
@@ -111,6 +107,69 @@ contract StablecoinExchangeTest is BaseTest {
 
         bytes32 key = exchange.createPair(address(newBase));
         assertEq(key, expectedKey);
+    }
+
+    /// @notice Orderbook keys should be order-sensitive and change when quoteToken changes.
+    function test_OrderbookPairs_AreOrderSensitive_AcrossQuoteUpdates() public {
+        // Create a dedicated base token and two possible quote tokens, all USD-denominated.
+        vm.startPrank(admin);
+        ITIP20 base = ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin));
+        ITIP20 quote1 = ITIP20(factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin));
+        vm.stopPrank();
+
+        // Initial state: base quotes PathUSD
+        assertEq(address(base.quoteToken()), address(pathUSD));
+
+        // 1) First pair: (base, PathUSD)
+        bytes32 key0 = exchange.createPair(address(base));
+        (address b0, address q0,,) = exchange.books(key0);
+        assertEq(b0, address(base), "first book base mismatch");
+        assertEq(q0, address(pathUSD), "first book quote mismatch");
+
+        // 2) Update base's quote token to quote1 and create a new pair
+        vm.startPrank(admin);
+        base.setNextQuoteToken(quote1);
+        base.completeQuoteTokenUpdate();
+        vm.stopPrank();
+
+        assertEq(address(base.quoteToken()), address(quote1));
+
+        bytes32 key1 = exchange.createPair(address(base));
+        (address b1, address q1,,) = exchange.books(key1);
+        assertEq(b1, address(base), "second book base mismatch");
+        assertEq(q1, address(quote1), "second book quote mismatch");
+
+        // Keys must differ when quoteToken changes
+        assertTrue(key1 != key0, "orderbook key should change when quoteToken changes");
+
+        // 3) Reset base's quote token back to PathUSD so that setting quote1's
+        // quote token to base does not create a quote-token loop.
+        vm.startPrank(admin);
+        base.setNextQuoteToken(pathUSD);
+        base.completeQuoteTokenUpdate();
+        vm.stopPrank();
+
+        assertEq(address(base.quoteToken()), address(pathUSD));
+
+        // 4) Now set quote1's quote token to base and create a pair for quote1.
+        // This tests that we can still create a new pair where the previous quote
+        // becomes the base, and that the key is order-sensitive.
+        vm.startPrank(admin);
+        quote1.setNextQuoteToken(base);
+        quote1.completeQuoteTokenUpdate();
+        vm.stopPrank();
+
+        assertEq(address(quote1.quoteToken()), address(base));
+
+        bytes32 key2 = exchange.createPair(address(quote1));
+        (address b2, address q2,,) = exchange.books(key2);
+        assertEq(b2, address(quote1), "third book base mismatch");
+        assertEq(q2, address(base), "third book quote mismatch");
+
+        // The (base, quote1) and (quote1, base) books must have different keys
+        assertTrue(key2 != key1, "reversed base/quote should have different key");
+        // And also be distinct from the initial (base, PathUSD) configuration
+        assertTrue(key2 != key0, "third key should differ from first");
     }
 
     function test_PlaceBidOrder() public {
@@ -1275,6 +1334,96 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(askHead, 0, "No ask order should exist at flip tick");
         assertEq(askTail, 0, "No ask order should exist at flip tick");
         assertEq(askLiquidity, 0, "No liquidity should exist at flip tick");
+    }
+
+    /// @notice Test that a maker blacklisted in the token they are buying cannot place a bid order
+    /// @dev This tests the new check that verifies authorization on both base and quote tokens
+    function test_BlacklistedInBuyToken_CannotPlaceBidOrder() public {
+        // Create a blacklist policy for token1 (the base token alice wants to buy)
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in token1
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Verify alice is blacklisted in token1
+        assertFalse(registry.isAuthorized(policyId, alice), "Alice should be blacklisted in token1");
+
+        // Alice tries to place a bid order to BUY token1 with pathUSD
+        // Even though alice is authorized in pathUSD (the escrow token), she is blacklisted in token1
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.place(address(token1), orderAmount, true, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    /// @notice Test that a maker blacklisted in the token they would receive cannot place an ask order
+    /// @dev This tests the new check that verifies authorization on both base and quote tokens
+    function test_BlacklistedInReceiveToken_CannotPlaceAskOrder() public {
+        // Create a blacklist policy for pathUSD (the quote token alice would receive)
+        uint64 policyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on pathUSD
+        vm.prank(pathUSDAdmin);
+        pathUSD.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in pathUSD
+        vm.prank(pathUSDAdmin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Verify alice is blacklisted in pathUSD
+        assertFalse(
+            registry.isAuthorized(policyId, alice), "Alice should be blacklisted in pathUSD"
+        );
+
+        // Alice tries to place an ask order to SELL token1 for pathUSD
+        // Even though alice is authorized in token1 (the escrow token), she is blacklisted in pathUSD
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.place(address(token1), orderAmount, false, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+    }
+
+    /// @notice Test that a maker blacklisted in either token cannot place a flip order
+    function test_BlacklistedUser_CannotPlaceFlipOrder() public {
+        // Create a blacklist policy
+        uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+
+        // Set the policy on token1
+        vm.prank(admin);
+        token1.changeTransferPolicyId(policyId);
+
+        // Blacklist alice in token1
+        vm.prank(admin);
+        registry.modifyPolicyBlacklist(policyId, alice, true);
+
+        // Alice tries to place a flip bid order (buy token1, flip to sell token1)
+        // She is blacklisted in token1, so this should fail
+        uint128 orderAmount = exchange.MIN_ORDER_AMOUNT() * 2;
+        vm.prank(alice);
+        try exchange.placeFlip(address(token1), orderAmount, true, 100, 200) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
+
+        // Also test flip ask order
+        vm.prank(alice);
+        try exchange.placeFlip(address(token1), orderAmount, false, 200, 100) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
     }
 
     /*//////////////////////////////////////////////////////////////

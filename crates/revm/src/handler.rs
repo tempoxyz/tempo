@@ -1177,7 +1177,7 @@ where
 /// - Access list costs (shared across batch)
 /// - Key authorization costs (if present): 30k/32k base + 22k per spending limit
 /// - Floor gas calculation (EIP-7623, Prague+)
-fn calculate_aa_batch_intrinsic_gas<'a>(
+pub fn calculate_aa_batch_intrinsic_gas<'a>(
     aa_env: &TempoBatchCallEnv,
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {

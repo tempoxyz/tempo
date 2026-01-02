@@ -836,12 +836,6 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        if refund > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, refund, self.address).into(),
-            );
-        }
-
         let new_from_balance =
             from_balance
                 .checked_sub(refund)
