@@ -117,8 +117,11 @@ contract StablecoinExchangeTest is BaseTest {
     function test_OrderbookPairs_AreOrderSensitive_AcrossQuoteUpdates() public {
         // Create a dedicated base token and two possible quote tokens, all USD-denominated.
         vm.startPrank(admin);
-        ITIP20 base = ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin));
-        ITIP20 quote1 = ITIP20(factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin));
+        ITIP20 base =
+            ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin, bytes32(0)));
+        ITIP20 quote1 = ITIP20(
+            factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin, bytes32(uint256(1)))
+        );
         vm.stopPrank();
 
         // Initial state: base quotes PathUSD
