@@ -1240,6 +1240,13 @@ where
         .wrap_err_with(|| {
             format!("failed to read header for last boundary block number `{last_boundary}`")
         })?;
+
+    // XXX: Reads the contract from the latest available block (newest_height),
+    // not from the boundary. The reason is that we cannot be sure that the
+    // boundary block is available. But we know that the on-chain state is
+    // immutable - validators never change their identity and never update their
+    // IP addresses (the latter would actually probably be fine; what matters is
+    // that identities don't change).
     let onchain_outcome =
         tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
