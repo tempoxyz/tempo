@@ -48,11 +48,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let balance = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000001"), // Alpha USD // [!code focus]
-        provider, // [!code focus]
+        &provider, // [!code focus]
     ) // [!code focus]
     .balanceOf(address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb")) // [!code focus]
     .call() // [!code focus]
     .await?; // [!code focus]
+
+    println!("Balance: {balance:?}"); // [!code focus]
 
     Ok(())
 }
@@ -94,7 +96,7 @@ const unwatch = watchEvent(client, {
 
 ```rust [Rust]
 use alloy::{primitives::address, providers::ProviderBuilder};
-use futures_util::StreamExt;
+use futures::StreamExt;
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
 
 #[tokio::main]
@@ -106,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Watch for incoming transfers // [!code focus]
     let mut transfers = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000001"), // [!code focus]
-        provider, // [!code focus]
+        &provider, // [!code focus]
     ) // [!code focus]
     .Transfer_filter() // [!code focus]
     .watch() // [!code focus]
@@ -157,7 +159,7 @@ const unwatch = watchEvent(client, {
 
 ```rust [Rust]
 use alloy::{primitives::address, providers::ProviderBuilder};
-use futures_util::StreamExt;
+use futures::StreamExt;
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
 
 #[tokio::main]
@@ -168,7 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut transfers = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000001"), // [!code focus]
-        provider, // [!code focus]
+        &provider, // [!code focus]
     ) // [!code focus]
     .TransferWithMemo_filter() // [!code focus]
     .watch() // [!code focus]
@@ -176,9 +178,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .into_stream(); // [!code focus]
 
     while let Some(Ok((transfer, _))) = transfers.next().await { // [!code focus]
-        // Mark invoice as paid in your database.
         let invoice_id = transfer.memo; // [!code focus]
-        mark_invoice_paid(invoice_id).await?; // [!code focus]
+        println!("Transfer received with memo: {invoice_id:?}"); // [!code focus]
     } // [!code focus]
 
     Ok(())
