@@ -220,14 +220,12 @@ impl std::fmt::Display for DecodedValidator {
 #[instrument(
     skip_all,
     fields(
-        attempt = _attempt,
         at_height,
     ),
     err,
     ret(level = Level::INFO)
 )]
-pub(super) async fn read_next_full_dkg_ceremony(
-    _attempt: u32,
+pub(super) fn read_next_full_dkg_ceremony(
     node: &TempoFullNode,
     at_height: u64,
 ) -> eyre::Result<u64> {

@@ -1014,15 +1014,13 @@ where
             output
         };
 
-        // Check if next ceremony should be full
+        // Check if next ceremony should be full.
+        // Read from pre-last block of the epoch, but never ahead of the current request.
         let next_epoch = state.epoch.next();
         let is_next_full_dkg = validators::read_next_full_dkg_ceremony(
-            1,
             &self.config.execution_node,
-            request.height.saturating_sub(1),
+            epoch_info.last().saturating_sub(1).min(request.height),
         )
-        .await
-        // in theory it should never fail, but if it does, just stick to reshare.
         .is_ok_and(|epoch| epoch == next_epoch.get());
         if is_next_full_dkg {
             info!(%next_epoch, "next DKG ceremony will be full");
