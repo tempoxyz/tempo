@@ -1285,7 +1285,7 @@ where
     marshal.set_floor(newest_height).await;
 
     Ok(State {
-        epoch: Epoch::zero(),
+        epoch: onchain_outcome.epoch,
         seed: Summary::random(context),
         output: onchain_outcome.output.clone(),
         share,
