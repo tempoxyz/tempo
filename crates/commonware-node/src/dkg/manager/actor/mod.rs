@@ -169,12 +169,14 @@ where
                 let execution_node = self.config.execution_node.clone();
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
+                let marshal = self.config.marshal.clone();
                 async move {
-                    read_initial_state(
+                    read_initial_state_and_set_floor(
                         &mut context,
                         &execution_node,
                         initial_share.clone(),
                         &epoch_strategy,
+                        &mut marshal,
                     )
                     .await
                 }
@@ -1196,11 +1198,12 @@ enum NewState {
 }
 
 #[instrument(skip_all, err)]
-async fn read_initial_state<TContext>(
+async fn read_initial_state_and_set_floor<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
     share: Option<Share>,
     epoch_strategy: &FixedEpocher,
+    marshal: &mut crate::alias::marshal::Mailbox,
 ) -> eyre::Result<State>
 where
     TContext: CryptoRngCore,
@@ -1277,6 +1280,9 @@ where
         }
         Some(share)
     };
+
+    info!(newest_height, "setting sync floor");
+    marshal.set_floor(newest_height).await;
 
     Ok(State {
         epoch: Epoch::zero(),
