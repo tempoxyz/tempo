@@ -256,15 +256,15 @@ commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = 
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "4a5fca0223772b1a1627138d970ce231f876e6ff" }
 
-revm = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-database = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-state = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
-revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "6e69a272" }
+revm = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-database = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-state = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-interpreter = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
+revm-database-interface = { git = "https://github.com/bluealloy/revm", rev = "965bd1fd" }
 
-alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "c2236ae" }
+alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "5826667" }
 revm-inspectors = { git = "https://github.com/paradigmxyz/revm-inspectors", rev = "aa62b0f" }
 
 

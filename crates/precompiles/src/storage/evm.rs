@@ -3,6 +3,7 @@ use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
     context::{Block, CfgEnv},
     context_interface::cfg::GasParams,
+    interpreter::instructions::WARM_STORAGE_READ_COST,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -60,8 +61,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
-        // TODO add codedeposit cost
-        self.deduct_gas(code.len() as u64 * 100)?;
+        self.deduct_gas(self.gas_params.codedeposit_cost(code.len() as u64))?;
 
         self.internals
             .load_account_mut(address)?
@@ -76,13 +76,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        // TODO add static warm cost
-        self.deduct_gas(100)?;
+        self.deduct_gas(WARM_STORAGE_READ_COST)?;
 
-        // TODO add skip_cold_load flag logic
+        // skip cold load if gas remaining is less than additional cost
         let additional_cost = self.gas_params.cold_account_additional_cost();
-
-        let mut account = self.internals.load_account_mut(address)?;
+        let skip_cold_load = self.gas_remaining < additional_cost;
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, skip_cold_load)?;
         account.load_code()?;
         account.touch();
 
