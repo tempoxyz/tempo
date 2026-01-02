@@ -6,6 +6,7 @@ use alloy::{
 };
 use eyre::{Result, eyre};
 use futures::future::try_join_all;
+use itertools::Itertools;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use poem::{Response, handler};
@@ -68,7 +69,7 @@ impl MonitorConfig {
         }
     }
 
-    /// Fetches token metadata, discovers historical pools, and returns an initialized `Monitor`.
+    /// Fetches token metadata, discovers existing pools, and returns an initialized `Monitor`.
     #[instrument(name = "monitor::init", skip(self))]
     pub async fn init(self) -> Result<Monitor> {
         let provider = ProviderBuilder::new()
@@ -78,8 +79,15 @@ impl MonitorConfig {
         // Fetch metadata for all whitelisted tokens
         let tokens = self.fetch_token_metadata(&provider).await?;
 
-        // Discover historical pools
-        let (known_pairs, last_processed_block) = self.discover_historical_pools(&provider).await?;
+        // Discover existing pools by querying all token permutations
+        let last_processed_block = provider.get_block_number().await?;
+        let known_pairs = self.discover_pools(&provider).await?;
+
+        info!(
+            pools_discovered = known_pairs.len(),
+            last_block = last_processed_block,
+            "pool discovery complete"
+        );
 
         Ok(Monitor {
             rpc_url: self.rpc_url,
@@ -121,35 +129,41 @@ impl MonitorConfig {
             .map(|v| v.into_iter().collect())
     }
 
-    /// Discovers all pool pairs from historical `Mint` events.
-    async fn discover_historical_pools<P: Provider + Clone>(
+    /// Discovers existing pools by querying all token permutations in parallel.
+    async fn discover_pools<P: Provider + Clone>(
         &self,
         provider: &P,
-    ) -> Result<(HashSet<(Address, Address)>, u64)> {
-        let current_block = provider.get_block_number().await?;
+    ) -> Result<HashSet<(Address, Address)>> {
+        let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
-        let filter = Filter::new()
-            .address(TIP_FEE_MANAGER_ADDRESS)
-            .event_signature(Mint::SIGNATURE_HASH)
-            .from_block(0)
-            .to_block(current_block)
-            .with_minted_tokens(self.target_tokens.iter());
+        let check_pool_futures: Vec<_> = self
+            .target_tokens
+            .iter()
+            .permutations(2)
+            .map(|pair| {
+                let (token_a, token_b) = (*pair[0], *pair[1]);
+                let fee_amm = fee_amm.clone();
+                async move {
+                    match fee_amm.getPool(token_a, token_b).call().await {
+                        Ok(_) => {
+                            debug!(%token_a, %token_b, "discovered pool");
+                            Some((token_a, token_b))
+                        }
+                        Err(e) => {
+                            // Skip if pool is non existent (call reverts). Otherwise, log the error.
+                            if e.as_revert_data().is_none() {
+                                counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
+                                error!(%token_a, %token_b, "failed to fetch pool: {}", e);
+                            }
+                            None
+                        }
+                    }
+                }
+            })
+            .collect();
 
-        let logs = provider.get_logs(&filter).await?;
-
-        let mut known_pairs = HashSet::new();
-        for log in logs {
-            let (user_token, validator_token) = parse_mint_tokens(&log);
-            known_pairs.insert((user_token, validator_token));
-        }
-
-        info!(
-            pools_discovered = known_pairs.len(),
-            last_block = current_block,
-            "historical pool discovery complete"
-        );
-
-        Ok((known_pairs, current_block))
+        let results = futures::future::join_all(check_pool_futures).await;
+        Ok(results.into_iter().flatten().collect())
     }
 }
 
