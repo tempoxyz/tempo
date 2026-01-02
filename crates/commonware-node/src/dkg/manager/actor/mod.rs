@@ -256,14 +256,7 @@ where
             // If there is no finalized block for this epoch, then we must not
             // have observed the first one. Therefore we need to start a
             // consensus engine to ensure we register peers, schemes, etc.
-            self.config
-                .epoch_manager
-                .enter(
-                    previous.epoch,
-                    previous.output.public().clone(),
-                    previous.share.clone(),
-                    previous.dealers.keys().clone(),
-                )
+            self.enter_epoch(&previous)
                 .wrap_err("could not instruct epoch manager to enter the previous epoch")?;
         }
 
@@ -287,14 +280,7 @@ where
             .update(state.epoch.get(), all_peers)
             .await;
 
-        self.config
-            .epoch_manager
-            .enter(
-                state.epoch,
-                state.output.public().clone(),
-                state.share.clone(),
-                state.dealers.keys().clone(),
-            )
+        self.enter_epoch(&state)
             .wrap_err("could not instruct epoch manager to enter a new epoch")?;
 
         // TODO: emit an event with round info
@@ -1189,6 +1175,18 @@ where
         };
 
         None
+    }
+
+    fn enter_epoch(&mut self, state: &state::State) -> eyre::Result<()> {
+        self.config
+            .epoch_manager
+            .enter(
+                state.epoch,
+                state.output.public().clone(),
+                state.share.clone(),
+                state.dealers.keys().clone(),
+            )
+            .wrap_err("could not instruct epoch manager to enter epoch")
     }
 }
 
