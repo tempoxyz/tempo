@@ -8,6 +8,7 @@ crate::sol! {
     interface ITIP20Factory {
         error AddressReserved();
         error InvalidQuoteToken();
+        error TokenAlreadyExists(address token);
 
         event TokenCreated(address indexed token, string name, string symbol, string currency, address quoteToken, address admin, bytes32 salt);
 

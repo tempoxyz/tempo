@@ -93,6 +93,14 @@ impl TIP20Factory {
             ));
         }
 
+        if self.is_tip20(token_address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
+                    token: token_address,
+                }),
+            ));
+        }
+
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         if !self.is_tip20(call.quoteToken)? {
             return Err(TIP20Error::invalid_quote_token().into());

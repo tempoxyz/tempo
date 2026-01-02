@@ -285,7 +285,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::{TIP20Token, token_id_to_address};
+    use crate::tip20::TIP20Token;
     use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
@@ -342,7 +342,7 @@ mod tests {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
-        let target_address = Address::random();
+        let token_address = PATH_USD_ADDRESS;
 
         let call_static = |calldata: Bytes| {
             let mut db = CacheDB::new(EmptyDB::new());

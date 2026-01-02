@@ -43,6 +43,10 @@ contract TIP20Factory is ITIP20Factory {
         address tokenAddr =
             address(uint160(0x20C0000000000000000000000000000000000000) | uint160(lowerBytes));
 
+        if (tokenAddr.code.length != 0) {
+            revert TokenAlreadyExists(tokenAddr);
+        }
+
         // Deploy TIP20 contract to the deterministic address using Foundry cheatcodes
         bytes memory creationCode = vm.getCode("TIP20.sol");
         vm.etch(

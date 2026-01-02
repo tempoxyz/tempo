@@ -151,6 +151,22 @@ contract TIP20FactoryTest is BaseTest {
         assertTrue(addr1 != addr2, "Different senders should produce different addresses");
     }
 
+    function testDoubleDeployment() public {
+        address tokenAddr = factory.createToken(
+            "Unique Token", "UNQ", "USD", ITIP20(_PATH_USD), admin, bytes32("unique_salt")
+        );
+
+        try factory.createToken(
+            "Unique Token", "UNQ", "USD", ITIP20(_PATH_USD), admin, bytes32("unique_salt")
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err, abi.encodeWithSelector(ITIP20Factory.TokenAlreadyExists.selector, tokenAddr)
+            );
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                 SECTION: ADDITIONAL FUZZ & EDGE TESTS
     //////////////////////////////////////////////////////////////*/

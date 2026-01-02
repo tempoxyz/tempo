@@ -9,6 +9,7 @@ interface ITIP20Factory {
 
     error AddressReserved();
     error InvalidQuoteToken();
+    error TokenAlreadyExists(address tokenAddress);
 
     /// @notice Emitted when a new TIP-20 token is created
     /// @param token The address of the newly created token contract
