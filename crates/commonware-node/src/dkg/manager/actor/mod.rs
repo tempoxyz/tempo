@@ -1314,7 +1314,7 @@ where
                 .filter(|(_, v)| v.active)
                 .map(|(k, v)| (k.clone(), v.inbound)),
         ),
-        is_full_dkg: false,
+        is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
 }
 
