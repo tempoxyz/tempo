@@ -4,7 +4,7 @@
 //! verifying that multi-slot structs are correctly handled and that deletion works.
 
 use super::*;
-use tempo_precompiles::storage::{Mapping, StorageCtx};
+use tempo_precompiles::storage::{Mapping, StorableType, StorageCtx};
 
 #[test]
 fn test_struct_storage() {
@@ -92,6 +92,17 @@ fn test_struct_storage() {
             TestBlock::default()
         );
     });
+}
+
+#[test]
+fn test_multi_slot_last_field_slot_count() {
+    #[derive(Storable)]
+    struct MultiSlotLast {
+        flag: bool,     // slot 0
+        arr: [U256; 2], // slot 1-2
+    }
+
+    assert_eq!(MultiSlotLast::SLOTS, 3);
 }
 
 #[test]
