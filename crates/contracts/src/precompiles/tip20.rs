@@ -133,6 +133,7 @@ crate::sol! {
         error Unauthorized();
         error ProtectedAddress();
         error InvalidToken();
+        error Uninitialized();
         error InvalidTransferPolicyId();
     }
 }
@@ -237,5 +238,10 @@ impl TIP20Error {
     /// Error when transfer policy ID does not exist
     pub const fn invalid_transfer_policy_id() -> Self {
         Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
+    }
+
+    /// Error when token is uninitialized (has no bytecode)
+    pub const fn uninitialized() -> Self {
+        Self::Uninitialized(ITIP20::Uninitialized {})
     }
 }

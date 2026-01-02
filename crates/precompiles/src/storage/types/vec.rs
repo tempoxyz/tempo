@@ -15,7 +15,7 @@ use alloy::primitives::{Address, U256};
 use std::marker::PhantomData;
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{
         Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
@@ -142,6 +142,11 @@ where
 ///     slot.write(42)?;
 /// }
 /// ```
+///
+/// # Capacity
+///
+/// Vectors have a maximum capacity of `u32::MAX / element_size` to prevent
+/// arithmetic overflow in storage slot calculations.
 pub struct VecHandler<T>
 where
     T: Storable,
@@ -203,6 +208,15 @@ where
             len_slot,
             address,
             _ty: PhantomData,
+        }
+    }
+
+    /// Max valid index to prevent arithmetic overflow in slot calculations.
+    const fn max_index() -> usize {
+        if T::BYTES <= 16 {
+            u32::MAX as usize / T::BYTES
+        } else {
+            u32::MAX as usize / T::SLOTS
         }
     }
 
@@ -278,6 +292,8 @@ where
     /// Pushes a new element to the end of the vector.
     ///
     /// Automatically increments the length and handles packing for small types.
+    ///
+    /// Returns `Err` if the vector has reached its maximum capacity.
     #[inline]
     pub fn push(&self, value: T) -> Result<()>
     where
@@ -286,6 +302,9 @@ where
     {
         // Read current length
         let length = self.len()?;
+        if length >= Self::max_index() {
+            return Err(TempoPrecompileError::Fatal("Vec is at max capacity".into()));
+        }
 
         // Write element at the end
         let mut elem_slot = self.at_unchecked(length);
@@ -1561,6 +1580,57 @@ mod tests {
 
             // OOB indices should return None
             assert!(handler.at(3)?.is_none());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_vec_push_at_max_capacity() -> eyre::Result<()> {
+        let (mut storage, address) = setup_storage();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut len_slot = Slot::<U256>::new(U256::ZERO, address);
+
+            // Test packed type
+            let handler = VecHandler::<u32>::new(U256::ZERO, address);
+            let max_index = u32::MAX as usize / u32::BYTES;
+
+            // Manually write max_index - 1 to length slot
+            len_slot.write(U256::from(max_index - 1))?;
+
+            // Push should succeed once (length becomes max_index)
+            handler.push(1)?;
+            assert_eq!(handler.len()?, max_index);
+
+            // Can read element at len - 1
+            let elem = handler.at(max_index - 1)?;
+            assert_eq!(elem.unwrap().read()?, 1);
+
+            // Next push should fail
+            let result = handler.push(1);
+            assert!(result.is_err());
+
+            // Test unpacked type (U256: 32 bytes, max_index = u32::MAX / 1)
+            let handler = VecHandler::<U256>::new(U256::ZERO, address);
+            let max_index = u32::MAX as usize;
+            let value = U256::random();
+
+            // Manually write max_index - 1 to length slot
+            len_slot.write(U256::from(max_index - 1))?;
+
+            // Push should succeed once (length becomes max_index)
+            handler.push(value)?;
+            assert_eq!(handler.len()?, max_index);
+
+            // Can read element at len - 1
+            let elem = handler.at(max_index - 1)?;
+            assert!(elem.is_some());
+            assert_eq!(elem.unwrap().read()?, value);
+
+            // Next push should fail
+            let result = handler.push(value);
+            assert!(result.is_err());
 
             Ok(())
         })
