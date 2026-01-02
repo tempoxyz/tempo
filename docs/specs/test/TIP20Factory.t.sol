@@ -144,11 +144,9 @@ contract TIP20FactoryTest is BaseTest {
         assertEq(predicted, actual, "Predicted address should match actual deployed address");
     }
 
-    function testGetTokenAddressDifferentSenders() public view {
-        bytes32 salt = bytes32("same_salt");
-
-        address addr1 = factory.getTokenAddress(address(this), salt);
-        address addr2 = factory.getTokenAddress(admin, salt);
+    function testGetTokenAddressDifferentSenders(bytes32 salt) public view {
+        address addr1 = factory.getTokenAddress(address(0x1), salt);
+        address addr2 = factory.getTokenAddress(address(0x2), salt);
 
         assertTrue(addr1 != addr2, "Different senders should produce different addresses");
     }
