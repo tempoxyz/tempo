@@ -729,14 +729,8 @@ where
         // state), then we know the DKG failed.
         if onchain_outcome.output == state.output {
             self.metrics.failures.inc();
-            if state.is_full_dkg {
-                self.metrics.full_failures.inc();
-            }
         } else {
             self.metrics.successes.inc();
-            if state.is_full_dkg {
-                self.metrics.full_successes.inc();
-            }
         }
 
         Ok(Some(state::State {
@@ -1104,9 +1098,6 @@ struct Metrics {
     failures: Counter,
     successes: Counter,
 
-    full_successes: Counter,
-    full_failures: Counter,
-
     dealers: Gauge,
     players: Gauge,
     syncing_players: Gauge,
@@ -1216,20 +1207,6 @@ impl Metrics {
             bad_dealings.clone(),
         );
 
-        let full_successes = Counter::default();
-        context.register(
-            "full_ceremony_successes",
-            "the number of successful full DKG ceremonies a node participated in",
-            full_successes.clone(),
-        );
-
-        let full_failures = Counter::default();
-        context.register(
-            "full_ceremony_failures",
-            "the number of failed full DKG ceremonies a node participated in",
-            full_failures.clone(),
-        );
-
         Self {
             peers,
             syncing_players,
@@ -1245,8 +1222,6 @@ impl Metrics {
             how_often_player,
             failures,
             successes,
-            full_successes,
-            full_failures,
         }
     }
 

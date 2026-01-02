@@ -80,8 +80,7 @@ impl FullDkgTest {
             tracing::info!(?pubkey_before, "Group public key BEFORE full DKG");
 
             // Step 2: Wait for full DKG to complete (epoch N+1)
-            self.wait_for_epoch_with_full_dkg(&context, self.full_dkg_epoch + 1)
-                .await;
+            self.wait_for_epoch(&context, self.full_dkg_epoch + 1).await;
 
             // Step 3: Verify full DKG created a NEW polynomial (different public key)
             let outcome_after_full = self
@@ -164,32 +163,10 @@ impl FullDkgTest {
         }
     }
 
-    /// Waits until all validators reach the target epoch AND have completed a full DKG.
-    async fn wait_for_epoch_with_full_dkg(&self, context: &Context, target_epoch: u64) {
-        tracing::info!(target_epoch, "Waiting for epoch with full DKG success");
-
-        loop {
-            context.sleep(Duration::from_secs(1)).await;
-
-            let (at_epoch, full_successes) = self.parse_metrics(context, target_epoch);
-
-            if at_epoch >= self.how_many_signers && full_successes >= self.how_many_signers {
-                tracing::info!(target_epoch, "All validators completed full DKG");
-                return;
-            }
-        }
-    }
-
     /// Counts how many validators have reached the target epoch.
     fn count_validators_at_epoch(&self, context: &Context, target_epoch: u64) -> u32 {
-        self.parse_metrics(context, target_epoch).0
-    }
-
-    /// Parses metrics and returns (validators_at_epoch, full_dkg_successes).
-    fn parse_metrics(&self, context: &Context, target_epoch: u64) -> (u32, u32) {
         let metrics = context.encode();
         let mut at_epoch = 0;
-        let mut full_successes = 0;
 
         for line in metrics.lines() {
             let Some((metric, value)) = parse_metric_line(line) else {
@@ -197,14 +174,8 @@ impl FullDkgTest {
             };
 
             // Assert no DKG failures
-            if metric.ends_with("_dkg_manager_ceremony_failures_total")
-                || metric.ends_with("_dkg_manager_full_ceremony_failures_total")
-            {
+            if metric.ends_with("_dkg_manager_ceremony_failures_total") {
                 assert_eq!(0, value, "DKG ceremony failed: {metric}");
-            }
-
-            if metric.ends_with("_dkg_manager_full_ceremony_successes_total") && value >= 1 {
-                full_successes += 1;
             }
 
             if metric.ends_with("_epoch_manager_latest_epoch") && value >= target_epoch {
@@ -212,7 +183,7 @@ impl FullDkgTest {
             }
         }
 
-        (at_epoch, full_successes)
+        at_epoch
     }
 }
 
