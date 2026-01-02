@@ -31,7 +31,7 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, ready, try_join},
+    future::{ready, try_join},
 };
 use rand::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
@@ -455,33 +455,14 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
     ) -> eyre::Result<Block> {
-        let genesis_digest = self.execution_node.chain_spec().genesis_hash();
-        let parent_request = if parent_digest == Digest(genesis_digest) {
-            let genesis_block = Block::from_execution_block(
-                self.execution_node
-                    .provider
-                    .block_by_number(0)
-                    .map_or_else(
-                        |e| Err(eyre::Report::new(e)),
-                        |block| block.ok_or_eyre("execution layer did not have block"),
-                    )
-                    .wrap_err("execution layer did not have the genesis block")?
-                    .seal(),
-            );
-            Either::Left(always_ready(move || Ok(genesis_block.clone())))
-        } else {
-            Either::Right(
-                self.marshal
-                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-                    .await,
-            )
-        };
-        let parent = parent_request
-            .await
-            .map_err(|_| eyre!(
-                "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-            ))?;
-
+        let parent = get_parent(
+            &self.execution_node,
+            round,
+            parent_digest,
+            parent_view,
+            &mut self.marshal,
+        )
+        .await?;
         debug!(height = parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
@@ -636,37 +617,24 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        let genesis_digest = self.execution_node.chain_spec().genesis_hash();
-        let parent_request = if parent_digest == Digest(genesis_digest) {
-            let genesis_block = Block::from_execution_block(
-                self.execution_node
-                    .provider
-                    .block_by_number(0)
-                    .map_or_else(
-                        |e| Err(eyre::Report::new(e)),
-                        |block| block.ok_or_eyre("execution layer did not have block"),
-                    )
-                    .wrap_err("execution layer did not have the genesis block")?
-                    .seal(),
-            );
-            Either::Left(always_ready(move || Ok(genesis_block.clone())))
-        } else {
-            Either::Right(
-                self.marshal
-                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-                    .await
-                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
-            )
-        };
         let block_request = self
             .marshal
             .subscribe(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
 
-        let (block, parent) = try_join(block_request, parent_request)
-            .await
-            .wrap_err("failed getting required blocks from syncer")?;
+        let (block, parent) = try_join(
+            block_request,
+            get_parent(
+                &self.execution_node,
+                round,
+                parent_digest,
+                parent_view,
+                &mut self.marshal,
+            ),
+        )
+        .await
+        .wrap_err("failed getting required blocks from syncer")?;
 
         // Can only repropose at the end of an epoch.
         //
@@ -1000,5 +968,35 @@ impl Drop for AbortOnDrop {
 impl std::fmt::Debug for AbortOnDrop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AbortOnDrop").finish_non_exhaustive()
+    }
+}
+
+async fn get_parent(
+    execution_node: &TempoFullNode,
+    round: Round,
+    parent_digest: Digest,
+    parent_view: View,
+    marshal: &mut crate::alias::marshal::Mailbox,
+) -> eyre::Result<Block> {
+    let genesis_digest = execution_node.chain_spec().genesis_hash();
+    if parent_digest == Digest(genesis_digest) {
+        let genesis_block = Block::from_execution_block(
+            execution_node
+                .provider
+                .block_by_number(0)
+                .map_or_else(
+                    |e| Err(eyre::Report::new(e)),
+                    |block| block.ok_or_eyre("execution layer did not have block"),
+                )
+                .wrap_err("execution layer did not have the genesis block")?
+                .seal(),
+        );
+        Ok(genesis_block)
+    } else {
+        marshal
+            .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .await
+            .await
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
     }
 }
