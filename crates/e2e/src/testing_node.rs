@@ -29,28 +29,28 @@ where
     TClock: commonware_runtime::Clock,
 {
     /// Unique identifier for this node
-    uid: String,
+    pub uid: String,
     /// Public key of the validator
-    public_key: PublicKey,
+    pub public_key: PublicKey,
     /// Simulated network oracle for test environments
-    oracle: Oracle<PublicKey, TClock>,
+    pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
-    consensus_config:
+    pub consensus_config:
         consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
-    consensus_handle: Option<Handle<eyre::Result<()>>>,
+    pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
-    execution_node_datadir: PathBuf,
+    pub execution_node_datadir: PathBuf,
     /// Running execution node (None if execution is stopped)
-    execution_node: Option<ExecutionNode>,
+    pub execution_node: Option<ExecutionNode>,
     /// Handle to the execution runtime for spawning new execution nodes
-    execution_runtime: ExecutionRuntimeHandle,
+    pub execution_runtime: ExecutionRuntimeHandle,
     /// Configuration for the execution node
-    execution_config: ExecutionNodeConfig,
+    pub execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
-    execution_database: Option<Arc<DatabaseEnv>>,
+    pub execution_database: Option<Arc<DatabaseEnv>>,
     /// Last block number in database when stopped (used for restart verification)
-    last_db_block_on_stop: Option<u64>,
+    pub last_db_block_on_stop: Option<u64>,
 }
 
 impl<TClock> TestingNode<TClock>
