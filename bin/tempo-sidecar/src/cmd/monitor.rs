@@ -1,11 +1,12 @@
 use crate::monitor::{Monitor, prometheus_metrics};
 use alloy::primitives::Address;
 use clap::Parser;
-use eyre::Context;
+use eyre::{Context, eyre};
 use metrics::{describe_counter, describe_gauge};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt, Route, Server, get, listener::TcpListener};
 use reqwest::Url;
+use tempo_precompiles::tip20::is_tip20_prefix;
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
@@ -41,6 +42,10 @@ impl MonitorArgs {
         let metrics_handle = builder
             .install_recorder()
             .context("failed to install recorder")?;
+
+        if self.tokens.iter().any(|t| !is_tip20_prefix(*t)) {
+            return Err(eyre!("Invalid input. Pools require TIP20 tokens."));
+        }
 
         let mut monitor = Monitor::new(
             self.rpc_url,

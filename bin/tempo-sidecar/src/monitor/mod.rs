@@ -5,13 +5,17 @@ use alloy::{
     sol_types::SolEvent,
 };
 use eyre::{Result, eyre};
-use futures::future::try_join_all;
+use futures::future::{join_all, try_join_all};
 use itertools::Itertools;
 use metrics::{counter, gauge};
 use metrics_exporter_prometheus::PrometheusHandle;
 use poem::{Response, handler};
+use rand_distr::num_traits::Zero;
 use reqwest::Url;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Mint, Pool},
@@ -72,9 +76,11 @@ impl MonitorConfig {
     /// Fetches token metadata, discovers existing pools, and returns an initialized `Monitor`.
     #[instrument(name = "monitor::init", skip(self))]
     pub async fn init(self) -> Result<Monitor> {
-        let provider = ProviderBuilder::new()
-            .connect(self.rpc_url.as_str())
-            .await?;
+        let provider = Arc::new(
+            ProviderBuilder::new()
+                .connect(self.rpc_url.as_str())
+                .await?,
+        );
 
         // Fetch metadata for all whitelisted tokens
         let tokens = self.fetch_token_metadata(&provider).await?;
@@ -102,7 +108,7 @@ impl MonitorConfig {
     /// Fetches metadata for all whitelisted tokens.
     async fn fetch_token_metadata<P: Provider + Clone>(
         &self,
-        provider: &P,
+        provider: &Arc<P>,
     ) -> Result<HashMap<Address, TIP20Token>> {
         let get_token_metadata: Vec<_> = self
             .target_tokens
@@ -132,29 +138,29 @@ impl MonitorConfig {
     /// Discovers existing pools by querying all token permutations in parallel.
     async fn discover_pools<P: Provider + Clone>(
         &self,
-        provider: &P,
+        provider: &Arc<P>,
     ) -> Result<HashSet<(Address, Address)>> {
-        let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-
         let check_pool_futures: Vec<_> = self
             .target_tokens
             .iter()
             .permutations(2)
             .map(|pair| {
                 let (token_a, token_b) = (*pair[0], *pair[1]);
-                let fee_amm = fee_amm.clone();
+                let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
                 async move {
                     match fee_amm.getPool(token_a, token_b).call().await {
-                        Ok(_) => {
-                            debug!(%token_a, %token_b, "discovered pool");
-                            Some((token_a, token_b))
+                        Ok(pool) => {
+                            // Skip if pool isn't initialized.
+                            if pool.reserveUserToken.is_zero() {
+                                None
+                            } else {
+                                debug!(%token_a, %token_b, "discovered pool");
+                                Some((token_a, token_b))
+                            }
                         }
                         Err(e) => {
-                            // Skip if pool is non existent (call reverts). Otherwise, log the error.
-                            if e.as_revert_data().is_none() {
-                                counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
-                                error!(%token_a, %token_b, "failed to fetch pool: {}", e);
-                            }
+                            counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
+                            error!(%token_a, %token_b, "failed to fetch pool: {}", e);
                             None
                         }
                     }
@@ -162,7 +168,7 @@ impl MonitorConfig {
             })
             .collect();
 
-        let results = futures::future::join_all(check_pool_futures).await;
+        let results = join_all(check_pool_futures).await;
         Ok(results.into_iter().flatten().collect())
     }
 }
@@ -231,14 +237,14 @@ impl Monitor {
             let pool: Result<Pool, _> = fee_amm.getPool(token_a, token_b).call().await;
             match pool {
                 Ok(pool) => {
+                    // Skip if pool isn't initialized.
+                    if pool.reserveUserToken.is_zero() {
+                        continue;
+                    }
+
                     self.pools.insert((token_a, token_b), pool);
                 }
                 Err(e) => {
-                    // skip if pool is non existent
-                    if e.as_revert_data().is_some() {
-                        continue;
-                    };
-
                     counter!("tempo_fee_amm_errors", "request" => "pool").increment(1);
 
                     return Err(eyre!(
