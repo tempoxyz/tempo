@@ -77,7 +77,7 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
 
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
-pub fn extract_packed_value<T: FromWord + StorableType>(
+pub fn extract_from_word<T: FromWord + StorableType>(
     slot_value: U256,
     offset: usize,
     bytes: usize,
@@ -107,7 +107,7 @@ pub fn extract_packed_value<T: FromWord + StorableType>(
 
 /// Insert a packed value into a storage slot at a given byte offset.
 #[inline]
-pub fn insert_packed_value<T: FromWord + StorableType>(
+pub fn insert_into_word<T: FromWord + StorableType>(
     current: U256,
     value: &T,
     offset: usize,
@@ -146,10 +146,10 @@ pub fn insert_packed_value<T: FromWord + StorableType>(
 
 /// Zero out a packed value in a storage slot at a given byte offset.
 ///
-/// This is the inverse operation to `insert_packed_value`, clearing the bits
+/// This is the inverse operation to `insert_into_word`, clearing the bits
 /// for a specific field while preserving other packed values in the slot.
 #[inline]
-pub fn zero_packed_value(current: U256, offset: usize, bytes: usize) -> Result<U256> {
+pub fn delete_from_word(current: U256, offset: usize, bytes: usize) -> Result<U256> {
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
         return Err(crate::error::TempoPrecompileError::Fatal(format!(
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_packed_value() {
+    fn test_delete_from_word() {
         // Start with a slot containing multiple packed u8 values
         let slot = gen_word_from(&[
             "0xff", // offset 3 (1 byte)
@@ -349,7 +349,7 @@ mod tests {
         ]);
 
         // Zero out the value at offset 1
-        let cleared = zero_packed_value(slot, 1, 1).unwrap();
+        let cleared = delete_from_word(slot, 1, 1).unwrap();
         let expected = gen_word_from(&[
             "0xff", // offset 3 - unchanged
             "0x56", // offset 2 - unchanged
@@ -360,13 +360,13 @@ mod tests {
 
         // Zero out a u16 (2 bytes) at offset 0
         let slot = gen_word_from(&["0x5678", "0x1234"]);
-        let cleared = zero_packed_value(slot, 0, 2).unwrap();
+        let cleared = delete_from_word(slot, 0, 2).unwrap();
         let expected = gen_word_from(&["0x5678", "0x0000"]);
         assert_eq!(cleared, expected, "Should zero u16 at offset 0");
 
         // Zero out the last byte in a slot
         let slot = gen_word_from(&["0xff"]);
-        let cleared = zero_packed_value(slot, 0, 1).unwrap();
+        let cleared = delete_from_word(slot, 0, 1).unwrap();
         assert_eq!(cleared, U256::ZERO, "Should zero entire slot");
     }
 
@@ -376,7 +376,7 @@ mod tests {
     fn test_boundary_validation_rejects_spanning() {
         // Address (20 bytes) at offset 13 would span slot boundary (13 + 20 = 33 > 32)
         let addr = Address::random();
-        let result = insert_packed_value(U256::ZERO, &addr, 13, 20);
+        let result = insert_into_word(U256::ZERO, &addr, 13, 20);
         assert!(
             result.is_err(),
             "Should reject address at offset 13 (would span slot)"
@@ -384,7 +384,7 @@ mod tests {
 
         // u16 (2 bytes) at offset 31 would span slot boundary (31 + 2 = 33 > 32)
         let val: u16 = 42;
-        let result = insert_packed_value(U256::ZERO, &val, 31, 2);
+        let result = insert_into_word(U256::ZERO, &val, 31, 2);
         assert!(
             result.is_err(),
             "Should reject u16 at offset 31 (would span slot)"
@@ -392,14 +392,14 @@ mod tests {
 
         // u32 (4 bytes) at offset 29 would span slot boundary (29 + 4 = 33 > 32)
         let val: u32 = 42;
-        let result = insert_packed_value(U256::ZERO, &val, 29, 4);
+        let result = insert_into_word(U256::ZERO, &val, 29, 4);
         assert!(
             result.is_err(),
             "Should reject u32 at offset 29 (would span slot)"
         );
 
         // Test extract as well
-        let result = extract_packed_value::<Address>(U256::ZERO, 13, 20);
+        let result = extract_from_word::<Address>(U256::ZERO, 13, 20);
         assert!(
             result.is_err(),
             "Should reject extracting address from offset 13"
@@ -410,22 +410,22 @@ mod tests {
     fn test_boundary_validation_accepts_valid() {
         // Address (20 bytes) at offset 12 is valid (12 + 20 = 32)
         let addr = Address::random();
-        let result = insert_packed_value(U256::ZERO, &addr, 12, 20);
+        let result = insert_into_word(U256::ZERO, &addr, 12, 20);
         assert!(result.is_ok(), "Should accept address at offset 12");
 
         // u16 (2 bytes) at offset 30 is valid (30 + 2 = 32)
         let val: u16 = 42;
-        let result = insert_packed_value(U256::ZERO, &val, 30, 2);
+        let result = insert_into_word(U256::ZERO, &val, 30, 2);
         assert!(result.is_ok(), "Should accept u16 at offset 30");
 
         // u8 (1 byte) at offset 31 is valid (31 + 1 = 32)
         let val: u8 = 42;
-        let result = insert_packed_value(U256::ZERO, &val, 31, 1);
+        let result = insert_into_word(U256::ZERO, &val, 31, 1);
         assert!(result.is_ok(), "Should accept u8 at offset 31");
 
         // U256 (32 bytes) at offset 0 is valid (0 + 32 = 32)
         let val = U256::from(42);
-        let result = insert_packed_value(U256::ZERO, &val, 0, 32);
+        let result = insert_into_word(U256::ZERO, &val, 0, 32);
         assert!(result.is_ok(), "Should accept U256 at offset 0");
     }
 
@@ -438,12 +438,12 @@ mod tests {
             "0x01", // offset 0 (1 byte)
         ]);
 
-        let slot = insert_packed_value(U256::ZERO, &true, 0, 1).unwrap();
+        let slot = insert_into_word(U256::ZERO, &true, 0, 1).unwrap();
         assert_eq!(
             slot, expected,
             "Single bool [true] should match Solidity layout"
         );
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
+        assert!(extract_from_word::<bool>(slot, 0, 1).unwrap());
 
         // two bools
         let expected = gen_word_from(&[
@@ -452,11 +452,11 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &true, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &true, 1, 1).unwrap();
+        slot = insert_into_word(slot, &true, 0, 1).unwrap();
+        slot = insert_into_word(slot, &true, 1, 1).unwrap();
         assert_eq!(slot, expected, "[true, true] should match Solidity layout");
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
-        assert!(extract_packed_value::<bool>(slot, 1, 1).unwrap());
+        assert!(extract_from_word::<bool>(slot, 0, 1).unwrap());
+        assert!(extract_from_word::<bool>(slot, 1, 1).unwrap());
     }
 
     #[test]
@@ -475,16 +475,16 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &v2, 1, 1).unwrap();
-        slot = insert_packed_value(slot, &v3, 2, 1).unwrap();
-        slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 1).unwrap();
+        slot = insert_into_word(slot, &v2, 1, 1).unwrap();
+        slot = insert_into_word(slot, &v3, 2, 1).unwrap();
+        slot = insert_into_word(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "u8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<u8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_from_word::<u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_from_word::<u8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_from_word::<u8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_from_word::<u8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -501,14 +501,14 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 2).unwrap();
-        slot = insert_packed_value(slot, &v2, 2, 2).unwrap();
-        slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 2).unwrap();
+        slot = insert_into_word(slot, &v2, 2, 2).unwrap();
+        slot = insert_into_word(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "u16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_from_word::<u16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_from_word::<u16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_from_word::<u16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -523,12 +523,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 4).unwrap();
-        slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 4).unwrap();
+        slot = insert_into_word(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "u32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_from_word::<u32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_from_word::<u32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -543,12 +543,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 8).unwrap();
-        slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 8).unwrap();
+        slot = insert_into_word(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "u64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_from_word::<u64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_from_word::<u64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -563,12 +563,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 16).unwrap();
-        slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 16).unwrap();
+        slot = insert_into_word(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "u128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<u128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_from_word::<u128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_from_word::<u128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -583,16 +583,13 @@ mod tests {
         let expected =
             gen_word_from(&["0x123456789abcdef0fedcba9876543210112233445566778899aabbccddeeff00"]);
 
-        let slot = insert_packed_value(U256::ZERO, &value, 0, 32).unwrap();
+        let slot = insert_into_word(U256::ZERO, &value, 0, 32).unwrap();
         assert_eq!(slot, expected, "u256 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<U256>(slot, 0, 32).unwrap(), value);
+        assert_eq!(extract_from_word::<U256>(slot, 0, 32).unwrap(), value);
 
         // Test U256::MAX
-        let slot = insert_packed_value(U256::ZERO, &U256::MAX, 0, 32).unwrap();
-        assert_eq!(
-            extract_packed_value::<U256>(slot, 0, 32).unwrap(),
-            U256::MAX
-        );
+        let slot = insert_into_word(U256::ZERO, &U256::MAX, 0, 32).unwrap();
+        assert_eq!(extract_from_word::<U256>(slot, 0, 32).unwrap(), U256::MAX);
     }
 
     #[test]
@@ -611,16 +608,16 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &v2, 1, 1).unwrap();
-        slot = insert_packed_value(slot, &v3, 2, 1).unwrap();
-        slot = insert_packed_value(slot, &v4, 3, 1).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 1).unwrap();
+        slot = insert_into_word(slot, &v2, 1, 1).unwrap();
+        slot = insert_into_word(slot, &v3, 2, 1).unwrap();
+        slot = insert_into_word(slot, &v4, 3, 1).unwrap();
 
         assert_eq!(slot, expected, "i8 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i8>(slot, 1, 1).unwrap(), v2);
-        assert_eq!(extract_packed_value::<i8>(slot, 2, 1).unwrap(), v3);
-        assert_eq!(extract_packed_value::<i8>(slot, 3, 1).unwrap(), v4);
+        assert_eq!(extract_from_word::<i8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_from_word::<i8>(slot, 1, 1).unwrap(), v2);
+        assert_eq!(extract_from_word::<i8>(slot, 2, 1).unwrap(), v3);
+        assert_eq!(extract_from_word::<i8>(slot, 3, 1).unwrap(), v4);
     }
 
     #[test]
@@ -637,14 +634,14 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 2).unwrap();
-        slot = insert_packed_value(slot, &v2, 2, 2).unwrap();
-        slot = insert_packed_value(slot, &v3, 4, 2).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 2).unwrap();
+        slot = insert_into_word(slot, &v2, 2, 2).unwrap();
+        slot = insert_into_word(slot, &v3, 4, 2).unwrap();
 
         assert_eq!(slot, expected, "i16 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i16>(slot, 0, 2).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i16>(slot, 2, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<i16>(slot, 4, 2).unwrap(), v3);
+        assert_eq!(extract_from_word::<i16>(slot, 0, 2).unwrap(), v1);
+        assert_eq!(extract_from_word::<i16>(slot, 2, 2).unwrap(), v2);
+        assert_eq!(extract_from_word::<i16>(slot, 4, 2).unwrap(), v3);
     }
 
     #[test]
@@ -659,12 +656,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 4).unwrap();
-        slot = insert_packed_value(slot, &v2, 4, 4).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 4).unwrap();
+        slot = insert_into_word(slot, &v2, 4, 4).unwrap();
 
         assert_eq!(slot, expected, "i32 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i32>(slot, 0, 4).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i32>(slot, 4, 4).unwrap(), v2);
+        assert_eq!(extract_from_word::<i32>(slot, 0, 4).unwrap(), v1);
+        assert_eq!(extract_from_word::<i32>(slot, 4, 4).unwrap(), v2);
     }
 
     #[test]
@@ -679,12 +676,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 8).unwrap();
-        slot = insert_packed_value(slot, &v2, 8, 8).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 8).unwrap();
+        slot = insert_into_word(slot, &v2, 8, 8).unwrap();
 
         assert_eq!(slot, expected, "i64 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i64>(slot, 0, 8).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i64>(slot, 8, 8).unwrap(), v2);
+        assert_eq!(extract_from_word::<i64>(slot, 0, 8).unwrap(), v1);
+        assert_eq!(extract_from_word::<i64>(slot, 8, 8).unwrap(), v2);
     }
 
     #[test]
@@ -699,12 +696,12 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 16).unwrap();
-        slot = insert_packed_value(slot, &v2, 16, 16).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 16).unwrap();
+        slot = insert_into_word(slot, &v2, 16, 16).unwrap();
 
         assert_eq!(slot, expected, "i128 packing should match Solidity layout");
-        assert_eq!(extract_packed_value::<i128>(slot, 0, 16).unwrap(), v1);
-        assert_eq!(extract_packed_value::<i128>(slot, 16, 16).unwrap(), v2);
+        assert_eq!(extract_from_word::<i128>(slot, 0, 16).unwrap(), v1);
+        assert_eq!(extract_from_word::<i128>(slot, 16, 16).unwrap(), v2);
     }
 
     #[test]
@@ -723,19 +720,19 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &v2, 1, 2).unwrap();
-        slot = insert_packed_value(slot, &v3, 3, 4).unwrap();
-        slot = insert_packed_value(slot, &v4, 7, 8).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 1).unwrap();
+        slot = insert_into_word(slot, &v2, 1, 2).unwrap();
+        slot = insert_into_word(slot, &v3, 3, 4).unwrap();
+        slot = insert_into_word(slot, &v4, 7, 8).unwrap();
 
         assert_eq!(
             slot, expected,
             "Mixed types packing should match Solidity layout"
         );
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), v1);
-        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), v2);
-        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), v3);
-        assert_eq!(extract_packed_value::<u64>(slot, 7, 8).unwrap(), v4);
+        assert_eq!(extract_from_word::<u8>(slot, 0, 1).unwrap(), v1);
+        assert_eq!(extract_from_word::<u16>(slot, 1, 2).unwrap(), v2);
+        assert_eq!(extract_from_word::<u32>(slot, 3, 4).unwrap(), v3);
+        assert_eq!(extract_from_word::<u64>(slot, 7, 8).unwrap(), v4);
     }
 
     #[test]
@@ -750,16 +747,16 @@ mod tests {
         ]);
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &true, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &addr, 1, 20).unwrap();
-        slot = insert_packed_value(slot, &number, 21, 1).unwrap();
+        slot = insert_into_word(slot, &true, 0, 1).unwrap();
+        slot = insert_into_word(slot, &addr, 1, 20).unwrap();
+        slot = insert_into_word(slot, &number, 21, 1).unwrap();
         assert_eq!(
             slot, expected,
             "[bool, address, u8] should match Solidity layout"
         );
-        assert!(extract_packed_value::<bool>(slot, 0, 1).unwrap());
-        assert_eq!(extract_packed_value::<Address>(slot, 1, 20).unwrap(), addr);
-        assert_eq!(extract_packed_value::<u8>(slot, 21, 1).unwrap(), number);
+        assert!(extract_from_word::<bool>(slot, 0, 1).unwrap());
+        assert_eq!(extract_from_word::<Address>(slot, 1, 20).unwrap(), addr);
+        assert_eq!(extract_from_word::<u8>(slot, 21, 1).unwrap(), number);
     }
 
     #[test]
@@ -772,20 +769,20 @@ mod tests {
         let expected = U256::ZERO;
 
         let mut slot = U256::ZERO;
-        slot = insert_packed_value(slot, &v1, 0, 1).unwrap();
-        slot = insert_packed_value(slot, &v2, 1, 2).unwrap();
-        slot = insert_packed_value(slot, &v3, 3, 4).unwrap();
+        slot = insert_into_word(slot, &v1, 0, 1).unwrap();
+        slot = insert_into_word(slot, &v2, 1, 2).unwrap();
+        slot = insert_into_word(slot, &v3, 3, 4).unwrap();
 
         assert_eq!(slot, expected, "Zero values should produce zero slot");
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u16>(slot, 1, 2).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u32>(slot, 3, 4).unwrap(), 0);
+        assert_eq!(extract_from_word::<u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_from_word::<u16>(slot, 1, 2).unwrap(), 0);
+        assert_eq!(extract_from_word::<u32>(slot, 3, 4).unwrap(), 0);
 
         // Test that zeros don't interfere with non-zero values
         let v4: u8 = 0xff;
-        slot = insert_packed_value(slot, &v4, 10, 1).unwrap();
-        assert_eq!(extract_packed_value::<u8>(slot, 0, 1).unwrap(), 0);
-        assert_eq!(extract_packed_value::<u8>(slot, 10, 1).unwrap(), 0xff);
+        slot = insert_into_word(slot, &v4, 10, 1).unwrap();
+        assert_eq!(extract_from_word::<u8>(slot, 0, 1).unwrap(), 0);
+        assert_eq!(extract_from_word::<u8>(slot, 10, 1).unwrap(), 0xff);
     }
 
     // -- SLOT PACKED FIELD TESTS ------------------------------------------
@@ -886,93 +883,93 @@ mod tests {
 
         #[test]
         fn proptest_roundtrip_u8(value: u8, offset in arb_offset(1)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 1)?;
-            let extracted: u8 = extract_packed_value(slot, offset, 1)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 1)?;
+            let extracted: u8 = extract_from_word(slot, offset, 1)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_u16(value: u16, offset in arb_offset(2)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 2)?;
-            let extracted: u16 = extract_packed_value(slot, offset, 2)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 2)?;
+            let extracted: u16 = extract_from_word(slot, offset, 2)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_u32(value: u32, offset in arb_offset(4)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 4)?;
-            let extracted: u32 = extract_packed_value(slot, offset, 4)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 4)?;
+            let extracted: u32 = extract_from_word(slot, offset, 4)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_u64(value: u64, offset in arb_offset(8)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 8)?;
-            let extracted: u64 = extract_packed_value(slot, offset, 8)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 8)?;
+            let extracted: u64 = extract_from_word(slot, offset, 8)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_u128(value: u128, offset in arb_offset(16)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 16)?;
-            let extracted: u128 = extract_packed_value(slot, offset, 16)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 16)?;
+            let extracted: u128 = extract_from_word(slot, offset, 16)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_address(addr in arb_address(), offset in arb_offset(20)) {
-            let slot = insert_packed_value(U256::ZERO, &addr, offset, 20)?;
-            let extracted: Address = extract_packed_value(slot, offset, 20)?;
+            let slot = insert_into_word(U256::ZERO, &addr, offset, 20)?;
+            let extracted: Address = extract_from_word(slot, offset, 20)?;
             prop_assert_eq!(extracted, addr);
         }
 
         #[test]
         fn proptest_roundtrip_u256(value in arb_u256()) {
             // U256 takes the full 32 bytes, so offset must be 0
-            let slot = insert_packed_value(U256::ZERO, &value, 0, 32)?;
-            let extracted: U256 = extract_packed_value(slot, 0, 32)?;
+            let slot = insert_into_word(U256::ZERO, &value, 0, 32)?;
+            let extracted: U256 = extract_from_word(slot, 0, 32)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_bool(value: bool, offset in arb_offset(1)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 1)?;
-            let extracted: bool = extract_packed_value(slot, offset, 1)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 1)?;
+            let extracted: bool = extract_from_word(slot, offset, 1)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_i8(value: i8, offset in arb_offset(1)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 1)?;
-            let extracted: i8 = extract_packed_value(slot, offset, 1)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 1)?;
+            let extracted: i8 = extract_from_word(slot, offset, 1)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_i16(value: i16, offset in arb_offset(2)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 2)?;
-            let extracted: i16 = extract_packed_value(slot, offset, 2)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 2)?;
+            let extracted: i16 = extract_from_word(slot, offset, 2)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_i32(value: i32, offset in arb_offset(4)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 4)?;
-            let extracted: i32 = extract_packed_value(slot, offset, 4)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 4)?;
+            let extracted: i32 = extract_from_word(slot, offset, 4)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_i64(value: i64, offset in arb_offset(8)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 8)?;
-            let extracted: i64 = extract_packed_value(slot, offset, 8)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 8)?;
+            let extracted: i64 = extract_from_word(slot, offset, 8)?;
             prop_assert_eq!(extracted, value);
         }
 
         #[test]
         fn proptest_roundtrip_i128(value: i128, offset in arb_offset(16)) {
-            let slot = insert_packed_value(U256::ZERO, &value, offset, 16)?;
-            let extracted: i128 = extract_packed_value(slot, offset, 16)?;
+            let slot = insert_into_word(U256::ZERO, &value, offset, 16)?;
+            let extracted: i128 = extract_from_word(slot, offset, 16)?;
             prop_assert_eq!(extracted, value);
         }
     }
@@ -991,14 +988,14 @@ mod tests {
             // u16 at offset 1 (2 bytes)
             // u32 at offset 3 (4 bytes)
             let mut slot = U256::ZERO;
-            slot = insert_packed_value(slot, &v1, 0, 1)?;
-            slot = insert_packed_value(slot, &v2, 1, 2)?;
-            slot = insert_packed_value(slot, &v3, 3, 4)?;
+            slot = insert_into_word(slot, &v1, 0, 1)?;
+            slot = insert_into_word(slot, &v2, 1, 2)?;
+            slot = insert_into_word(slot, &v3, 3, 4)?;
 
             // Verify all values can be extracted correctly
-            let e1: u8 = extract_packed_value(slot, 0, 1)?;
-            let e2: u16 = extract_packed_value(slot, 1, 2)?;
-            let e3: u32 = extract_packed_value(slot, 3, 4)?;
+            let e1: u8 = extract_from_word(slot, 0, 1)?;
+            let e2: u16 = extract_from_word(slot, 1, 2)?;
+            let e3: u32 = extract_from_word(slot, 3, 4)?;
 
             prop_assert_eq!(e1, v1);
             prop_assert_eq!(e2, v2);
@@ -1013,15 +1010,15 @@ mod tests {
         ) {
             // Pack two values
             let mut slot = U256::ZERO;
-            slot = insert_packed_value(slot, &v1, 0, 1)?;
-            slot = insert_packed_value(slot, &v2, 1, 2)?;
+            slot = insert_into_word(slot, &v1, 0, 1)?;
+            slot = insert_into_word(slot, &v2, 1, 2)?;
 
             // Overwrite the first value
-            slot = insert_packed_value(slot, &v1_new, 0, 1)?;
+            slot = insert_into_word(slot, &v1_new, 0, 1)?;
 
             // Verify the second value is unchanged
-            let e1: u8 = extract_packed_value(slot, 0, 1)?;
-            let e2: u16 = extract_packed_value(slot, 1, 2)?;
+            let e1: u8 = extract_from_word(slot, 0, 1)?;
+            let e2: u16 = extract_from_word(slot, 1, 2)?;
 
             prop_assert_eq!(e1, v1_new);
             prop_assert_eq!(e2, v2); // Should be unchanged
@@ -1036,16 +1033,16 @@ mod tests {
         ) {
             // Pack bools alongside other types: bool(1) | u16(2) | bool(1) | u32(4)
             let mut slot = U256::ZERO;
-            slot = insert_packed_value(slot, &flag1, 0, 1)?;
-            slot = insert_packed_value(slot, &u16_val, 1, 2)?;
-            slot = insert_packed_value(slot, &flag2, 3, 1)?;
-            slot = insert_packed_value(slot, &u32_val, 4, 4)?;
+            slot = insert_into_word(slot, &flag1, 0, 1)?;
+            slot = insert_into_word(slot, &u16_val, 1, 2)?;
+            slot = insert_into_word(slot, &flag2, 3, 1)?;
+            slot = insert_into_word(slot, &u32_val, 4, 4)?;
 
             // Extract and verify all values
-            let e_flag1: bool = extract_packed_value(slot, 0, 1)?;
-            let e_u16: u16 = extract_packed_value(slot, 1, 2)?;
-            let e_flag2: bool = extract_packed_value(slot, 3, 1)?;
-            let e_u32: u32 = extract_packed_value(slot, 4, 4)?;
+            let e_flag1: bool = extract_from_word(slot, 0, 1)?;
+            let e_u16: u16 = extract_from_word(slot, 1, 2)?;
+            let e_flag2: bool = extract_from_word(slot, 3, 1)?;
+            let e_u32: u32 = extract_from_word(slot, 4, 4)?;
 
             prop_assert_eq!(e_flag1, flag1);
             prop_assert_eq!(e_u16, u16_val);
@@ -1060,12 +1057,12 @@ mod tests {
             // Pack multiple bools at consecutive offsets
             let mut slot = U256::ZERO;
             for (i, &flag) in flags.iter().enumerate() {
-                slot = insert_packed_value(slot, &flag, i, 1)?;
+                slot = insert_into_word(slot, &flag, i, 1)?;
             }
 
             // Verify all flags can be extracted correctly
             for (i, &expected_flag) in flags.iter().enumerate() {
-                let extracted: bool = extract_packed_value(slot, i, 1)?;
+                let extracted: bool = extract_from_word(slot, i, 1)?;
                 prop_assert_eq!(extracted, expected_flag, "Flag at offset {} mismatch", i);
             }
         }

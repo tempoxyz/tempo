@@ -207,7 +207,7 @@ pub trait Storable: StorableType + Sized {
                 // For packed context, we need to preserve other fields in the slot
                 let bytes = Self::BYTES;
                 let current = storage.load(slot)?;
-                let cleared = crate::storage::packing::zero_packed_value(current, offset, bytes)?;
+                let cleared = crate::storage::packing::delete_from_word(current, offset, bytes)?;
                 storage.store(slot, cleared)
             }
         }
@@ -264,7 +264,7 @@ impl<T: Packable> Storable for T {
             None => storage.load(slot).and_then(Self::from_word),
             Some(offset) => {
                 let slot_value = storage.load(slot)?;
-                packing::extract_packed_value(slot_value, offset, Self::BYTES)
+                packing::extract_from_word(slot_value, offset, Self::BYTES)
             }
         }
     }
@@ -277,7 +277,7 @@ impl<T: Packable> Storable for T {
             None => storage.store(slot, self.to_word()),
             Some(offset) => {
                 let current = storage.load(slot)?;
-                let updated = packing::insert_packed_value(current, self, offset, Self::BYTES)?;
+                let updated = packing::insert_into_word(current, self, offset, Self::BYTES)?;
                 storage.store(slot, updated)
             }
         }

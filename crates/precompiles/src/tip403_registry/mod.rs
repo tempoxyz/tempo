@@ -36,10 +36,10 @@ impl PolicyData {
     }
 
     pub fn encode_to_slot(&self) -> U256 {
-        use crate::storage::packing::insert_packed_value;
+        use crate::storage::packing::insert_into_word;
         use __packing_policy_data::{ADMIN_LOC as A_LOC, POLICY_TYPE_LOC as PT_LOC};
 
-        let encoded = insert_packed_value(
+        let encoded = insert_into_word(
             U256::ZERO,
             &self.policy_type,
             PT_LOC.offset_bytes,
@@ -47,7 +47,7 @@ impl PolicyData {
         )
         .expect("unable to insert 'policy_type'");
 
-        insert_packed_value(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
+        insert_into_word(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
             .expect("unable to insert 'admin'")
     }
 }

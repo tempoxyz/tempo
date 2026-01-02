@@ -390,7 +390,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
                     "Arrays can only be loaded with LayoutCtx::FULL"
                 );
 
-                use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_packed_value};
+                use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_from_word};
                 let base_slot = slot;
                 #load_impl
             }
@@ -402,7 +402,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
                     "Arrays can only be stored with LayoutCtx::FULL"
                 );
 
-                use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_packed_value};
+                use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_into_word};
                 let base_slot = slot;
                 #store_impl
             }
@@ -434,7 +434,7 @@ fn gen_packed_array_load(array_size: &usize, elem_byte_count: &usize) -> TokenSt
             let offset = calc_element_offset(i, #elem_byte_count);
             let slot_addr = base_slot + U256::from(slot_idx);
             let slot_value = storage.load(slot_addr)?;
-            result[i] = extract_packed_value(slot_value, offset, #elem_byte_count)?;
+            result[i] = extract_from_word(slot_value, offset, #elem_byte_count)?;
         }
         Ok(result)
     }
@@ -456,7 +456,7 @@ fn gen_packed_array_store(array_size: &usize, elem_byte_count: &usize) -> TokenS
                 let elem_slot = calc_element_slot(i, #elem_byte_count);
                 if elem_slot == slot_idx {
                     let offset = calc_element_offset(i, #elem_byte_count);
-                    slot_value = insert_packed_value(slot_value, &self[i], offset, #elem_byte_count)?;
+                    slot_value = insert_into_word(slot_value, &self[i], offset, #elem_byte_count)?;
                 }
             }
 
