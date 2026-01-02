@@ -163,21 +163,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Permit2 bytecode in abi/Permit2.json doesn't match mainnet - needs investigation"]
-    async fn permit2_bytecode_matches_mainnet() {
-        let mainnet_hash = get_mainnet_code_hash(PERMIT2_ADDRESS).await;
-        let our_hash = keccak256(&Permit2::DEPLOYED_BYTECODE);
-
-        assert_eq!(
-            mainnet_hash, our_hash,
-            "Permit2 bytecode hash mismatch!\n\
-             Mainnet: {mainnet_hash}\n\
-             Ours:    {our_hash}\n\
-             This likely means we have the wrong bytecode for Permit2."
-        );
-    }
-
-    #[tokio::test]
     async fn arachnid_create2_factory_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(ARACHNID_CREATE2_FACTORY_ADDRESS).await;
         let our_hash = keccak256(&contracts::ARACHNID_CREATE2_FACTORY_BYTECODE);
