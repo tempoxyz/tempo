@@ -245,31 +245,24 @@ impl TempoTransaction {
             return Err("valid_before must be greater than valid_after");
         }
 
-        // Authorization list validation: Cannot have Create in any call when aa_authorization_list is non-empty
-        // This follows EIP-7702 semantics - when using delegation
-        if !self.tempo_authorization_list.is_empty() {
-            for call in &self.calls {
-                if call.to.is_create() {
-                    return Err(
-                        "calls cannot contain Create when aa_authorization_list is non-empty",
-                    );
-                }
-            }
+        let mut calls = self.calls.iter();
+
+        // Only the first call in the batch can be a CREATE call.
+        if let Some(call) = calls.next()
+            // Authorization list validation: Can NOT have CREATE when `aa_authorization_list` is non-empty
+            // This follows EIP-7702 semantics - when using delegation
+            && !self.tempo_authorization_list.is_empty()
+            && call.to.is_create()
+        {
+            return Err("calls cannot contain CREATE when 'aa_authorization_list' is non-empty");
         }
 
-        // CREATE validation for batch transactions:
-        // 1. Only ONE CREATE is allowed per transaction
-        // 2. If present, CREATE must be the FIRST call in the batch
-        let mut create_found = false;
-        for (index, call) in self.calls.iter().enumerate() {
+        // All subsequent calls must be CALL.
+        for call in calls {
             if call.to.is_create() {
-                if create_found {
-                    return Err("only one CREATE call is allowed per transaction");
-                }
-                if index != 0 {
-                    return Err("CREATE call must be at the first position in the calls array");
-                }
-                create_found = true;
+                return Err(
+                    "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
+                );
             }
         }
 
@@ -1901,12 +1894,7 @@ mod tests {
             ..Default::default()
         };
         assert!(tx_invalid.validate().is_err());
-        assert!(
-            tx_invalid
-                .validate()
-                .unwrap_err()
-                .contains("first position")
-        );
+        assert!(tx_invalid.validate().unwrap_err().contains("first call"));
     }
 
     #[test]
