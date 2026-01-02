@@ -134,7 +134,7 @@ impl TIP20Factory {
         use crate::PATH_USD_ADDRESS;
 
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {
@@ -142,7 +142,7 @@ impl TIP20Factory {
                 name: "PathUSD".to_string(),
                 symbol: "PUSD".to_string(),
                 currency: "USD".to_string(),
-                quoteToken: PATH_USD_ADDRESS,
+                quoteToken: Address::ZERO,
                 admin,
                 salt: B256::ZERO,
             },

@@ -463,11 +463,10 @@ fn create_path_usd_token(
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         // Initialize PathUSD directly (not via factory) since it's at a reserved address.
-        // PathUSD uses itself as quote token.
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create PathUSD token instance");
         token
-            .initialize("pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)
+            .initialize("pathUSD", "pathUSD", "USD", Address::ZERO, admin)
             .expect("Could not initialize PathUSD token");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
