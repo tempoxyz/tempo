@@ -366,6 +366,7 @@ where
         }
 
         let share = if round.is_full_dkg() {
+            info!("running full DKG ceremony as dealer (new polynomial)");
             None
         } else if share.is_none() {
             warn!(
