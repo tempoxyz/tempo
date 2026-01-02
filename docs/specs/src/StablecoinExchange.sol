@@ -83,6 +83,13 @@ contract StablecoinExchange is IStablecoinExchange {
         return uint32(int32(PRICE_SCALE) + int32(tick));
     }
 
+    /// @notice Convert base amount to quote amount with ceiling division (rounds up)
+    /// @dev Used for escrowing bids to ensure protocol collects enough
+    function baseToQuoteCeil(uint128 baseAmount, int16 tick) public pure returns (uint128) {
+        uint256 price = uint256(tickToPrice(tick));
+        return uint128((uint256(baseAmount) * price + PRICE_SCALE - 1) / PRICE_SCALE);
+    }
+
     /// @notice Convert scaled price to relative tick
     function priceToTick(uint32 price) public pure returns (int16 tick) {
         if (price < MIN_PRICE || price > MAX_PRICE) {
@@ -231,9 +238,9 @@ contract StablecoinExchange is IStablecoinExchange {
             address escrowToken;
             if (isBid) {
                 // For bids, escrow quote tokens based on price
+                // Round UP to ensure protocol collects enough (matches Rust RoundingDirection::Up)
                 escrowToken = quote;
-                uint32 price = tickToPrice(tick);
-                escrowAmount = uint128((uint256(amount) * uint256(price)) / uint256(PRICE_SCALE));
+                escrowAmount = baseToQuoteCeil(amount, tick);
             } else {
                 // For asks, escrow base tokens
                 escrowToken = base;
@@ -424,9 +431,8 @@ contract StablecoinExchange is IStablecoinExchange {
         uint128 escrowAmount;
         if (order.isBid) {
             // For bids, escrow quote tokens based on price
-            uint32 price = tickToPrice(order.tick);
-            escrowAmount =
-                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
+            // Round UP to match the escrow amount from placement (matches Rust RoundingDirection::Up)
+            escrowAmount = baseToQuoteCeil(order.remaining, order.tick);
         } else {
             // For asks, escrow base tokens
             escrowAmount = order.remaining;

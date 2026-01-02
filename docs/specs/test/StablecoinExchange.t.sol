@@ -372,9 +372,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(
-            address(pathUSD), address(token1), amountOut, maxAmountIn
-        );
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -611,9 +610,8 @@ contract StablecoinExchangeTest is BaseTest {
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(
-                IStablecoinExchange.BelowMinimumOrderSize.selector, amount
-            );
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -978,9 +976,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find direct path
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(pathUSD), address(token1), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), minOrderAmount);
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
             // Sibling tokens through pathUSD
@@ -1014,9 +1011,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find path in reverse
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(pathUSD), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), minOrderAmount);
             assertGt(amountOut, 0);
         }
     }
@@ -1702,6 +1698,223 @@ contract StablecoinExchangeTest is BaseTest {
 
         vm.prank(user);
         orderId = exchange.place(address(token1), amount, false, tick);
+    }
+
+    /// @notice Verifies that swapExactAmountOut fully consumes a bid when the taker
+    /// requests all available quote. Tests that baseNeeded rounds up correctly.
+    function test_BidExactOutRounding_FullOrderConsumption() public {
+        // Values that trigger the rounding issue
+        uint128 baseAmount = 100_000_051;
+        int16 tick = -2000; // price = 98000, p = 0.98
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor) - what taker can actually get
+        uint128 release = uint128((uint256(baseAmount) * uint256(price)) / exchange.PRICE_SCALE());
+
+        // Alice places a bid for baseAmount base tokens
+        vm.prank(alice);
+        exchange.place(address(token1), baseAmount, true, tick);
+
+        // Bob does exactOut for the full release amount
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            release, // amountOut
+            type(uint128).max // maxAmountIn
+        );
+
+        // With the fix, baseIn should equal baseAmount (order fully consumed)
+        assertEq(
+            baseIn, baseAmount, "Order should be fully filled when taker takes all available quote"
+        );
+    }
+
+    function testFuzz_BidExactOutRounding_FullOrderConsumption(uint128 amount, int16 tick) public {
+        // Bound inputs
+        amount = uint128(bound(amount, 100_000_000, 500_000_000));
+        tick = int16(bound(tick, -2000, 2000));
+        tick = tick - (tick % 10); // align to tick spacing
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor)
+        uint128 release = uint128((uint256(amount) * uint256(price)) / exchange.PRICE_SCALE());
+        if (release == 0) return; // skip if no quote to release
+
+        // Alice places a bid
+        vm.prank(alice);
+        exchange.place(address(token1), amount, true, tick);
+
+        // Bob takes all available quote
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), address(pathUSD), release, type(uint128).max
+        );
+
+        // Order should be fully consumed
+        assertEq(baseIn, amount, "Order should be fully filled");
+    }
+
+    /// @notice Verifies that swapExactAmountOut correctly rounds up amountIn when filling bids,
+    ///         ensuring the requested output is fully backed by the consumed input.
+    function test_BidExactOutRounding_RoundsUpAmountIn() public {
+        // Choose a tick where price > PRICE_SCALE to make the rounding behavior observable.
+        int16 tick = 2000; // price = 102_000
+        uint128 amount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000
+
+        uint32 price = exchange.tickToPrice(tick);
+        // Escrow now uses ceiling division to match Rust
+        uint128 escrow = uint128(
+            (uint256(amount) * uint256(price) + uint256(exchange.PRICE_SCALE()) - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
+
+        // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
+        vm.startPrank(admin);
+        token1.mint(charlie, INITIAL_BALANCE);
+        vm.stopPrank();
+        vm.prank(charlie);
+        token1.approve(address(exchange), type(uint256).max);
+
+        // Place a single bid order
+        uint128 order1 = _placeBidOrder(alice, amount, tick);
+        assertEq(order1, 1);
+
+        // Sanity: contract holds quote from the order.
+        assertEq(pathUSD.balanceOf(address(exchange)), escrow);
+
+        // Execute exactOut swap for exactly the escrow amount.
+        // baseNeeded = ceil(escrow * PRICE_SCALE / price) + 1, but capped at order.remaining
+        vm.prank(charlie);
+        uint128 amountIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            escrow,
+            type(uint128).max
+        );
+
+        // fillAmount is min(baseNeeded, order.remaining) = min(amount+1, amount) = amount
+        assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
+    }
+
+    /// @notice Verifies that bid escrow and cancel refund use ceiling division,
+    ///         ensuring users get back exactly what they escrowed (matches Rust behavior).
+    function test_BidEscrowAndCancelRounding_RefundEqualsEscrow() public {
+        // Use a fresh address to have clean balance tracking
+        address testUser = address(0x12345);
+
+        // Use an amount that causes rounding (not evenly divisible by PRICE_SCALE after multiplication)
+        // This matches the Rust test case
+        uint128 baseAmount = 100_000_003;
+        int16 tick = 100; // price = 100_100
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate expected escrow with ceiling division (matches Rust RoundingDirection::Up)
+        uint128 escrowCeil = uint128(
+            (uint256(baseAmount) * uint256(price) + uint256(exchange.PRICE_SCALE()) - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
+
+        // Floor division for comparison
+        uint128 escrowFloor =
+            uint128((uint256(baseAmount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
+
+        // Verify rounding actually occurs (ceil > floor)
+        assertGt(escrowCeil, escrowFloor, "Test requires rounding to occur");
+
+        // Give testUser exactly the ceiling escrow amount
+        vm.startPrank(pathUSDAdmin);
+        pathUSD.mint(testUser, escrowCeil);
+        vm.stopPrank();
+
+        // testUser approves and places the order
+        vm.startPrank(testUser);
+        pathUSD.approve(address(exchange), type(uint256).max);
+        uint128 orderId = exchange.place(address(token1), baseAmount, true, tick);
+        vm.stopPrank();
+
+        // Verify all tokens were escrowed (testUser has 0 balance)
+        assertEq(pathUSD.balanceOf(testUser), 0, "All quote tokens should be escrowed");
+
+        // testUser cancels the order
+        vm.prank(testUser);
+        exchange.cancel(orderId);
+
+        // Verify the refund equals the original escrow amount (user doesn't lose tokens)
+        uint128 userRefund = exchange.balanceOf(testUser, address(pathUSD));
+        assertEq(
+            userRefund,
+            escrowCeil,
+            "Cancellation refund must equal escrow amount - user should not lose tokens"
+        );
+
+        // Withdraw and verify testUser gets all tokens back
+        vm.prank(testUser);
+        exchange.withdraw(address(pathUSD), userRefund);
+        assertEq(
+            pathUSD.balanceOf(testUser), escrowCeil, "User should get all escrowed tokens back"
+        );
+    }
+
+    /// @notice Verifies rounding behavior for partial order cancellation.
+    ///         When an order is partially filled and then canceled, the remaining escrow
+    ///         should be calculated using ceiling division.
+    function test_PartialFillAndCancel_RoundingConsistency() public {
+        // Use fresh addresses for clean tracking
+        address maker = address(0x12346);
+        address taker = address(0x12347);
+
+        // Use an amount that causes rounding
+        uint128 baseAmount = 200_000_007;
+        int16 tick = 100; // price = 100_100
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate expected escrow with ceiling division
+        uint128 escrowCeil = uint128(
+            (uint256(baseAmount) * uint256(price) + uint256(exchange.PRICE_SCALE()) - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
+
+        // Give maker the escrow amount and taker base tokens
+        vm.startPrank(pathUSDAdmin);
+        pathUSD.mint(maker, escrowCeil);
+        vm.stopPrank();
+        vm.startPrank(admin);
+        token1.mint(taker, INITIAL_BALANCE);
+        vm.stopPrank();
+
+        // Maker places a bid order
+        vm.startPrank(maker);
+        pathUSD.approve(address(exchange), type(uint256).max);
+        uint128 orderId = exchange.place(address(token1), baseAmount, true, tick);
+        vm.stopPrank();
+
+        // Taker fills half the order by swapping base for quote
+        uint128 fillAmount = baseAmount / 2;
+        vm.startPrank(taker);
+        token1.approve(address(exchange), type(uint256).max);
+        exchange.swapExactAmountIn(address(token1), address(pathUSD), fillAmount, 0);
+        vm.stopPrank();
+
+        // Maker cancels the remaining order
+        vm.prank(maker);
+        exchange.cancel(orderId);
+
+        // Get maker's internal balance (refund)
+        uint128 makerRefund = exchange.balanceOf(maker, address(pathUSD));
+
+        // Calculate what the remaining escrow should be (ceiling division)
+        uint128 remaining = baseAmount - fillAmount;
+        uint128 expectedRefund = uint128(
+            (uint256(remaining) * uint256(price) + uint256(exchange.PRICE_SCALE()) - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
+
+        assertEq(makerRefund, expectedRefund, "Partial cancel refund should use ceiling division");
     }
 
 }
