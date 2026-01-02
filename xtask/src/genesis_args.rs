@@ -279,7 +279,8 @@ impl GenesisArgs {
             validator_admin,
             &mut evm,
             &consensus_config,
-            &addresses,
+            // Skip first address (used as default admin)
+            &addresses[1..],
             validator_onchain_addresses,
             self.no_dkg_in_genesis,
         )?;
@@ -724,31 +725,20 @@ fn initialize_validator_config(
 
         if let Some(consensus_config) = consensus_config.clone() {
             let num_validators = consensus_config.validators.len();
+            let addrs = custom_validator_addresses.unwrap_or(fallback_addresses);
 
-            if let Some(custom_addrs) = custom_validator_addresses
-                && custom_addrs.len() != num_validators
-            {
+            if addrs.len() < num_validators {
                 return Err(eyre!(
-                    "provided {} validator addresses but have {} validators",
-                    custom_addrs.len(),
-                    num_validators
+                    "need {} addresses for all validators, but only {} were provided",
+                    num_validators,
+                    addrs.len()
                 ));
             }
 
             println!("writing {num_validators} validators into contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
                 #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let newValidatorAddress = if let Some(custom_addrs) = custom_validator_addresses {
-                    custom_addrs[i]
-                } else {
-                    *fallback_addresses.get(i).ok_or_else(|| {
-                        eyre!(
-                            "need `{}` addresses for all validators, but only `{}` were generated",
-                            num_validators,
-                            fallback_addresses.len()
-                        )
-                    })?
-                };
+                let newValidatorAddress = addrs[i];
                 let public_key = validator.public_key();
                 let addr = validator.addr;
                 validator_config
