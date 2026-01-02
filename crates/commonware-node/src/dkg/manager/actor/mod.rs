@@ -456,6 +456,7 @@ where
                                     &state,
                                     request,
                                 )
+                                .await
                             {
                                 let stream = match self.config.marshal.ancestry((None, hole)).await {
                                     Some(stream) => stream,
@@ -485,6 +486,7 @@ where
                             .expect("if the stream is yielding blocks, there must be a receiver");
                         if let Some((hole, request)) = self
                             .handle_get_dkg_outcome(&cause, storage, &player_state, &round, &state, request)
+                            .await
                         {
                             let stream = match self.config.marshal.ancestry((None, hole)).await {
                                 Some(stream) => stream,
@@ -825,6 +827,7 @@ where
                     .filter(|(_, v)| v.active)
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
+            is_full_dkg: onchain_outcome.is_next_full_dkg,
         })))
     }
 
@@ -896,6 +899,7 @@ where
                     .filter(|(_, v)| v.active)
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
+            is_full_dkg: onchain_outcome.is_next_full_dkg,
         })))
     }
 
@@ -1056,7 +1060,7 @@ where
             our.epoch = %round.epoch(),
         ),
     )]
-    fn handle_get_dkg_outcome<TStorageContext>(
+    async fn handle_get_dkg_outcome<TStorageContext>(
         &mut self,
         cause: &Span,
         storage: &mut state::Storage<TStorageContext>,
@@ -1164,12 +1168,24 @@ where
             output
         };
 
+        // Check if next ceremony should be full.
+        // Read from pre-last block of the epoch, but never ahead of the current request.
+        let next_epoch = state.epoch.next();
+        let is_next_full_dkg =
+            validators::read_next_full_dkg_ceremony(&self.config.execution_node, request.height)
+                // in theory it should never fail, but if it does, just stick to reshare.
+                .is_ok_and(|epoch| epoch == next_epoch.get());
+        if is_next_full_dkg {
+            info!(%next_epoch, "next DKG will change the network identity and not be a reshare process");
+        }
+
         if request
             .response
             .send(OnchainDkgOutcome {
-                epoch: state.epoch.next(),
+                epoch: next_epoch,
                 output,
                 next_players: state.syncers.keys().clone(),
+                is_next_full_dkg,
             })
             .is_err()
         {
@@ -1297,6 +1313,7 @@ where
                 .filter(|(_, v)| v.active)
                 .map(|(k, v)| (k.clone(), v.inbound)),
         ),
+        is_full_dkg: onchain_outcome.is_next_full_dkg,
     })
 }
 
