@@ -294,7 +294,6 @@ where
                 round.clone(),
                 state.share.clone(),
                 state.seed,
-                state.is_full_dkg,
             )
             .wrap_err("unable to instantiate dealer state")?;
 

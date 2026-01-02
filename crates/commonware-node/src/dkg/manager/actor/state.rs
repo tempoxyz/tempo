@@ -360,13 +360,12 @@ where
         round: Round,
         share: Option<Share>,
         seed: Summary,
-        is_full_dkg: bool,
     ) -> eyre::Result<Option<Dealer>> {
         if round.dealers.position(&me.public_key()).is_none() {
             return Ok(None);
         }
 
-        let share = if is_full_dkg {
+        let share = if round.is_full_dkg() {
             None
         } else if share.is_none() {
             warn!(
@@ -960,6 +959,7 @@ pub(super) struct Round {
     info: dkg::Info<MinSig, PublicKey>,
     dealers: ordered::Set<PublicKey>,
     players: ordered::Set<PublicKey>,
+    is_full_dkg: bool,
 }
 
 impl Round {
@@ -984,6 +984,7 @@ impl Round {
                 state.players.keys().clone(),
             )
             .expect("a DKG round must always be initializable given some epoch state"),
+            is_full_dkg: state.is_full_dkg,
         }
     }
 
@@ -1001,6 +1002,10 @@ impl Round {
 
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
+    }
+
+    pub(super) fn is_full_dkg(&self) -> bool {
+        self.is_full_dkg
     }
 }
 
