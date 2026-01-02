@@ -1175,6 +1175,7 @@ where
             &self.config.execution_node,
             epoch_info.last().saturating_sub(1).min(request.height),
         )
+        // in theory it should never fail, but if it does, just stick to reshare.
         .is_ok_and(|epoch| epoch == next_epoch.get());
         if is_next_full_dkg {
             info!(%next_epoch, "next DKG ceremony will be full");
