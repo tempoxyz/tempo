@@ -111,7 +111,7 @@ where
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
         let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
-            // XXX: relies on into_initialized generating an error event before exit.
+            // Drop the error because into_initialized generates an error event.
             return;
         };
 
@@ -841,7 +841,6 @@ async fn verify_block<TContext: Pacer>(
             Ok(false)
         }
         PayloadStatusEnum::Syncing => {
-            // FIXME: is this error message correct?
             bail!(
                 "failed validating block because payload is still syncing, \
                 this means the parent block was available to the consensus
