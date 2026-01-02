@@ -21,7 +21,7 @@ use tempo_precompiles_macros::contract;
 pub struct TipFeeManager {
     validator_tokens: Mapping<Address, Address>,
     user_tokens: Mapping<Address, Address>,
-    collected_fees: Mapping<Address, U256>,
+    collected_fees: Mapping<Address, Mapping<Address, U256>>,
     pools: Mapping<B256, Pool>,
     total_supply: Mapping<B256, U256>,
     liquidity_balances: Mapping<B256, Mapping<Address, U256>>,
@@ -167,19 +167,24 @@ impl TipFeeManager {
             compute_amount_out(actual_spending)?
         };
 
-        self.increment_collected_fees(beneficiary, amount)?;
+        self.increment_collected_fees(beneficiary, validator_token, amount)?;
 
         Ok(())
     }
 
-    /// Increment collected fees for the validator token
-    fn increment_collected_fees(&mut self, validator: Address, amount: U256) -> Result<()> {
+    /// Increment collected fees for a specific validator and token combination.
+    fn increment_collected_fees(
+        &mut self,
+        validator: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         if amount.is_zero() {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees.at(validator).read()?;
-        self.collected_fees.at(validator).write(
+        let collected_fees = self.collected_fees.at(validator).at(token).read()?;
+        self.collected_fees.at(validator).at(token).write(
             collected_fees
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -188,19 +193,20 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Transfers the validator's fee balance to their address.
-    pub fn distribute_fees(&mut self, validator: Address) -> Result<()> {
-        let amount = self.collected_fees.at(validator).read()?;
+    /// Transfers the validator's fee balance for a specific token to their address.
+    pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
+        let amount = self.collected_fees.at(validator).at(token).read()?;
         if amount.is_zero() {
             return Ok(());
         }
-        self.collected_fees.at(validator).write(U256::ZERO)?;
+        self.collected_fees
+            .at(validator)
+            .at(token)
+            .write(U256::ZERO)?;
 
         // Transfer fees to validator
-        let validator_token = self.get_validator_token(validator)?;
-
-        let mut token = TIP20Token::from_address(validator_token)?;
-        token.transfer(
+        let mut tip20_token = TIP20Token::from_address(token)?;
+        tip20_token.transfer(
             self.address,
             ITIP20::transferCall {
                 to: validator,
@@ -212,7 +218,7 @@ impl TipFeeManager {
         self.emit_event(FeeManagerEvent::FeesDistributed(
             IFeeManager::FeesDistributed {
                 validator,
-                token: validator_token,
+                token,
                 amount,
             },
         ))?;
@@ -239,22 +245,11 @@ impl TipFeeManager {
         call: IFeeManager::getFeeTokenBalanceCall,
     ) -> Result<IFeeManager::getFeeTokenBalanceReturn> {
         let mut token = self.user_tokens.at(call.sender).read()?;
-
         if token.is_zero() {
-            let validator_token = self.validator_tokens.at(call.validator).read()?;
-
-            if validator_token.is_zero() {
-                return Ok(IFeeManager::getFeeTokenBalanceReturn {
-                    _0: Address::ZERO,
-                    _1: U256::ZERO,
-                });
-            } else {
-                token = validator_token;
-            }
+            token = DEFAULT_FEE_TOKEN;
         }
 
-        let tip20_token = TIP20Token::from_address(token)?;
-        let token_balance = tip20_token.balance_of(ITIP20::balanceOfCall {
+        let token_balance = TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall {
             account: call.sender,
         })?;
 
@@ -459,7 +454,11 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify fees were tracked
-            let tracked_amount = fee_manager.collected_fees.at(validator).read()?;
+            let tracked_amount = fee_manager
+                .collected_fees
+                .at(validator)
+                .at(token.address())
+                .read()?;
             assert_eq!(tracked_amount, actual_used);
 
             // Verify user got the refund
@@ -561,7 +560,11 @@ mod tests {
             // - Liquidity is checked (not reserved)
             // - No swap happens yet (swap happens in collect_fee_post_tx)
             // - collected_fees should be zero
-            let collected = fee_manager.collected_fees.at(validator).read()?;
+            let collected = fee_manager
+                .collected_fees
+                .at(validator)
+                .at(validator_token.address())
+                .read()?;
             assert_eq!(
                 collected,
                 U256::ZERO,
@@ -640,7 +643,11 @@ mod tests {
 
             // Expected output: 800 * 9970 / 10000 = 797
             let expected_fee_amount = (actual_spending * U256::from(9970)) / U256::from(10000);
-            let collected = fee_manager.collected_fees.at(validator).read()?;
+            let collected = fee_manager
+                .collected_fees
+                .at(validator)
+                .at(validator_token.address())
+                .read()?;
             assert_eq!(collected, expected_fee_amount);
 
             // Pool reserves should be updated
@@ -733,11 +740,15 @@ mod tests {
             )?;
 
             // collected_fees is zero by default
-            let collected = fee_manager.collected_fees.at(validator).read()?;
+            let collected = fee_manager
+                .collected_fees
+                .at(validator)
+                .at(token.address())
+                .read()?;
             assert_eq!(collected, U256::ZERO);
 
             // distribute_fees should be a no-op
-            let result = fee_manager.distribute_fees(validator);
+            let result = fee_manager.distribute_fees(validator, token.address());
             assert!(result.is_ok(), "Should succeed even with zero balance");
 
             // Validator balance should still be zero
@@ -776,7 +787,11 @@ mod tests {
 
             // Simulate accumulated fees
             let fee_amount = U256::from(500);
-            fee_manager.collected_fees.at(validator).write(fee_amount)?;
+            fee_manager
+                .collected_fees
+                .at(validator)
+                .at(token.address())
+                .write(fee_amount)?;
 
             // Check validator balance before
             let tip20_token = TIP20Token::from_address(token.address())?;
@@ -786,7 +801,7 @@ mod tests {
 
             // Distribute fees
             let mut fee_manager = TipFeeManager::new();
-            fee_manager.distribute_fees(validator)?;
+            fee_manager.distribute_fees(validator, token.address())?;
 
             // Verify validator received the fees
             let tip20_token = TIP20Token::from_address(token.address())?;
@@ -796,8 +811,40 @@ mod tests {
 
             // Verify collected fees cleared
             let fee_manager = TipFeeManager::new();
-            let remaining = fee_manager.collected_fees.at(validator).read()?;
+            let remaining = fee_manager
+                .collected_fees
+                .at(validator)
+                .at(token.address())
+                .read()?;
             assert_eq!(remaining, U256::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_fee_token_balance_fallback() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let user = Address::random();
+        let validator = Address::random();
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let balance = U256::from(1000);
+            let _path_usd = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(user, balance)
+                .apply()?;
+
+            let fee_manager = TipFeeManager::new();
+            let call = IFeeManager::getFeeTokenBalanceCall {
+                sender: user,
+                validator,
+            };
+            let result = fee_manager.get_fee_token_balance(call)?;
+
+            assert_eq!(result._0, DEFAULT_FEE_TOKEN);
+            assert_eq!(result._1, balance);
 
             Ok(())
         })
