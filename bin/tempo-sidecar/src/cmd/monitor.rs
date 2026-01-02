@@ -1,4 +1,5 @@
 use crate::monitor::{Monitor, prometheus_metrics};
+use alloy::primitives::Address;
 use clap::Parser;
 use eyre::Context;
 use metrics::{describe_counter, describe_gauge};
@@ -22,6 +23,12 @@ pub struct MonitorArgs {
 
     #[arg(short, long, required = true)]
     port: u16,
+
+    /// Comma-separated list of token addresses to monitor.
+    ///
+    /// NOTE: Only pools with both tokens whitelisted will be monitored.
+    #[arg(short, long, value_delimiter = ',', num_args = 2.., required = true)]
+    tokens: Vec<Address>,
 }
 
 impl MonitorArgs {
@@ -35,7 +42,13 @@ impl MonitorArgs {
             .install_recorder()
             .context("failed to install recorder")?;
 
-        let mut monitor = Monitor::new(self.rpc_url, self.poll_interval);
+        let mut monitor = Monitor::new(
+            self.rpc_url,
+            self.poll_interval,
+            self.tokens.iter().copied().collect(),
+        )
+        .await
+        .context("failed to initialize monitor")?;
 
         describe_gauge!(
             "tempo_fee_amm_user_reserves",
