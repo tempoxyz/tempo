@@ -20,6 +20,8 @@
     "noFallthroughCasesInSwitch": true,
     "noPropertyAccessFromIndexSignature": true,
 
+    "allowImportingTsExtensions": true,
+    "resolvePackageJsonImports": true,
     // Recommended Options
     "strict": true,
     "jsx": "react-jsx",

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.2.5/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.3.10/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -7,7 +7,11 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!specs/lib", "!snippets/unformatted"]
+    "includes": [
+      "**",
+      "!specs/lib",
+      "!snippets/unformatted"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -27,8 +31,39 @@
   },
   "javascript": {
     "formatter": {
+      "enabled": true,
       "quoteStyle": "single",
       "semicolons": "asNeeded"
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
+  "json": {
+    "assist": {
+      "enabled": true
+    },
+    "formatter": {
+      "enabled": true
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
+  "css": {
+    "formatter": {
+      "enabled": true
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
+  "html": {
+    "formatter": {
+      "enabled": true
+    },
+    "linter": {
+      "enabled": true
     }
   },
   "assist": {
@@ -38,5 +73,20 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "env.d.ts"
+      ],
+      "linter": {
+        "enabled": true,
+        "rules": {
+          "correctness": {
+            "noUnusedVariables": "off"
+          }
+        }
+      }
+    }
+  ]
 }

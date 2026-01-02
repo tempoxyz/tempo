@@ -3,11 +3,43 @@ title: Tempo Token List Registry
 ---
 import { Callout } from 'vocs/components'
 
+import { Fn } from '#components/Fn.tsx'
+
 # Tempo Token List Registry
 
 A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadata and icons on Tempo.
 
-<img src="https://tokenlist.tempo.xyz/icon/42429/0x20c0000000000000000000000000000000000000" alt="pathUSD" width="64" height="64" />
+As an example, here's Tempo Testnet's tokenlist, fetched from [tokenlist.tempo.xyz/list/42429](https://tokenlist.tempo.xyz/list/42429):
+
+<Fn
+  fn={async () => {
+    const list = await fetch('https://esm.sh/gh/tempoxyz/tempo-apps/apps/tokenlist/data/42429/tokenlist.json')
+    if (!list.ok) return <></>
+    const json = await list.json()
+    if (!Object.hasOwn(json, 'tokens')) return <></>
+    return (
+      <ul className='list-none gap-2 flex flex-col justify-center'>
+        {json.map(token => (
+          <li key={token.address} title={token.address}>
+            <a
+              target='_blank'
+              rel='noopener noreferrer'
+              className='flex items-center gap-2 text-[#202020]'
+              href={`https://tokenlist.tempo.xyz/asset/42429/${token.address}`}
+            >
+              <img 
+                src={token.logoURI}
+                alt={token.name}
+                className='size-8'
+              />
+              <span className='text-xl font-medium tracking-wider'>{token.name}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    )
+  }}
+/>
 
 ## Endpoints
 
@@ -25,9 +57,9 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
 2. **Add token** to `data/<chain_id>/tokenlist.json` in `apps/tokenlist`:
    ```json
    {
-     "name": "MyToken",
-     "symbol": "MTK",
-     "decimals": 18,
+     "name": "piUSD",
+     "symbol": "PiUSD",
+     "decimals": 6,
      "chainId": 42429,
      "address": "0x..."
    }
