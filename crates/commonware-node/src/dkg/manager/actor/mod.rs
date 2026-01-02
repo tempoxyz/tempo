@@ -1470,11 +1470,6 @@ impl Metrics {
     }
 }
 
-enum NewState {
-    FromSkip(state::State),
-    Normal(state::State),
-}
-
 /// Attempts to read the validator config from the smart contract until it becomes available.
 async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     context: &C,
