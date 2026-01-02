@@ -32,6 +32,8 @@ The contract maintains per‑user, per‑token internal balances. Order placemen
 
 A flip order behaves like a normal resting order until it is fully filled. When filled, the exchange places a new order for the same maker on the opposite side at a configured `flipTick` (which must be greater than `tick` for bids and less for asks). This enables passive liquidity with flexible strategies.
 
+When a flip order flips, it draws escrow exclusively from the maker's internal exchange balance. Unlike initial order placement, the exchange does not fall back to `transferFrom` if the internal balance is insufficient—the flip simply does not occur. This ensures that flip execution is self-contained and does not require additional token approvals or external balance checks at fill time.
+
 #### Pairs, ticks, and prices
 
 Pairs are identified deterministically from the two token addresses (the base token is any TIP‑20, and its `quoteToken()` function points to the quote token). Prices are discretized into integer ticks with a tick size of 0.1 bps: with `PRICE_SCALE = 100_000`, `price = PRICE_SCALE + tick`. Orders may only be placed at ticks divisible by `TICK_SPACING = 10` (effectively setting a 1 bp tick size). The orderbook tracks best bid (highest active bid tick) and best ask (lowest active ask tick), and uses bitmaps over tick words for efficient discovery of the next initialized tick.
@@ -160,6 +162,8 @@ Places a limit order against the pair of `token` and its quote, immediately addi
 Notes:
 
 - `tick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
+- The maker must be authorized by the TIP-403 transfer policies of both the base and quote tokens. This ensures makers cannot place orders to buy or sell tokens they are not permitted to transfer.
+- Additionally, the DEX contract itself must be authorized by the TIP-20 transfer policies of both the base and quote tokens. This allows token issuers to prevent their tokens from being traded on the DEX.
 
 ```solidity
 function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
@@ -170,12 +174,22 @@ Like `place`, but marks the order as a flip order. When fully filled, a new orde
 Notes:
 
 - Both `tick` and `flipTick` must be within `[MIN_TICK, MAX_TICK]` and divisible by `TICK_SPACING` (10).
+- When the order flips, escrow is drawn exclusively from the maker's internal exchange balance. If the internal balance is insufficient, the flip silently fails—no `transferFrom` is attempted, even if the maker has sufficient external balance and approval.
+- The maker must be authorized by the TIP-403 transfer policies of both the base and quote tokens, both at initial placement and when the order flips. If the maker becomes unauthorized before a flip, the flip silently fails and no new order is created (although the existing order is executed).
 
 ```solidity
 function cancel(uint128 orderId) external;
 ```
 
 Cancels an order owned by the caller. When canceled, the order is removed from the tick queue, liquidity is decremented, and remaining escrow is refunded to the order owner's exchange balance which can then be withdrawn.
+
+```solidity
+function cancelStaleOrder(uint128 orderId) external;
+```
+
+Cancels an order where the maker is forbidden by the escrowed token's [TIP-403 transfer policy](/protocol/tip403/overview). Unlike `cancel`, this function can be called by anyone—not just the order maker—but only succeeds if the maker is no longer authorized to transfer the escrowed token (e.g., the maker has been blacklisted). This allows third parties to clean up stale orders from the book.
+
+When canceled, the order is removed from the tick queue, liquidity is decremented, and remaining escrow is refunded to the order maker's exchange balance. Reverts with `OrderNotStale` if the maker is still authorized.
 
 ```solidity
 function nextOrderId() external view returns (uint128);
@@ -228,6 +242,7 @@ error Unauthorized();
 - Bounds: `TICK_OUT_OF_BOUNDS`, `FLIP_TICK_OUT_OF_BOUNDS`, `FLIP_TICK_MUST_BE_GREATER_FOR_BID`, `FLIP_TICK_MUST_BE_LESS_FOR_ASK`, "Price out of bounds"
 - Tick spacing: `TICK_NOT_MULTIPLE_OF_SPACING`, `FLIP_TICK_NOT_MULTIPLE_OF_SPACING`
 - Liquidity and limits: `INSUFFICIENT_LIQUIDITY`, `MAX_IN_EXCEEDED`, `INSUFFICIENT_OUTPUT`
-- Authorization: `UNAUTHORIZED` (cancel not by maker) 
+- Authorization: `UNAUTHORIZED` (cancel not by maker)
+- Stale orders: `ORDER_NOT_STALE` (cancelStaleOrder when maker is still authorized)
 - Balance: `INSUFFICIENT_BALANCE` (withdraw)
 

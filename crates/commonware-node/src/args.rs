@@ -123,11 +123,8 @@ pub struct Args {
     /// Connections are still authenticated via public key cryptography, but
     /// anyone can attempt handshakes, increasing exposure to DoS attacks.
     /// Only enable in trusted network environments.
-    #[arg(
-        long = "consensus.allow-unregistered-handshakes",
-        default_value_t = false
-    )]
-    pub allow_unregistered_handshakes: bool,
+    #[arg(long = "consensus.bypass-ip-check", default_value_t = false)]
+    pub bypass_ip_check: bool,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).

@@ -280,9 +280,9 @@ impl TipFeeManager {
         // Emit Mint event
         self.emit_event(TIPFeeAMMEvent::Mint(ITIPFeeAMM::Mint {
             sender: msg_sender,
+            to,
             userToken: user_token,
             validatorToken: validator_token,
-            amountUserToken: U256::ZERO,
             amountValidatorToken: amount_validator_token,
             liquidity,
         }))?;

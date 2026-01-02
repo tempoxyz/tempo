@@ -21,6 +21,7 @@ use commonware_cryptography::{
 use commonware_math::algebra::Random as _;
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
+use commonware_codec::Encode;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
@@ -198,7 +199,7 @@ pub async fn setup_validators(
         .generate();
 
     let mut nodes = vec![];
-    for ((private_key, share), execution_config) in signer_keys
+    for ((private_key, share), mut execution_config) in signer_keys
         .into_iter()
         .zip_eq(shares)
         .map(|(signing_key, (verifying_key, share))| {
@@ -210,6 +211,16 @@ pub async fn setup_validators(
     {
         let oracle = oracle.clone();
         let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
+
+        execution_config.validator_key = Some(
+            private_key
+                .public_key()
+                .encode()
+                .freeze()
+                .as_ref()
+                .try_into()
+                .unwrap(),
+        );
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),

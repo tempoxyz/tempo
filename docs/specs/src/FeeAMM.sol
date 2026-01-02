@@ -140,7 +140,7 @@ contract FeeAMM is IFeeAMM {
         totalSupply[poolId] += liquidity;
         liquidityBalances[poolId][to] += liquidity;
 
-        emit Mint(msg.sender, userToken, validatorToken, 0, amountValidatorToken, liquidity);
+        emit Mint(msg.sender, to, userToken, validatorToken, amountValidatorToken, liquidity);
     }
 
     function burn(address userToken, address validatorToken, uint256 liquidity, address to)

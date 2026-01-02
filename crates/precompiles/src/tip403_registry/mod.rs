@@ -79,6 +79,13 @@ impl TIP403Registry {
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
+        // Check if policy exists before returning data
+        if !self.policy_exists(ITIP403Registry::policyExistsCall {
+            policyId: call.policyId,
+        })? {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+
         let data = self.get_policy_data(call.policyId)?;
         Ok(ITIP403Registry::policyDataReturn {
             policyType: data
@@ -475,6 +482,29 @@ mod tests {
                 policyId: policy_id,
                 user,
             })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_reverts_for_non_existent_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Test that querying a non-existent policy ID reverts
+            let result = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 100 });
+            assert!(result.is_err());
+
+            // Verify the error is PolicyNotFound
+            let err = result.unwrap_err();
+            assert!(matches!(
+                err,
+                crate::error::TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::PolicyNotFound(_)
+                )
+            ));
 
             Ok(())
         })

@@ -42,7 +42,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -169,8 +169,23 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                     self.on_new_message(action);
                 },
                 // Handle new subblock transactions.
-                Ok(transaction) = self.subblock_transactions_rx.recv() => {
-                    self.on_new_subblock_transaction(transaction);
+                result = self.subblock_transactions_rx.recv() => {
+                    match result {
+                        Ok(transaction) => {
+                            self.on_new_subblock_transaction(transaction);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            warn!(
+                                lagged_count = count,
+                                "subblock transaction receiver lagged, {} messages dropped",
+                                count
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            error!("subblock transactions channel closed unexpectedly");
+                            break;
+                        }
+                    }
                 },
                 // Handle messages from the network.
                 Ok((sender, message)) = network_rx.recv() => {

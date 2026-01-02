@@ -192,6 +192,8 @@ pub struct ExecutionNodeConfig {
     pub trusted_peers: Vec<String>,
     /// Port for the network service.
     pub port: u16,
+    /// Validator public key for filtering subblock transactions.
+    pub validator_key: Option<B256>,
 }
 
 impl ExecutionNodeConfig {
@@ -230,6 +232,7 @@ impl ExecutionNodeConfigGenerator {
                     secret_key: B256::random(),
                     trusted_peers: vec![],
                     port: 0,
+                    validator_key: None,
                 })
                 .collect();
         }
@@ -254,6 +257,7 @@ impl ExecutionNodeConfigGenerator {
                 secret_key: B256::random(),
                 trusted_peers: vec![],
                 port,
+                validator_key: None,
             })
             .collect();
 
@@ -660,10 +664,11 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c
         });
 
+    let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
     let node_handle = NodeBuilder::new(node_config)
         .with_database(database)
         .with_launch_context(task_manager.executor())
-        .node(TempoNode::default())
+        .node(tempo_node)
         .launch()
         .await
         .wrap_err_with(|| {

@@ -2229,28 +2229,41 @@ contract TIP20Test is BaseTest {
     function testFuzz_GetPendingRewards(uint256 rewardAmount) public {
         rewardAmount = bound(rewardAmount, 1e18, 1000e18);
 
-        // Alice opts in
         vm.prank(alice);
         token.setRewardRecipient(alice);
 
-        // Inject rewards
         vm.startPrank(admin);
         token.mint(admin, rewardAmount);
         token.distributeReward(rewardAmount);
         vm.stopPrank();
 
-        // Pending should approximately equal reward amount (allow for rounding due to integer division)
         uint256 pending = token.getPendingRewards(alice);
         assertApproxEqAbs(pending, rewardAmount, 1000);
 
-        // Claim and verify
         vm.prank(alice);
         uint256 claimed = token.claimRewards();
         assertApproxEqAbs(claimed, rewardAmount, 1000);
 
-        // After claim, pending should be 0
         uint256 pendingAfterClaim = token.getPendingRewards(alice);
         assertEq(pendingAfterClaim, 0);
+    }
+
+    function test_ClaimRewards_RevertsIf_UserUnauthorized() public {
+        address[] memory accounts = new address[](1);
+        accounts[0] = alice;
+        uint64 blacklistPolicy = registry.createPolicyWithAccounts(
+            admin, ITIP403Registry.PolicyType.BLACKLIST, accounts
+        );
+
+        vm.prank(admin);
+        token.changeTransferPolicyId(blacklistPolicy);
+
+        vm.prank(alice);
+        try token.claimRewards() {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(ITIP20.PolicyForbids.selector));
+        }
     }
 
 }

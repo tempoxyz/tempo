@@ -50,6 +50,7 @@ crate::sol! {
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
         function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
         function cancel(uint128 orderId) external;
+        function cancelStaleOrder(uint128 orderId) external;
 
         // Swap Functions
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -74,6 +75,7 @@ crate::sol! {
         function MAX_TICK() external pure returns (int16);
         function TICK_SPACING() external pure returns (int16);
         function PRICE_SCALE() external pure returns (uint32);
+        function MIN_ORDER_AMOUNT() external pure returns (uint128);
         function MIN_PRICE() external pure returns (uint32);
         function MAX_PRICE() external pure returns (uint32);
 
@@ -104,6 +106,7 @@ crate::sol! {
         error MaxInputExceeded();
         error BelowMinimumOrderSize(uint128 amount);
         error InvalidBaseToken();
+        error OrderNotStale();
     }
 }
 
@@ -181,5 +184,10 @@ impl StablecoinExchangeError {
     /// Creates an error for invalid base token.
     pub const fn invalid_base_token() -> Self {
         Self::InvalidBaseToken(IStablecoinExchange::InvalidBaseToken {})
+    }
+
+    /// Creates an error when order is not stale
+    pub const fn order_not_stale() -> Self {
+        Self::OrderNotStale(IStablecoinExchange::OrderNotStale {})
     }
 }
