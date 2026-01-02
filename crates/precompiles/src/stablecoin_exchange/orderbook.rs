@@ -27,18 +27,11 @@ pub enum RoundingDirection {
     Up,
 }
 
-/// Checked ceiling division for u128.
-/// Returns None if divisor is zero.
-fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
-    if divisor == 0 {
-        return None;
-    }
-    Some(numerator.div_ceil(divisor))
-}
-
 /// Convert base token amount to quote token amount at a given tick.
 ///
 /// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
+///
+/// Uses U256 for intermediate multiplication to prevent overflow.
 ///
 /// # Arguments
 /// * `base_amount` - Amount of base tokens
@@ -46,20 +39,27 @@ fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
 /// * `rounding` - Rounding direction
 ///
 /// # Returns
-/// Quote token amount, or None on overflow
+/// Quote token amount, or None if result exceeds u128
 pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    let numerator = base_amount.checked_mul(price)?;
+    let price = U256::from(tick_to_price(tick));
+    let base = U256::from(base_amount);
+    let scale = U256::from(PRICE_SCALE);
 
-    match rounding {
-        RoundingDirection::Down => numerator.checked_div(PRICE_SCALE as u128),
-        RoundingDirection::Up => checked_div_ceil(numerator, PRICE_SCALE as u128),
-    }
+    let numerator = base * price;
+
+    let result = match rounding {
+        RoundingDirection::Down => numerator / scale,
+        RoundingDirection::Up => numerator.div_ceil(scale),
+    };
+
+    result.try_into().ok()
 }
 
 /// Convert quote token amount to base token amount at a given tick.
 ///
 /// Formula: base_amount = (quote_amount * PRICE_SCALE) / price
+///
+/// Uses U256 for intermediate multiplication to prevent overflow.
 ///
 /// # Arguments
 /// * `quote_amount` - Amount of quote tokens
@@ -67,15 +67,20 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
 /// * `rounding` - Rounding direction
 ///
 /// # Returns
-/// Base token amount, or None on overflow
+/// Base token amount, or None if result exceeds u128
 pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    let numerator = quote_amount.checked_mul(PRICE_SCALE as u128)?;
+    let price = U256::from(tick_to_price(tick));
+    let quote = U256::from(quote_amount);
+    let scale = U256::from(PRICE_SCALE);
 
-    match rounding {
-        RoundingDirection::Down => numerator.checked_div(price),
-        RoundingDirection::Up => checked_div_ceil(numerator, price),
-    }
+    let numerator = quote * scale;
+
+    let result = match rounding {
+        RoundingDirection::Down => numerator / price,
+        RoundingDirection::Up => numerator.div_ceil(price),
+    };
+
+    result.try_into().ok()
 }
 
 // PRICE_SCALE + MIN_TICK = 100_000 - 2000
@@ -392,19 +397,12 @@ impl From<Orderbook> for IStablecoinExchange::Orderbook {
     }
 }
 
-/// Compute deterministic book key from base, quote token pair
-pub fn compute_book_key(token_a: Address, token_b: Address) -> B256 {
-    // Sort tokens to ensure deterministic key
-    let (token_a, token_b) = if token_a < token_b {
-        (token_a, token_b)
-    } else {
-        (token_b, token_a)
-    };
-
-    // Compute keccak256(abi.encodePacked(tokenA, tokenB))
+/// Compute deterministic book key from ordered (base, quote) token pair
+pub fn compute_book_key(base: Address, quote: Address) -> B256 {
+    // Compute keccak256(abi.encodePacked(base, quote))
     let mut buf = [0u8; 40];
-    buf[..20].copy_from_slice(token_a.as_slice());
-    buf[20..].copy_from_slice(token_b.as_slice());
+    buf[..20].copy_from_slice(base.as_slice());
+    buf[20..].copy_from_slice(quote.as_slice());
     keccak256(buf)
 }
 
@@ -519,27 +517,20 @@ mod tests {
 
     #[test]
     fn test_compute_book_key() {
-        let token_a = address!("0x1111111111111111111111111111111111111111");
-        let token_b = address!("0x2222222222222222222222222222222222222222");
+        let base = address!("0x1111111111111111111111111111111111111111");
+        let quote = address!("0x2222222222222222222222222222222222222222");
 
-        let key_ab = compute_book_key(token_a, token_b);
-        let key_ba = compute_book_key(token_b, token_a);
-        assert_eq!(key_ab, key_ba);
+        let key_bq = compute_book_key(base, quote);
+        let key_qb = compute_book_key(quote, base);
 
-        assert_eq!(
-            key_ab, key_ba,
-            "Book key should be the same regardless of address order"
-        );
+        assert_ne!(key_bq, key_qb);
 
         let mut buf = [0u8; 40];
-        buf[..20].copy_from_slice(token_a.as_slice());
-        buf[20..].copy_from_slice(token_b.as_slice());
+        buf[..20].copy_from_slice(base.as_slice());
+        buf[20..].copy_from_slice(quote.as_slice());
         let expected_hash = keccak256(buf);
 
-        assert_eq!(
-            key_ab, expected_hash,
-            "Book key should match manual keccak256 computation"
-        );
+        assert_eq!(key_bq, expected_hash,);
     }
 
     mod bitmap_tests {
@@ -1139,6 +1130,45 @@ mod tests {
             assert!(
                 payout_floor <= payout_ceil,
                 "Floor should never be more than ceiling"
+            );
+        }
+    }
+
+    mod u256_upcast_tests {
+        use super::*;
+
+        #[test]
+        fn test_base_to_quote_large_amount_no_overflow() {
+            let large_base_amount: u128 = u128::MAX / 100_000;
+            let result = base_to_quote(large_base_amount, MAX_TICK, RoundingDirection::Down);
+
+            assert!(
+                result.is_some(),
+                "base_to_quote should handle large amounts without overflow using U256"
+            );
+
+            let expected = large_base_amount
+                .checked_mul(102)
+                .and_then(|v| v.checked_div(100));
+            assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn test_quote_to_base_large_amount_no_overflow() {
+            let large_quote_amount: u128 = (u128::MAX / PRICE_SCALE as u128) + 1;
+
+            assert!(
+                large_quote_amount
+                    .checked_mul(PRICE_SCALE as u128)
+                    .is_none(),
+                "Test setup: this value should overflow u128 multiplication"
+            );
+
+            let result = quote_to_base(large_quote_amount, MAX_TICK, RoundingDirection::Down);
+
+            assert!(
+                result.is_some(),
+                "quote_to_base should handle large amounts without overflow using U256"
             );
         }
     }

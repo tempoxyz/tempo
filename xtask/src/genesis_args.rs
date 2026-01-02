@@ -20,10 +20,13 @@ use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rayon::prelude::*;
 use reth_evm::{
-    EvmEnv, EvmFactory,
+    Evm as _, EvmEnv, EvmFactory,
     revm::{
+        DatabaseCommit,
+        context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
+        state::{AccountInfo, Bytecode},
     },
 };
 use std::{
@@ -36,8 +39,8 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, Permit2, SafeDeployer},
+    PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -179,7 +182,10 @@ impl GenesisArgs {
 
         // Deploy TestUSD fee token
         let admin = addresses[0];
-        let mut evm = setup_tempo_evm();
+        let mut evm = setup_tempo_evm(self.chain_id);
+
+        deploy_arachnid_create2_factory(&mut evm);
+        deploy_permit2(&mut evm)?;
 
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
@@ -269,6 +275,13 @@ impl GenesisArgs {
             &mut evm,
         );
 
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(PERMIT2_ADDRESS)?;
+
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
         let evm_state = evm.ctx_mut().journaled_state.evm_state();
@@ -319,24 +332,6 @@ impl GenesisArgs {
             SAFE_DEPLOYER_ADDRESS,
             GenesisAccount {
                 code: Some(Bytes::from_static(&SafeDeployer::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            PERMIT2_ADDRESS,
-            GenesisAccount {
-                code: Some(Bytes::from_static(&Permit2::DEPLOYED_BYTECODE)),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            ARACHNID_CREATE2_FACTORY_ADDRESS,
-            GenesisAccount {
-                code: Some(ARACHNID_CREATE2_FACTORY_BYTECODE),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -397,12 +392,54 @@ impl GenesisArgs {
     }
 }
 
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
-    let env = EvmEnv::default().with_timestamp(U256::ZERO);
+    let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
+    env.cfg_env.chain_id = chain_id;
+
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
+}
+
+/// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
+fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
+    println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
+
+    evm.db_mut().insert_account_info(
+        ARACHNID_CREATE2_FACTORY_ADDRESS,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
+            nonce: 0,
+            ..Default::default()
+        },
+    );
+}
+
+/// Deploys Permit2 contract via the Arachnid CREATE2 factory.
+fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    // Build calldata for Arachnid CREATE2 factory: salt (32 bytes) || creation bytecode
+    let bytecode = &tempo_contracts::Permit2::BYTECODE;
+    let calldata: Bytes = PERMIT2_SALT
+        .as_slice()
+        .iter()
+        .chain(bytecode.iter())
+        .copied()
+        .collect();
+
+    println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
+
+    let result =
+        evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
+
+    if !result.result.is_success() {
+        return Err(eyre!("Permit2 deployment failed: {:?}", result));
+    }
+
+    evm.db_mut().commit(result.state);
+
+    println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
+    Ok(())
 }
 
 /// Initializes the TIP20Factory contract (should be called once before creating any tokens)

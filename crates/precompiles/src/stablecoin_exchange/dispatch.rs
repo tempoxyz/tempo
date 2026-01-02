@@ -6,7 +6,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
+    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
     unknown_selector, view,
 };
 
@@ -65,7 +65,7 @@ impl Precompile for StablecoinExchange {
 
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    Ok(self.pair_key(call.tokenA, call.tokenB))
+                    Ok(compute_book_key(call.tokenA, call.tokenB))
                 })
             }
 

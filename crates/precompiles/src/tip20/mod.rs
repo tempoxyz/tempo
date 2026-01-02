@@ -613,6 +613,12 @@ impl TIP20Token {
         Ok(Self::new(token_id))
     }
 
+    /// Returns true if the token has been initialized (has bytecode deployed).
+    pub fn is_initialized(&self) -> Result<bool> {
+        self.storage
+            .with_account_info(self.address, |info| Ok(!info.is_empty_code_hash()))
+    }
+
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
@@ -836,12 +842,6 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        if refund > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, refund, self.address).into(),
-            );
-        }
-
         let new_from_balance =
             from_balance
                 .checked_sub(refund)

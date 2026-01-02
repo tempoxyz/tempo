@@ -293,11 +293,6 @@ impl StablecoinExchange {
         Ok(amount)
     }
 
-    /// Generate deterministic key for token pair
-    pub fn pair_key(&self, token_a: Address, token_b: Address) -> B256 {
-        compute_book_key(token_a, token_b)
-    }
-
     /// Get price level information
     pub fn get_price_level(&self, base: Address, tick: i16, is_bid: bool) -> Result<TickLevel> {
         let quote = TIP20Token::from_address(base)?.quote_token()?;
@@ -400,15 +395,19 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from)
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance or transfer from wallet
         self.decrement_balance_or_transfer_from(sender, escrow_token, escrow_amount)?;
@@ -542,15 +541,19 @@ impl StablecoinExchange {
         }
 
         // Calculate escrow amount and token based on order side
-        let (escrow_token, escrow_amount) = if is_bid {
+        let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
             let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
                 .ok_or(StablecoinExchangeError::insufficient_balance())?;
-            (quote_token, quote_amount)
+            (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
-            (token, amount)
+            (token, amount, quote_token)
         };
+
+        // Check policy on non-escrow token (escrow token is checked in decrement_balance_or_transfer_from or below)
+        TIP20Token::from_address(non_escrow_token)?
+            .ensure_transfer_authorized(sender, self.address)?;
 
         // Debit from user's balance only. This is set to true after a flip order is filled and the
         // subsequent flip order is being placed.
@@ -609,20 +612,29 @@ impl StablecoinExchange {
             .remaining
             .write(new_remaining)?;
 
+        // Calculate quote amount for this fill (used by both maker settlement and taker output)
+        let quote_amount = base_to_quote(
+            fill_amount,
+            order.tick(),
+            if order.is_bid() {
+                RoundingDirection::Down // Bid: taker receives quote, round DOWN
+            } else {
+                RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
+            },
+        )
+        .ok_or(TempoPrecompileError::under_overflow())?;
+
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
-            // Ask order maker receives quote tokens - round DOWN to favor protocol
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            // Ask order maker receives quote tokens
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
-        // Calculate amount out for taker - round DOWN to favor protocol
+        // Taker output: bid→quote, ask→base (zero-sum with maker)
         let amount_out = if order.is_bid() {
-            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?
+            quote_amount
         } else {
             fill_amount
         };
@@ -659,7 +671,7 @@ impl StablecoinExchange {
         let orderbook = book_handler_order.read()?;
         let fill_amount = order.remaining();
 
-        // Settlement: round DOWN for both maker and taker to favor protocol
+        // Settlement: bid rounds DOWN (taker receives less), ask rounds UP (maker receives more)
         let amount_out = if order.is_bid() {
             // Bid maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
@@ -667,8 +679,8 @@ impl StablecoinExchange {
             base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?
         } else {
-            // Ask maker receives quote tokens - round DOWN
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
+            // Ask maker receives quote tokens - round UP to favor maker
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
@@ -769,16 +781,18 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in) = if bid {
                 // For bids: amount_out is quote, amount_in is base
-                // Round down base_needed (user provides less base, favors protocol)
-                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                // Round UP baseNeeded and add 1 to ensure full order consumption.
+                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+                    .saturating_add(1);
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
                 // For asks: amount_out is base, amount_in is quote
+                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let fill_amount = amount_out.min(order.remaining());
-                // Round down amount_in (taker pays less, but this is balanced by settlement rounding)
-                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Down)
+                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, amount_in)
             };
@@ -798,9 +812,10 @@ impl StablecoinExchange {
 
                 // Set to 0 to avoid rounding errors
                 if bid {
-                    // Round down base_needed (user provides less base, favors protocol)
-                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    // Round UP baseNeeded + 1 to match the initial calculation
+                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
+                        .ok_or(TempoPrecompileError::under_overflow())?
+                        .saturating_add(1);
                     if base_needed > order.remaining() {
                         amount_out = amount_out
                             .checked_sub(amount_out_received)
@@ -882,13 +897,13 @@ impl StablecoinExchange {
                         amount_in = 0;
                     }
                 } else {
-                    // Round down base_out (user receives less base, favors protocol)
+                    // For asks: taker pays quote, maker receives quote
                     let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                     if base_out > order.remaining() {
-                        // Round down quote_needed (user pays less quote, but order is fully consumed)
+                        // Quote consumed = what maker receives - round UP (zero-sum with maker)
                         let quote_needed =
-                            base_to_quote(order.remaining(), tick, RoundingDirection::Down)
+                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)
                                 .ok_or(TempoPrecompileError::under_overflow())?;
                         amount_in = amount_in
                             .checked_sub(quote_needed)
@@ -1123,10 +1138,11 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in_tick) = if is_bid {
                 // For bids: remaining_out is in quote, amount_in is in base
-                // Round down base_needed (user provides less base)
-                let base_needed =
-                    quote_to_base(remaining_out, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                // Round UP + 1 to match execution. Note: if multiple orders are crossed
+                // within this tick, execution may charge slightly more (+1 per order boundary).
+                let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?
+                    .saturating_add(1);
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1135,29 +1151,28 @@ impl StablecoinExchange {
                 (fill_amount, fill_amount)
             } else {
                 // For asks: remaining_out is in base, amount_in is in quote
+                // Taker pays quote, maker receives quote - round UP to favor maker
                 let fill_amount = if remaining_out > level.total_liquidity {
                     level.total_liquidity
                 } else {
                     remaining_out
                 };
-                // Round down quote_needed (user pays less quote)
-                let quote_needed =
-                    base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, quote_needed)
             };
 
             let amount_out_tick = if is_bid {
                 // Round down amount_out_tick (user receives less quote)
+                // Cap at remaining_out since fill_amount includes +1 bias
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
+                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out
-                .checked_sub(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            remaining_out = remaining_out.saturating_sub(amount_out_tick);
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1247,21 +1262,32 @@ impl StablecoinExchange {
         let mut route = Vec::new();
 
         for i in 0..path.len() - 1 {
-            let hop_token_in = path[i];
-            let hop_token_out = path[i + 1];
+            let token_in = path[i];
+            let token_out = path[i + 1];
 
-            let book_key = compute_book_key(hop_token_in, hop_token_out);
+            let (base, quote) = {
+                let token_in_tip20 = TIP20Token::from_address(token_in)?;
+                if token_in_tip20.quote_token()? == token_out {
+                    (token_in, token_out)
+                } else {
+                    let token_out_tip20 = TIP20Token::from_address(token_out)?;
+                    if token_out_tip20.quote_token()? == token_in {
+                        (token_out, token_in)
+                    } else {
+                        return Err(StablecoinExchangeError::pair_does_not_exist().into());
+                    }
+                }
+            };
+
+            let book_key = compute_book_key(base, quote);
             let orderbook = self.books.at(book_key).read()?;
 
-            // Validate pair exists
             if orderbook.base.is_zero() {
                 return Err(StablecoinExchangeError::pair_does_not_exist().into());
             }
 
-            // Determine direction
-            let base_for_quote = hop_token_in == orderbook.base;
-
-            route.push((book_key, base_for_quote));
+            let is_base_for_quote = token_in == base;
+            route.push((book_key, is_base_for_quote));
         }
 
         Ok(route)
@@ -1325,13 +1351,12 @@ impl StablecoinExchange {
                 (fill, quote_out, fill)
             } else {
                 // For asks: remaining_in is quote, amount_out is base
-                // Round down base_to_get (user receives less base)
+                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let base_to_get =
                     quote_to_base(remaining_in, current_tick, RoundingDirection::Down)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill = base_to_get.min(level.total_liquidity);
-                // Round down quote_consumed (less quote consumed from remaining)
-                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Down)
+                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill, fill, quote_consumed)
             };
@@ -1540,9 +1565,10 @@ mod tests {
 
             let alice_quote_after = exchange.balance_of(alice, quote_token)?;
 
+            // Ask order maker receives quote - round UP to favor maker
             assert_eq!(
-                alice_quote_after, expected_quote_floor,
-                "Maker settlement should round DOWN to favor protocol. Got {alice_quote_after}, expected floor {expected_quote_floor}"
+                alice_quote_after, expected_quote_ceil,
+                "Ask order maker should receive quote rounded UP. Got {alice_quote_after}, expected ceil {expected_quote_ceil}"
             );
 
             assert!(
@@ -2158,7 +2184,9 @@ mod tests {
                 .expect("Quote should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            // Expected: ceil(amount_out * PRICE_SCALE / price) + 1 for bid exactOut rounding
+            let expected_amount_in =
+                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128) + 1;
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2380,18 +2408,20 @@ mod tests {
     }
 
     /// Helper to verify a single hop in a route
-    fn verify_hop(hop: (B256, bool), token_in: Address, token_out: Address) -> eyre::Result<()> {
-        let (book_key, base_for_quote) = hop;
-        let expected_book_key = compute_book_key(token_in, token_out);
-        assert_eq!(book_key, expected_book_key, "Book key should match");
+    fn verify_hop(hop: (B256, bool), token_in: Address) -> eyre::Result<()> {
+        let (book_key, is_base_for_quote) = hop;
 
         let exchange = StablecoinExchange::new();
         let orderbook = exchange.books.at(book_key).read()?;
+
+        let expected_book_key = compute_book_key(orderbook.base, orderbook.quote);
+        assert_eq!(book_key, expected_book_key, "Book key should match");
+
         let expected_direction = token_in == orderbook.base;
         assert_eq!(
-            base_for_quote, expected_direction,
-            "Direction should be correct: token_in={}, base={}, base_for_quote={}",
-            token_in, orderbook.base, base_for_quote
+            is_base_for_quote, expected_direction,
+            "Direction should be correct: token_in={}, base={}, is_base_for_quote={}",
+            token_in, orderbook.base, is_base_for_quote
         );
 
         Ok(())
@@ -2475,7 +2505,7 @@ mod tests {
 
             // Expected: 1 hop (token -> path_usd)
             assert_eq!(route.len(), 1, "Should have 1 hop for direct pair");
-            verify_hop(route[0], token, path_usd)?;
+            verify_hop(route[0], token)?;
 
             Ok(())
         })
@@ -2506,7 +2536,7 @@ mod tests {
 
             // Expected: 1 hop (path_usd -> token)
             assert_eq!(route.len(), 1, "Should have 1 hop for reverse pair");
-            verify_hop(route[0], path_usd, token)?;
+            verify_hop(route[0], path_usd)?;
 
             Ok(())
         })
@@ -2536,8 +2566,8 @@ mod tests {
 
             // Expected: 2 hops (USDC -> PathUSD, PathUSD -> EURC)
             assert_eq!(route.len(), 2, "Should have 2 hops for sibling tokens");
-            verify_hop(route[0], usdc.address(), PATH_USD_ADDRESS)?;
-            verify_hop(route[1], PATH_USD_ADDRESS, eurc.address())?;
+            verify_hop(route[0], usdc.address())?;
+            verify_hop(route[1], PATH_USD_ADDRESS)?;
 
             Ok(())
         })
@@ -2638,10 +2668,13 @@ mod tests {
             let amount_in =
                 exchange.quote_swap_exact_amount_out(usdc.address(), eurc.address(), amount_out)?;
 
-            // With 1:1 rates at each hop, input should equal output
+            // With 1:1 rates at each hop:
+            // - First hop (USDC->PathUSD): against bid, has +1 rounding adjustment
+            // - Second hop (PathUSD->EURC): against ask, no +1 adjustment
             assert_eq!(
-                amount_in, amount_out,
-                "With 1:1 rates, input should equal output"
+                amount_in,
+                amount_out + 1,
+                "With 1:1 rates, input should equal output plus rounding adjustment for bid hop"
             );
 
             Ok(())
@@ -2909,10 +2942,11 @@ mod tests {
 
             let price_50 = orderbook::tick_to_price(tick_50);
             let price_100 = orderbook::tick_to_price(tick_100);
+            // Taker pays quote with ceiling rounding
             let quote_for_first =
-                (order_amount * price_50 as u128) / orderbook::PRICE_SCALE as u128;
+                (order_amount * price_50 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
             let quote_for_partial_second =
-                (999 * price_100 as u128) / orderbook::PRICE_SCALE as u128;
+                (999 * price_100 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
             let total_needed = quote_for_first + quote_for_partial_second;
 
             let result = exchange.swap_exact_amount_out(
@@ -3884,6 +3918,138 @@ mod tests {
             assert!(matches!(
                 result.unwrap_err(),
                 TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::OrderNotStale(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_when_base_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, _quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Get the base token and apply blacklist policy
+            let mut base = TIP20Token::from_address(base_addr)?;
+            base.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the base token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place bid order (alice wants to buy base token) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, true, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip bid order - should also fail
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, true, 0, 100, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_place_when_quote_blacklisted() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            // Setup TIP403 registry and create blacklist policy
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+
+            // Set up base and quote tokens
+            let (base_addr, quote_addr) =
+                setup_test_tokens(admin, alice, exchange.address, MIN_ORDER_AMOUNT * 4)?;
+
+            // Get the quote token and apply blacklist policy
+            let mut quote = TIP20Token::from_address(quote_addr)?;
+            quote.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            // Blacklist alice in the quote token
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: alice,
+                    restricted: true,
+                },
+            )?;
+
+            exchange.create_pair(base_addr)?;
+
+            // Test place ask order (alice wants to sell base for quote) - should fail
+            let result = exchange.place(alice, base_addr, MIN_ORDER_AMOUNT, false, 0);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+            ));
+
+            // Test placeFlip ask order - should also fail
+            let result =
+                exchange.place_flip(alice, base_addr, MIN_ORDER_AMOUNT, false, 100, 0, false);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
             ));
 
             Ok(())

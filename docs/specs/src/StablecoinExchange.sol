@@ -119,11 +119,21 @@ contract StablecoinExchange is IStablecoinExchange {
         }
     }
 
-    /// @notice Generate deterministic key for token pair
-    /// @return key Deterministic pair key
-    function pairKey(address tokenA, address tokenB) public pure returns (bytes32 key) {
-        (tokenA, tokenB) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        key = keccak256(abi.encodePacked(tokenA, tokenB));
+    /// @notice Check if an account is authorized by a token's transfer policy
+    /// @param token The token to check the policy of
+    /// @param account The account to check authorization for
+    /// @return True if both the account and this contract are authorized
+    function _checkTransferPolicy(address token, address account) internal view returns (bool) {
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        return TIP403_REGISTRY.isAuthorized(policyId, account)
+            && TIP403_REGISTRY.isAuthorized(policyId, address(this));
+    }
+
+    /// @notice Generate deterministic key for ordered (base, quote) token pair
+    /// @return key pair key
+    /// @dev The first argument MUST be the base token and the second the quote token.
+    function pairKey(address base, address quote) public pure returns (bytes32 key) {
+        key = keccak256(abi.encodePacked(base, quote));
     }
 
     /// @notice Creates a new trading pair between base and quote tokens
@@ -230,12 +240,8 @@ contract StablecoinExchange is IStablecoinExchange {
                 escrowAmount = amount;
             }
 
-            // Check if maker is authorized by the token's transfer policy before operating on internal balance
-            uint64 policyId = ITIP20(escrowToken).transferPolicyId();
-            if (
-                !TIP403_REGISTRY.isAuthorized(policyId, maker)
-                    || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
-            ) {
+            // Check if maker and DEX are authorized by both tokens' transfer policies
+            if (!_checkTransferPolicy(base, maker) || !_checkTransferPolicy(quote, maker)) {
                 if (revertOnTransferFail) {
                     revert ITIP20.PolicyForbids();
                 } else {
@@ -532,12 +538,13 @@ contract StablecoinExchange is IStablecoinExchange {
 
         // Credit maker with appropriate tokens
         if (isBid) {
-            // Bid order: maker gets base tokens
+            // Bid order: maker gets base tokens (exact amount)
             balances[order.maker][book.base] += fillAmount;
         } else {
-            // Ask order: maker gets quote tokens
+            // Ask order: maker gets quote tokens - round UP to favor maker
             uint32 price = tickToPrice(order.tick);
-            uint128 quoteAmount = (fillAmount * price) / PRICE_SCALE;
+            uint128 quoteAmount =
+                uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
             balances[order.maker][book.quote] += quoteAmount;
         }
 
@@ -727,8 +734,10 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
-                // For bids, we want remainingOut quote tokens
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // For bids: round UP baseNeeded and add 1 to ensure full order consumption.
+                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 // Calculate how much quote to receive for fillAmount of base
@@ -786,8 +795,9 @@ contract StablecoinExchange is IStablecoinExchange {
                     remainingOut = 0;
                 }
 
-                // Calculate how much quote to pay for fillAmount of base
-                uint128 quoteIn = (fillAmount * price) / PRICE_SCALE;
+                // Calculate how much quote taker pays (maker receives) - round UP to favor maker
+                uint128 quoteIn =
+                    uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
                 amountIn += quoteIn;
 
                 // Fill the order and get next order
@@ -894,10 +904,12 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseOut = (remainingIn * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
-                // Calculate actual quote needed for fillAmount of base
+                // Calculate quote consumed = what maker receives - round UP to favor maker
                 if (baseOut > currentOrder.remaining) {
                     fillAmount = currentOrder.remaining;
-                    remainingIn -= (fillAmount * price) / PRICE_SCALE;
+                    remainingIn -= uint128(
+                        (uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE
+                    );
                 } else {
                     fillAmount = baseOut;
                     remainingIn = 0;
@@ -951,7 +963,10 @@ contract StablecoinExchange is IStablecoinExchange {
 
                 uint32 price = tickToPrice(currentTick);
 
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // Round UP + 1 to match execution. Note: if multiple orders are crossed
+                // within this tick, execution may charge slightly more (+1 per order boundary).
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 if (baseNeeded > level.totalLiquidity) {
@@ -993,7 +1008,9 @@ contract StablecoinExchange is IStablecoinExchange {
                     remainingOut = 0;
                 }
 
-                uint128 quoteIn = (fillAmount * price) / PRICE_SCALE;
+                // Taker pays quote, maker receives quote - round UP to favor maker
+                uint128 quoteIn =
+                    uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
                 amountIn += quoteIn;
 
                 if (fillAmount == level.totalLiquidity) {
@@ -1065,9 +1082,12 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseOut = (remainingIn * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
+                // Quote consumed = what maker receives - round UP to favor maker
                 if (baseOut > level.totalLiquidity) {
                     fillAmount = level.totalLiquidity;
-                    remainingIn -= (fillAmount * price) / PRICE_SCALE;
+                    remainingIn -= uint128(
+                        (uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE
+                    );
                 } else {
                     fillAmount = baseOut;
                     remainingIn = 0;
@@ -1225,20 +1245,53 @@ contract StablecoinExchange is IStablecoinExchange {
         bookKeys = new bytes32[](path.length - 1);
         baseForQuote = new bool[](path.length - 1);
 
+        // Track whether we are currently moving "up" the quote tree (child -> parent)
+        // or "down" (parent -> child). We start with the natural direction from
+        // `tokenIn` towards the LCA and flip once when we cross the LCA so that
+        // at most one hop has to check both orientations.
+        bool isBaseForQuote = true;
+
         for (uint256 i = 0; i < path.length - 1; i++) {
             address hopTokenIn = path[i];
             address hopTokenOut = path[i + 1];
 
-            bytes32 bookKey = pairKey(hopTokenIn, hopTokenOut);
+            address base;
+            address quote;
+            // Determine which token is base and which is quote using the current
+            // TIP-20 quoteToken relationships. While we are "going up" the tree,
+            // we expect hopTokenIn.quoteToken() == hopTokenOut; once this no longer
+            // holds, we flip to "going down" and expect hopTokenOut.quoteToken() == hopTokenIn
+            // for all remaining hops. This guarantees at most one hop checks both.
+            // First, try the "upward" direction (child -> parent) while we are goingUp.
+            if (isBaseForQuote && address(ITIP20(hopTokenIn).quoteToken()) == hopTokenOut) {
+                // hopTokenIn quotes hopTokenOut => base = hopTokenIn, quote = hopTokenOut
+                base = hopTokenIn;
+                quote = hopTokenOut;
+            } else {
+                // Upward match failed or we've already flipped; we now only accept
+                // the "downward" direction (parent -> child).
+                if (isBaseForQuote) {
+                    // Flip direction at most once when we cross the LCA
+                    isBaseForQuote = false;
+                }
+
+                // This check may not be strictly needed given how path is constructed
+                if (address(ITIP20(hopTokenOut).quoteToken()) == hopTokenIn) {
+                    // hopTokenOut quotes hopTokenIn => base = hopTokenOut, quote = hopTokenIn
+                    base = hopTokenOut;
+                    quote = hopTokenIn;
+                } else {
+                    revert IStablecoinExchange.PairDoesNotExist();
+                }
+            }
+
+            bytes32 bookKey = pairKey(base, quote);
             Orderbook storage orderbook = books[bookKey];
 
             // Validate pair exists
             if (orderbook.base == address(0)) {
                 revert IStablecoinExchange.PairDoesNotExist();
             }
-
-            // Determine direction
-            bool isBaseForQuote = (hopTokenIn == orderbook.base);
 
             bookKeys[i] = bookKey;
             baseForQuote[i] = isBaseForQuote;
