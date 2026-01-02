@@ -726,13 +726,14 @@ fn initialize_validator_config(
             let num_validators = consensus_config.validators.len();
 
             if let Some(custom_addrs) = custom_validator_addresses
-                && custom_addrs.len() != num_validators {
-                    return Err(eyre!(
-                        "provided {} validator addresses but have {} validators",
-                        custom_addrs.len(),
-                        num_validators
-                    ));
-                }
+                && custom_addrs.len() != num_validators
+            {
+                return Err(eyre!(
+                    "provided {} validator addresses but have {} validators",
+                    custom_addrs.len(),
+                    num_validators
+                ));
+            }
 
             println!("writing {num_validators} validators into contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
