@@ -9,5 +9,4 @@
 pub(crate) mod manager;
 mod scheme_provider;
 
-pub(crate) use manager::ingress::{EpochTransition, Exit};
 pub(crate) use scheme_provider::SchemeProvider;

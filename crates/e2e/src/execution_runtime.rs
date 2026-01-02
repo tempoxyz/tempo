@@ -379,6 +379,27 @@ impl ExecutionRuntime {
                                 .unwrap();
                             let _ = response.send(receipt);
                         }
+                        Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
+                            let SetNextFullDkgCeremony {
+                                http_url,
+                                epoch,
+                                response,
+                            } = *set_next_full_dkg_ceremony;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let receipt = validator_config
+                                .setNextFullDkgCeremony(epoch)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
                         Message::SpawnNode {
                             name,
                             config,
@@ -460,6 +481,26 @@ impl ExecutionRuntime {
                     address,
                     active,
                     http_url,
+                    response: tx,
+                }
+                .into(),
+            )
+            .wrap_err("the execution runtime went away")?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    pub async fn set_next_full_dkg_ceremony(
+        &self,
+        http_url: Url,
+        epoch: u64,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(
+                SetNextFullDkgCeremony {
+                    http_url,
+                    epoch,
                     response: tx,
                 }
                 .into(),
@@ -689,6 +730,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 enum Message {
     AddValidator(Box<AddValidator>),
     ChangeValidatorStatus(Box<ChangeValidatorStatus>),
+    SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
@@ -710,6 +752,12 @@ impl From<ChangeValidatorStatus> for Message {
     }
 }
 
+impl From<SetNextFullDkgCeremony> for Message {
+    fn from(value: SetNextFullDkgCeremony) -> Self {
+        Self::SetNextFullDkgCeremony(value.into())
+    }
+}
+
 #[derive(Debug)]
 struct AddValidator {
     /// URL of the node to send this to.
@@ -726,6 +774,14 @@ struct ChangeValidatorStatus {
     http_url: Url,
     address: Address,
     active: bool,
+    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+}
+
+#[derive(Debug)]
+struct SetNextFullDkgCeremony {
+    /// URL of the node to send this to.
+    http_url: Url,
+    epoch: u64,
     response: tokio::sync::oneshot::Sender<TransactionReceipt>,
 }
 

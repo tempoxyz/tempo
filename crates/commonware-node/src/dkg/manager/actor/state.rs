@@ -365,7 +365,10 @@ where
             return Ok(None);
         }
 
-        if share.is_none() {
+        let share = if round.is_full_dkg() {
+            info!("running full DKG ceremony as dealer (new polynomial)");
+            None
+        } else if share.is_none() {
             warn!(
                 "we are a dealer in this round, but we do not have a share, \
                 which means we likely lost it; will not instantiate a dealer \
@@ -373,13 +376,15 @@ where
                 are a player"
             );
             return Ok(None);
-        }
+        } else {
+            share
+        };
 
         let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start(
             Transcript::resume(seed).noise(b"dealer-rng"),
             round.info.clone(),
             me.clone(),
-            share.clone(),
+            share,
         )
         .wrap_err("unable to start cryptographic dealer instance")?;
 
@@ -604,6 +609,8 @@ pub(super) struct State {
     pub(super) players: ordered::Map<PublicKey, SocketAddr>,
     // TODO: should these be in the per-epoch state?
     pub(super) syncers: ordered::Map<PublicKey, SocketAddr>,
+    /// Whether this DKG ceremony is a full ceremony (new polynomial) instead of a reshare.
+    pub(super) is_full_dkg: bool,
 }
 
 impl State {
@@ -627,6 +634,7 @@ impl EncodeSize for State {
             + self.dealers.encode_size()
             + self.players.encode_size()
             + self.syncers.encode_size()
+            + self.is_full_dkg.encode_size()
     }
 }
 
@@ -639,6 +647,7 @@ impl Write for State {
         self.dealers.write(buf);
         self.players.write(buf);
         self.syncers.write(buf);
+        self.is_full_dkg.write(buf);
     }
 }
 
@@ -657,6 +666,7 @@ impl Read for State {
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             syncers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
+            is_full_dkg: ReadExt::read(buf)?,
         })
     }
 }
@@ -950,10 +960,18 @@ pub(super) struct Round {
     info: dkg::Info<MinSig, PublicKey>,
     dealers: ordered::Set<PublicKey>,
     players: ordered::Set<PublicKey>,
+    is_full_dkg: bool,
 }
 
 impl Round {
     pub(super) fn from_state(state: &State, namespace: &[u8]) -> Self {
+        // For full DKG, don't pass the previous output - this creates a new polynomial
+        let previous_output = if state.is_full_dkg {
+            None
+        } else {
+            Some(state.output.clone())
+        };
+
         Self {
             epoch: state.epoch,
             dealers: state.dealers.keys().clone(),
@@ -961,12 +979,13 @@ impl Round {
             info: Info::new(
                 namespace,
                 state.epoch.get(),
-                Some(state.output.clone()),
+                previous_output,
                 Mode::NonZeroCounter,
                 state.dealers.keys().clone(),
                 state.players.keys().clone(),
             )
             .expect("a DKG round must always be initializable given some epoch state"),
+            is_full_dkg: state.is_full_dkg,
         }
     }
 
@@ -984,6 +1003,10 @@ impl Round {
 
     pub(super) fn players(&self) -> &ordered::Set<PublicKey> {
         &self.players
+    }
+
+    pub(super) fn is_full_dkg(&self) -> bool {
+        self.is_full_dkg
     }
 }
 
