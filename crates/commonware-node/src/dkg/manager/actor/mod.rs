@@ -1173,7 +1173,7 @@ where
         let next_epoch = state.epoch.next();
         let is_next_full_dkg = validators::read_next_full_dkg_ceremony(
             &self.config.execution_node,
-            epoch_info.last().saturating_sub(1).min(request.height),
+            request.height,
         )
         // in theory it should never fail, but if it does, just stick to reshare.
         .is_ok_and(|epoch| epoch == next_epoch.get());
