@@ -7,8 +7,6 @@ interface IFeeAMM {
     error IdenticalAddresses();
     error InvalidToken();
     error InvalidCurrency();
-    /// @notice Error when two-sided mint is called (disabled post-Moderato)
-    error MintDisabled();
 
     event Burn(
         address indexed sender,
@@ -26,10 +24,10 @@ interface IFeeAMM {
         uint256 amountOut
     );
     event Mint(
-        address indexed sender,
+        address sender,
+        address indexed to,
         address indexed userToken,
         address indexed validatorToken,
-        uint256 amountUserToken,
         uint256 amountValidatorToken,
         uint256 liquidity
     );
@@ -69,14 +67,6 @@ interface IFeeAMM {
     function liquidityBalances(bytes32, address) external view returns (uint256);
 
     function mint(
-        address userToken,
-        address validatorToken,
-        uint256 amountUserToken,
-        uint256 amountValidatorToken,
-        address to
-    ) external returns (uint256 liquidity);
-
-    function mintWithValidatorToken(
         address userToken,
         address validatorToken,
         uint256 amountValidatorToken,

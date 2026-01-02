@@ -151,6 +151,10 @@ interface ITIP20 {
     
     /// @notice Changes the transfer policy ID (requires DEFAULT_ADMIN_ROLE)
     /// @param newPolicyId The new policy ID from TIP-403 registry
+    /// @dev From Allegretto hardfork onwards, validates that the policy exists using TIP403Registry.policyExists()
+    /// Built-in policies (ID 0 = always-reject, ID 1 = always-allow) are always valid.
+    /// For custom policies (ID >= 2), the policy must exist in the TIP-403 registry.
+    /// Reverts with InvalidTransferPolicyId if the policy does not exist.
     function changeTransferPolicyId(uint64 newPolicyId) external;
     
     /// @notice Stages a new quote token for update (requires DEFAULT_ADMIN_ROLE)
@@ -273,14 +277,10 @@ interface ITIP20 {
 
     /// @notice Emitted when a reward distribution is scheduled
     /// @param funder The account funding the reward distribution
-    /// @param id The identifier of the reward (0 for instant distributions)
     /// @param amount The total amount of tokens allocated to the reward
-    /// @param durationSeconds The duration in seconds (must be 0 in current version)
-    event RewardScheduled(
+    event RewardDistributed(
         address indexed funder,
-        uint64 indexed id,
         uint256 amount,
-        uint32 durationSeconds
     );
 
     /// @notice Emitted when the token's supply cap is updated
@@ -362,6 +362,9 @@ interface ITIP20 {
     ///         (for example, another TIP-20 token contract)
     error InvalidRecipient();
 
+    /// @notice The specified transfer policy ID does not exist in the TIP-403 registry
+    error InvalidTransferPolicyId();
+
     /// @notice The new supply cap is invalid, for example lower than the current total supply
     error InvalidSupplyCap();
 
@@ -370,9 +373,6 @@ interface ITIP20 {
 
     /// @notice The configured transfer policy denies authorization for the sender or recipient
     error PolicyForbids();
-
-    /// @notice Attempted to start a timed reward distribution; streaming is disabled
-    error ScheduledRewardsDisabled();
 
     /// @notice The attempted operation would cause total supply to exceed the configured supply cap
     error SupplyCapExceeded();
@@ -400,7 +400,7 @@ Internally, this is implemented via a `transferAuthorized` modifier that:
 - Calls `TIP403_REGISTRY.isAuthorized(transferPolicyId, to)` for the recipient.
 
 Both checks must return `true`, otherwise the call reverts with `PolicyForbids`.
-Reward operations (`startReward`, `setRewardRecipient`, `claimRewards`) also perform the same TIP-403 authorization checks before moving any funds.
+Reward operations (`distributeReward`, `setRewardRecipient`, `claimRewards`) also perform the same TIP-403 authorization checks before moving any funds.
 
 ## Invalid Recipient Protection
 TIP-20 tokens cannot be sent to other TIP-20 token contract addresses. The implementation uses a `validRecipient` guard that rejects recipients whose address is zero, or has the TIP-20 prefix (`0x20c000000000000000000000`).
@@ -434,6 +434,8 @@ Roles are assigned and managed through `grantRole`, `revokeRole`, `renounceRole`
 
 ## System Functions
 System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` are only callable by other Tempo protocol precompiles. These entrypoints power transaction fee collection, refunds, and internal accounting within the Fee AMM and Stablecoin DEX. They must not be callable by general contracts or users.
+
+`transferFeePreTx` respects the token's pause state and will revert if the token is paused. However, `transferFeePostTx` is intentionally allowed to execute even when the token is paused. This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund. Apart from this specific refund transfer, no other token transfers can occur after a pause event.
 
 ## Token Rewards Distribution
 See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
@@ -534,6 +536,6 @@ interface ITIP20Factory {
 ## Invariants
 - `totalSupply()` must always equal to the sum of all `balanceOf(account)` over all accounts.
 - `totalSupply()` must always be `<= supplyCap` 
-- When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `startReward`, `setRewardRecipient`, `claimRewards`) can succeed.
+- When `paused` is `true`, no functions that move tokens (`transfer`, `transferFrom`, memo variants, `systemTransferFrom`, `transferFeePreTx`, `distributeReward`, `setRewardRecipient`, `claimRewards`) can succeed.
 - TIP20 tokens cannot be transferred to another TIP20 token contract address.
 - `systemTransferFrom`, `transferFeePreTx`, and `transferFeePostTx` never change `totalSupply()`.

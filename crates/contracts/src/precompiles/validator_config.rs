@@ -58,6 +58,7 @@ crate::sol! {
         error Unauthorized();
         error ValidatorAlreadyExists();
         error ValidatorNotFound();
+        error InvalidPublicKey();
 
         error NotHostPort(string field, string input, string backtrace);
         error NotIpPort(string field, string input, string backtrace);
@@ -78,6 +79,11 @@ impl ValidatorConfigError {
     /// Creates an error when validator is not found.
     pub const fn validator_not_found() -> Self {
         Self::ValidatorNotFound(IValidatorConfig::ValidatorNotFound {})
+    }
+
+    /// Creates an error when public key is invalid (zero).
+    pub const fn invalid_public_key() -> Self {
+        Self::InvalidPublicKey(IValidatorConfig::InvalidPublicKey {})
     }
 
     pub fn not_host_port(field: String, input: String, backtrace: String) -> Self {

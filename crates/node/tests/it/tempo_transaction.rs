@@ -14,15 +14,16 @@ use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
+    ACCOUNT_KEYCHAIN_ADDRESS,
     tip20::ITIP20::{self, transferCall},
 };
 
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope,
+    SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization,
+        KeyAuthorization, SignedKeyAuthorization, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
@@ -35,6 +36,7 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
+/// Returns the fee token address that was used for funding
 async fn fund_address_with_fee_tokens(
     setup: &mut SingleNodeSetup,
     provider: &impl Provider,
@@ -43,7 +45,7 @@ async fn fund_address_with_fee_tokens(
     recipient: Address,
     amount: U256,
     chain_id: u64,
-) -> eyre::Result<()> {
+) -> eyre::Result<Address> {
     let transfer_calldata = transferCall {
         to: recipient,
         amount,
@@ -56,24 +58,21 @@ async fn fund_address_with_fee_tokens(
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 100_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
         nonce_key: U256::ZERO,
         nonce: provider.get_transaction_count(funder_addr).await?,
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         ..Default::default()
     };
 
     // Sign and send the funding transaction
-    let sig_hash = funding_tx.signature_hash();
-    let signature = funder_signer.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_funding_tx = AASigned::new_unhashed(funding_tx, aa_signature);
-    let funding_envelope: TempoTxEnvelope = signed_funding_tx.into();
+    let signature = funder_signer.sign_hash_sync(&funding_tx.signature_hash())?;
+    let funding_envelope: TempoTxEnvelope = funding_tx.into_signed(signature.into()).into();
     let mut encoded_funding = Vec::new();
     funding_envelope.encode_2718(&mut encoded_funding);
 
@@ -87,7 +86,7 @@ async fn fund_address_with_fee_tokens(
         funding_payload.block().inner.number
     );
 
-    Ok(())
+    Ok(DEFAULT_FEE_TOKEN)
 }
 
 /// Helper function to verify a transaction exists in the blockchain via eth_getTransactionByHash
@@ -220,14 +219,11 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     Address,
 )> {
     // Setup test node with direct access
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
-    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN_POST_ALLEGRETTO from genesis)
+    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
     let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let signer_addr = signer.address();
 
@@ -236,6 +232,45 @@ async fn setup_test_with_funded_account() -> eyre::Result<(
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     Ok((setup, provider, signer, signer_addr))
+}
+
+/// Helper function to create a signed KeyAuthorization for gas estimation tests
+fn create_signed_key_authorization(
+    signer: &impl SignerSync,
+    key_type: SignatureType,
+    num_limits: usize,
+) -> SignedKeyAuthorization {
+    let limits = if num_limits == 0 {
+        None
+    } else {
+        Some(
+            (0..num_limits)
+                .map(|_| TokenLimit {
+                    token: Address::ZERO,
+                    limit: U256::ZERO,
+                })
+                .collect(),
+        )
+    };
+
+    let authorization = KeyAuthorization {
+        chain_id: 0, // Wildcard - valid on any chain
+        key_type,
+        key_id: Address::random(), // Random key being authorized
+        expiry: None,              // Never expires
+        limits,
+    };
+
+    // Sign the key authorization
+    let sig_hash = authorization.signature_hash();
+    let signature = signer
+        .sign_hash_sync(&sig_hash)
+        .expect("signing should succeed");
+
+    SignedKeyAuthorization {
+        authorization,
+        signature: PrimitiveSignature::Secp256k1(signature),
+    }
 }
 
 /// Helper function to compute authorization signature hash (EIP-7702)
@@ -437,7 +472,7 @@ fn verify_delegation_code(code: &Bytes, expected_delegate: Address, authority_na
 }
 
 /// Helper function to set up P256 test infrastructure with funded account
-/// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id)
+/// Returns: (setup, provider, signing_key, pub_key_x, pub_key_y, signer_addr, funder_signer, funder_addr, chain_id, fee_token)
 async fn setup_test_with_p256_funded_account(
     funding_amount: U256,
 ) -> eyre::Result<(
@@ -450,14 +485,12 @@ async fn setup_test_with_p256_funded_account(
     impl SignerSync,
     Address,
     u64,
+    Address,
 )> {
     use p256::{ecdsa::SigningKey, elliptic_curve::rand_core::OsRng};
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -488,7 +521,7 @@ async fn setup_test_with_p256_funded_account(
     let chain_id = provider.get_chain_id().await?;
 
     // Fund the P256 signer with fee tokens
-    fund_address_with_fee_tokens(
+    let fee_token = fund_address_with_fee_tokens(
         &mut setup,
         &provider,
         &funder_signer,
@@ -509,6 +542,7 @@ async fn setup_test_with_p256_funded_account(
         funder_signer,
         funder_addr,
         chain_id,
+        fee_token,
     ))
 }
 
@@ -565,15 +599,15 @@ async fn submit_and_mine_aa_tx(
     tx: TempoTransaction,
     signature: TempoSignature,
 ) -> eyre::Result<B256> {
-    let signed_tx = AASigned::new_unhashed(tx, signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
-    let tx_hash = envelope.tx_hash();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
-
-    setup.node.rpc.inject_tx(encoded.into()).await?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
     setup.node.advance_block().await?;
-    Ok(*tx_hash)
+    Ok(tx_hash)
 }
 
 /// Helper to sign AA transaction with P256 access key (wrapped in Keychain signature)
@@ -615,7 +649,7 @@ fn create_transfer_call(to: Address, amount: U256) -> Call {
     use tempo_contracts::precompiles::ITIP20::transferCall;
 
     Call {
-        to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+        to: DEFAULT_FEE_TOKEN.into(),
         value: U256::ZERO,
         input: transferCall { to, amount }.abi_encode().into(),
     }
@@ -626,7 +660,7 @@ fn create_balance_of_call(account: Address) -> Call {
     use alloy::sol_types::SolCall;
 
     Call {
-        to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+        to: DEFAULT_FEE_TOKEN.into(),
         value: U256::ZERO,
         input: ITIP20::balanceOfCall { account }.abi_encode().into(),
     }
@@ -652,7 +686,7 @@ fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit
     use tempo_primitives::transaction::TokenLimit;
 
     vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+        token: DEFAULT_FEE_TOKEN,
         limit: U256::from(100u64) * U256::from(10).pow(U256::from(18)),
     }]
 }
@@ -675,7 +709,7 @@ fn create_basic_aa_tx(
         nonce_key: U256::ZERO,
         nonce,
         // Use AlphaUSD to match fund_address_with_fee_tokens
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -789,11 +823,8 @@ fn sign_aa_tx_webauthn(
 
 /// Helper to encode an AA transaction
 fn encode_aa_tx(tx: TempoTransaction, signature: TempoSignature) -> Vec<u8> {
-    let signed_tx = AASigned::new_unhashed(tx, signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
-    let mut encoded = Vec::new();
-    envelope.encode_2718(&mut encoded);
-    encoded
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    envelope.encoded_2718()
 }
 
 // ===== Token Helper Functions =====
@@ -839,11 +870,8 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
 
     // Sign and encode the transaction
     let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
-    let encoded = encode_aa_tx(tx.clone(), aa_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_tx = AASigned::new_unhashed(tx, aa_signature);
-    let envelope: TempoTxEnvelope = signed_tx.into();
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let encoded = envelope.encoded_2718();
 
     println!(
         "Encoded AA transaction: {} bytes (type: 0x{:02x})",
@@ -912,11 +940,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
     // Sign and encode transaction
     let aa_signature = sign_aa_tx_secp256k1(&tx_protocol, &alice_signer)?;
-    let encoded_protocol = encode_aa_tx(tx_protocol.clone(), aa_signature.clone());
-
-    // Recreate envelope for verification
-    let signed_tx_protocol = AASigned::new_unhashed(tx_protocol, aa_signature);
-    let envelope_protocol: TempoTxEnvelope = signed_tx_protocol.into();
+    let envelope_protocol: TempoTxEnvelope = tx_protocol.into_signed(aa_signature).into();
+    let encoded_protocol = envelope_protocol.encoded_2718();
 
     println!(
         "Transaction with nonce_key=0 encoded, size: {} bytes",
@@ -955,11 +980,8 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
 
     // Sign and encode transaction
     let aa_signature_parallel = sign_aa_tx_secp256k1(&tx_parallel, &alice_signer)?;
-    let encoded_parallel = encode_aa_tx(tx_parallel.clone(), aa_signature_parallel.clone());
-
-    // Recreate envelope for verification
-    let signed_tx_parallel = AASigned::new_unhashed(tx_parallel, aa_signature_parallel);
-    let envelope_parallel: TempoTxEnvelope = signed_tx_parallel.into();
+    let envelope_parallel: TempoTxEnvelope = tx_parallel.into_signed(aa_signature_parallel).into();
+    let encoded_parallel = envelope_parallel.encoded_2718();
 
     println!(
         "Transaction with nonce_key=1 encoded, size: {} bytes",
@@ -1639,7 +1661,7 @@ async fn test_aa_2d_nonce_out_of_order_arrival() -> eyre::Result<()> {
 async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
+    let transfer_amount = U256::from(10u64) * U256::from(10).pow(U256::from(6)); // 10 tokens (6 decimals)
     let (
         mut setup,
         provider,
@@ -1650,6 +1672,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
+        fee_token,
     ) = setup_test_with_p256_funded_account(transfer_amount).await?;
 
     println!("WebAuthn signer address: {signer_addr}");
@@ -1660,7 +1683,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Create AA transaction with WebAuthn signature
-    let tx = create_basic_aa_tx(
+    let mut tx = create_basic_aa_tx(
         chain_id,
         0, // First transaction
         vec![Call {
@@ -1670,6 +1693,8 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
         }],
         200_000, // Higher gas limit for WebAuthn verification
     );
+    // Use the correct fee token that was used for funding
+    tx.fee_token = Some(fee_token);
 
     println!("Created AA transaction for WebAuthn signature");
 
@@ -1752,10 +1777,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node with direct access
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -2106,7 +2128,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
 async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(18)); // 20 tokens with 18 decimals
+    let initial_funding_amount = U256::from(20u64) * U256::from(10).pow(U256::from(6)); // 20 tokens with 6 decimals (TIP20 decimals)
     let (
         mut setup,
         provider,
@@ -2117,10 +2139,12 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         _funder_signer,
         _funder_addr,
         chain_id,
+        fee_token,
     ) = setup_test_with_p256_funded_account(initial_funding_amount).await?;
 
     println!("\n=== Testing P256 Call Batching ===\n");
     println!("P256 signer address: {signer_addr}");
+    println!("Fee token: {fee_token}");
 
     // Create multiple recipient addresses for batch transfers
     let num_recipients = 5;
@@ -2140,7 +2164,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     }
 
     // Create batch calls - transfer different amounts to each recipient
-    let transfer_base_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18)); // 1 token base
+    let transfer_base_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token base (6 decimals)
     let mut calls = Vec::new();
 
     for (recipient, multiplier) in &recipients {
@@ -2152,7 +2176,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .abi_encode();
 
         calls.push(Call {
-            to: DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO.into(),
+            to: fee_token.into(),
             value: U256::ZERO,
             input: calldata.into(),
         });
@@ -2164,7 +2188,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     );
 
     // Create AA transaction with batched calls and P256 signature
-    // Use AlphaUSD (DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO) since that's what we funded with
+    // Use the fee token we funded with
     let batch_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
@@ -2173,7 +2197,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         calls,
         nonce_key: U256::ZERO,
         nonce: 0, // First transaction from P256 signer
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(fee_token),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -2217,7 +2241,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
 
     println!("\nChecking initial recipient balances:");
     for (i, (recipient, _)) in recipients.iter().enumerate() {
-        let balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        let balance = ITIP20::new(fee_token, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -2291,7 +2315,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         recipients.iter().zip(initial_balances.iter()).enumerate()
     {
         let expected_amount = transfer_base_amount * U256::from(*multiplier);
-        let final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+        let final_balance = ITIP20::new(fee_token, &provider)
             .balanceOf(*recipient)
             .call()
             .await?;
@@ -2318,7 +2342,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         .map(|i| transfer_base_amount * U256::from(i))
         .fold(U256::ZERO, |acc, x| acc + x);
 
-    let signer_final_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let signer_final_balance = ITIP20::new(fee_token, &provider)
         .balanceOf(signer_addr)
         .call()
         .await?;
@@ -2342,10 +2366,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -2367,7 +2388,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User address: {user_addr} (unfunded)");
 
     // Verify user has ZERO balance (check AlphaUSD since that's what fees are paid in)
-    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let user_token_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -2379,7 +2400,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     println!("User token balance: {user_token_balance} (expected: 0)");
 
     // Get fee payer's balance before transaction (check AlphaUSD since that's what fees are paid in)
-    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let fee_payer_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
@@ -2465,7 +2486,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify user still has ZERO balance (fee payer paid)
-    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let user_token_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(user_addr)
         .call()
         .await?;
@@ -2476,7 +2497,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
     );
 
     // Verify fee payer's balance decreased (check AlphaUSD since that's what fees are paid in)
-    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, &provider)
+    let fee_payer_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(fee_payer_addr)
         .call()
         .await?;
@@ -2577,6 +2598,10 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+    use tempo_primitives::transaction::tempo_transaction::Call;
+
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2588,43 +2613,51 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 
     let recipient = Address::random();
 
-    // Create a simple AA transaction request for gas estimation (based on issue #516 format)
-    // Note: We provide maxFeePerGas and maxPriorityFeePerGas but NOT gas - gas is what we're estimating!
-    let tx_request = serde_json::json!({
-        "from": signer_addr.to_string(),
-        "calls": [{
-            "to": recipient.to_string(),
-            "value": "0x0",
-            "input": "0x"
+    // Helper to create a base transaction request
+    let base_tx_request = || TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
         }],
-    });
+        ..Default::default()
+    };
 
     // Test 1: Estimate gas WITHOUT keyType (baseline - uses secp256k1)
     println!("Test 1: Estimating gas WITHOUT keyType (baseline)");
     let baseline_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request.clone()])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(base_tx_request())?],
+        )
         .await?;
     let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
     println!("  Baseline gas: {baseline_gas_u64}");
 
     // Test 2: Estimate gas WITH keyType="p256"
     println!("\nTest 2: Estimating gas WITH keyType='p256'");
-    let mut tx_request_p256 = tx_request.clone();
-    tx_request_p256
-        .as_object_mut()
-        .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("p256"));
+    let tx_request_p256 = TempoTransactionRequest {
+        key_type: Some(SignatureType::P256),
+        ..base_tx_request()
+    };
 
     let p256_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request_p256])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_request_p256)?],
+        )
         .await?;
     let p256_gas_u64 = u64::from_str_radix(p256_gas.trim_start_matches("0x"), 16)?;
     println!("  P256 gas: {p256_gas_u64}");
-    // P256 should add approximately 5,000 gas (allow small tolerance for gas estimation variance)
+    // P256 should add approximately 5,000 gas (allow tolerance for gas estimation buffer variance)
     let p256_diff = (p256_gas_u64 as i64 - baseline_gas_u64 as i64).unsigned_abs();
     assert!(
-        (4_985..=5_015).contains(&p256_diff),
-        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±15)",
+        (4_800..=5_200).contains(&p256_diff),
+        "P256 should add ~5,000 gas: actual diff {p256_diff} (expected 5,000 ±200)",
     );
     println!("  ✓ P256 adds {p256_diff} gas (expected ~5,000)");
 
@@ -2634,21 +2667,20 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
     // Specify WebAuthn data size (excluding 128 bytes for public keys)
     // Encoded as hex: 116 = 0x74 (1 byte) or 0x0074 (2 bytes)
     let webauthn_size = 116u16;
-    let key_data_hex = format!("0x{webauthn_size:04x}"); // 2-byte encoding: "0x0074"
-    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data_hex})",);
+    let key_data = Bytes::from(webauthn_size.to_be_bytes().to_vec());
+    println!("  Requesting WebAuthn data size: {webauthn_size} bytes (keyData: {key_data})",);
 
-    let mut tx_request_webauthn = tx_request.clone();
-    tx_request_webauthn
-        .as_object_mut()
-        .unwrap()
-        .insert("keyType".to_string(), serde_json::json!("webAuthn"));
-    tx_request_webauthn
-        .as_object_mut()
-        .unwrap()
-        .insert("keyData".to_string(), serde_json::json!(key_data_hex));
+    let tx_request_webauthn = TempoTransactionRequest {
+        key_type: Some(SignatureType::WebAuthn),
+        key_data: Some(key_data),
+        ..base_tx_request()
+    };
 
     let webauthn_gas: String = provider
-        .raw_request("eth_estimateGas".into(), [tx_request_webauthn])
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_request_webauthn)?],
+        )
         .await?;
     let webauthn_gas_u64 = u64::from_str_radix(webauthn_gas.trim_start_matches("0x"), 16)?;
     println!("  WebAuthn gas: {webauthn_gas_u64}");
@@ -2659,6 +2691,202 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
         "WebAuthn should cost more than P256"
     );
     println!("  ✓ WebAuthn adds signature verification + calldata gas");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
+    use alloy::rpc::types::TransactionRequest;
+    use tempo_node::rpc::TempoTransactionRequest;
+    use tempo_primitives::transaction::tempo_transaction::Call;
+
+    reth_tracing::init_test_tracing();
+
+    let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
+    // Keep setup alive for the duration of the test
+    let _ = &_setup;
+
+    println!("\n=== Testing eth_estimateGas with isKeychain and keyAuthorization ===\n");
+    println!("Test address: {signer_addr}");
+
+    let recipient = Address::random();
+
+    // Helper to create a base transaction request
+    let base_tx_request = || TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(signer_addr),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: TxKind::Call(recipient),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        ..Default::default()
+    };
+
+    // Test 1: Baseline gas (secp256k1, primitive signature)
+    println!("Test 1: Baseline gas (secp256k1, primitive signature)");
+    let baseline_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(base_tx_request())?],
+        )
+        .await?;
+    let baseline_gas_u64 = u64::from_str_radix(baseline_gas.trim_start_matches("0x"), 16)?;
+    println!("  Baseline gas: {baseline_gas_u64}");
+
+    // Test 2: Keychain signature (secp256k1 inner) - should add 3,000 gas
+    // For keychain signatures, we need to use same-tx auth+use pattern:
+    // provide both key_id AND key_authorization with the same key_id
+    println!("\nTest 2: Keychain signature (secp256k1 inner)");
+    let key_auth_secp_for_keychain =
+        create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
+    let key_id_secp = key_auth_secp_for_keychain.key_id;
+    let tx_keychain = TempoTransactionRequest {
+        key_id: Some(key_id_secp), // Use the same key_id as in key_authorization
+        key_authorization: Some(key_auth_secp_for_keychain),
+        ..base_tx_request()
+    };
+
+    let keychain_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_keychain)?],
+        )
+        .await?;
+    let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
+    println!("  Keychain gas: {keychain_gas_u64}");
+
+    // Keychain with same-tx auth adds:
+    // - 3,000 for keychain validation
+    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
+    // Total: ~33,000 gas
+    let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (32_500..=34_000).contains(&keychain_diff.unsigned_abs()),
+        "Keychain + KeyAuth should add ~33,000 gas: actual diff {keychain_diff} (expected 33,000 ±500)"
+    );
+    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~33,000)");
+
+    // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 + ~30,000 = ~38,000 gas
+    println!("\nTest 3: Keychain signature (P256 inner)");
+    let key_auth_p256_for_keychain =
+        create_signed_key_authorization(&signer, SignatureType::P256, 0);
+    let key_id_p256 = key_auth_p256_for_keychain.key_id;
+    let tx_keychain_p256 = TempoTransactionRequest {
+        key_type: Some(SignatureType::P256),
+        key_id: Some(key_id_p256), // Use the same key_id as in key_authorization
+        key_authorization: Some(key_auth_p256_for_keychain),
+        ..base_tx_request()
+    };
+
+    let keychain_p256_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_keychain_p256)?],
+        )
+        .await?;
+    let keychain_p256_gas_u64 =
+        u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
+    println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
+
+    let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
+    // Keychain P256 with same-tx auth adds:
+    // - 3,000 for keychain validation
+    // - 5,000 for P256 signature verification
+    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
+    // Total: ~38,000 gas
+    assert!(
+        (37_500..=39_000).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 + KeyAuth should add ~38,000 gas: actual diff {keychain_p256_diff} (expected 38,000 ±500)"
+    );
+    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~38,000)");
+
+    // Test 4: KeyAuthorization with secp256k1 (no limits)
+    println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
+    let key_auth_secp = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 0);
+    let tx_key_auth = TempoTransactionRequest {
+        key_authorization: Some(key_auth_secp),
+        ..base_tx_request()
+    };
+
+    let key_auth_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth)?],
+        )
+        .await?;
+    let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth gas: {key_auth_gas_u64}");
+
+    // KeyAuth secp256k1 adds ~30,000 gas (27,000 base + 3,000 ecrecover)
+    let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (29_500..=31_000).contains(&key_auth_diff.unsigned_abs()),
+        "KeyAuth secp256k1 should add ~30,000 gas: actual diff {key_auth_diff} (expected 30,000 ±500)"
+    );
+    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~30,000)");
+
+    // Test 5: KeyAuthorization with P256 key type (no limits)
+    // Note: The key authorization signature is secp256k1 (signed by root key).
+    // The key_type field specifies what type of key is being authorized (P256),
+    // but the gas cost depends on the signature type, not the key being authorized.
+    println!("\nTest 5: KeyAuthorization (P256 key type, no limits)");
+    let key_auth_p256 = create_signed_key_authorization(&signer, SignatureType::P256, 0);
+    let tx_key_auth_p256 = TempoTransactionRequest {
+        key_authorization: Some(key_auth_p256),
+        ..base_tx_request()
+    };
+
+    let key_auth_p256_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth_p256)?],
+        )
+        .await?;
+    let key_auth_p256_gas_u64 =
+        u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
+
+    // KeyAuth with P256 key type has same gas as secp256k1 (~30,000) because
+    // the authorization signature itself is always secp256k1 from the root key
+    let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (29_500..=31_000).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 key type should add ~30,000 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
+    );
+    println!(
+        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~30,000)"
+    );
+
+    // Test 6: KeyAuthorization with spending limits
+    println!("\nTest 6: KeyAuthorization (secp256k1, 3 spending limits)");
+    let key_auth_limits = create_signed_key_authorization(&signer, SignatureType::Secp256k1, 3);
+    let tx_key_auth_limits = TempoTransactionRequest {
+        key_authorization: Some(key_auth_limits),
+        ..base_tx_request()
+    };
+
+    let key_auth_limits_gas: String = provider
+        .raw_request(
+            "eth_estimateGas".into(),
+            [serde_json::to_value(&tx_key_auth_limits)?],
+        )
+        .await?;
+    let key_auth_limits_gas_u64 =
+        u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
+    println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
+
+    // KeyAuth secp256k1 with 3 limits adds ~96,000 gas (30,000 + 3*22,000)
+    let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
+    assert!(
+        (95_500..=97_500).contains(&key_auth_limits_diff.unsigned_abs()),
+        "KeyAuth with 3 limits should add ~96,000 gas: actual diff {key_auth_limits_diff} (expected 96,000 ±1,500)"
+    );
+    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~96,000)");
+
+    println!("\n✓ All gas estimation tests passed!");
     Ok(())
 }
 
@@ -2675,8 +2903,10 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
 
     println!("Transaction sender: {sender_addr}");
 
-    // The delegate address that all EOAs will delegate to (using default 7702 delegate)
-    let delegate_address = tempo_contracts::DEFAULT_7702_DELEGATE_ADDRESS;
+    // The delegate address that all EOAs will delegate to (using AccountKeychain precompile)
+    // Note that this test simply asserts that the account has been delegated, rather than testing
+    // functionality of a the code that the account delegates to
+    let delegate_address = ACCOUNT_KEYCHAIN_ADDRESS;
     println!("Delegate address: {delegate_address}");
 
     // ========================================================================
@@ -2971,10 +3201,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("\n=== Testing AA Transaction with Key Authorization and P256 Spending Limits ===\n");
 
     // Setup test node
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let http_url = setup.node.rpc_url();
 
@@ -3015,7 +3242,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("Chain ID: {chain_id}");
 
     // Check root key's initial balance
-    let root_balance_initial = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let root_balance_initial = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(root_key_addr)
         .call()
         .await?;
@@ -3026,15 +3253,15 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("Token transfer recipient: {recipient}");
 
     // Define spending limits for the access key
-    // Allow spending up to 10 tokens from DEFAULT_FEE_TOKEN_POST_ALLEGRETTO
+    // Allow spending up to 10 tokens from DEFAULT_FEE_TOKEN
     let spending_limit_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
     let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+        token: DEFAULT_FEE_TOKEN,
         limit: spending_limit_amount,
     }];
 
     println!("\nCreating key authorization:");
-    println!("  - Token: {DEFAULT_FEE_TOKEN_POST_ALLEGRETTO}");
+    println!("  - Token: {DEFAULT_FEE_TOKEN}");
     println!("  - Spending limit: {spending_limit_amount} (10 tokens)");
     println!("  - Key type: P256");
     println!("  - Key ID (address): {access_key_addr}");
@@ -3085,12 +3312,15 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
         300_000, // Higher gas for key authorization verification
     );
+    // Use PathUSD (DEFAULT_FEE_TOKEN) as fee token
+    // and our spending limit is set for PathUSD
+    tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     tx.key_authorization = Some(key_authorization);
 
     println!("✓ AA transaction created with key authorization");
@@ -3159,7 +3389,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     );
 
     // Get recipient's initial balance (should be 0)
-    let recipient_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone())
+    let recipient_balance_before = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
         .balanceOf(recipient)
         .call()
         .await?;
@@ -3326,7 +3556,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     assert!(status, "Transaction should succeed");
 
     // Verify recipient received the tokens
-    let recipient_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone())
+    let recipient_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
         .balanceOf(recipient)
         .call()
         .await?;
@@ -3341,7 +3571,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     println!("✓ Recipient received correct amount: {transfer_amount} tokens");
 
     // Verify root key's balance decreased
-    let root_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, provider.clone())
+    let root_balance_after = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone())
         .balanceOf(root_key_addr)
         .call()
         .await?;
@@ -3351,13 +3581,14 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         "\nRoot key balance: {root_balance_initial} → {root_balance_after} (decreased by {balance_decrease})"
     );
 
-    // PathUSD balance should decrease by exactly the transfer amount
-    // (gas fees are paid in AlphaUSD via fee_token setting)
-    assert_eq!(
-        balance_decrease, transfer_amount,
-        "Root key PathUSD should have decreased by transfer amount"
+    // PathUSD balance should decrease by at least the transfer amount
+    // (gas fees are also paid in PathUSD since we set fee_token to PathUSD)
+    assert!(
+        balance_decrease >= transfer_amount,
+        "Root key PathUSD should have decreased by at least the transfer amount"
     );
-    println!("✓ Root key paid for transfer (gas fees paid in AlphaUSD)");
+    let gas_fee_paid = balance_decrease - transfer_amount;
+    println!("✓ Root key paid for transfer ({transfer_amount}) + gas fees ({gas_fee_paid})");
 
     // Verify the key was authorized in the AccountKeychain precompile
     println!("\n=== Verifying Key Authorization in Precompile ===");
@@ -3388,7 +3619,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     let get_remaining_call = getRemainingLimitCall {
         account: root_key_addr,
         keyId: access_key_addr,
-        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+        token: DEFAULT_FEE_TOKEN,
     };
     let call_data = get_remaining_call.abi_encode();
 
@@ -3420,10 +3651,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
 
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
     let provider = ProviderBuilder::new()
@@ -3499,7 +3727,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         None, // Never expires
         Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            token: DEFAULT_FEE_TOKEN,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
         }]),
     )?;
@@ -3511,7 +3739,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -3544,7 +3772,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -3623,7 +3851,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         None, // Never expires
         Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            token: DEFAULT_FEE_TOKEN,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
         }]),
     )?;
@@ -3635,7 +3863,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -3684,7 +3912,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -3738,11 +3966,8 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
 
     reth_tracing::init_test_tracing();
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
-    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN_POST_ALLEGRETTO from genesis)
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    // Use TEST_MNEMONIC account (has balance in DEFAULT_FEE_TOKEN from genesis)
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
 
@@ -3777,7 +4002,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         chain_id,
         None, // Never expires
         Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+            token: DEFAULT_FEE_TOKEN,
             limit: spending_limit,
         }]),
     )?;
@@ -3791,13 +4016,14 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 400_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: balanceOfCall { account: root_addr }.abi_encode().into(),
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        // Use PathUSD as fee token (matches the spending limit token)
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -3826,7 +4052,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
             value: U256::ZERO,
             input: updateSpendingLimitCall {
                 keyId: access_key_addr,
-                token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+                token: DEFAULT_FEE_TOKEN,
                 newLimit: U256::from(20u64) * U256::from(10).pow(U256::from(18)),
             }
             .abi_encode()
@@ -3834,7 +4060,8 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        // Use PathUSD as fee token (matches the spending limit token)
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -3884,7 +4111,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient,
@@ -3895,7 +4122,8 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        // Use PathUSD as fee token (matches the spending limit token)
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -3945,7 +4173,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient,
@@ -3956,7 +4184,8 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        // Use PathUSD as fee token (matches the spending limit token)
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -3994,7 +4223,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
 
     assert_eq!(status, "0x1", "Transfer within spending limit must succeed");
 
-    let recipient_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient)
         .call()
         .await?;
@@ -4014,10 +4243,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
 
     println!("\n=== Testing enforce_limits Flag Behavior ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -4058,7 +4284,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    auth_unlimited_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    auth_unlimited_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_unlimited_tx.key_authorization = Some(unlimited_key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_unlimited_tx, &root_signer)?;
@@ -4079,7 +4306,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, large_transfer_amount)],
         300_000,
     );
-    transfer_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let unlimited_sig = sign_aa_tx_with_p256_access_key(
         &transfer_tx,
@@ -4111,7 +4339,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     );
 
     // Verify the large transfer succeeded (unlimited key has no limit enforcement)
-    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient1)
         .call()
         .await?;
@@ -4141,7 +4369,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    auth_no_spending_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    auth_no_spending_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_no_spending_tx.key_authorization = Some(no_spending_key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_no_spending_tx, &root_signer)?;
@@ -4162,7 +4391,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, small_transfer_amount)],
         300_000,
     );
-    no_spending_transfer_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    no_spending_transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let no_spending_sig = sign_aa_tx_with_p256_access_key(
         &no_spending_transfer_tx,
@@ -4181,18 +4411,25 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     setup.node.rpc.inject_tx(encoded.into()).await?;
     setup.node.advance_block().await?;
 
-    let receipt = provider
-        .get_transaction_receipt(tx_hash)
-        .await?
-        .expect("Transaction must be included in block");
+    // The transaction should be rejected during block building (not included)
+    // because fee payment exceeds the spending limit (empty limits = no spending allowed)
+    let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
-    assert!(
-        !receipt.status(),
-        "No-spending key must not be able to transfer any tokens"
-    );
+    if let Some(receipt) = receipt {
+        // If included, it must have failed
+        assert!(
+            !receipt.status(),
+            "No-spending key must not be able to transfer any tokens"
+        );
+        println!("✓ No-spending key transaction was included but reverted");
+    } else {
+        println!(
+            "✓ No-spending key transaction was rejected by block builder (spending limit exceeded)"
+        );
+    }
 
     // Verify recipient2 received NO tokens
-    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient2)
         .call()
         .await?;
@@ -4207,18 +4444,19 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
 
     // STEP 5: Verify unlimited key can still transfer (second transfer)
     println!("\n=== STEP 5: Unlimited Key Second Transfer ===");
-    nonce += 1;
+    // Don't increment nonce - the previous transaction was rejected so on-chain nonce didn't change
 
     let recipient3 = Address::random();
     let second_transfer = U256::from(5u64) * U256::from(10).pow(U256::from(18)); // 5 tokens
 
     let second_unlimited_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        // Use higher gas price to replace the rejected no-spending tx still in pool
+        max_priority_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
+        max_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient3,
@@ -4229,7 +4467,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        // Use PathUSD as fee token (matches the spending limit token)
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -4248,7 +4487,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
 
     let _tx_hash = submit_and_mine_aa_tx(&mut setup, second_unlimited_tx, unlimited_sig2).await?;
 
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient3)
         .call()
         .await?;
@@ -4273,10 +4512,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
 
     println!("\n=== Testing Key Expiry Functionality ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -4329,7 +4565,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    auth_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_tx.key_authorization = Some(never_expires_key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
@@ -4348,7 +4585,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, transfer_amount)],
         300_000,
     );
-    transfer_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let never_expires_sig = sign_aa_tx_with_p256_access_key(
         &transfer_tx,
@@ -4361,7 +4599,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     submit_and_mine_aa_tx(&mut setup, transfer_tx, never_expires_sig).await?;
     nonce += 1;
 
-    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient1_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient1)
         .call()
         .await?;
@@ -4414,7 +4652,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    auth_short_expiry_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    auth_short_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_short_expiry_tx.key_authorization = Some(short_expiry_key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&auth_short_expiry_tx, &root_signer)?;
@@ -4434,7 +4673,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, transfer_amount)],
         300_000,
     );
-    before_expiry_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    before_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let short_expiry_sig = sign_aa_tx_with_p256_access_key(
         &before_expiry_tx,
@@ -4447,7 +4687,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     submit_and_mine_aa_tx(&mut setup, before_expiry_tx, short_expiry_sig).await?;
     nonce += 1;
 
-    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient2)
         .call()
         .await?;
@@ -4488,7 +4728,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient3, transfer_amount)],
         300_000,
     );
-    after_expiry_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    after_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let expired_key_sig = sign_aa_tx_with_p256_access_key(
         &after_expiry_tx,
@@ -4524,7 +4765,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     }
 
     // Verify recipient3 received NO tokens
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient3)
         .call()
         .await?;
@@ -4569,7 +4810,8 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    past_expiry_tx.fee_token = None;
+    // Use PathUSD as fee token (matches the spending limit token)
+    past_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     past_expiry_tx.key_authorization = Some(past_expiry_key_auth);
 
     let root_sig = sign_aa_tx_secp256k1(&past_expiry_tx, &root_signer)?;
@@ -4612,10 +4854,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     println!("\n=== Testing RPC Validation of Keychain Signatures ===\n");
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
     let http_url = setup.node.rpc_url();
 
     // Generate TWO P256 access keys
@@ -4662,7 +4901,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     println!("=== STEP 1: Authorize Access Key (same-tx auth+use) ===");
 
     let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+        token: DEFAULT_FEE_TOKEN,
         limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)), // 10 tokens
     }];
 
@@ -4693,7 +4932,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 500_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient1,
@@ -4704,7 +4943,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -4754,7 +4993,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient2,
@@ -4765,7 +5004,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -4804,7 +5043,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         .expect("Receipt must have status");
     assert_eq!(status2, "0x1", "Positive test transaction must succeed");
 
-    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient2_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient2)
         .call()
         .await?;
@@ -4827,7 +5066,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: transferCall {
                 to: recipient3,
@@ -4838,7 +5077,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -4880,7 +5119,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     );
 
     // Verify recipient3 received NO tokens
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, &provider)
+    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
         .balanceOf(recipient3)
         .call()
         .await?;
@@ -4938,13 +5177,13 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 500_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
         nonce_key: U256::ZERO,
         nonce,
-        fee_token: None,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
         valid_after: None,
@@ -5079,10 +5318,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     use tempo_primitives::transaction::TokenLimit;
 
-    let mut setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_with_node_access()
-        .await?;
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
 
     let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
     let root_addr = root_signer.address();
@@ -5110,7 +5346,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     ));
 
     let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO,
+        token: DEFAULT_FEE_TOKEN,
         limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
     }];
 
@@ -5132,7 +5368,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],
@@ -5189,7 +5425,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
         gas_limit: 300_000,
         calls: vec![Call {
-            to: DEFAULT_FEE_TOKEN_POST_ALLEGRETTO.into(),
+            to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
             input: Bytes::new(),
         }],

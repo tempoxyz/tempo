@@ -175,4 +175,12 @@ impl HashMapStorageProvider {
     pub fn clear_transient(&mut self) {
         self.transient.clear();
     }
+
+    pub fn clear_events(&mut self, address: Address) {
+        let _ = self
+            .events
+            .entry(address)
+            .and_modify(|v| v.clear())
+            .or_default();
+    }
 }

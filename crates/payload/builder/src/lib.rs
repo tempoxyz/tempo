@@ -9,7 +9,6 @@ use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
-use alloy_sol_types::SolCall;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -43,15 +42,10 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
-use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-    stablecoin_exchange::IStablecoinExchange, tip_fee_manager::IFeeManager,
-    tip20_rewards_registry::ITIP20RewardsRegistry,
-};
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -109,111 +103,17 @@ impl<Provider> TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
-    /// Builds system transactions to execute at the start of the block.
-    ///
-    /// Returns a vector of system transactions that must be executed at the beginning of each block:
-    /// 1. TIP20 Rewards Registry finalizeStreams - finalizes expired reward streams
-    fn build_start_block_txs(
-        &self,
-        evm: &TempoEvm<impl Database>,
-    ) -> Vec<Recovered<TempoTxEnvelope>> {
-        // No start of block system transactions after moderato.
-        if evm.ctx().cfg.spec.is_moderato() {
-            return vec![];
-        }
-
-        let chain_id = Some(self.provider.chain_spec().chain().id());
-
-        // Build rewards registry system transaction
-        let rewards_registry_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-            .abi_encode()
-            .into_iter()
-            .chain(evm.block().number.to_be_bytes_vec())
-            .collect();
-
-        let rewards_registry_tx = Recovered::new_unchecked(
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                TxLegacy {
-                    chain_id,
-                    nonce: 0,
-                    gas_price: 0,
-                    gas_limit: 0,
-                    to: TIP20_REWARDS_REGISTRY_ADDRESS.into(),
-                    value: U256::ZERO,
-                    input: rewards_registry_input,
-                },
-                TEMPO_SYSTEM_TX_SIGNATURE,
-            )),
-            TEMPO_SYSTEM_TX_SENDER,
-        );
-
-        vec![rewards_registry_tx]
-    }
-
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
-    /// 1. Fee manager executeBlock - processes collected fees (pre-AllegroModerato only)
-    /// 2. Stablecoin exchange executeBlock - commits pending orders (pre-AllegroModerato only)
-    /// 3. Subblocks signatures - validates subblock signatures
+    /// - Subblocks signatures - validates subblock signatures
     fn build_seal_block_txs(
         &self,
         block_env: &BlockEnv,
         subblocks: &[RecoveredSubBlock],
-        timestamp: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         let chain_spec = self.provider.chain_spec();
         let chain_id = Some(chain_spec.chain().id());
-        let mut txs = Vec::with_capacity(3);
-
-        // Build fee manager and stablecoin dex system transaction (pre-AllegroModerato only)
-        if !chain_spec.is_allegro_moderato_active_at_timestamp(timestamp) {
-            let fee_manager_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block_env.number.to_be_bytes_vec())
-                .collect();
-
-            let fee_manager_tx = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    TxLegacy {
-                        chain_id,
-                        nonce: 0,
-                        gas_price: 0,
-                        gas_limit: 0,
-                        to: TIP_FEE_MANAGER_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: fee_manager_input,
-                    },
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                )),
-                TEMPO_SYSTEM_TX_SENDER,
-            );
-            txs.push(fee_manager_tx);
-
-            let stablecoin_exchange_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_env.number.to_be_bytes_vec())
-                .collect();
-
-            let stablecoin_exchange_tx = Recovered::new_unchecked(
-                TempoTxEnvelope::Legacy(Signed::new_unhashed(
-                    TxLegacy {
-                        chain_id,
-                        nonce: 0,
-                        gas_price: 0,
-                        gas_limit: 0,
-                        to: STABLECOIN_EXCHANGE_ADDRESS.into(),
-                        value: U256::ZERO,
-                        input: stablecoin_exchange_input,
-                    },
-                    TEMPO_SYSTEM_TX_SIGNATURE,
-                )),
-                TEMPO_SYSTEM_TX_SENDER,
-            );
-            txs.push(stablecoin_exchange_tx);
-        }
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -240,9 +140,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             )),
             TEMPO_SYSTEM_TX_SENDER,
         );
-        txs.push(subblocks_signatures_tx);
 
-        txs
+        vec![subblocks_signatures_tx]
     }
 }
 
@@ -333,10 +232,7 @@ where
 
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
-            Box::new(InstrumentedStateProvider::from_state_provider(
-                state_provider,
-                "builder",
-            ))
+            Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
         } else {
             state_provider
         };
@@ -359,8 +255,7 @@ where
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit =
-            (parent_header.gas_limit() - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+        let general_gas_limit = non_shared_gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
 
         let mut cumulative_gas_used = 0;
         let mut non_payment_gas_used = 0;
@@ -445,8 +340,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs =
-            self.build_seal_block_txs(builder.evm().block(), &subblocks, attributes.timestamp());
+        let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -464,20 +358,6 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
-
-        // Execute start-of-block system transactions (rewards registry finalize)
-        let start_block_txs_execution_start = Instant::now();
-        for tx in self.build_start_block_txs(builder.evm()) {
-            block_size_used += tx.inner().length();
-
-            builder
-                .execute_transaction(tx)
-                .map_err(PayloadBuilderError::evm)?;
-        }
-        let start_block_txs_execution_elapsed = start_block_txs_execution_start.elapsed();
-        self.metrics
-            .start_block_txs_execution_duration_seconds
-            .record(start_block_txs_execution_elapsed);
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {

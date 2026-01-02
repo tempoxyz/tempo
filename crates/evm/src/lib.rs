@@ -233,25 +233,21 @@ impl ConfigureEvm for TempoEvmConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        // Create a test chainspec with Adagio at genesis
+        // Create a test chainspec
         let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
             tempo_chainspec::spec::ANDANTINO.genesis().clone(),
         ));
 
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
 
-        // Should be able to query Tempo hardforks through the chainspec
-        assert!(evm_config.chain_spec().is_adagio_active_at_timestamp(0));
-        assert!(evm_config.chain_spec().is_adagio_active_at_timestamp(1000));
-
         // Should be able to query activation condition
         let activation = evm_config
             .chain_spec()
-            .tempo_fork_activation(TempoHardfork::Adagio);
+            .tempo_fork_activation(TempoHardfork::Genesis);
         assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
     }
 }

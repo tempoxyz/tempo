@@ -11,29 +11,16 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, Bytes, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Decodable;
-use alloy_sol_types::SolCall;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
 };
 use reth_revm::{Inspector, State, context::result::ResultAndState};
-use revm::{
-    DatabaseCommit,
-    context::ContextTr,
-    state::{Account, Bytecode},
-};
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_contracts::{CREATEX_ADDRESS, MULTICALL_ADDRESS};
-
-use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_REWARDS_REGISTRY_ADDRESS, stablecoin_exchange::IStablecoinExchange,
-    tip_fee_manager::IFeeManager, tip20_rewards_registry::ITIP20RewardsRegistry,
-};
+use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, subblock::PartialValidatorKey,
 };
@@ -42,8 +29,8 @@ use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum BlockSection {
-    /// Start of block system transactions (rewards registry).
-    StartOfBlock { seen_tip20_rewards_registry: bool },
+    /// Start of block system transactions.
+    StartOfBlock,
     /// Basic section of the block. Includes arbitrary transactions chosen by the proposer.
     ///
     /// Must use at most `non_shared_gas_left` gas.
@@ -53,11 +40,7 @@ enum BlockSection {
     /// Gas incentive transaction.
     GasIncentive,
     /// End of block system transactions.
-    System {
-        seen_fee_manager: bool,
-        seen_stablecoin_dex: bool,
-        seen_subblocks_signatures: bool,
-    },
+    System { seen_subblocks_signatures: bool },
 }
 
 /// Builder for [`TempoReceipt`].
@@ -132,9 +115,7 @@ where
                 chain_spec,
                 TempoReceiptBuilder::default(),
             ),
-            section: BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: false,
-            },
+            section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
@@ -146,110 +127,18 @@ where
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
-        let block_timestamp = block.timestamp;
         let block_number = block.number.to_be_bytes_vec();
         let to = tx.to().unwrap_or_default();
 
-        if !self
-            .inner
-            .spec
-            .is_moderato_active_at_timestamp(block_timestamp.to::<u64>())
-        {
-            // Handle start-of-block system transaction (rewards registry)
-            // Only enforce this restriction when we haven't seen the rewards registry yet
-            if let BlockSection::StartOfBlock {
-                seen_tip20_rewards_registry: false,
-            } = self.section
-            {
-                if to != TIP20_REWARDS_REGISTRY_ADDRESS {
-                    return Err(BlockValidationError::msg(
-                        "only rewards registry system transaction allowed at start of block",
-                    ));
-                }
+        // Handle end-of-block system transactions (subblocks signatures only)
+        let mut seen_subblocks_signatures = match self.section {
+            BlockSection::System {
+                seen_subblocks_signatures,
+            } => seen_subblocks_signatures,
+            _ => false,
+        };
 
-                let finalize_streams_input = ITIP20RewardsRegistry::finalizeStreamsCall {}
-                    .abi_encode()
-                    .into_iter()
-                    .chain(block_number)
-                    .collect::<Bytes>();
-
-                if *tx.input() != finalize_streams_input {
-                    return Err(BlockValidationError::msg(
-                        "invalid TIP20 rewards registry system transaction",
-                    ));
-                }
-
-                return Ok(BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry: true,
-                });
-            }
-        }
-
-        // Handle end-of-block system transactions (fee manager, DEX, subblocks signatures)
-        let (mut seen_fee_manager, mut seen_stablecoin_dex, mut seen_subblocks_signatures) =
-            match self.section {
-                BlockSection::System {
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                } => (
-                    seen_fee_manager,
-                    seen_stablecoin_dex,
-                    seen_subblocks_signatures,
-                ),
-                _ => (false, false, false),
-            };
-
-        if to == TIP_FEE_MANAGER_ADDRESS {
-            if seen_fee_manager {
-                return Err(BlockValidationError::msg(
-                    "duplicate fee manager system transaction",
-                ));
-            }
-
-            let fee_input = IFeeManager::executeBlockCall
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != fee_input {
-                return Err(BlockValidationError::msg(
-                    "invalid fee manager system transaction",
-                ));
-            }
-
-            seen_fee_manager = true;
-        } else if to == STABLECOIN_EXCHANGE_ADDRESS {
-            // The stablecoin dex system tx is disabled post allegro moderato hardfork
-            if self
-                .inner
-                .spec
-                .is_allegro_moderato_active_at_timestamp(block_timestamp.saturating_to::<u64>())
-            {
-                return Err(BlockValidationError::msg("invalid system transaction"));
-            }
-
-            if seen_stablecoin_dex {
-                return Err(BlockValidationError::msg(
-                    "duplicate stablecoin DEX system transaction",
-                ));
-            }
-
-            let dex_input = IStablecoinExchange::executeBlockCall {}
-                .abi_encode()
-                .into_iter()
-                .chain(block_number)
-                .collect::<Bytes>();
-
-            if *tx.input() != dex_input {
-                return Err(BlockValidationError::msg(
-                    "invalid stablecoin DEX system transaction",
-                ));
-            }
-
-            seen_stablecoin_dex = true;
-        } else if to.is_zero() {
+        if to.is_zero() {
             if seen_subblocks_signatures {
                 return Err(BlockValidationError::msg(
                     "duplicate subblocks metadata system transaction",
@@ -285,8 +174,6 @@ where
         }
 
         Ok(BlockSection::System {
-            seen_fee_manager,
-            seen_stablecoin_dex,
             seen_subblocks_signatures,
         })
     }
@@ -345,7 +232,8 @@ where
                 ));
             };
 
-            if !validator.verify(None, signature_hash.as_slice(), &signature) {
+            // TODO: Add namespace?
+            if !validator.verify(&[], signature_hash.as_slice(), &signature) {
                 return Err(BlockValidationError::msg("invalid subblock signature"));
             }
 
@@ -376,29 +264,15 @@ where
         tx: &TempoTxEnvelope,
         gas_used: u64,
     ) -> Result<BlockSection, BlockValidationError> {
-        let block = self.evm().block();
-        let block_timestamp = block.timestamp.to::<u64>();
-        let post_moderato = self
-            .inner
-            .spec
-            .is_moderato_active_at_timestamp(block_timestamp);
-
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
             match self.section {
-                BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry,
-                } if !post_moderato && !seen_tip20_rewards_registry => {
-                    Err(BlockValidationError::msg(
-                        "TIP20 rewards registry system transaction was not seen",
-                    ))
-                }
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
-                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
+                BlockSection::StartOfBlock | BlockSection::NonShared => {
                     Ok(BlockSection::SubBlock {
                         proposer: tx_proposer,
                     })
@@ -419,14 +293,7 @@ where
             }
         } else {
             match self.section {
-                BlockSection::StartOfBlock {
-                    seen_tip20_rewards_registry,
-                } if !post_moderato && !seen_tip20_rewards_registry => {
-                    Err(BlockValidationError::msg(
-                        "TIP20 rewards registry system transaction was not seen",
-                    ))
-                }
-                BlockSection::StartOfBlock { .. } | BlockSection::NonShared => {
+                BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
                         || (!tx.is_payment() && gas_used > self.non_payment_gas_left)
                     {
@@ -465,95 +332,7 @@ where
     type Evm = TempoEvm<&'a mut State<DB>, I>;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
-        self.inner.apply_pre_execution_changes()?;
-
-        // Initialize keychain precompile if allegretto is active
-        let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        if self
-            .inner
-            .spec
-            .is_allegretto_active_at_timestamp(block_timestamp)
-        {
-            let evm = self.evm_mut();
-            let db = evm.ctx_mut().db_mut();
-
-            // Load the keychain account from the cache
-            let acc = db
-                .load_cache_account(ACCOUNT_KEYCHAIN_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-
-            // Get existing account info or create default
-            let mut acc_info = acc.account_info().unwrap_or_default();
-
-            // Only initialize if the account has no code
-            if acc_info.is_empty_code_hash() {
-                // Set the keychain code
-                let code = Bytecode::new_legacy(Bytes::from_static(&[0xef]));
-                acc_info.code_hash = code.hash_slow();
-                acc_info.code = Some(code);
-
-                // Convert to revm account and mark as touched
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
-
-                // Commit the account to the database to ensure it persists
-                // even if no transactions are executed in this block
-                db.commit(HashMap::from_iter([(ACCOUNT_KEYCHAIN_ADDRESS, revm_acc)]));
-            }
-        }
-
-        // Modify CreateX bytecode and upgrade Multicall to Multicall3 if AllegroModerato is active
-        if self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp)
-        {
-            let evm = self.evm_mut();
-            let db = evm.ctx_mut().db_mut();
-
-            // Update CreateX bytecode if outdated
-            let acc = db
-                .load_cache_account(CREATEX_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-
-            let mut acc_info = acc.account_info().unwrap_or_default();
-
-            let correct_code_hash =
-                tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE_HASH;
-            if acc_info.code_hash != correct_code_hash {
-                acc_info.code_hash = correct_code_hash;
-                acc_info.code = Some(Bytecode::new_legacy(
-                    tempo_contracts::contracts::CREATEX_POST_ALLEGRO_MODERATO_BYTECODE,
-                ));
-
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
-
-                db.commit(HashMap::from_iter([(CREATEX_ADDRESS, revm_acc)]));
-            }
-
-            // Update Multicall to Multicall3 if outdated
-            let acc = db
-                .load_cache_account(MULTICALL_ADDRESS)
-                .map_err(BlockExecutionError::other)?;
-
-            let mut acc_info = acc.account_info().unwrap_or_default();
-
-            let correct_code_hash = tempo_contracts::contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
-            if acc_info.code_hash != correct_code_hash {
-                acc_info.code_hash = correct_code_hash;
-                acc_info.code = Some(Bytecode::new_legacy(
-                    tempo_contracts::Multicall3::DEPLOYED_BYTECODE.clone(),
-                ));
-
-                let mut revm_acc: Account = acc_info.into();
-                revm_acc.mark_touch();
-
-                db.commit(HashMap::from_iter([(MULTICALL_ADDRESS, revm_acc)]));
-            }
-        }
-
-        Ok(())
+        self.inner.apply_pre_execution_changes()
     }
 
     fn execute_transaction_without_commit(
@@ -562,9 +341,7 @@ where
     ) -> Result<ResultAndState<TempoHaltReason>, BlockExecutionError> {
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if self.evm().ctx().cfg.spec.is_allegretto()
-            && let Some(validator) = tx.tx().subblock_proposer()
-        {
+        if let Some(validator) = tx.tx().subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -604,7 +381,7 @@ where
         self.section = next_section;
 
         match self.section {
-            BlockSection::StartOfBlock { .. } => {
+            BlockSection::StartOfBlock => {
                 // no gas spending for start-of-block system transactions
             }
             BlockSection::NonShared => {
@@ -643,19 +420,8 @@ where
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         // Check that we ended in the System section with all end-of-block system txs seen
-        let block_timestamp = self.evm().block().timestamp.to::<u64>();
-        let is_allegro_moderato = self
-            .inner
-            .spec
-            .is_allegro_moderato_active_at_timestamp(block_timestamp);
-
-        // Post AllegroModerato, both fee manager and stablecoin DEX system txs are no longer required
-        let expected_seen_system_tx = !is_allegro_moderato;
-
         if self.section
             != (BlockSection::System {
-                seen_fee_manager: expected_seen_system_tx,
-                seen_stablecoin_dex: expected_seen_system_tx,
                 seen_subblocks_signatures: true,
             })
         {

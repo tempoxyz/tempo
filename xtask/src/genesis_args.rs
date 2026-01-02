@@ -5,41 +5,55 @@ use alloy::{
 };
 use alloy_primitives::Bytes;
 use commonware_codec::Encode as _;
-use commonware_cryptography::ed25519::PublicKey;
+use commonware_consensus::types::Epoch;
+use commonware_cryptography::{
+    bls12381::{
+        dkg::{self, Output},
+        primitives::{sharing::Mode, variant::MinSig},
+    },
+    ed25519::PublicKey,
+};
+use commonware_math::algebra::Random as _;
+use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
+use itertools::Itertools;
 use rayon::prelude::*;
 use reth_evm::{
-    EvmEnv, EvmFactory,
+    Evm as _, EvmEnv, EvmFactory,
     revm::{
+        DatabaseCommit,
+        context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
         inspector::JournalExt,
+        state::{AccountInfo, Bytecode},
     },
 };
 use std::{
     collections::BTreeMap,
+    iter::repeat_with,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_BASE_FEE};
-use tempo_commonware_node_config::{Peers, PublicPolynomial, SigningKey, SigningShare};
+use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, DEFAULT_7702_DELEGATE_ADDRESS,
-    MULTICALL_ADDRESS, PERMIT2_ADDRESS, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_POST_ALLEGRO_MODERATO_BYTECODE},
+    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
+    PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
+    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
     precompiles::{ITIP20Factory, IValidatorConfig},
 };
-use tempo_dkg_onchain_artifacts::PublicOutcome;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
+    account_keychain::AccountKeychain,
     nonce::NonceManager,
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -79,22 +93,6 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
 
-    /// Adagio hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    adagio_time: u64,
-
-    /// Moderato hardfork activation timestamp (defaults to 0 = active at genesis)
-    #[arg(long, default_value_t = 0)]
-    pub moderato_time: u64,
-
-    /// Allegretto hardfork activation timestamp
-    #[arg(long, default_value_t = 0)]
-    pub allegretto_time: u64,
-
-    /// Allegro-Moderato hardfork activation timestamp
-    #[arg(long)]
-    pub allegro_moderato_time: Option<u64>,
-
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
@@ -104,14 +102,9 @@ pub(crate) struct GenesisArgs {
         long,
         value_name = "<ip>:<port>",
         value_delimiter = ',',
-        required_if_eq("allegretto_time", "0")
+        required_unless_present_all(["no_dkg_in_genesis"]),
     )]
     validators: Vec<SocketAddr>,
-
-    /// Will not write the validators into the validator config contract of
-    /// the genesis block.
-    #[arg(long)]
-    no_validators_in_genesis: bool,
 
     /// Will not write the initial DKG outcome into the extra_data field of
     /// the genesis header.
@@ -126,16 +119,18 @@ pub(crate) struct GenesisArgs {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConsensusConfig {
-    pub(crate) public_polynomial: PublicPolynomial,
-    pub(crate) peers: Peers,
+    pub(crate) output: Output<MinSig, PublicKey>,
     pub(crate) validators: Vec<Validator>,
 }
 impl ConsensusConfig {
-    pub(crate) fn to_genesis_dkg_outcome(&self) -> PublicOutcome {
-        PublicOutcome {
-            epoch: 0,
-            participants: self.peers.public_keys().clone(),
-            public: self.public_polynomial.clone().into_inner(),
+    pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
+        OnchainDkgOutcome {
+            epoch: Epoch::zero(),
+            output: self.output.clone(),
+            next_players: ordered::Set::try_from_iter(
+                self.validators.iter().map(Validator::public_key),
+            )
+            .unwrap(),
         }
     }
 }
@@ -186,7 +181,10 @@ impl GenesisArgs {
 
         // Deploy TestUSD fee token
         let admin = addresses[0];
-        let mut evm = setup_tempo_evm();
+        let mut evm = setup_tempo_evm(self.chain_id);
+
+        deploy_arachnid_create2_factory(&mut evm);
+        deploy_permit2(&mut evm)?;
 
         println!("Initializing registry");
         initialize_registry(&mut evm)?;
@@ -195,7 +193,6 @@ impl GenesisArgs {
         println!("Initializing TIP20Factory");
         initialize_tip20_factory(&mut evm)?;
 
-        // Post-Allegretto: PathUSD is created through the factory as token_id=0 with address(0) as quote token
         println!("Creating PathUSD through factory");
         create_path_usd_token(admin, &addresses, &mut evm)?;
 
@@ -233,14 +230,12 @@ impl GenesisArgs {
             &mut evm,
         )?;
 
-        println!("Initializing TIP20RewardsRegistry");
-        initialize_tip20_rewards_registry(&mut evm)?;
-
         println!(
             "generating consensus config for validators: {:?}",
             self.validators
         );
-        let consensus_config = generate_consensus_config(&self.validators, self.seed);
+        let consensus_config =
+            generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
         println!("Initializing validator config");
         initialize_validator_config(
@@ -249,7 +244,7 @@ impl GenesisArgs {
             &consensus_config,
             // Skip admin
             &addresses[1..],
-            self.no_validators_in_genesis,
+            self.no_dkg_in_genesis,
         )?;
 
         println!("Initializing fee manager");
@@ -267,6 +262,9 @@ impl GenesisArgs {
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
 
+        println!("Initializing account keychain");
+        initialize_account_keychain(&mut evm)?;
+
         println!("Minting pairwise FeeAMM liquidity");
         mint_pairwise_liquidity(
             alpha_token_address,
@@ -275,6 +273,13 @@ impl GenesisArgs {
             admin,
             &mut evm,
         );
+
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(ARACHNID_CREATE2_FACTORY_ADDRESS)?;
+        evm.ctx_mut()
+            .journaled_state
+            .load_account(PERMIT2_ADDRESS)?;
 
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
@@ -305,18 +310,9 @@ impl GenesisArgs {
             .collect();
 
         genesis_alloc.insert(
-            MULTICALL_ADDRESS,
+            MULTICALL3_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::Multicall::DEPLOYED_BYTECODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            DEFAULT_7702_DELEGATE_ADDRESS,
-            GenesisAccount {
-                code: Some(tempo_contracts::IthacaAccount::DEPLOYED_BYTECODE.clone()),
+                code: Some(Bytes::from_static(&Multicall3::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -325,7 +321,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             CREATEX_ADDRESS,
             GenesisAccount {
-                code: Some(CREATEX_POST_ALLEGRO_MODERATO_BYTECODE),
+                code: Some(Bytes::from_static(&CreateX::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -334,25 +330,7 @@ impl GenesisArgs {
         genesis_alloc.insert(
             SAFE_DEPLOYER_ADDRESS,
             GenesisAccount {
-                code: Some(tempo_contracts::SafeDeployer::DEPLOYED_BYTECODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            PERMIT2_ADDRESS,
-            GenesisAccount {
-                code: Some(tempo_contracts::Permit2::DEPLOYED_BYTECODE.clone()),
-                nonce: Some(1),
-                ..Default::default()
-            },
-        );
-
-        genesis_alloc.insert(
-            ARACHNID_CREATE2_FACTORY_ADDRESS,
-            GenesisAccount {
-                code: Some(ARACHNID_CREATE2_FACTORY_BYTECODE),
+                code: Some(Bytes::from_static(&SafeDeployer::DEPLOYED_BYTECODE)),
                 nonce: Some(1),
                 ..Default::default()
             },
@@ -381,40 +359,12 @@ impl GenesisArgs {
             ..Default::default()
         };
 
-        // Add Tempo hardfork times to extra_fields
-        chain_config.extra_fields.insert(
-            "adagioTime".to_string(),
-            serde_json::json!(self.adagio_time),
-        );
-        chain_config.extra_fields.insert(
-            "moderatoTime".to_string(),
-            serde_json::json!(self.moderato_time),
-        );
-        chain_config.extra_fields.insert(
-            "allegrettoTime".to_string(),
-            serde_json::json!(self.allegretto_time),
-        );
-        if let Some(allegro_moderato_time) = self.allegro_moderato_time {
-            chain_config.extra_fields.insert(
-                "allegroModeratoTime".to_string(),
-                serde_json::json!(allegro_moderato_time),
-            );
-        }
-
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
-            chain_config
-                .extra_fields
-                .insert_value("validators".to_string(), consensus_config.peers.clone())?;
-            chain_config.extra_fields.insert_value(
-                "publicPolynomial".to_string(),
-                consensus_config.public_polynomial.clone(),
-            )?;
-
             if self.no_dkg_in_genesis {
                 println!("no-initial-dkg-in-genesis passed; not writing to header extra_data");
             } else {
@@ -441,15 +391,54 @@ impl GenesisArgs {
     }
 }
 
-fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
+fn setup_tempo_evm(chain_id: u64) -> TempoEvm<CacheDB<EmptyDB>> {
     let db = CacheDB::default();
     // revm sets timestamp to 1 by default, override it to 0 for genesis initializations
     let mut env = EvmEnv::default().with_timestamp(U256::ZERO);
-    // Configure EVM for Allegretto hardfork so factory uses correct token_id counter (starts at 0)
-    // and accepts address(0) as quote token for the first token
-    env.cfg_env = env.cfg_env.with_spec(TempoHardfork::Allegretto);
+    env.cfg_env.chain_id = chain_id;
+
     let factory = TempoEvmFactory::default();
     factory.create_evm(db, env)
+}
+
+/// Deploys the Arachnid CREATE2 factory by directly inserting it into the EVM state.
+fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
+    println!("Deploying Arachnid CREATE2 factory at {ARACHNID_CREATE2_FACTORY_ADDRESS}");
+
+    evm.db_mut().insert_account_info(
+        ARACHNID_CREATE2_FACTORY_ADDRESS,
+        AccountInfo {
+            code: Some(Bytecode::new_raw(ARACHNID_CREATE2_FACTORY_BYTECODE)),
+            nonce: 0,
+            ..Default::default()
+        },
+    );
+}
+
+/// Deploys Permit2 contract via the Arachnid CREATE2 factory.
+fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    // Build calldata for Arachnid CREATE2 factory: salt (32 bytes) || creation bytecode
+    let bytecode = &tempo_contracts::Permit2::BYTECODE;
+    let calldata: Bytes = PERMIT2_SALT
+        .as_slice()
+        .iter()
+        .chain(bytecode.iter())
+        .copied()
+        .collect();
+
+    println!("Deploying Permit2 via CREATE2 to {PERMIT2_ADDRESS}");
+
+    let result =
+        evm.transact_system_call(Address::ZERO, ARACHNID_CREATE2_FACTORY_ADDRESS, calldata)?;
+
+    if !result.result.is_success() {
+        return Err(eyre!("Permit2 deployment failed: {:?}", result));
+    }
+
+    evm.db_mut().commit(result.state);
+
+    println!("Permit2 deployed successfully at {PERMIT2_ADDRESS}");
+    Ok(())
 }
 
 /// Initializes the TIP20Factory contract (should be called once before creating any tokens)
@@ -462,7 +451,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 }
 
 /// Creates PathUSD as the first TIP20 token (token_id=0) through the factory.
-/// Post-Allegretto, the first token must have address(0) as quote token.
+/// The first token must have address(0) as quote token.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -470,7 +459,7 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        // Create PathUSD through factory with address(0) as quote token (required for first token post-Allegretto)
+        // Create PathUSD through factory with address(0) as quote token (required for first token)
         let token_address = TIP20Factory::new()
             .create_token(
                 admin,
@@ -583,15 +572,6 @@ fn create_and_mint_token(
     })
 }
 
-fn initialize_tip20_rewards_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
-    let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20RewardsRegistry::new().initialize()
-    })?;
-
-    Ok(())
-}
-
 fn initialize_fee_manager(
     default_fee_address: Address,
     initial_accounts: Vec<Address>,
@@ -660,6 +640,16 @@ fn initialize_nonce_manager(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
+/// Initializes the [`AccountKeychain`] contract.
+fn initialize_account_keychain(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        AccountKeychain::new().initialize()
+    })?;
+
+    Ok(())
+}
+
 /// Initializes the initial validator config smart contract.
 ///
 /// NOTE: Does not populate it at all because consensus does not read the
@@ -669,7 +659,7 @@ fn initialize_validator_config(
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
     consensus_config: &Option<ConsensusConfig>,
     addresses: &[Address],
-    no_validators_in_genesis: bool,
+    no_dkg_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
@@ -678,8 +668,8 @@ fn initialize_validator_config(
             .initialize(admin)
             .wrap_err("failed to initialize validator config contract")?;
 
-        if no_validators_in_genesis {
-            println!("no-validators-genesis passed; not writing validators to genesis block");
+        if no_dkg_in_genesis {
+            println!("no-dkg-in-genesis passed; not writing validators to genesis block");
             return Ok(());
         }
 
@@ -732,48 +722,54 @@ fn initialize_validator_config(
 fn generate_consensus_config(
     validators: &[SocketAddr],
     seed: Option<u64>,
+    no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
-    use commonware_cryptography::{PrivateKeyExt as _, Signer as _, ed25519::PrivateKey};
+    use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
     use rand::SeedableRng as _;
 
-    if validators.is_empty() {
-        println!("no validator socket addresses provided; not generating consensus config");
-        return None;
+    match (validators.is_empty(), no_dkg_in_genesis) {
+        (_, true) => {
+            println!(
+                "no-dkg-in-genesis passed; not generating any consensus config because I can't write it to the genesis block"
+            );
+            return None;
+        }
+        (true, false) => {
+            panic!("no validators provided and no-dkg-in-genesis not set");
+        }
+        _ => {}
     }
 
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-    let mut signers = (0..validators.len())
-        .map(|_| PrivateKey::from_rng(&mut rng))
+
+    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
+        .take(validators.len())
         .collect::<Vec<_>>();
+    signer_keys.sort_by_key(|key| key.public_key());
 
-    // generate consensus key
-    let threshold = commonware_utils::quorum(validators.len() as u32);
-    let (polynomial, shares) = commonware_cryptography::bls12381::dkg::ops::generate_shares::<
-        _,
-        commonware_cryptography::bls12381::primitives::variant::MinSig,
-    >(&mut rng, None, validators.len() as u32, threshold);
+    let (output, shares) = dkg::deal(
+        &mut rng,
+        Mode::NonZeroCounter,
+        ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
+    )
+    .unwrap();
 
-    signers.sort_by_key(|signer| signer.public_key());
-    let peers = validators
+    let validators = validators
         .iter()
-        .zip(signers.iter())
-        .map(|(addr, private_key)| (private_key.public_key(), *addr))
-        .collect::<commonware_utils::set::OrderedAssociated<_, _>>();
+        .copied()
+        .zip_eq(signer_keys)
+        .zip_eq(shares)
+        .map(|((addr, signing_key), (verifying_key, signing_share))| {
+            assert_eq!(signing_key.public_key(), verifying_key);
+            Validator {
+                addr,
+                signing_key: SigningKey::from(signing_key),
+                signing_share: SigningShare::from(signing_share),
+            }
+        })
+        .collect();
 
-    let mut validators = vec![];
-    for (addr, (signer, share)) in peers.values().iter().zip(signers.into_iter().zip(shares)) {
-        validators.push(Validator {
-            addr: *addr,
-            signing_key: SigningKey::from(signer),
-            signing_share: SigningShare::from(share),
-        });
-    }
-
-    Some(ConsensusConfig {
-        peers: peers.into(),
-        public_polynomial: polynomial.into(),
-        validators,
-    })
+    Some(ConsensusConfig { output, validators })
 }
 
 fn mint_pairwise_liquidity(
@@ -789,7 +785,7 @@ fn mint_pairwise_liquidity(
 
         for b_token_address in b_tokens {
             fee_manager
-                .mint(admin, a_token, b_token_address, amount, amount, admin)
+                .mint(admin, a_token, b_token_address, amount, admin)
                 .expect("Could not mint A -> B Liquidity pool");
         }
     });

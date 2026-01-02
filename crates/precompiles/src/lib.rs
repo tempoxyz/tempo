@@ -9,13 +9,10 @@ pub mod storage;
 
 pub mod account_keychain;
 pub mod nonce;
-pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
-pub mod tip20_rewards_registry;
 pub mod tip403_registry;
-pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
@@ -25,14 +22,11 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
-    tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -48,13 +42,12 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
@@ -80,30 +73,20 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     let spec = cfg.spec;
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20_prefix(*address) {
-            let token_id = address_to_token_id_unchecked(*address);
-            if token_id == 0 {
-                Some(PathUSDPrecompile::create(chain_id, spec))
-            } else {
-                Some(TIP20Precompile::create(*address, chain_id, spec))
-            }
+            Some(TIP20Precompile::create(*address, chain_id, spec))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id, spec))
-        } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
-            Some(TIP20RewardsRegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id, spec))
-        } else if *address == TIP_ACCOUNT_REGISTRAR {
-            Some(TipAccountRegistrarPrecompile::create(chain_id, spec))
         } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
             Some(StablecoinExchangePrecompile::create(chain_id, spec))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
-        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS && spec.is_allegretto() {
-            // AccountKeychain is only available after Allegretto hardfork
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
@@ -144,24 +127,6 @@ impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", chain_id, spec, |input| {
             TipFeeManager::new()
-        })
-    }
-}
-
-pub struct TipAccountRegistrarPrecompile;
-impl TipAccountRegistrarPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", chain_id, spec, |input| {
-            TipAccountRegistrar::new()
-        })
-    }
-}
-
-pub struct TIP20RewardsRegistryPrecompile;
-impl TIP20RewardsRegistryPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20RewardsRegistry", chain_id, spec, |input| {
-            TIP20RewardsRegistry::new()
         })
     }
 }
@@ -218,13 +183,6 @@ impl AccountKeychainPrecompile {
         tempo_precompile!("AccountKeychain", chain_id, spec, |input| {
             AccountKeychain::new()
         })
-    }
-}
-
-pub struct PathUSDPrecompile;
-impl PathUSDPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("PathUSD", chain_id, spec, |input| { PathUSD::new() })
     }
 }
 
@@ -295,24 +253,18 @@ fn fill_precompile_output(
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
-    if !output.reverted && storage.spec().is_allegretto() {
+    if !output.reverted {
         output.gas_refunded = storage.gas_refunded();
     }
     output
 }
 
-/// Helper function to return an unknown function selector error
-///
-/// Before Moderato: Returns a generic PrecompileError::Other
-/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+/// Helper function to return an unknown function selector error.
+/// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
 #[inline]
-pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
-    if spec.is_moderato() {
-        error::TempoPrecompileError::UnknownFunctionSelector(selector)
-            .into_precompile_result(gas, |_: ()| Bytes::new())
-    } else {
-        Err(PrecompileError::Other("Unknown function selector".into()))
-    }
+pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
+    error::TempoPrecompileError::UnknownFunctionSelector(selector)
+        .into_precompile_result(gas, |_: ()| Bytes::new())
 }
 
 #[cfg(test)]

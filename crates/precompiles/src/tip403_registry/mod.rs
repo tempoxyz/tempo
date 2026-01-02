@@ -64,10 +64,28 @@ impl TIP403Registry {
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
+    pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
+        // Special policies 0 and 1 always exist
+        if call.policyId < 2 {
+            return Ok(true);
+        }
+
+        // Check if policy ID is within the range of created policies
+        let counter = self.policy_id_counter()?;
+        Ok(call.policyId < counter)
+    }
+
     pub fn policy_data(
         &self,
         call: ITIP403Registry::policyDataCall,
     ) -> Result<ITIP403Registry::policyDataReturn> {
+        // Check if policy exists before returning data
+        if !self.policy_exists(ITIP403Registry::policyExistsCall {
+            policyId: call.policyId,
+        })? {
+            return Err(TIP403RegistryError::policy_not_found().into());
+        }
+
         let data = self.get_policy_data(call.policyId)?;
         Ok(ITIP403Registry::policyDataReturn {
             policyType: data
@@ -329,6 +347,7 @@ mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
     use alloy::primitives::Address;
+    use rand::Rng;
 
     #[test]
     fn test_create_policy() -> eyre::Result<()> {
@@ -463,6 +482,77 @@ mod tests {
                 policyId: policy_id,
                 user,
             })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_data_reverts_for_non_existent_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            // Test that querying a non-existent policy ID reverts
+            let result = registry.policy_data(ITIP403Registry::policyDataCall { policyId: 100 });
+            assert!(result.is_err());
+
+            // Verify the error is PolicyNotFound
+            let err = result.unwrap_err();
+            assert!(matches!(
+                err,
+                crate::error::TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::PolicyNotFound(_)
+                )
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_policy_exists() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            // Special policies 0 and 1 always exist
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 0 })?);
+            assert!(registry.policy_exists(ITIP403Registry::policyExistsCall { policyId: 1 })?);
+
+            // Test 100 random policy IDs > 1 should not exist initially
+            let mut rng = rand::thread_rng();
+            for _ in 0..100 {
+                let random_policy_id = rng.gen_range(2..u64::MAX);
+                assert!(!registry.policy_exists(ITIP403Registry::policyExistsCall {
+                    policyId: random_policy_id
+                })?);
+            }
+
+            // Create 50 policies
+            let mut created_policy_ids = Vec::new();
+            for i in 0..50 {
+                let policy_id = registry.create_policy(
+                    admin,
+                    ITIP403Registry::createPolicyCall {
+                        admin,
+                        policyType: if i % 2 == 0 {
+                            ITIP403Registry::PolicyType::WHITELIST
+                        } else {
+                            ITIP403Registry::PolicyType::BLACKLIST
+                        },
+                    },
+                )?;
+                created_policy_ids.push(policy_id);
+            }
+
+            // All created policies should exist
+            for policy_id in &created_policy_ids {
+                assert!(registry.policy_exists(ITIP403Registry::policyExistsCall {
+                    policyId: *policy_id
+                })?);
+            }
 
             Ok(())
         })

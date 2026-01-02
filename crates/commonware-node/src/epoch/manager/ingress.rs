@@ -1,9 +1,9 @@
 use commonware_consensus::{Reporter, types::Epoch};
 use commonware_cryptography::{
-    bls12381::primitives::{group::Share, poly::Public, variant::MinSig},
+    bls12381::primitives::{group::Share, sharing::Sharing, variant::MinSig},
     ed25519::PublicKey,
 };
-use commonware_utils::set::Ordered;
+use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use tracing::{Span, warn};
@@ -36,12 +36,12 @@ impl Message {
 
 #[derive(Debug)]
 pub(crate) enum Activity {
-    Enter(Enter),
+    Enter(EpochTransition),
     Exit(Exit),
 }
 
-impl From<Enter> for Activity {
-    fn from(value: Enter) -> Self {
+impl From<EpochTransition> for Activity {
+    fn from(value: EpochTransition) -> Self {
         Self::Enter(value)
     }
 }
@@ -53,11 +53,11 @@ impl From<Exit> for Activity {
 }
 
 #[derive(Debug)]
-pub(crate) struct Enter {
+pub(crate) struct EpochTransition {
     pub(crate) epoch: Epoch,
-    pub(crate) public: Public<MinSig>,
+    pub(crate) public: Sharing<MinSig>,
     pub(crate) share: Option<Share>,
-    pub(crate) participants: Ordered<PublicKey>,
+    pub(crate) participants: ordered::Set<PublicKey>,
 }
 
 #[derive(Debug)]

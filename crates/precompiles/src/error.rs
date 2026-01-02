@@ -11,11 +11,9 @@ use alloy::{
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
-    TIP20RewardsRegistryError, TIP403RegistryError, TIPAccountRegistrarError, TIPFeeAMMError,
-    UnknownFunctionSelector, ValidatorConfigError,
+    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
 };
 
-// TODO: add error type for overflow/underflow
 /// Top-level error type for all Tempo precompile operations
 #[derive(
     Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From, derive_more::TryInto,
@@ -28,10 +26,6 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
-
-    /// Error from TIP20RewardsRegistry
-    #[error("TIP20 rewards registry error: {0:?}")]
-    TIP20RewardsRegistry(TIP20RewardsRegistryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -48,10 +42,6 @@ pub enum TempoPrecompileError {
     /// Error from TIP fee AMM
     #[error("TIP fee AMM error: {0:?}")]
     TIPFeeAMMError(TIPFeeAMMError),
-
-    /// Error from TIP account registrar
-    #[error("TIP account registrar error: {0:?}")]
-    TIPAccountRegistrarError(TIPAccountRegistrarError),
 
     /// Error from Tempo Transaction nonce manager
     #[error("Tempo Transaction nonce error: {0:?}")]
@@ -126,15 +116,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
 
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinExchange);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20RewardsRegistry);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);
-    add_errors_to_registry(
-        &mut registry,
-        TempoPrecompileError::TIPAccountRegistrarError,
-    );
     add_errors_to_registry(&mut registry, TempoPrecompileError::NonceError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
@@ -180,10 +165,8 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
                 let bytes = match err {
                     TPErr::StablecoinExchange(e) => e.abi_encode().into(),
                     TPErr::TIP20(e) => e.abi_encode().into(),
-                    TPErr::TIP20RewardsRegistry(e) => e.abi_encode().into(),
                     TPErr::RolesAuthError(e) => e.abi_encode().into(),
                     TPErr::TIP403RegistryError(e) => e.abi_encode().into(),
-                    TPErr::TIPAccountRegistrarError(e) => e.abi_encode().into(),
                     TPErr::FeeManagerError(e) => e.abi_encode().into(),
                     TPErr::TIPFeeAMMError(e) => e.abi_encode().into(),
                     TPErr::NonceError(e) => e.abi_encode().into(),
@@ -223,10 +206,8 @@ impl<T> IntoPrecompileResult<T> for TempoPrecompileError {
         let bytes = match self {
             Self::StablecoinExchange(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
-            Self::TIP20RewardsRegistry(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
-            Self::TIPAccountRegistrarError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
             Self::NonceError(e) => e.abi_encode().into(),

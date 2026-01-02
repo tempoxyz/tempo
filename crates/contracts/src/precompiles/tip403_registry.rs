@@ -14,6 +14,7 @@ crate::sol! {
 
         // View Functions
         function policyIdCounter() external view returns (uint64);
+        function policyExists(uint64 policyId) external view returns (bool);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
 
@@ -33,6 +34,7 @@ crate::sol! {
         // Errors
         error Unauthorized();
         error IncompatiblePolicyType();
+        error PolicyNotFound();
     }
 }
 
@@ -45,5 +47,10 @@ impl TIP403RegistryError {
     /// Creates an error for incompatible policy types
     pub const fn incompatible_policy_type() -> Self {
         Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
+    }
+
+    /// Creates an error for non-existent policy
+    pub const fn policy_not_found() -> Self {
+        Self::PolicyNotFound(ITIP403Registry::PolicyNotFound {})
     }
 }
