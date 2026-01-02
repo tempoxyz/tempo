@@ -37,9 +37,7 @@ impl Layout {
     /// Returns true if this field can be packed with adjacent fields.
     pub const fn is_packable(&self) -> bool {
         match self {
-            // TODO(rusowsky): use `Self::Bytes(n) => *n < 32` to reduce gas usage.
-            // Note that this requires a hardfork and must be properly coordinated.
-            Self::Bytes(_) => true,
+            Self::Bytes(n) => *n < 32,
             Self::Slots(_) => false,
         }
     }
@@ -233,12 +231,17 @@ pub(in crate::storage::types) mod sealed {
 /// `Packable` is used by the storage packing system to efficiently pack multiple
 /// small values into a single 32-byte storage slot.
 ///
-/// # Safety
+/// # Warning
 ///
-/// Implementations must ensure:
-/// - `IS_PACKABLE` is true for the implementing type (enforced at compile time)
-/// - Round-trip conversions preserve data: `from_word(to_word(x)) == x`
-pub trait Packable: sealed::OnlyPrimitives + StorableType {
+/// `IS_PACKABLE` must be true for the implementing type (enforced at compile time)
+pub trait Packable: FromWord + StorableType {}
+
+/// Trait for primitive types that fit into a single EVM storage slot.
+///
+/// # Warning
+///
+/// Round-trip conversions must preserve data: `from_word(to_word(x)) == x`
+pub trait FromWord: sealed::OnlyPrimitives {
     /// Encode this type to a single U256 word.
     fn to_word(&self) -> U256;
 

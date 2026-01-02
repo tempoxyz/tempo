@@ -83,8 +83,7 @@ fn test_default_values() {
         assert_eq!(defaults.flag.slot(), U256::ZERO);
         assert_eq!(defaults.flag.offset(), Some(8));
         assert_eq!(defaults.amount.slot(), U256::ONE);
-        // NOTE(rusowsky): we use the inefficient version for backwards compatibility.
-        assert_eq!(defaults.amount.offset(), Some(0));
+        assert_eq!(defaults.amount.offset(), None);
 
         Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
     })

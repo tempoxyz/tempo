@@ -16,7 +16,7 @@ use alloy::primitives::U256;
 
 use crate::{
     error::Result,
-    storage::{Layout, Packable, StorageOps},
+    storage::{FromWord, Layout, StorableType, StorageOps},
 };
 
 /// A helper struct to support packing elements into a single slot. Represents an
@@ -77,7 +77,7 @@ pub fn create_element_mask(byte_count: usize) -> U256 {
 
 /// Extract a packed value from a storage slot at a given byte offset.
 #[inline]
-pub fn extract_packed_value<T: Packable>(
+pub fn extract_packed_value<T: FromWord + StorableType>(
     slot_value: U256,
     offset: usize,
     bytes: usize,
@@ -107,7 +107,7 @@ pub fn extract_packed_value<T: Packable>(
 
 /// Insert a packed value into a storage slot at a given byte offset.
 #[inline]
-pub fn insert_packed_value<T: Packable>(
+pub fn insert_packed_value<T: FromWord + StorableType>(
     current: U256,
     value: &T,
     offset: usize,
