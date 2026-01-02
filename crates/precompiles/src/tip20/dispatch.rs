@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mutable_call_uninitialized_token_reverts() -> eyre::Result<()> {
+    fn test_call_uninitialized_token_reverts() -> eyre::Result<()> {
         let (mut storage, _) = setup_storage();
         let caller = Address::random();
 
@@ -734,7 +734,7 @@ mod tests {
             let result = token.call(&calldata, caller)?;
 
             assert!(result.reverted);
-            let expected: Bytes = TIP20Error::invalid_token().selector().into();
+            let expected: Bytes = TIP20Error::uninitialized().selector().into();
             assert_eq!(result.bytes, expected);
 
             TIP20Setup::create("Test", "TST", caller).apply()?;

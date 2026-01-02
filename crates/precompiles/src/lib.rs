@@ -286,8 +286,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::TIP20Token;
-    use alloy::primitives::{Address, Bytes, U256};
+    use crate::tip20::{TIP20Token, token_id_to_address};
+    use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -295,6 +295,7 @@ mod tests {
     use revm::{
         context::ContextTr,
         database::{CacheDB, EmptyDB},
+        state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::ITIP20;
 
@@ -336,14 +337,22 @@ mod tests {
 
     #[test]
     fn test_precompile_static_call() {
+        const ID: u64 = 1;
         let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile =
-            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
-
-        let target_address = Address::random();
+        let (precompile, token_address) = (
+            tempo_precompile!("TIP20Token", chain_id, spec, |i| { TIP20Token::new(ID) }),
+            token_id_to_address(ID),
+        );
 
         let call_static = |calldata: Bytes| {
-            let db = CacheDB::new(EmptyDB::new());
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                token_address,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
             let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
             let block = evm.block.clone();
             let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
@@ -355,8 +364,8 @@ mod tests {
                 gas: 100_000,
                 is_static: true,
                 value: U256::ZERO,
-                target_address,
-                bytecode_address: target_address,
+                target_address: token_address,
+                bytecode_address: token_address,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)
