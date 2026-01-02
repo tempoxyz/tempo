@@ -1089,10 +1089,8 @@ contract TIP20Test is BaseTest {
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
         // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
-        TIP20 token2 =
-            TIP20(factory.createToken("Token 2", "TK2", "USD", token, admin, bytes32("token2")));
         TIP20 token3 =
-            TIP20(factory.createToken("Token 3", "TK3", "USD", token2, admin, bytes32("token3")));
+            TIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
 
         // Try to set linkedToken's quote token to token3 (would create loop)
         vm.startPrank(admin);
