@@ -42,10 +42,43 @@ fn joins_from_snapshot() {
         // TOOD: spin up a new validator and actually copy over the execution
         // layer state.
         stopped.consensus_config.partition_prefix.push_str("_moved");
-
         stopped.start().await;
 
-        wait_for_epoch(&context, 4, 4).await;
+        loop {
+            let metrics = context.encode();
+            let mut validators_at_epoch = 0;
+
+            for line in metrics.lines() {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
+                    continue;
+                }
+
+                let mut parts = line.split_whitespace();
+                let metric = parts.next().unwrap();
+                let value = parts.next().unwrap();
+
+                // Check if this is a height metric
+                if metric.ends_with("_epoch_manager_latest_epoch") {
+                    let epoch = value.parse::<u64>().unwrap();
+                    if epoch >= 4 {
+                        validators_at_epoch += 1;
+                    }
+                }
+
+                if metrics.ends_with("_epoch_manager_latest_epoch")
+                && metric.contains(&stopped.uid) {
+                    let epoch = value.parse::<u64>().unwrap();
+                    assert!(
+                        epoch >= 2,
+                        "when starting from snapshot, older epochs must never \
+                        had consensus engines running");
+                }
+            }
+            if validators_at_epoch == 4 {
+                break;
+            }
+            context.sleep(Duration::from_secs(1)).await;
+        }
     });
 }
 
