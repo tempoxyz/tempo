@@ -299,10 +299,13 @@ where
             impl Receiver<PublicKey = PublicKey>,
         >,
     ) -> eyre::Result<()> {
-        ensure!(
-            !self.active_epochs.contains_key(&epoch),
-            "an engine for the entered epoch is already running; ignoring",
-        );
+        if let Some(latest) = self.active_epochs.last_key_value().map(|(k, _)| *k) {
+            ensure!(
+                epoch > latest,
+                "requested to start an epoch `{epoch}` older than the latest \
+                running, `{latest}`; refusing",
+            );
+        }
 
         let n_participants = participants.len();
         // Register the new signing scheme with the scheme provider.

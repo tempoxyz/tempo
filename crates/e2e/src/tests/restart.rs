@@ -338,7 +338,7 @@ fn validator_catches_up_with_gap_of_one_epoch() {
     let _state = run_restart_test(setup);
 }
 
-#[test_traced("WARN")]
+#[test_traced]
 fn validator_catches_up_with_gap_of_three_epochs() {
     let _ = tempo_eyre::install();
 

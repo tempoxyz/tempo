@@ -2,7 +2,6 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -28,26 +27,15 @@ use tracing::{Level, info, instrument, warn};
     skip_all,
     fields(
         attempt = _attempt,
-        epoch = epoch.map(tracing::field::display),
+        block.number = block_number,
     ),
     err
 )]
-pub(super) async fn read_from_contract_on_epoch_boundary(
+pub(super) async fn read_from_contract_at_block(
     _attempt: u32,
     node: &TempoFullNode,
-    epoch: Option<Epoch>,
-    epoch_strategy: &FixedEpocher,
+    block_number: u64,
 ) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let last_height = epoch.map_or(0, |epoch| {
-        epoch_strategy
-            .last(epoch)
-            .expect("epoch strategy covers all epochs")
-    });
-    info!(
-        last_height,
-        "will read contract state from last height of epoch"
-    );
-
     // Try mapping the block height to a hash tracked by reth.
     //
     // First check the canonical chain, then fallback to pending block state.
@@ -55,19 +43,19 @@ pub(super) async fn read_from_contract_on_epoch_boundary(
     // Necessary because the DKG and application actors process finalized block concurrently.
     let block_hash = if let Some(hash) = node
         .provider
-        .block_hash(last_height)
-        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+        .block_hash(block_number)
+        .wrap_err_with(|| format!("failed reading block hash at height `{block_number}`"))?
     {
         hash
     } else if let Some(pending) = node
         .provider
         .pending_block_num_hash()
         .wrap_err("failed reading pending block state")?
-        && pending.number == last_height
+        && pending.number == block_number
     {
         pending.hash
     } else {
-        return Err(eyre::eyre!("block not found at height `{last_height}`"));
+        return Err(eyre::eyre!("block not found at height `{block_number}`"));
     };
 
     let block = node

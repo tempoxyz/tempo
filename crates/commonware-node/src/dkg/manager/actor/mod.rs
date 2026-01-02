@@ -32,7 +32,7 @@ use futures::{
 };
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
-use reth_ethereum::chainspec::EthChainSpec as _;
+use reth_provider::{BlockNumReader, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, debug, error, info, info_span, instrument, warn, warn_span};
@@ -167,14 +167,14 @@ where
             .initial_state({
                 let mut context = self.context.clone();
                 let execution_node = self.config.execution_node.clone();
-                let epoch_strategy = self.config.epoch_strategy.clone();
                 let initial_share = self.config.initial_share.clone();
+                let epoch_strategy = self.config.epoch_strategy.clone();
                 async move {
-                    read_initial_state_from_genesis(
+                    read_initial_state(
                         &mut context,
                         &execution_node,
-                        &epoch_strategy,
                         initial_share.clone(),
+                        &epoch_strategy,
                     )
                     .await
                 }
@@ -1190,26 +1190,86 @@ where
     }
 }
 
+enum NewState {
+    FromSkip(state::State),
+    Normal(state::State),
+}
+
 #[instrument(skip_all, err)]
-async fn read_initial_state_from_genesis<TContext>(
+async fn read_initial_state<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
-    epoch_strategy: &FixedEpocher,
     share: Option<Share>,
+    epoch_strategy: &FixedEpocher,
 ) -> eyre::Result<State>
 where
     TContext: CryptoRngCore,
 {
-    let spec = node.chain_spec();
-    let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
-        &mut spec.genesis().extra_data.as_ref(),
-    )
-    .wrap_err("the genesis header did not contain the initial DKG outcome")?;
+    let newest_height = node
+        .provider
+        .best_block_number()
+        .wrap_err("failed reading newest block number from database")?;
 
-    let all_validators =
-        validators::read_from_contract_on_epoch_boundary(0, node, None, epoch_strategy)
-            .await
-            .wrap_err("the genesis block did not contain a validator config")?;
+    let epoch_info = epoch_strategy
+        .containing(newest_height)
+        .expect("epoch strategy is for all heights");
+
+    let last_boundary = if epoch_info.last() == newest_height {
+        newest_height
+    } else {
+        epoch_info.epoch().previous().map_or(0, |previous| {
+            epoch_strategy
+                .last(previous)
+                .expect("epoch strategy is for all epochs")
+        })
+    };
+    info!(
+        newest_height,
+        last_boundary,
+        "excecution layer reported newest available block, reading on-chain \
+        DKG outcome from last boundary height, and validator state from newest \
+        block"
+    );
+    let header = node
+        .provider
+        .header_by_number(last_boundary)
+        .map_or_else(
+            |e| Err(eyre::Report::new(e)),
+            |header| header.ok_or_eyre("execution layer reported it had no header"),
+        )
+        .wrap_err_with(|| {
+            format!("failed to read header for last boundary block number `{last_boundary}`")
+        })?;
+    let onchain_outcome =
+        tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
+            .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
+
+    let all_validators = validators::read_from_contract_at_block(0, node, newest_height)
+        .await
+        .wrap_err_with(|| {
+            format!("failed reading validator config from block height `{newest_height}`")
+        })?;
+
+    let share = 'verify_initial_share: {
+        let Some(share) = share else {
+            break 'verify_initial_share None;
+        };
+        let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
+            warn!(
+                "the index of the provided share exceeds the polynomial of the \
+                on-chain DKG outcome; ignoring the share"
+            );
+            break 'verify_initial_share None;
+        };
+        if share.public::<MinSig>() != partial {
+            warn!(
+                "the provided share does not match the polynomial of the \
+                on-chain DKG outcome; ignoring the share"
+            );
+            break 'verify_initial_share None;
+        }
+        Some(share)
+    };
 
     Ok(State {
         epoch: Epoch::zero(),
@@ -1412,16 +1472,14 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut attempts = 0;
     let retry_after = Duration::from_secs(1);
+
+    let last = epoch_strategy
+        .last(epoch)
+        .expect("epoch strategy is valid for all epochs");
     loop {
         metric.inc();
         attempts += 1;
-        if let Ok(validators) = validators::read_from_contract_on_epoch_boundary(
-            attempts,
-            node,
-            Some(epoch),
-            epoch_strategy,
-        )
-        .await
+        if let Ok(validators) = validators::read_from_contract_at_block(attempts, node, last).await
         {
             break validators;
         }
