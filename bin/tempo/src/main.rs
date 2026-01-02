@@ -25,12 +25,9 @@ use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
 use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
-use reth_ethereum::{
-    chainspec::EthChainSpec as _,
-    cli::{Cli, Commands},
-    evm::revm::primitives::B256,
-};
-use reth_ethereum_cli as _;
+use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
+use reth_ethereum_cli::Cli;
+use reth_rpc_server_types::DefaultRpcModuleValidator;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -113,11 +110,8 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    if let Some(result) = tempo_cmd::try_run_tempo_subcommand() {
-        return result;
-    }
-
-    let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
+    let cli =
+        Cli::<TempoChainSpecParser, TempoArgs, DefaultRpcModuleValidator, tempo_cmd::TempoSubcommand>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
