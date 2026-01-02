@@ -1796,4 +1796,86 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
     }
 
+    /// @notice Fuzz test: splitting a trade into smaller pieces should never give the taker a better price.
+    /// With ceiling rounding on asks, the taker pays at least as much (usually more) when splitting.
+    function testFuzz_AskRounding_SplittingNeverCheaper(
+        uint128 totalBaseOut,
+        uint8 numSplits,
+        int16 tick
+    ) public {
+        // Bound inputs
+        totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
+        numSplits = uint8(bound(numSplits, 2, 10));
+        tick = int16(bound(tick, -2000, 2000));
+        tick = tick - (tick % 10); // align to tick spacing
+
+        // Alice places a large ask order (selling base for quote)
+        uint128 askAmount = totalBaseOut * 2; // ensure enough liquidity
+        vm.prank(alice);
+        exchange.place(address(token1), askAmount, false, tick);
+
+        // Calculate quote needed for single trade
+        uint128 singleTradeQuote = exchange.quoteSwapExactAmountOut(
+            address(pathUSD), // tokenIn = quote
+            address(token1), // tokenOut = base
+            totalBaseOut
+        );
+
+        // Calculate quote needed for split trades
+        uint128 splitSize = totalBaseOut / uint128(numSplits);
+        uint128 remainder = totalBaseOut - (splitSize * uint128(numSplits));
+        uint128 totalSplitQuote = 0;
+
+        for (uint8 i = 0; i < numSplits; i++) {
+            uint128 thisAmount = splitSize;
+            if (i == numSplits - 1) {
+                thisAmount += remainder; // last split gets the remainder
+            }
+            if (thisAmount > 0) {
+                totalSplitQuote += exchange.quoteSwapExactAmountOut(
+                    address(pathUSD), address(token1), thisAmount
+                );
+            }
+        }
+
+        // Splitting should never be cheaper (ceiling rounding means splits cost >= single)
+        assertGe(
+            totalSplitQuote,
+            singleTradeQuote,
+            "Splitting trades should never give taker a better price"
+        );
+    }
+
+    /// @notice PoC: Without the fix, at price < 1.0, trading 1 base at a time costs 0 quote each.
+    /// floor(1 * 98000 / 100000) = floor(0.98) = 0
+    /// With the fix (ceiling), each 1-base trade costs 1 quote.
+    function test_AskRounding_OneAtATimeNotFree() public {
+        // Alice places an ask at price 0.98 (tick -200)
+        int16 tick = -200; // price = 98000, i.e., 0.98 quote per base
+        uint128 askAmount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000 base
+
+        vm.prank(alice);
+        exchange.place(address(token1), askAmount, false, tick);
+
+        // Quote for single trade of 100 base
+        uint128 singleTradeQuote =
+            exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 100);
+
+        // Quote for 100 trades of 1 base each
+        uint128 totalOneAtATime = 0;
+        for (uint256 i = 0; i < 100; i++) {
+            uint128 quoteFor1 =
+                exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 1);
+            totalOneAtATime += quoteFor1;
+
+            // With ceiling rounding, each 1-base trade costs at least 1 quote
+            assertGt(quoteFor1, 0, "Each 1-base trade should cost > 0 quote");
+        }
+
+        // With the fix, 100 trades of 1 base costs MORE than single trade (ceiling rounds up)
+        assertGe(
+            totalOneAtATime, singleTradeQuote, "Splitting into 1-unit trades should not be cheaper"
+        );
+    }
+
 }

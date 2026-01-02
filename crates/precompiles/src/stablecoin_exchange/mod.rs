@@ -612,20 +612,29 @@ impl StablecoinExchange {
             .remaining
             .write(new_remaining)?;
 
+        // Calculate quote amount for this fill (used by both maker settlement and taker output)
+        let quote_amount = base_to_quote(
+            fill_amount,
+            order.tick(),
+            if order.is_bid() {
+                RoundingDirection::Down // Bid: taker receives quote, round DOWN
+            } else {
+                RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
+            },
+        )
+        .ok_or(TempoPrecompileError::under_overflow())?;
+
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
         } else {
-            // Ask order maker receives quote tokens - round DOWN to favor protocol
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            // Ask order maker receives quote tokens
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         }
 
-        // Calculate amount out for taker - round DOWN to favor protocol
+        // Taker output: bid→quote, ask→base (zero-sum with maker)
         let amount_out = if order.is_bid() {
-            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?
+            quote_amount
         } else {
             fill_amount
         };
@@ -662,7 +671,7 @@ impl StablecoinExchange {
         let orderbook = book_handler_order.read()?;
         let fill_amount = order.remaining();
 
-        // Settlement: round DOWN for both maker and taker to favor protocol
+        // Settlement: bid rounds DOWN (taker receives less), ask rounds UP (maker receives more)
         let amount_out = if order.is_bid() {
             // Bid maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
@@ -670,8 +679,8 @@ impl StablecoinExchange {
             base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
                 .ok_or(TempoPrecompileError::under_overflow())?
         } else {
-            // Ask maker receives quote tokens - round DOWN
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
+            // Ask maker receives quote tokens - round UP to favor maker
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
@@ -781,9 +790,9 @@ impl StablecoinExchange {
                 (fill_amount, fill_amount)
             } else {
                 // For asks: amount_out is base, amount_in is quote
+                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let fill_amount = amount_out.min(order.remaining());
-                // Round down amount_in (taker pays less, but this is balanced by settlement rounding)
-                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Down)
+                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, amount_in)
             };
@@ -888,13 +897,13 @@ impl StablecoinExchange {
                         amount_in = 0;
                     }
                 } else {
-                    // Round down base_out (user receives less base, favors protocol)
+                    // For asks: taker pays quote, maker receives quote
                     let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                     if base_out > order.remaining() {
-                        // Round down quote_needed (user pays less quote, but order is fully consumed)
+                        // Quote consumed = what maker receives - round UP (zero-sum with maker)
                         let quote_needed =
-                            base_to_quote(order.remaining(), tick, RoundingDirection::Down)
+                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)
                                 .ok_or(TempoPrecompileError::under_overflow())?;
                         amount_in = amount_in
                             .checked_sub(quote_needed)
@@ -1142,15 +1151,14 @@ impl StablecoinExchange {
                 (fill_amount, fill_amount)
             } else {
                 // For asks: remaining_out is in base, amount_in is in quote
+                // Taker pays quote, maker receives quote - round UP to favor maker
                 let fill_amount = if remaining_out > level.total_liquidity {
                     level.total_liquidity
                 } else {
                     remaining_out
                 };
-                // Round down quote_needed (user pays less quote)
-                let quote_needed =
-                    base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill_amount, quote_needed)
             };
 
@@ -1343,13 +1351,12 @@ impl StablecoinExchange {
                 (fill, quote_out, fill)
             } else {
                 // For asks: remaining_in is quote, amount_out is base
-                // Round down base_to_get (user receives less base)
+                // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let base_to_get =
                     quote_to_base(remaining_in, current_tick, RoundingDirection::Down)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill = base_to_get.min(level.total_liquidity);
-                // Round down quote_consumed (less quote consumed from remaining)
-                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Down)
+                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 (fill, fill, quote_consumed)
             };
@@ -1558,9 +1565,10 @@ mod tests {
 
             let alice_quote_after = exchange.balance_of(alice, quote_token)?;
 
+            // Ask order maker receives quote - round UP to favor maker
             assert_eq!(
-                alice_quote_after, expected_quote_floor,
-                "Maker settlement should round DOWN to favor protocol. Got {alice_quote_after}, expected floor {expected_quote_floor}"
+                alice_quote_after, expected_quote_ceil,
+                "Ask order maker should receive quote rounded UP. Got {alice_quote_after}, expected ceil {expected_quote_ceil}"
             );
 
             assert!(
@@ -2934,10 +2942,11 @@ mod tests {
 
             let price_50 = orderbook::tick_to_price(tick_50);
             let price_100 = orderbook::tick_to_price(tick_100);
+            // Taker pays quote with ceiling rounding
             let quote_for_first =
-                (order_amount * price_50 as u128) / orderbook::PRICE_SCALE as u128;
+                (order_amount * price_50 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
             let quote_for_partial_second =
-                (999 * price_100 as u128) / orderbook::PRICE_SCALE as u128;
+                (999 * price_100 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
             let total_needed = quote_for_first + quote_for_partial_second;
 
             let result = exchange.swap_exact_amount_out(
