@@ -32,3 +32,5 @@ async fn build_provider() -> Result<impl Provider<TempoNetwork>, TransportError>
         .await
 }
 ```
+
+See the [examples directory](https://github.com/tempoxyz/tempo/tree/main/crates/alloy/examples) for additional runnable code samples.

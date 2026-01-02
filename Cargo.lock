@@ -11459,6 +11459,7 @@ dependencies = [
 name = "tempo-alloy"
 version = "0.8.0"
 dependencies = [
+ "alloy",
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips",
@@ -11472,6 +11473,7 @@ dependencies = [
  "alloy-transport",
  "derive_more",
  "eyre",
+ "futures",
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",
