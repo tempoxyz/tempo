@@ -303,7 +303,7 @@ where
         // Read current length
         let length = self.len()?;
         if length >= Self::max_index() {
-            return Err(TempoPrecompileError::under_overflow());
+            return Err(TempoPrecompileError::Fatal("Vec is at max capacity".into()));
         }
 
         // Write element at the end
