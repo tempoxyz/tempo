@@ -16,7 +16,7 @@ use alloy::{
 use tracing::trace;
 
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
-const RESERVED_SIZE: u128 = 1000;
+const RESERVED_SIZE: u128 = 1024;
 
 /// TIP20 token address prefix (10 bytes): 0x20C00000000000000000
 const TIP20_PREFIX_BYTES: [u8; 10] = [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -27,21 +27,19 @@ pub struct TIP20Factory {}
 /// Computes the deterministic TIP20 address from sender and salt.
 /// Returns the address and the lower bytes used for derivation.
 fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u128) {
-    let hash = keccak256((sender, salt).abi_encode_packed());
+    let hash = keccak256((sender, salt).abi_encode());
 
-    // Take highest 80 bits (first 10 bytes) of the hash for the lower bytes of the address
-    let lower_bytes = u128::from_be_bytes([
-        0, 0, 0, 0, 0, 0, hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7],
-        hash[8], hash[9],
-    ]);
+    // Take first 10 bytes of hash as lower bytes (padded to u128)
+    let mut padded = [0u8; 16];
+    padded[6..].copy_from_slice(&hash[..10]);
+    let lower_bytes = u128::from_be_bytes(padded);
 
-    // Construct the address: TIP20_PREFIX (10 bytes) || lower_bytes (10 bytes)
+    // Construct the address: TIP20_PREFIX (10 bytes) || hash[..10] (10 bytes)
     let mut address_bytes = [0u8; 20];
     address_bytes[..10].copy_from_slice(&TIP20_PREFIX_BYTES);
     address_bytes[10..].copy_from_slice(&hash[..10]);
 
-    let address = Address::from(address_bytes);
-    (address, lower_bytes)
+    (Address::from(address_bytes), lower_bytes)
 }
 
 // Precompile functions
@@ -121,6 +119,28 @@ impl TIP20Factory {
         ))?;
 
         Ok(token_address)
+    }
+
+    /// Creates a token at a reserved address. Internal function only, to create pathUSD at genesis.
+    pub fn create_path_usd(&mut self, admin: Address) -> Result<Address> {
+        use crate::PATH_USD_ADDRESS;
+
+        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+        path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+
+        self.emit_event(TIP20FactoryEvent::TokenCreated(
+            ITIP20Factory::TokenCreated {
+                token: PATH_USD_ADDRESS,
+                name: "PathUSD".to_string(),
+                symbol: "PUSD".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: PATH_USD_ADDRESS,
+                admin,
+                salt: B256::ZERO,
+            },
+        ))?;
+
+        Ok(PATH_USD_ADDRESS)
     }
 }
 

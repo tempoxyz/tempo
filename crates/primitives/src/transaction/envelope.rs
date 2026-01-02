@@ -10,9 +10,9 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
 
-/// TIP20 payment address prefix (14 bytes for payment classification)
-/// Same as TIP20_TOKEN_PREFIX but extended to 14 bytes for payment classification
-pub const TIP20_PAYMENT_PREFIX: [u8; 14] = hex!("20C0000000000000000000000000");
+/// TIP20 payment address prefix (10 bytes for payment classification)
+/// Same as TIP20_TOKEN_PREFIX but extended to 10 bytes for payment classification
+pub const TIP20_PAYMENT_PREFIX: [u8; 10] = hex!("20C00000000000000000");
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
@@ -716,8 +716,8 @@ mod tests {
 
     #[test]
     fn test_payment_classification_aa_partial_match() {
-        // First 14 bytes (28 hex chars) match TIP20_PAYMENT_PREFIX, remaining 6 bytes differ
-        let payment_addr = address!("20c0000000000000000000000000111111111111");
+        // First 10 bytes (20 hex chars) match TIP20_PAYMENT_PREFIX, remaining 10 bytes differ
+        let payment_addr = address!("20c0000000000000000011111111111111111111");
         let call = Call {
             to: TxKind::Call(payment_addr),
             value: U256::ZERO,

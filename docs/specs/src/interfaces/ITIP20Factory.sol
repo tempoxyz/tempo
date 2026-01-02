@@ -48,4 +48,10 @@ interface ITIP20Factory {
     /// @return True if the address is a TIP-20 token, false otherwise
     function isTIP20(address token) external view returns (bool);
 
+    /// @notice Predicts the address of a token deployment given sender and salt
+    /// @param sender The address that will call createToken
+    /// @param salt The salt to use for deterministic deployment
+    /// @return The predicted token address
+    function getTokenAddress(address sender, bytes32 salt) external pure returns (address);
+
 }

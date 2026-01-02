@@ -12,7 +12,7 @@ contract TIP20Factory is ITIP20Factory {
     // Foundry cheatcode VM for deployCodeTo
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    uint256 internal immutable reservedSize = 1000;
+    uint256 internal immutable reservedSize = 1024;
 
     function createToken(
         string memory name,
@@ -60,6 +60,11 @@ contract TIP20Factory is ITIP20Factory {
 
     function isTIP20(address token) external view returns (bool) {
         return TempoUtilities.isTIP20(token);
+    }
+
+    function getTokenAddress(address sender, bytes32 salt) external pure returns (address) {
+        uint80 lowerBytes = uint80(bytes10(keccak256(abi.encode(sender, salt))));
+        return address(uint160(0x20C0000000000000000000000000000000000000) | uint160(lowerBytes));
     }
 
 }

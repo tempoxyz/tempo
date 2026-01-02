@@ -136,6 +136,7 @@ pub struct TIP20Setup {
     action: Action,
     quote_token: Option<Address>,
     admin: Option<Address>,
+    salt: Option<B256>,
     roles: Vec<(Address, B256)>,
     mints: Vec<(Address, U256)>,
     approvals: Vec<(Address, Address, U256)>,
@@ -204,6 +205,12 @@ impl TIP20Setup {
         self
     }
 
+    /// Set a custom salt for token address derivation (default: random).
+    pub fn with_salt(mut self, salt: B256) -> Self {
+        self.salt = Some(salt);
+        self
+    }
+
     /// Set the admin address explicitly. Required for `config()` when using `with_mint()`.
     pub fn with_admin(mut self, admin: Address) -> Self {
         self.admin = Some(admin);
@@ -248,9 +255,6 @@ impl TIP20Setup {
     }
 
     /// Initialize PathUSD if needed and return it.
-    ///
-    /// PathUSD is initialized directly (not via factory) since it's at a reserved address
-    /// and uses itself as quote token.
     fn path_usd_inner(&self) -> Result<TIP20Token> {
         if is_initialized(PATH_USD_ADDRESS) {
             return TIP20Token::from_address(PATH_USD_ADDRESS);
@@ -260,12 +264,9 @@ impl TIP20Setup {
             .admin
             .expect("pathUSD is uninitialized and requires an admin");
 
-        // PathUSD is at a reserved address, so we initialize it directly
-        // (not via factory). It uses itself as quote token.
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+        Self::factory()?.create_path_usd(admin)?;
 
-        Ok(path_usd)
+        TIP20Token::from_address(PATH_USD_ADDRESS)
     }
 
     /// Initialize the TIP20 factory if needed.
@@ -291,8 +292,7 @@ impl TIP20Setup {
 
                 let admin = self.admin.expect("initializing a token requires an admin");
                 let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
-                // Generate a random salt for token deployment
-                let salt = B256::random();
+                let salt = self.salt.unwrap_or_else(B256::random);
                 let token_address = factory.create_token(
                     admin,
                     tip20_factory::ITIP20Factory::createTokenCall {
@@ -374,8 +374,7 @@ fn is_initialized(address: Address) -> bool {
 
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
-    use alloy::primitives::Log;
-    use alloy::sol_types::SolEvent;
+    use alloy::{primitives::Log, sol_types::SolEvent};
     use tempo_contracts::precompiles::ITIP20Factory;
 
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);

@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, U256, address},
+    primitives::{Address, B256, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
@@ -205,6 +205,7 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(1)),
             &mut evm,
         )?;
 
@@ -216,6 +217,7 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(2)),
             &mut evm,
         )?;
 
@@ -227,6 +229,7 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(3)),
             &mut evm,
         )?;
 
@@ -495,6 +498,7 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
+    salt: B256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -506,8 +510,6 @@ fn create_and_mint_token(
                 .expect("Could not check factory initialization"),
             "TIP20Factory must be initialized before creating tokens"
         );
-        // Use symbol as basis for deterministic salt
-        let salt = alloy::primitives::keccak256(symbol.as_bytes());
         let token_address = factory
             .create_token(
                 admin,

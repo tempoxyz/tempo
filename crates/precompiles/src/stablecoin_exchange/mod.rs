@@ -3046,12 +3046,10 @@ mod tests {
 
             // Give bob base tokens and carol quote tokens
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(bob, U256::from(AMOUNT))
                 .with_approval(bob, exchange.address, U256::from(AMOUNT))
                 .apply()?;
             TIP20Setup::config(quote_token)
-                .with_admin(admin)
                 .with_mint(carol, U256::from(AMOUNT))
                 .with_approval(carol, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3127,7 +3125,6 @@ mod tests {
 
             // Place ask orders at two different ticks
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
@@ -3202,7 +3199,6 @@ mod tests {
 
             // Place 2 ask orders at tick 50 and tick 60
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(alice, U256::from(amount * 2))
                 .with_approval(alice, exchange.address, U256::from(amount * 2))
                 .apply()?;
@@ -3271,7 +3267,6 @@ mod tests {
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(alice, U256::from(AMOUNT))
                 .with_approval(alice, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3313,7 +3308,6 @@ mod tests {
 
             // Give alice base tokens
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(alice, U256::from(AMOUNT))
                 .with_approval(alice, exchange.address, U256::from(AMOUNT))
                 .apply()?;
@@ -3423,7 +3417,6 @@ mod tests {
                 setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
 
             TIP20Setup::config(base_token)
-                .with_admin(admin)
                 .with_mint(alice, U256::from(amount))
                 .with_approval(alice, exchange.address, U256::from(amount))
                 .apply()?;

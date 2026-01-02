@@ -131,6 +131,28 @@ contract TIP20FactoryTest is BaseTest {
         assertTrue(tokenAddr != tokenAddr2, "Different salts should produce different addresses");
     }
 
+    function testGetTokenAddress() public {
+        bytes32 salt = bytes32("predict");
+
+        // Get predicted address before deployment
+        address predicted = factory.getTokenAddress(address(this), salt);
+
+        // Deploy the token
+        address actual =
+            factory.createToken("Predicted", "PRED", "USD", ITIP20(_PATH_USD), admin, salt);
+
+        assertEq(predicted, actual, "Predicted address should match actual deployed address");
+    }
+
+    function testGetTokenAddressDifferentSenders() public view {
+        bytes32 salt = bytes32("same_salt");
+
+        address addr1 = factory.getTokenAddress(address(this), salt);
+        address addr2 = factory.getTokenAddress(admin, salt);
+
+        assertTrue(addr1 != addr2, "Different senders should produce different addresses");
+    }
+
     /*//////////////////////////////////////////////////////////////
                 SECTION: ADDITIONAL FUZZ & EDGE TESTS
     //////////////////////////////////////////////////////////////*/
