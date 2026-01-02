@@ -1178,7 +1178,7 @@ where
         // in theory it should never fail, but if it does, just stick to reshare.
         .is_ok_and(|epoch| epoch == next_epoch.get());
         if is_next_full_dkg {
-            info!(%next_epoch, "next DKG ceremony will be full");
+            info!(%next_epoch, "next DKG will change the network identity and not be a reshare process");
         }
 
         if request
