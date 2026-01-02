@@ -197,12 +197,30 @@ where
         let reason = loop {
             match self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
                 Ok(new_state) => {
+                    let (new_state, prune_previous) = match new_state {
+                        NewState::FromSkip(new_state) => {
+                            let prune_previous = new_state.epoch.previous();
+                            (new_state, prune_previous)
+                        }
+                        NewState::Normal(new_state) => (new_state, None),
+                    };
                     if let Err(error) = storage
                         .append_state(new_state)
                         .await
                         .wrap_err("failed appending state to journal")
                     {
                         break error;
+                    }
+                    // If the new state was obtained by skipping a round, all
+                    // previous epochs historical and will not observe any
+                    // activity. Usually an old epoch is exited on observing the
+                    // first finalized height of the new epoch. This is done to
+                    // help straggling nodes observe finalizations of the
+                    // boundary height. But since the network has already
+                    // advanced past the new epoch, there is no need for that.
+                    if let Some(prune_previous) = prune_previous {
+                        let _ = self.config.epoch_manager.exit(prune_previous);
+                        let _ = storage.prune(prune_previous.next()).await;
                     }
                 }
                 Err(error) => break error,
@@ -221,7 +239,7 @@ where
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> eyre::Result<State>
+    ) -> eyre::Result<NewState>
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
@@ -576,11 +594,6 @@ where
                 skipped",
             );
 
-            // Shut down the engine backing our epoch immediately. There is no
-            // point running it and we are not even guaranteed to observe the
-            // first height of the next epoch.
-            let _ = self.config.epoch_manager.exit(round.epoch());
-
             // NOTE: `set_floor(height)` implies that the next block sent by
             // marshal will be height + 1.
             self.config.marshal.set_floor(boundary_height - 1).await;
@@ -636,7 +649,7 @@ where
         dealer_state: &mut Option<state::Dealer>,
         player_state: &mut Option<state::Player>,
         block: Block,
-    ) -> eyre::Result<Option<State>>
+    ) -> eyre::Result<Option<NewState>>
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
@@ -811,7 +824,7 @@ where
             self.metrics.successes.inc();
         }
 
-        Ok(Some(state::State {
+        Ok(Some(NewState::Normal(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -824,7 +837,7 @@ where
                     .filter(|(_, v)| v.active)
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
-        }))
+        })))
     }
 
     /// Looks for and handles a finalized boundary block.
@@ -847,7 +860,7 @@ where
         cause: Span,
         round: &state::Round,
         block: Block,
-    ) -> eyre::Result<Option<State>> {
+    ) -> eyre::Result<Option<NewState>> {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -882,7 +895,7 @@ where
         )
         .await;
 
-        Ok(Some(state::State {
+        Ok(Some(NewState::FromSkip(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -895,7 +908,7 @@ where
                     .filter(|(_, v)| v.active)
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
-        }))
+        })))
     }
 
     #[instrument(skip_all, fields(me = %self.config.me.public_key(), %epoch))]
@@ -1384,6 +1397,11 @@ impl Metrics {
         self.dealings_read.set(0);
         self.bad_dealings.set(0);
     }
+}
+
+enum NewState {
+    FromSkip(state::State),
+    Normal(state::State),
 }
 
 /// Attempts to read the validator config from the smart contract until it becomes available.
