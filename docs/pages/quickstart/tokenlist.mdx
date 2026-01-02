@@ -3,7 +3,7 @@ title: Tempo Token List Registry
 ---
 import { Callout } from 'vocs/components'
 
-import { Fn } from '#components/Fn.tsx'
+import { TokenListDemo } from '#components/TokenList.tsx'
 
 # Tempo Token List Registry
 
@@ -11,35 +11,7 @@ A [Uniswap Token Lists](https://tokenlists.org)-compatible API for token metadat
 
 As an example, here's Tempo Testnet's tokenlist, fetched from [tokenlist.tempo.xyz/list/42429](https://tokenlist.tempo.xyz/list/42429):
 
-<Fn
-  fn={async () => {
-    const list = await fetch('https://esm.sh/gh/tempoxyz/tempo-apps/apps/tokenlist/data/42429/tokenlist.json')
-    if (!list.ok) return <></>
-    const json = await list.json()
-    if (!Object.hasOwn(json, 'tokens')) return <></>
-    return (
-      <ul className='list-none gap-2 flex flex-col justify-center'>
-        {json.map(token => (
-          <li key={token.address} title={token.address}>
-            <a
-              target='_blank'
-              rel='noopener noreferrer'
-              className='flex items-center gap-2 text-[#202020]'
-              href={`https://tokenlist.tempo.xyz/asset/42429/${token.address}`}
-            >
-              <img 
-                src={token.logoURI}
-                alt={token.name}
-                className='size-8'
-              />
-              <span className='text-xl font-medium tracking-wider'>{token.name}</span>
-            </a>
-          </li>
-        ))}
-      </ul>
-    )
-  }}
-/>
+<TokenListDemo />
 
 ## Endpoints
 
