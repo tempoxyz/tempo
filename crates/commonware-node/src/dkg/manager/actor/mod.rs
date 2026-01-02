@@ -169,7 +169,7 @@ where
                 let execution_node = self.config.execution_node.clone();
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
-                let marshal = self.config.marshal.clone();
+                let mut marshal = self.config.marshal.clone();
                 async move {
                     read_initial_state_and_set_floor(
                         &mut context,
@@ -1229,7 +1229,7 @@ where
     info!(
         newest_height,
         last_boundary,
-        "excecution layer reported newest available block, reading on-chain \
+        "execution layer reported newest available block, reading on-chain \
         DKG outcome from last boundary height, and validator state from newest \
         block"
     );
