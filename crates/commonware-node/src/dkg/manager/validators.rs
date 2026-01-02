@@ -2,7 +2,6 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -84,27 +83,16 @@ fn read_validator_config_at_height<T>(
     skip_all,
     fields(
         attempt = _attempt,
-        epoch = epoch.map(tracing::field::display),
+        block.number = block_number,
     ),
     err
 )]
-pub(super) async fn read_from_contract_on_epoch_boundary(
+pub(super) async fn read_from_contract_at_block(
     _attempt: u32,
     node: &TempoFullNode,
-    epoch: Option<Epoch>,
-    epoch_strategy: &FixedEpocher,
+    block_number: u64,
 ) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let last_height = epoch.map_or(0, |epoch| {
-        epoch_strategy
-            .last(epoch)
-            .expect("epoch strategy covers all epochs")
-    });
-    info!(
-        last_height,
-        "will read contract state from last height of epoch"
-    );
-
-    let raw_validators = read_validator_config_at_height(node, last_height, |config| {
+    let raw_validators = read_validator_config_at_height(node, block_number, |config| {
         config
             .get_validators()
             .wrap_err("failed to query contract for validator config")

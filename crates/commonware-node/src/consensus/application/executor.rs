@@ -15,13 +15,13 @@ use commonware_consensus::{Block as _, marshal::Update};
 
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
     select_biased,
 };
-use reth_provider::BlockNumReader as _;
+use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
@@ -33,10 +33,6 @@ pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     pub(super) execution_node: TempoFullNode,
-
-    /// The genesis block of the network. Used to populate fields on
-    /// the send the initial forkchoice state.
-    pub(super) genesis_block: Arc<Block>,
 
     /// The last finalized height according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the
@@ -56,7 +52,6 @@ impl Builder {
     {
         let Self {
             execution_node,
-            genesis_block,
             last_finalized_height,
             marshal,
         } = self;
@@ -69,8 +64,15 @@ impl Builder {
             .provider
             .last_block_number()
             .wrap_err("unable to read latest block number from execution layer")?;
+        let last_finalized_block_hash = execution_node
+            .provider
+            .block_hash(last_execution_finalized_height)
+            .map_or_else(
+                |e| Err(eyre::Report::new(e)),
+                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
+            )
+            .wrap_err("failed to read the last finalized block hash")?;
 
-        let genesis_hash = genesis_block.block_hash();
         Ok(Executor {
             context: ContextCell::new(context),
             execution_node,
@@ -81,9 +83,9 @@ impl Builder {
             my_mailbox,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
-                    head_block_hash: genesis_hash,
-                    safe_block_hash: genesis_hash,
-                    finalized_block_hash: genesis_hash,
+                    head_block_hash: last_finalized_block_hash,
+                    safe_block_hash: last_finalized_block_hash,
+                    finalized_block_hash: last_finalized_block_hash,
                 },
                 head_height: 0,
                 finalized_height: 0,
