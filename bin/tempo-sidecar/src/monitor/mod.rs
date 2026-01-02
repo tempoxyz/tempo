@@ -40,6 +40,25 @@ pub struct Monitor {
     last_processed_block: u64,
 }
 
+trait FilterExt {
+    fn with_minted_tokens<'a>(self, tokens: impl Iterator<Item = &'a Address>) -> Self;
+}
+
+impl FilterExt for Filter {
+    /// Restricts the filter to events where both, topic 2 and topic 3, are among the input tokens.
+    ///
+    /// WARNING: Caller must ensure that the filter targets fee AMM mint events:
+    /// - `Mint(address indexed sender, address indexed userToken, address indexed validatorToken, ..)`
+    fn with_minted_tokens<'a>(mut self, tokens: impl Iterator<Item = &'a Address>) -> Self {
+        for addr in tokens {
+            let b256 = addr.into_word();
+            self.topics[2].insert(b256);
+            self.topics[3].insert(b256);
+        }
+        self
+    }
+}
+
 impl MonitorConfig {
     pub fn new(rpc_url: Url, poll_interval: u64, target_tokens: HashSet<Address>) -> Self {
         Self {
@@ -57,11 +76,10 @@ impl MonitorConfig {
             .await?;
 
         // Fetch metadata for all whitelisted tokens
-        let tokens = Self::fetch_token_metadata(&provider, self.target_tokens).await?;
+        let tokens = self.fetch_token_metadata(&provider).await?;
 
         // Discover historical pools
-        let (known_pairs, last_processed_block) =
-            Self::discover_historical_pools(&provider, &tokens).await?;
+        let (known_pairs, last_processed_block) = self.discover_historical_pools(&provider).await?;
 
         Ok(Monitor {
             rpc_url: self.rpc_url,
@@ -75,14 +93,15 @@ impl MonitorConfig {
 
     /// Fetches metadata for all whitelisted tokens.
     async fn fetch_token_metadata<P: Provider + Clone>(
+        &self,
         provider: &P,
-        whitelisted_tokens: HashSet<Address>,
     ) -> Result<HashMap<Address, TIP20Token>> {
-        let get_token_metadata: Vec<_> = whitelisted_tokens
-            .into_iter()
+        let get_token_metadata: Vec<_> = self
+            .target_tokens
+            .iter()
             .map(|addr| {
                 debug!(%addr, "fetching token metadata");
-                let token = ITIP20::new(addr, provider.clone());
+                let token = ITIP20::new(*addr, provider.clone());
                 async move {
                     let decimals = token.decimals().call().await.map_err(|e| {
                         counter!("tempo_fee_amm_errors", "request" => "decimals").increment(1);
@@ -92,7 +111,7 @@ impl MonitorConfig {
                         counter!("tempo_fee_amm_errors", "request" => "name").increment(1);
                         eyre!("failed to fetch token name for {}: {}", addr, e)
                     })?;
-                    Ok::<_, eyre::Error>((addr, TIP20Token { decimals, name }))
+                    Ok::<_, eyre::Error>((*addr, TIP20Token { decimals, name }))
                 }
             })
             .collect();
@@ -104,8 +123,8 @@ impl MonitorConfig {
 
     /// Discovers all pool pairs from historical `Mint` events.
     async fn discover_historical_pools<P: Provider + Clone>(
+        &self,
         provider: &P,
-        tokens: &HashMap<Address, TIP20Token>,
     ) -> Result<(HashSet<(Address, Address)>, u64)> {
         let current_block = provider.get_block_number().await?;
 
@@ -113,16 +132,15 @@ impl MonitorConfig {
             .address(TIP_FEE_MANAGER_ADDRESS)
             .event_signature(Mint::SIGNATURE_HASH)
             .from_block(0)
-            .to_block(current_block);
+            .to_block(current_block)
+            .with_minted_tokens(self.target_tokens.iter());
 
         let logs = provider.get_logs(&filter).await?;
 
         let mut known_pairs = HashSet::new();
         for log in logs {
             let (user_token, validator_token) = parse_mint_tokens(&log);
-            if tokens.contains_key(&user_token) && tokens.contains_key(&validator_token) {
-                known_pairs.insert((user_token, validator_token));
-            }
+            known_pairs.insert((user_token, validator_token));
         }
 
         info!(
@@ -147,11 +165,6 @@ impl Monitor {
             .await
     }
 
-    /// Returns true if both tokens are in the whitelist.
-    fn should_monitor_pool(&self, token_a: Address, token_b: Address) -> bool {
-        self.tokens.contains_key(&token_a) && self.tokens.contains_key(&token_b)
-    }
-
     /// Checks for new pools by querying `Mint` events since last processed block.
     #[instrument(name = "monitor::check_for_new_pools", skip(self))]
     async fn check_for_new_pools(&mut self) -> Result<()> {
@@ -169,16 +182,15 @@ impl Monitor {
             .address(TIP_FEE_MANAGER_ADDRESS)
             .event_signature(Mint::SIGNATURE_HASH)
             .from_block(self.last_processed_block + 1)
-            .to_block(current_block);
+            .to_block(current_block)
+            .with_minted_tokens(self.tokens.keys());
 
         let logs = provider.get_logs(&filter).await?;
 
         let mut new_pools = 0;
         for log in logs {
             let (user_token, validator_token) = parse_mint_tokens(&log);
-            if self.should_monitor_pool(user_token, validator_token)
-                && self.known_pairs.insert((user_token, validator_token))
-            {
+            if self.known_pairs.insert((user_token, validator_token)) {
                 new_pools += 1;
             }
         }
