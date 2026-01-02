@@ -86,6 +86,7 @@ impl TempoPrecompileError {
         let bytes = match self {
             Self::StablecoinExchange(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
+            Self::TIP20Factory(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),

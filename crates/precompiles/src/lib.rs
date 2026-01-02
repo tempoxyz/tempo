@@ -153,7 +153,6 @@ pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TIP20Token", chain_id, spec, |input| {
-            // SAFETY: This is only called after is_tip20_prefix check in extend_tempo_precompiles
             TIP20Token::from_address(address).expect("TIP20 prefix already verified")
         })
     }
