@@ -247,7 +247,7 @@ where
         let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, _last_finalized_height) = marshal::Actor::init(
+        let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
             self.context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
@@ -286,8 +286,8 @@ where
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: self.context.with_label("application"),
-            // TODO: pass in from the outside,
             fee_recipient: self.fee_recipient,
+            last_finalized_height,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),

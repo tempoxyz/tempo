@@ -92,6 +92,8 @@ where
             inner: Inner {
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
+                last_finalized_height: config.last_finalized_height,
+
                 new_payload_wait_time: config.new_payload_wait_time,
 
                 my_mailbox,
@@ -200,6 +202,7 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
+    last_finalized_height: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: Mailbox,
@@ -724,9 +727,11 @@ impl Inner<Uninit> {
         let executor = executor::Builder {
             execution_node: self.execution_node.clone(),
             genesis_block: self.genesis_block.clone(),
+            last_finalized_height: self.last_finalized_height,
             marshal: self.marshal.clone(),
         }
-        .build(context.with_label("executor"));
+        .build(context.with_label("executor"))
+        .wrap_err("unable to instantiate executor actor")?;
 
         let executor_mailbox = executor.mailbox().clone();
         let executor_handle = executor.start();
@@ -734,6 +739,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
+            last_finalized_height: self.last_finalized_height,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
