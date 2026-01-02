@@ -223,23 +223,17 @@ impl std::fmt::Display for DecodedValidator {
         attempt = _attempt,
         at_height,
     ),
-    err
+    err,
+    ret(level = Level::INFO)
 )]
 pub(super) async fn read_next_full_dkg_ceremony(
     _attempt: u32,
     node: &TempoFullNode,
     at_height: u64,
 ) -> eyre::Result<u64> {
-    let next_full_dkg_ceremony = read_validator_config_at_height(node, at_height, |config| {
+    read_validator_config_at_height(node, at_height, |config| {
         config
             .get_next_full_dkg_ceremony()
             .wrap_err("failed to query contract for next full dkg ceremony")
-    })?;
-
-    info!(
-        next_full_dkg_ceremony,
-        "read next full dkg ceremony from contract"
-    );
-
-    Ok(next_full_dkg_ceremony)
+    })
 }
