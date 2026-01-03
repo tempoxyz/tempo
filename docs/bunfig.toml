@@ -1,0 +1,4 @@
+telemetry = false
+
+[run]
+bun = false

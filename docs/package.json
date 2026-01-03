@@ -2,6 +2,9 @@
   "name": "docs",
   "private": true,
   "type": "module",
+  "imports": {
+    "#*": "./*"
+  },
   "scripts": {
     "build": "NODE_OPTIONS=\"--max-old-space-size=16384\" vocs build --searchIndex",
     "check": "biome check . --write --unsafe",
