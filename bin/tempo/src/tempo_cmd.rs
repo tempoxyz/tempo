@@ -6,6 +6,8 @@ use commonware_math::algebra::Random as _;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
+use crate::snapshot::SnapshotCommand;
+
 #[derive(Debug, Parser)]
 #[command(name = "tempo")]
 struct TempoCli {
@@ -17,6 +19,8 @@ struct TempoCli {
 enum TempoCommand {
     /// Consensus-related commands.
     Consensus(ConsensusCommand),
+    /// Snapshot-related commands for archiving and restoring node data.
+    Snapshot(SnapshotCommand),
 }
 
 #[derive(Debug, clap::Args)]
@@ -86,6 +90,7 @@ pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
                 ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
                 ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
             },
+            TempoCommand::Snapshot(cmd) => Some(cmd.run()),
         },
         Err(e) => match e.kind() {
             ErrorKind::InvalidSubcommand => None,

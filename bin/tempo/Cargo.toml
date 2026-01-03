@@ -22,6 +22,12 @@ tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
+# Snapshot command dependencies
+lz4 = "1.28"
+tar = "0.4"
+indicatif.workspace = true
+walkdir = "2.5"
+
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
@@ -29,6 +35,7 @@ futures = { workspace = true, features = ["executor"] }
 rand.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-util.workspace = true
+reth-db.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
 reth-node-builder.workspace = true

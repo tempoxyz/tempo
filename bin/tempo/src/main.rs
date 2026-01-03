@@ -16,6 +16,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod defaults;
+mod snapshot;
 mod tempo_cmd;
 
 use clap::Parser;

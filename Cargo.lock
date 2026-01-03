@@ -11434,14 +11434,18 @@ dependencies = [
  "commonware-runtime",
  "eyre",
  "futures",
+ "indicatif",
+ "lz4",
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",
  "reth-cli-commands",
  "reth-cli-util",
+ "reth-db",
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-node-builder",
+ "tar",
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
@@ -11453,6 +11457,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]
