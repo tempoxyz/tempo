@@ -1,16 +1,16 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{CommandFactory, Parser, Subcommand};
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
 #[derive(Debug, Parser)]
-#[command(name = "tempo")]
+#[command(name = "tempo", version)]
 struct TempoCli {
     #[command(subcommand)]
-    command: TempoCommand,
+    command: Option<TempoCommand>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -79,20 +79,36 @@ impl CalculatePublicKey {
     }
 }
 
+/// Returns true if the first CLI argument is a tempo-specific subcommand.
+fn is_tempo_subcommand() -> bool {
+    let Some(first_arg) = std::env::args().nth(1) else {
+        return false;
+    };
+
+    TempoCli::command()
+        .get_subcommands()
+        .any(|cmd| cmd.get_name() == first_arg)
+}
+
 pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
+    // Only attempt to parse if the first argument is a tempo-specific subcommand.
+    // This lets reth CLI handle everything else (including top-level -h/-V).
+    if !is_tempo_subcommand() {
+        return None;
+    }
+
     match TempoCli::try_parse() {
         Ok(cli) => match cli.command {
-            TempoCommand::Consensus(cmd) => match cmd.command {
+            Some(TempoCommand::Consensus(cmd)) => match cmd.command {
                 ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
                 ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
             },
+            None => None,
         },
-        Err(e) => match e.kind() {
-            ErrorKind::InvalidSubcommand => None,
-            _ => {
-                e.print().expect("should be able to write to STDOUT");
-                Some(Ok(()))
-            }
-        },
+        Err(e) => {
+            // Handle help/version for tempo subcommands
+            e.print().expect("should be able to write to stdout");
+            Some(Ok(()))
+        }
     }
 }
