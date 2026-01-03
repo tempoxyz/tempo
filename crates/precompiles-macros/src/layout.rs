@@ -29,8 +29,8 @@ pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::To
 /// - `field_idx`: the field's index in the allocated fields array
 /// - `all_fields`: all allocated fields (for neighbor slot detection)
 /// - `packing_mod`: optional packing module identifier
-///   - `None` = contract storage (uses `slots` module, inefficient layout)
-///   - `Some(mod_ident)` = storable struct (uses packing module, efficient layout, offsets from `base_slot`)
+///   - `None` = contract storage (uses `slots` module)
+///   - `Some(mod_ident)` = storable struct (uses packing module, offsets from `base_slot`)
 pub(crate) fn gen_handler_field_init(
     field: &LayoutField<'_>,
     field_idx: usize,
@@ -57,16 +57,17 @@ pub(crate) fn gen_handler_field_init(
     match &field.kind {
         FieldKind::Direct(ty) => {
             // Calculate neighbor slot references for packing detection
-            let (prev_slot_const_ref, next_slot_const_ref) =
-                packing::get_neighbor_slot_refs(field_idx, all_fields, const_mod, |f| f.name);
+            let (prev_slot_const_ref, next_slot_const_ref) = packing::get_neighbor_slot_refs(
+                field_idx,
+                all_fields,
+                const_mod,
+                |f| f.name,
+                is_contract,
+            );
 
             // Calculate `LayoutCtx` based on context
             let layout_ctx = if is_contract {
-                // NOTE(rusowsky): we use the inefficient version for backwards compatibility.
-
-                // TODO(rusowsky): fully embrace `fn gen_layout_ctx_expr` to reduce gas usage.
-                // Note that this requires a hardfork and must be properly coordinated.
-                packing::gen_layout_ctx_expr_inefficient(
+                packing::gen_layout_ctx_expr(
                     ty,
                     matches!(field.assigned_slot, SlotAssignment::Manual(_)),
                     quote! { #const_mod::#slot_const },

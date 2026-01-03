@@ -242,27 +242,41 @@ pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
 /// Helper to compute prev and next slot constant references for a field at a given index.
 ///
 /// Generic over the field type - uses a closure to extract the field name.
+///
+/// - `use_full_slot=true`: returns `*_SLOT` (U256) for contracts
+/// - `use_full_slot=false`: returns `*_LOC.offset_slots` (usize) for storable structs
 pub(crate) fn get_neighbor_slot_refs<T, F>(
     idx: usize,
     fields: &[T],
     packing: &Ident,
     get_name: F,
+    use_full_slot: bool,
 ) -> (Option<TokenStream>, Option<TokenStream>)
 where
     F: Fn(&T) -> &Ident,
 {
     let prev_slot_ref = if idx > 0 {
         let prev_name = get_name(&fields[idx - 1]);
-        let prev_slot = PackingConstants::new(prev_name).location();
-        Some(quote! { #packing::#prev_slot.offset_slots })
+        if use_full_slot {
+            let prev_slot = PackingConstants::new(prev_name).slot();
+            Some(quote! { #packing::#prev_slot })
+        } else {
+            let prev_loc = PackingConstants::new(prev_name).location();
+            Some(quote! { #packing::#prev_loc.offset_slots })
+        }
     } else {
         None
     };
 
     let next_slot_ref = if idx + 1 < fields.len() {
         let next_name = get_name(&fields[idx + 1]);
-        let next_slot = PackingConstants::new(next_name).location();
-        Some(quote! { #packing::#next_slot.offset_slots })
+        if use_full_slot {
+            let next_slot = PackingConstants::new(next_name).slot();
+            Some(quote! { #packing::#next_slot })
+        } else {
+            let next_loc = PackingConstants::new(next_name).location();
+            Some(quote! { #packing::#next_loc.offset_slots })
+        }
     } else {
         None
     };
@@ -351,34 +365,6 @@ pub(crate) fn gen_layout_ctx_expr(
                 } else {
                     crate::storage::LayoutCtx::FULL
                 }
-            }
-        }
-    } else {
-        quote! { crate::storage::LayoutCtx::FULL }
-    }
-}
-
-// TODO(rusowsky): fully embrace `fn gen_layout_ctx_expr` to reduce gas usage.
-// Note that this requires a hardfork and must be properly coordinated.
-
-/// Generate a `LayoutCtx` expression for accessing a field.
-///
-/// Despite we could deterministically know if a field shares its slot with a neighbour, we
-/// treat all primitive types as packable for backward-compatibility reasons.
-pub(crate) fn gen_layout_ctx_expr_inefficient(
-    ty: &Type,
-    is_manual_slot: bool,
-    _slot_const_ref: TokenStream,
-    offset_const_ref: TokenStream,
-    _prev_slot_const_ref: Option<TokenStream>,
-    _next_slot_const_ref: Option<TokenStream>,
-) -> TokenStream {
-    if !is_manual_slot {
-        quote! {
-            if <#ty as crate::storage::StorableType>::IS_PACKABLE {
-                crate::storage::LayoutCtx::packed(#offset_const_ref)
-            } else {
-                crate::storage::LayoutCtx::FULL
             }
         }
     } else {
