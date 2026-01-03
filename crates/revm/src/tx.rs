@@ -384,3 +384,87 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
         Self::from_recovered_tx(tx, sender)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::TxKind;
+    use tempo_primitives::transaction::{Call, validate_calls};
+
+    fn create_call(to: TxKind) -> Call {
+        Call {
+            to,
+            value: alloy_primitives::U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn test_validate_empty_calls_list() {
+        let result = validate_calls(&[], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_single_call_ok() {
+        let calls = vec![create_call(TxKind::Call(alloy_primitives::Address::ZERO))];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_create_ok() {
+        let calls = vec![create_call(TxKind::Create)];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_with_authorization_list_fails() {
+        let calls = vec![create_call(TxKind::Create)];
+        let result = validate_calls(&calls, true); // has_authorization_list = true
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("CREATE"));
+    }
+
+    #[test]
+    fn test_validate_create_not_first_call_fails() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Create), // CREATE as second call - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_multiple_creates_fails() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Create), // Second CREATE - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_create_first_then_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        // No auth list, so CREATE is allowed
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+}

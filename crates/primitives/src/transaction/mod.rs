@@ -16,7 +16,7 @@ pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
 pub use tempo_transaction::{
     Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
-    SignatureType, TEMPO_TX_TYPE_ID, TempoTransaction,
+    SignatureType, TEMPO_TX_TYPE_ID, TempoTransaction, validate_calls,
 };
 pub use tt_signed::AASigned;
 

@@ -40,7 +40,7 @@ use tempo_precompiles::{
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending,
+    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
 };
 
 use crate::{
@@ -1075,6 +1075,13 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+            // Validate AA transaction structure (calls list, CREATE rules)
+            validate_calls(
+                &aa_env.aa_calls,
+                !aa_env.tempo_authorization_list.is_empty(),
+            )
+            .map_err(TempoInvalidTransaction::from)?;
+
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
 
