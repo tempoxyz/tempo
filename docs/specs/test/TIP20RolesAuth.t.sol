@@ -12,7 +12,11 @@ contract TIP20RolesAuthTest is BaseTest {
 
     function setUp() public override {
         super.setUp();
-        token = TIP20(factory.createToken("Test Token", "TST", "USD", TIP20(_PATH_USD), admin));
+        token = TIP20(
+            factory.createToken(
+                "Test Token", "TST", "USD", TIP20(_PATH_USD), admin, bytes32("test")
+            )
+        );
     }
 
     function test_grantRole_RevertsWhenUnauthorized() public {

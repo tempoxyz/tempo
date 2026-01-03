@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, U256, address},
+    primitives::{Address, B256, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
@@ -52,7 +52,7 @@ use tempo_precompiles::{
     stablecoin_exchange::StablecoinExchange,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
@@ -198,7 +198,7 @@ impl GenesisArgs {
         create_path_usd_token(admin, &addresses, &mut evm)?;
 
         println!("Initializing TIP20 tokens");
-        let (_, alpha_token_address) = create_and_mint_token(
+        let alpha_token_address = create_and_mint_token(
             "AlphaUSD",
             "AlphaUSD",
             "USD",
@@ -206,10 +206,11 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(1)),
             &mut evm,
         )?;
 
-        let (_, beta_token_address) = create_and_mint_token(
+        let beta_token_address = create_and_mint_token(
             "BetaUSD",
             "BetaUSD",
             "USD",
@@ -217,10 +218,11 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(2)),
             &mut evm,
         )?;
 
-        let (_, theta_token_address) = create_and_mint_token(
+        let theta_token_address = create_and_mint_token(
             "ThetaUSD",
             "ThetaUSD",
             "USD",
@@ -228,6 +230,7 @@ impl GenesisArgs {
             admin,
             &addresses,
             U256::from(u64::MAX),
+            B256::from(U256::from(3)),
             &mut evm,
         )?;
 
@@ -451,8 +454,8 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Creates PathUSD as the first TIP20 token (token_id=0) through the factory.
-/// The first token must have address(0) as quote token.
+/// Creates PathUSD as the first TIP20 token at a reserved address.
+/// PathUSD is not created via factory since it's at a reserved address.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -460,27 +463,12 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        // Create PathUSD through factory with address(0) as quote token (required for first token)
-        let token_address = TIP20Factory::new()
-            .create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: "pathUSD".into(),
-                    symbol: "pathUSD".into(),
-                    currency: "USD".into(),
-                    quoteToken: Address::ZERO, // First token must use address(0) as quote token
-                    admin,
-                },
-            )
-            .expect("Could not create PathUSD token");
-
-        // Verify it was created at the expected address (token_id=0)
-        assert_eq!(
-            token_address, PATH_USD_ADDRESS,
-            "PathUSD should be created at token_id=0 address"
-        );
-
-        let mut token = TIP20Token::new(0);
+        // Initialize PathUSD directly (not via factory) since it's at a reserved address.
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("Could not create PathUSD token instance");
+        token
+            .initialize("pathUSD", "pathUSD", "USD", Address::ZERO, admin)
+            .expect("Could not initialize PathUSD token");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint to all recipients
@@ -510,8 +498,9 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
+    salt: B256,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<(u64, Address)> {
+) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut factory = TIP20Factory::new();
@@ -530,13 +519,13 @@ fn create_and_mint_token(
                     currency: currency.into(),
                     quoteToken: quote_token,
                     admin,
+                    salt,
                 },
             )
             .expect("Could not create token");
 
-        let token_id = address_to_token_id_unchecked(token_address);
-
-        let mut token = TIP20Token::new(token_id);
+        let mut token =
+            TIP20Token::from_address(token_address).expect("Could not create token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let result = token.set_supply_cap(
@@ -569,7 +558,7 @@ fn create_and_mint_token(
                 .expect("Could not mint fee token");
         }
 
-        Ok((token_id, token.address()))
+        Ok(token.address())
     })
 }
 

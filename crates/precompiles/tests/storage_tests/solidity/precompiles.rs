@@ -9,18 +9,8 @@ use tempo_precompiles_macros::{
 };
 use utils::*;
 
-#[test]
-fn test_tip20_factory_layout() {
-    use tempo_precompiles::tip20_factory::slots;
-
-    let sol_path = testdata("tip20_factory.sol");
-    let solc_layout = load_solc_layout(&sol_path);
-    let rust_layout = layout_fields!(token_id_counter);
-
-    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic_layout_mismatch("Layout", errors, &sol_path);
-    }
-}
+// TIP20Factory no longer has storage fields - address derivation is now
+// based on keccak256(sender, salt) instead of a sequential token_id_counter
 
 #[test]
 fn test_tip403_registry_layout() {
@@ -201,17 +191,7 @@ fn export_all_storage_constants() {
         })
     };
 
-    // TIP20 Factory
-    {
-        use tempo_precompiles::tip20_factory::slots;
-        let fields = layout_fields!(token_id_counter);
-        all_constants.insert(
-            "tip20_factory".to_string(),
-            json!({
-                "fields": fields.iter().map(field_to_json).collect::<Vec<_>>()
-            }),
-        );
-    }
+    // TIP20 Factory - no storage fields (address derivation is now salt-based)
 
     // TIP403 Registry
     {

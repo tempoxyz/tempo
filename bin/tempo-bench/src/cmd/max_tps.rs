@@ -64,7 +64,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip_fee_manager::DEFAULT_FEE_TOKEN,
-    tip20::{ISSUER_ROLE, token_id_to_address},
+    tip20::ISSUER_ROLE,
 };
 use tokio::{
     select,
