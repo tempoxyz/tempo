@@ -115,6 +115,29 @@ pub(crate) struct GenesisArgs {
     /// intended for use in development and testing. Use at your own peril.
     #[arg(long)]
     pub(crate) seed: Option<u64>,
+
+    /// Custom admin address for PathUSD token.
+    /// If not set, uses the first generated account.
+    #[arg(long)]
+    pathusd_admin: Option<Address>,
+
+    /// Custom admin address for validator config.
+    /// If not set, uses the first generated account.
+    #[arg(long)]
+    validator_admin: Option<Address>,
+
+    /// Custom onchain addresses for validators.
+    /// Must match the number of validators if provided.
+    #[arg(long, value_delimiter = ',')]
+    validator_addresses: Vec<Address>,
+
+    /// Disable creating Alpha/Beta/ThetaUSD tokens.
+    #[arg(long)]
+    no_extra_tokens: bool,
+
+    /// Disable minting pairwise FeeAMM liquidity.
+    #[arg(long)]
+    no_pairwise_liquidity: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +204,8 @@ impl GenesisArgs {
         // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
 
         // Deploy TestUSD fee token
-        let admin = addresses[0];
+        let pathusd_admin = self.pathusd_admin.unwrap_or(addresses[0]);
+        let validator_admin = self.validator_admin.unwrap_or(addresses[0]);
         let mut evm = setup_tempo_evm(self.chain_id);
 
         deploy_arachnid_create2_factory(&mut evm);
@@ -195,41 +219,49 @@ impl GenesisArgs {
         initialize_tip20_factory(&mut evm)?;
 
         println!("Creating PathUSD through factory");
-        create_path_usd_token(admin, &addresses, &mut evm)?;
+        create_path_usd_token(pathusd_admin, &addresses, &mut evm)?;
 
-        println!("Initializing TIP20 tokens");
-        let (_, alpha_token_address) = create_and_mint_token(
-            "AlphaUSD",
-            "AlphaUSD",
-            "USD",
-            PATH_USD_ADDRESS,
-            admin,
-            &addresses,
-            U256::from(u64::MAX),
-            &mut evm,
-        )?;
+        let (alpha_token_address, beta_token_address, theta_token_address) =
+            if !self.no_extra_tokens {
+                println!("Initializing TIP20 tokens");
+                let (_, alpha) = create_and_mint_token(
+                    "AlphaUSD",
+                    "AlphaUSD",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    pathusd_admin,
+                    &addresses,
+                    U256::from(u64::MAX),
+                    &mut evm,
+                )?;
 
-        let (_, beta_token_address) = create_and_mint_token(
-            "BetaUSD",
-            "BetaUSD",
-            "USD",
-            PATH_USD_ADDRESS,
-            admin,
-            &addresses,
-            U256::from(u64::MAX),
-            &mut evm,
-        )?;
+                let (_, beta) = create_and_mint_token(
+                    "BetaUSD",
+                    "BetaUSD",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    pathusd_admin,
+                    &addresses,
+                    U256::from(u64::MAX),
+                    &mut evm,
+                )?;
 
-        let (_, theta_token_address) = create_and_mint_token(
-            "ThetaUSD",
-            "ThetaUSD",
-            "USD",
-            PATH_USD_ADDRESS,
-            admin,
-            &addresses,
-            U256::from(u64::MAX),
-            &mut evm,
-        )?;
+                let (_, theta) = create_and_mint_token(
+                    "ThetaUSD",
+                    "ThetaUSD",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    pathusd_admin,
+                    &addresses,
+                    U256::from(u64::MAX),
+                    &mut evm,
+                )?;
+
+                (Some(alpha), Some(beta), Some(theta))
+            } else {
+                println!("Skipping extra token creation (--no-extra-tokens)");
+                (None, None, None)
+            };
 
         println!(
             "generating consensus config for validators: {:?}",
@@ -239,18 +271,25 @@ impl GenesisArgs {
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
         println!("Initializing validator config");
+        let validator_onchain_addresses = if self.validator_addresses.is_empty() {
+            None
+        } else {
+            Some(&self.validator_addresses[..])
+        };
         initialize_validator_config(
-            admin,
+            validator_admin,
             &mut evm,
             &consensus_config,
-            // Skip admin
+            // Skip first address (used as default admin)
             &addresses[1..],
+            validator_onchain_addresses,
             self.no_dkg_in_genesis,
         )?;
 
         println!("Initializing fee manager");
+        let default_fee_token = alpha_token_address.unwrap_or(PATH_USD_ADDRESS);
         initialize_fee_manager(
-            alpha_token_address,
+            default_fee_token,
             addresses.clone(),
             // TODO: also populate validators here, once the logic is back.
             vec![self.coinbase],
@@ -266,14 +305,24 @@ impl GenesisArgs {
         println!("Initializing account keychain");
         initialize_account_keychain(&mut evm)?;
 
-        println!("Minting pairwise FeeAMM liquidity");
-        mint_pairwise_liquidity(
-            alpha_token_address,
-            vec![PATH_USD_ADDRESS, beta_token_address, theta_token_address],
-            U256::from(10u64.pow(10)),
-            admin,
-            &mut evm,
-        );
+        if !self.no_pairwise_liquidity {
+            if let (Some(alpha), Some(beta), Some(theta)) =
+                (alpha_token_address, beta_token_address, theta_token_address)
+            {
+                println!("Minting pairwise FeeAMM liquidity");
+                mint_pairwise_liquidity(
+                    alpha,
+                    vec![PATH_USD_ADDRESS, beta, theta],
+                    U256::from(10u64.pow(10)),
+                    pathusd_admin,
+                    &mut evm,
+                );
+            } else {
+                println!("Skipping pairwise liquidity (extra tokens not created)");
+            }
+        } else {
+            println!("Skipping pairwise liquidity (--no-pairwise-liquidity)");
+        }
 
         evm.ctx_mut()
             .journaled_state
@@ -659,7 +708,8 @@ fn initialize_validator_config(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
     consensus_config: &Option<ConsensusConfig>,
-    addresses: &[Address],
+    fallback_addresses: &[Address],
+    custom_validator_addresses: Option<&[Address]>,
     no_dkg_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
@@ -675,19 +725,21 @@ fn initialize_validator_config(
         }
 
         if let Some(consensus_config) = consensus_config.clone() {
-            println!(
-                "writing {} validators into contract",
-                consensus_config.validators.len()
-            );
+            let num_validators = consensus_config.validators.len();
+            let addrs = custom_validator_addresses.unwrap_or(fallback_addresses);
+
+            if addrs.len() < num_validators {
+                return Err(eyre!(
+                    "need {} addresses for all validators, but only {} were provided",
+                    num_validators,
+                    addrs.len()
+                ));
+            }
+
+            println!("writing {num_validators} validators into contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
                 #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let newValidatorAddress = *addresses.get(i).ok_or_else(|| {
-                    eyre!(
-                        "need `{}` addresses for all validators, but only `{}` were generated",
-                        consensus_config.validators.len(),
-                        addresses.len()
-                    )
-                })?;
+                let newValidatorAddress = addrs[i];
                 let public_key = validator.public_key();
                 let addr = validator.addr;
                 validator_config
