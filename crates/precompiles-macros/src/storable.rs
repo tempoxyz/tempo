@@ -187,13 +187,16 @@ fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> 
     let last_field = &fields[fields.len() - 1];
     let last_slot_const = PackingConstants::new(last_field.name).slot();
     let packing_constants = packing::gen_constants_from_ir(fields, true);
+    let last_type = &last_field.ty;
 
     quote! {
         pub mod #mod_ident {
             use super::*;
 
             #packing_constants
-            pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(::alloy::primitives::U256::ONE)).as_limbs()[0] as usize;
+            pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(
+                ::alloy::primitives::U256::from_limbs([<#last_type as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+            )).as_limbs()[0] as usize;
         }
     }
 }

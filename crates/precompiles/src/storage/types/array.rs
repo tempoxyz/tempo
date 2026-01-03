@@ -52,6 +52,7 @@ tempo_precompiles_macros::storable_nested_arrays!();
 ///     slot.write(42)?;
 /// }
 /// ```
+#[derive(Debug, Clone)]
 pub struct ArrayHandler<T, const N: usize>
 where
     T: StorableType,
