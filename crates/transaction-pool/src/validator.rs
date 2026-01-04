@@ -130,7 +130,7 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new().keys.at(transaction.sender())[key_id].base_slot();
+        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider
@@ -887,12 +887,8 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = TIP403Registry::new().policy_data.at(policy_id).base_slot();
-        let policy_set_slot = TIP403Registry::new()
-            .policy_set
-            .at(policy_id)
-            .at(fee_payer)
-            .slot();
+        let policy_data_slot = TIP403Registry::new().policy_data[policy_id].base_slot();
+        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
 
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,

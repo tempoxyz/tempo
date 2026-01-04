@@ -145,7 +145,7 @@ pub trait TempoStateAccess<M = ()> {
         // Check stored user token preference
         let user_token = self.with_read_only_storage_ctx(spec, || {
             // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens.at(fee_payer).read()
+            TipFeeManager::new().user_tokens[fee_payer].read()
         })?;
 
         if !user_token.is_zero() {
@@ -249,7 +249,7 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances.at(account).read()
+            TIP20Token::from_address(token)?.balances[account].read()
         })
     }
 }
@@ -466,7 +466,7 @@ mod tests {
 
         // Set user stored token preference in the FeeManager
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let user_slot = TipFeeManager::new().user_tokens.at(caller).slot();
+        let user_slot = TipFeeManager::new().user_tokens[caller].slot();
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
@@ -583,7 +583,7 @@ mod tests {
 
         // Set up CacheDB with balance
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::new(token_id).balances[account].slot();
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage

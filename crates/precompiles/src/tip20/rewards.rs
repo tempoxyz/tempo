@@ -60,7 +60,7 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
-        let mut info = self.user_reward_info.at(holder).read()?;
+        let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
 
@@ -84,18 +84,16 @@ impl TIP20Token {
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
-                    let mut delegate_info = self.user_reward_info.at(cached_delegate).read()?;
+                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
                     delegate_info.reward_balance = delegate_info
                         .reward_balance
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info
-                        .at(cached_delegate)
-                        .write(delegate_info)?;
+                    self.user_reward_info[cached_delegate].write(delegate_info)?;
                 }
             }
             info.reward_per_token = global_reward_per_token;
-            self.user_reward_info.at(holder).write(info)?;
+            self.user_reward_info[holder].write(info)?;
         }
 
         Ok(cached_delegate)
@@ -141,9 +139,9 @@ impl TIP20Token {
             )?;
         }
 
-        let mut info = self.user_reward_info.at(msg_sender).read()?;
+        let mut info = self.user_reward_info[msg_sender].read()?;
         info.reward_recipient = call.recipient;
-        self.user_reward_info.at(msg_sender).write(info)?;
+        self.user_reward_info[msg_sender].write(info)?;
 
         // Emit reward recipient set event
         self.emit_event(TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
@@ -164,7 +162,7 @@ impl TIP20Token {
 
         self.update_rewards(msg_sender)?;
 
-        let mut info = self.user_reward_info.at(msg_sender).read()?;
+        let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
         let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
@@ -174,7 +172,7 @@ impl TIP20Token {
         info.reward_balance = amount
             .checked_sub(max_amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.user_reward_info.at(msg_sender).write(info)?;
+        self.user_reward_info[msg_sender].write(info)?;
 
         if max_amount > U256::ZERO {
             let new_contract_balance = contract_balance
@@ -284,7 +282,7 @@ impl TIP20Token {
 
     /// Retrieves user reward information for a given account.
     pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
-        self.user_reward_info.at(account).read()
+        self.user_reward_info[account].read()
     }
 
     /// Calculates the pending claimable rewards for an account without modifying state.
@@ -296,7 +294,7 @@ impl TIP20Token {
     /// For accounts that have delegated their rewards to another recipient, this returns 0
     /// since their rewards accrue to their delegate instead.
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
-        let info = self.user_reward_info.at(account).read()?;
+        let info = self.user_reward_info[account].read()?;
 
         // Start with the stored reward balance
         let mut pending = info.reward_balance;
@@ -373,7 +371,7 @@ mod tests {
             token
                 .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
 
-            let info = token.user_reward_info.at(alice).read()?;
+            let info = token.user_reward_info[alice].read()?;
             assert_eq!(info.reward_recipient, alice);
             assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
             assert_eq!(info.reward_per_token, U256::ZERO);
@@ -385,7 +383,7 @@ mod tests {
                 },
             )?;
 
-            let info = token.user_reward_info.at(alice).read()?;
+            let info = token.user_reward_info[alice].read()?;
             assert_eq!(info.reward_recipient, Address::ZERO);
             assert_eq!(token.get_opted_in_supply()?, 0u128);
             assert_eq!(info.reward_per_token, U256::ZERO);

@@ -101,7 +101,7 @@ impl Precompile for TipFeeManager {
             }
             IFeeManager::collectedFeesCall::SELECTOR => {
                 view::<IFeeManager::collectedFeesCall>(calldata, |call| {
-                    self.collected_fees.at(call.validator).at(call.token).read()
+                    self.collected_fees[call.validator][call.token].read()
                 })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {

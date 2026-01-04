@@ -121,7 +121,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
-    let slot = TIP20Token::new(token_id).balances.at(caller).slot();
+    let slot = TIP20Token::new(token_id).balances[caller].slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -135,7 +135,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
-    let slot = TIP20Token::new(token_id).balances.at(recipient).slot();
+    let slot = TIP20Token::new(token_id).balances[recipient].slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");

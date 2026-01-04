@@ -1334,7 +1334,7 @@ where
     let token_id = tip20::address_to_token_id_unchecked(token);
 
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::new(token_id).balances.at(sender).slot();
+    let balance_slot = TIP20Token::new(token_id).balances[sender].slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)

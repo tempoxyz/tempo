@@ -15,7 +15,7 @@ use tempo_precompiles::{
         Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
         orderbook::{OrderbookHandler, compute_book_key},
     },
-    storage::{ContractStorage, StorageCtx, evm::EvmPrecompileStorageProvider},
+    storage::{ContractStorage, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
 };
 use tempo_primitives::TempoHeader;
 
@@ -496,7 +496,8 @@ impl<'b> BookIterator<'b> {
     /// Get a TickLevel from a tick
     pub fn get_price_level(&self, tick: i16) -> Result<TickLevel, DexApiError> {
         self.handler
-            .get_tick_level(tick, self.bids)
+            .tick_level_handler(tick, self.bids)
+            .read()
             .map_err(DexApiError::Precompile)
     }
 

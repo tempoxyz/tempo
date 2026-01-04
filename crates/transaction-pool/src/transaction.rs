@@ -85,7 +85,7 @@ impl TempoPooledTransaction {
         *self.nonce_key_slot.get_or_init(|| {
             let nonce_key = self.nonce_key()?;
             let sender = self.sender();
-            let slot = NonceManager::new().nonces.at(sender)[nonce_key].slot();
+            let slot = NonceManager::new().nonces[sender][nonce_key].slot();
             Some(slot)
         })
     }
