@@ -400,25 +400,22 @@ mod tests {
         assert_eq!(lower0, lower1);
 
         // Same salt with different senders should produce different addresses
-        let (addr1, _) = compute_tip20_address(sender1, salt1);
-        let (addr2, _) = compute_tip20_address(sender2, salt1);
-        assert_ne!(
-            addr1, addr2,
-            "Different senders with same salt should produce different addresses"
-        );
+        let (addr2, lower2) = compute_tip20_address(sender1, salt1);
+        let (addr3, lower3) = compute_tip20_address(sender2, salt1);
+        assert_ne!(addr2, addr3);
+        assert_ne!(lower2, lower3);
 
         // Same sender with different salts should produce different addresses
-        let (addr3, _) = compute_tip20_address(sender1, salt1);
-        let (addr4, _) = compute_tip20_address(sender1, salt2);
-        assert_ne!(
-            addr3, addr4,
-            "Same sender with different salts should produce different addresses"
-        );
+        let (addr4, lower4) = compute_tip20_address(sender1, salt1);
+        let (addr5, lower5) = compute_tip20_address(sender1, salt2);
+        assert_ne!(addr4, addr5);
+        assert_ne!(lower4, lower5);
 
         // All addresses should have TIP20 prefix
         assert!(is_tip20_prefix(addr1));
         assert!(is_tip20_prefix(addr2));
         assert!(is_tip20_prefix(addr3));
         assert!(is_tip20_prefix(addr4));
+        assert!(is_tip20_prefix(addr5));
     }
 }
