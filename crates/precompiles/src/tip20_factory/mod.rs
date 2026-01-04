@@ -389,21 +389,36 @@ mod tests {
 
     #[test]
     fn test_compute_tip20_address_deterministic() {
-        let sender = Address::random();
-        let salt = B256::random();
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+        let salt1 = B256::random();
+        let salt2 = B256::random();
 
-        // Same sender + salt should produce same address
-        let (addr1, lower1) = compute_tip20_address(sender, salt);
-        let (addr2, lower2) = compute_tip20_address(sender, salt);
+        let (addr0, lower0) = compute_tip20_address(sender1, salt1);
+        let (addr1, lower1) = compute_tip20_address(sender1, salt1);
+        assert_eq!(addr0, addr1);
+        assert_eq!(lower0, lower1);
 
-        assert_eq!(addr1, addr2);
-        assert_eq!(lower1, lower2);
+        // Same salt with different senders should produce different addresses
+        let (addr1, _) = compute_tip20_address(sender1, salt1);
+        let (addr2, _) = compute_tip20_address(sender2, salt1);
+        assert_ne!(
+            addr1, addr2,
+            "Different senders with same salt should produce different addresses"
+        );
 
-        // Different salt should produce different address
-        let (addr3, _) = compute_tip20_address(sender, B256::random());
-        assert_ne!(addr1, addr3);
+        // Same sender with different salts should produce different addresses
+        let (addr3, _) = compute_tip20_address(sender1, salt1);
+        let (addr4, _) = compute_tip20_address(sender1, salt2);
+        assert_ne!(
+            addr3, addr4,
+            "Same sender with different salts should produce different addresses"
+        );
 
-        // Address should have TIP20 prefix
+        // All addresses should have TIP20 prefix
         assert!(is_tip20_prefix(addr1));
+        assert!(is_tip20_prefix(addr2));
+        assert!(is_tip20_prefix(addr3));
+        assert!(is_tip20_prefix(addr4));
     }
 }
