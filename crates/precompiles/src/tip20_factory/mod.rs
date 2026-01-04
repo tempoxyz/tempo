@@ -199,6 +199,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
             let path_usd = TIP20Setup::path_usd(sender).apply()?;
+            factory.clear_emitted_events();
 
             let salt1 = B256::random();
             let salt2 = B256::random();
@@ -219,8 +220,8 @@ mod tests {
                 salt: salt2,
             };
 
-            let token_addr_1 = factory.create_token(sender, call1)?;
-            let token_addr_2 = factory.create_token(sender, call2)?;
+            let token_addr_1 = factory.create_token(sender, call1.clone())?;
+            let token_addr_2 = factory.create_token(sender, call2.clone())?;
 
             // Verify addresses are different
             assert_ne!(token_addr_1, token_addr_2);
@@ -232,6 +233,28 @@ mod tests {
             // Verify tokens are valid TIP20s
             assert!(factory.is_tip20(token_addr_1)?);
             assert!(factory.is_tip20(token_addr_2)?);
+
+            // Verify event emission
+            factory.assert_emitted_events(vec![
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: token_addr_1,
+                    name: call1.name,
+                    symbol: call1.symbol,
+                    currency: call1.currency,
+                    quoteToken: call1.quoteToken,
+                    admin: call1.admin,
+                    salt: call1.salt,
+                }),
+                TIP20FactoryEvent::TokenCreated(ITIP20Factory::TokenCreated {
+                    token: token_addr_2,
+                    name: call2.name,
+                    symbol: call2.symbol,
+                    currency: call2.currency,
+                    quoteToken: call2.quoteToken,
+                    admin: call2.admin,
+                    salt: call2.salt,
+                }),
+            ]);
 
             Ok(())
         })
