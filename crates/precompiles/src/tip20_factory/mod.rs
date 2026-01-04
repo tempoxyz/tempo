@@ -157,8 +157,8 @@ impl TIP20Factory {
         }
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed or the quote
-        // token is address(0)
-        if !self.is_tip20(quote_token)? || !quote_token.is_zero() {
+        // quote_token must be a valid TIP20 or address(0)
+        if !(self.is_tip20(quote_token)? || quote_token.is_zero()) {
             return Err(TIP20Error::invalid_quote_token().into());
         }
 

@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, B256, U256, address},
+    primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
@@ -41,7 +41,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::IValidatorConfig,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -512,12 +512,18 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "PathUSD",
+            "PathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
+
         // Initialize PathUSD directly (not via factory) since it's at a reserved address.
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create PathUSD token instance");
-        token
-            .initialize("pathUSD", "pathUSD", "USD", Address::ZERO, admin)
-            .expect("Could not initialize PathUSD token");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint to all recipients
