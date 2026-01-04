@@ -28,7 +28,6 @@ fn test_array_storage() {
         assert_eq!(layout.small_array.base_slot(), U256::from(10));
         assert_eq!(layout.field_b.slot(), U256::ONE);
         assert_eq!(layout.large_array.base_slot(), U256::from(20));
-        assert_eq!(layout.field_b.slot(), U256::ONE);
         assert_eq!(layout.field_c.slot(), U256::from(2));
         assert_eq!(layout.auto_array.base_slot(), U256::from(3));
         assert_eq!(layout.field_d.slot(), U256::from(6));
