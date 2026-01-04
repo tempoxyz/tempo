@@ -2,7 +2,6 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -19,35 +18,12 @@ use tempo_precompiles::{
 
 use tracing::{Level, info, instrument, warn};
 
-/// Reads the validator config from the boundary block of `epoch`.
-///
-/// If `epoch` is not set, reads the genesis block.
-///
-/// Note that this returns all validators, active and inactive.
-#[instrument(
-    skip_all,
-    fields(
-        attempt = _attempt,
-        epoch = epoch.map(tracing::field::display),
-    ),
-    err
-)]
-pub(super) async fn read_from_contract_on_epoch_boundary(
-    _attempt: u32,
+/// Reads state from the ValidatorConfig precompile at a given block height.
+fn read_validator_config_at_height<T>(
     node: &TempoFullNode,
-    epoch: Option<Epoch>,
-    epoch_strategy: &FixedEpocher,
-) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let last_height = epoch.map_or(0, |epoch| {
-        epoch_strategy
-            .last(epoch)
-            .expect("epoch strategy covers all epochs")
-    });
-    info!(
-        last_height,
-        "will read contract state from last height of epoch"
-    );
-
+    height: u64,
+    read_fn: impl FnOnce(&ValidatorConfig) -> eyre::Result<T>,
+) -> eyre::Result<T> {
     // Try mapping the block height to a hash tracked by reth.
     //
     // First check the canonical chain, then fallback to pending block state.
@@ -55,19 +31,19 @@ pub(super) async fn read_from_contract_on_epoch_boundary(
     // Necessary because the DKG and application actors process finalized block concurrently.
     let block_hash = if let Some(hash) = node
         .provider
-        .block_hash(last_height)
-        .wrap_err_with(|| format!("failed reading block hash at height `{last_height}`"))?
+        .block_hash(height)
+        .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
     {
         hash
     } else if let Some(pending) = node
         .provider
         .pending_block_num_hash()
         .wrap_err("failed reading pending block state")?
-        && pending.number == last_height
+        && pending.number == height
     {
         pending.hash
     } else {
-        return Err(eyre::eyre!("block not found at height `{last_height}`"));
+        return Err(eyre::eyre!("block not found at height `{height}`"));
     };
 
     let block = node
@@ -87,22 +63,40 @@ pub(super) async fn read_from_contract_on_epoch_boundary(
         ))
         .build();
 
-    // XXX: Ensure that evm and internals go out of scope before the await point
-    // below.
-    let raw_validators = {
-        let mut evm = node
-            .evm_config
-            .evm_for_block(db, block.header())
-            .wrap_err("failed instantiating evm for genesis block")?;
+    let mut evm = node
+        .evm_config
+        .evm_for_block(db, block.header())
+        .wrap_err("failed instantiating evm for block")?;
 
-        let ctx = evm.ctx_mut();
-        StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-            let validator_config = ValidatorConfig::new();
-            validator_config
-                .get_validators()
-                .wrap_err("failed to query contract for validator config")
-        })
-    }?;
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        read_fn(&ValidatorConfig::new())
+    })
+}
+
+/// Reads the validator config from the boundary block of `epoch`.
+///
+/// If `epoch` is not set, reads the genesis block.
+///
+/// Note that this returns all validators, active and inactive.
+#[instrument(
+    skip_all,
+    fields(
+        attempt = _attempt,
+        block.number = block_number,
+    ),
+    err
+)]
+pub(super) async fn read_from_contract_at_block(
+    _attempt: u32,
+    node: &TempoFullNode,
+    block_number: u64,
+) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
+    let raw_validators = read_validator_config_at_height(node, block_number, |config| {
+        config
+            .get_validators()
+            .wrap_err("failed to query contract for validator config")
+    })?;
 
     info!(?raw_validators, "read validators from contract",);
 
@@ -205,4 +199,27 @@ impl std::fmt::Display for DecodedValidator {
             self.public_key, self.inbound, self.outbound, self.index, self.address
         ))
     }
+}
+
+/// Reads the `nextFullDkgCeremony` epoch value from the ValidatorConfig precompile.
+///
+/// This is used to determine if the next DKG ceremony should be a full ceremony
+/// (new polynomial) instead of a reshare.
+#[instrument(
+    skip_all,
+    fields(
+        at_height,
+    ),
+    err,
+    ret(level = Level::INFO)
+)]
+pub(super) fn read_next_full_dkg_ceremony(
+    node: &TempoFullNode,
+    at_height: u64,
+) -> eyre::Result<u64> {
+    read_validator_config_at_height(node, at_height, |config| {
+        config
+            .get_next_full_dkg_ceremony()
+            .wrap_err("failed to query contract for next full dkg ceremony")
+    })
 }

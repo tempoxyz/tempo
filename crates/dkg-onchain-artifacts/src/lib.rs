@@ -34,6 +34,10 @@ pub struct OnchainDkgOutcome {
     /// The next players. These will be the players in the DKG ceremony running
     /// during `epoch`.
     pub next_players: ordered::Set<PublicKey>,
+
+    /// Whether the next DKG ceremony should be a full ceremony (new polynomial)
+    /// instead of a reshare. Set when `nextFullDkgCeremony == epoch`.
+    pub is_next_full_dkg: bool,
 }
 
 impl OnchainDkgOutcome {
@@ -59,6 +63,7 @@ impl Write for OnchainDkgOutcome {
         self.epoch.write(buf);
         self.output.write(buf);
         self.next_players.write(buf);
+        self.is_next_full_dkg.write(buf);
     }
 }
 
@@ -72,17 +77,22 @@ impl Read for OnchainDkgOutcome {
             buf,
             &(RangeCfg::from(1..=(MAX_VALIDATORS.get() as usize)), ()),
         )?;
+        let is_next_full_dkg = ReadExt::read(buf)?;
         Ok(Self {
             epoch,
             output,
             next_players,
+            is_next_full_dkg,
         })
     }
 }
 
 impl EncodeSize for OnchainDkgOutcome {
     fn encode_size(&self) -> usize {
-        self.epoch.encode_size() + self.output.encode_size() + self.next_players.encode_size()
+        self.epoch.encode_size()
+            + self.output.encode_size()
+            + self.next_players.encode_size()
+            + self.is_next_full_dkg.encode_size()
     }
 }
 
@@ -121,6 +131,7 @@ mod tests {
                 player_keys.iter().map(|key| key.public_key()),
             )
             .unwrap(),
+            is_next_full_dkg: false,
         };
         let bytes = on_chain.encode();
         assert_eq!(

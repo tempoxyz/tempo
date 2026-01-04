@@ -169,6 +169,7 @@ pub async fn setup_validators(
         epoch: Epoch::zero(),
         output: initial_dkg_outcome,
         next_players: shares.keys().clone(),
+        is_next_full_dkg: false,
     };
     let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut context))
         .take(how_many_verifiers as usize)
