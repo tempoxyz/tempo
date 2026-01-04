@@ -188,8 +188,6 @@ fn export_all_storage_constants() {
         })
     };
 
-    // TIP20 Factory - no storage fields (address derivation is now salt-based)
-
     // TIP403 Registry
     {
         use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};
