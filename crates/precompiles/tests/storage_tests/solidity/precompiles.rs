@@ -9,9 +9,6 @@ use tempo_precompiles_macros::{
 };
 use utils::*;
 
-// TIP20Factory no longer has storage fields - address derivation is now
-// based on keccak256(sender, salt) instead of a sequential token_id_counter
-
 #[test]
 fn test_tip403_registry_layout() {
     use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};

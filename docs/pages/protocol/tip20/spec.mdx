@@ -441,11 +441,11 @@ System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFe
 See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
 
 ## TIP20Factory
-The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory derives deterministic deployment addresses using a caller-provided salt, combined with the caller's address, under a fixed 10-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address. The `TIP20Factory` precompile is deployed at `0x20Fc000000000000000000000000000000000000`.
+The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory derives deterministic deployment addresses using a caller-provided salt, combined with the caller's address, under a fixed 12-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address. The `TIP20Factory` precompile is deployed at `0x20Fc000000000000000000000000000000000000`.
 
 Newly created TIP-20 addresses are deployed to a deterministic address derived from `TIP20_PREFIX || lowerBytes`, where:
-- `TIP20_PREFIX` is the 10-byte prefix `20C00000000000000000`
-- `lowerBytes` is the highest 80 bits of `keccak256(msg.sender, salt)`
+- `TIP20_PREFIX` is the 12-byte prefix `20C000000000000000000000`
+- `lowerBytes` is the highest 64 bits of `keccak256(msg.sender, salt)`
 
 The first 1000 addresses (where `lowerBytes < 1000`) are reserved for protocol use and cannot be deployed to via the factory.
 

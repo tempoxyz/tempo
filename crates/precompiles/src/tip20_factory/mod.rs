@@ -18,8 +18,10 @@ use tracing::trace;
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
 const RESERVED_SIZE: u128 = 1024;
 
-/// TIP20 token address prefix (10 bytes): 0x20C00000000000000000
-const TIP20_PREFIX_BYTES: [u8; 10] = [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+/// TIP20 token address prefix (12 bytes): 0x20C000000000000000000000
+const TIP20_PREFIX_BYTES: [u8; 12] = [
+    0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {}
@@ -29,15 +31,15 @@ pub struct TIP20Factory {}
 fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u128) {
     let hash = keccak256((sender, salt).abi_encode());
 
-    // Take first 10 bytes of hash as lower bytes (padded to u128)
+    // Take first 8 bytes of hash as lower bytes (padded to u128)
     let mut padded = [0u8; 16];
-    padded[6..].copy_from_slice(&hash[..10]);
+    padded[8..].copy_from_slice(&hash[..8]);
     let lower_bytes = u128::from_be_bytes(padded);
 
-    // Construct the address: TIP20_PREFIX (10 bytes) || hash[..10] (10 bytes)
+    // Construct the address: TIP20_PREFIX (12 bytes) || hash[..8] (8 bytes)
     let mut address_bytes = [0u8; 20];
-    address_bytes[..10].copy_from_slice(&TIP20_PREFIX_BYTES);
-    address_bytes[10..].copy_from_slice(&hash[..10]);
+    address_bytes[..12].copy_from_slice(&TIP20_PREFIX_BYTES);
+    address_bytes[12..].copy_from_slice(&hash[..8]);
 
     (Address::from(address_bytes), lower_bytes)
 }
@@ -129,26 +131,53 @@ impl TIP20Factory {
         Ok(token_address)
     }
 
-    /// Creates a token at a reserved address. Internal function only, to create pathUSD at genesis.
-    pub fn create_path_usd(&mut self, admin: Address) -> Result<Address> {
-        use crate::PATH_USD_ADDRESS;
+    /// Creates a token at a reserved address
+    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
+    pub fn create_token_reserved_address(
+        &mut self,
+        address: Address,
+        name: &str,
+        symbol: &str,
+        currency: &str,
+        quote_token: Address,
+        admin: Address,
+    ) -> Result<Address> {
+        // Validate that the address has a TIP20 prefix
+        if !is_tip20_prefix(address) {
+            return Err(TIP20Error::invalid_token().into());
+        }
 
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)?;
+        // Validate that the address is not already deployed
+        if self.is_tip20(address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
+                    token: address,
+                }),
+            ));
+        }
+
+        // Ensure that the quote token is a valid TIP20 that is currently deployed or the quote
+        // quote_token must be a valid TIP20 or address(0)
+        if !(self.is_tip20(quote_token)? || quote_token.is_zero()) {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        let mut token = TIP20Token::from_address(address)?;
+        token.initialize(name, symbol, currency, Address::ZERO, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {
-                token: PATH_USD_ADDRESS,
-                name: "PathUSD".to_string(),
-                symbol: "PUSD".to_string(),
-                currency: "USD".to_string(),
+                token: address,
+                name: name.into(),
+                symbol: symbol.into(),
+                currency: currency.into(),
                 quoteToken: Address::ZERO,
                 admin,
                 salt: B256::ZERO,
             },
         ))?;
 
-        Ok(PATH_USD_ADDRESS)
+        Ok(address)
     }
 }
 

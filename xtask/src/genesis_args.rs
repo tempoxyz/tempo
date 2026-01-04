@@ -1,6 +1,6 @@
 use alloy::{
     genesis::{ChainConfig, Genesis, GenesisAccount},
-    primitives::{Address, B256, U256, address},
+    primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
 use alloy_primitives::Bytes;
@@ -41,7 +41,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::IValidatorConfig,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -224,7 +224,7 @@ impl GenesisArgs {
         let (alpha_token_address, beta_token_address, theta_token_address) =
             if !self.no_extra_tokens {
                 println!("Initializing TIP20 tokens");
-                let (_, alpha) = create_and_mint_token(
+                let alpha = create_and_mint_token(
                     "AlphaUSD",
                     "AlphaUSD",
                     "USD",
@@ -232,10 +232,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000001"),
                     &mut evm,
                 )?;
 
-                let (_, beta) = create_and_mint_token(
+                let beta = create_and_mint_token(
                     "BetaUSD",
                     "BetaUSD",
                     "USD",
@@ -243,10 +244,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000002"),
                     &mut evm,
                 )?;
 
-                let (_, theta) = create_and_mint_token(
+                let theta = create_and_mint_token(
                     "ThetaUSD",
                     "ThetaUSD",
                     "USD",
@@ -254,6 +256,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000003"),
                     &mut evm,
                 )?;
 
@@ -509,12 +512,18 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "PathUSD",
+            "PathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
+
         // Initialize PathUSD directly (not via factory) since it's at a reserved address.
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create PathUSD token instance");
-        token
-            .initialize("pathUSD", "pathUSD", "USD", Address::ZERO, admin)
-            .expect("Could not initialize PathUSD token");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint to all recipients
@@ -544,7 +553,7 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
-    salt: B256,
+    address: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -557,17 +566,7 @@ fn create_and_mint_token(
             "TIP20Factory must be initialized before creating tokens"
         );
         let token_address = factory
-            .create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.into(),
-                    symbol: symbol.into(),
-                    currency: currency.into(),
-                    quoteToken: quote_token,
-                    admin,
-                    salt,
-                },
-            )
+            .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
             .expect("Could not create token");
 
         let mut token =

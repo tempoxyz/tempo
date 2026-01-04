@@ -576,7 +576,6 @@ mod tests {
 
     #[test]
     fn test_read_token_balance_typed_storage() -> eyre::Result<()> {
-        // Use PATH_USD as the token address
         let token_address = PATH_USD_ADDRESS;
         let account = Address::random();
         let expected_balance = U256::from(1000u64);
