@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20Fa
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, is_tip20_prefix},
 };
