@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20Fa
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, is_tip20_prefix},
 };
@@ -131,8 +131,6 @@ impl TIP20Factory {
 
     /// Creates a token at a reserved address. Internal function only, to create pathUSD at genesis.
     pub fn create_path_usd(&mut self, admin: Address) -> Result<Address> {
-        use crate::PATH_USD_ADDRESS;
-
         let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
         path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)?;
 

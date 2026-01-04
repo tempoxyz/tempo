@@ -2,6 +2,7 @@ use alloy::{
     network::EthereumWallet,
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::Filter,
     signers::local::PrivateKeySigner,
     sol_types::SolEvent,
 };
@@ -43,8 +44,6 @@ pub struct SimpleArbArgs {
 
 #[instrument(skip(provider))]
 async fn fetch_all_pairs<P: Provider>(provider: P) -> eyre::Result<HashSet<(Address, Address)>> {
-    use alloy::rpc::types::Filter;
-
     let filter = Filter::new()
         .address(TIP20_FACTORY_ADDRESS)
         .event_signature(ITIP20Factory::TokenCreated::SIGNATURE_HASH);
