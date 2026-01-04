@@ -264,7 +264,13 @@ impl TIP20Setup {
             .admin
             .expect("pathUSD is uninitialized and requires an admin");
 
-        Self::factory()?.create_path_usd(admin)?;
+        Self::factory()?.create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "PathUSD",
+            "PUSD", 
+            "USD",
+            admin,
+        )?;
 
         TIP20Token::from_address(PATH_USD_ADDRESS)
     }

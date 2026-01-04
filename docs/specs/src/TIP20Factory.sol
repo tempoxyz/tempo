@@ -34,14 +34,14 @@ contract TIP20Factory is ITIP20Factory {
             }
         }
 
-        uint80 lowerBytes = uint80(bytes10(keccak256(abi.encode(msg.sender, salt))));
+        uint64 lowerBytes = uint64(bytes8(keccak256(abi.encode(msg.sender, salt))));
         if (lowerBytes < reservedSize) {
             revert AddressReserved();
         }
 
         // Calculate the deterministic address for this token
         address tokenAddr =
-            address(uint160(0x20C0000000000000000000000000000000000000) | uint160(lowerBytes));
+            address(uint160(0x20C000000000000000000000000000000000000000) | uint160(lowerBytes));
 
         if (tokenAddr.code.length != 0) {
             revert TokenAlreadyExists(tokenAddr);
@@ -67,8 +67,8 @@ contract TIP20Factory is ITIP20Factory {
     }
 
     function getTokenAddress(address sender, bytes32 salt) external pure returns (address) {
-        uint80 lowerBytes = uint80(bytes10(keccak256(abi.encode(sender, salt))));
-        return address(uint160(0x20C0000000000000000000000000000000000000) | uint160(lowerBytes));
+        uint64 lowerBytes = uint64(bytes8(keccak256(abi.encode(sender, salt))));
+        return address(uint160(0x20C000000000000000000000000000000000000000) | uint160(lowerBytes));
     }
 
 }

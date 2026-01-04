@@ -10,9 +10,9 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
 use core::fmt;
 
-/// TIP20 payment address prefix (10 bytes for payment classification)
-/// Same as TIP20_TOKEN_PREFIX but extended to 10 bytes for payment classification
-pub const TIP20_PAYMENT_PREFIX: [u8; 10] = hex!("20C00000000000000000");
+/// TIP20 payment address prefix (12 bytes for payment classification)
+/// Same as TIP20_TOKEN_PREFIX
+pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);

@@ -33,9 +33,9 @@ const TIP20_DECIMALS: u8 = 6;
 /// USD currency string constant
 pub const USD_CURRENCY: &str = "USD";
 
-/// TIP20 token address prefix (10 bytes)
-/// The full address is: TIP20_TOKEN_PREFIX (10 bytes) || derived_bytes (10 bytes)
-const TIP20_TOKEN_PREFIX: [u8; 10] = hex!("20C00000000000000000");
+/// TIP20 token address prefix (12 bytes)
+/// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
+const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Returns true if the address has the TIP20 prefix.
 ///
@@ -1475,9 +1475,9 @@ pub(crate) mod tests {
     fn test_tip20_token_prefix() {
         assert_eq!(
             TIP20_TOKEN_PREFIX,
-            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+            [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         );
-        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..10], &TIP20_TOKEN_PREFIX);
+        assert_eq!(&DEFAULT_FEE_TOKEN.as_slice()[..12], &TIP20_TOKEN_PREFIX);
     }
 
     #[test]

@@ -18,8 +18,8 @@ use tracing::trace;
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
 const RESERVED_SIZE: u128 = 1024;
 
-/// TIP20 token address prefix (10 bytes): 0x20C00000000000000000
-const TIP20_PREFIX_BYTES: [u8; 10] = [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+/// TIP20 token address prefix (12 bytes): 0x20C000000000000000000000
+const TIP20_PREFIX_BYTES: [u8; 12] = [0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {}
