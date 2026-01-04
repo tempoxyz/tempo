@@ -61,8 +61,9 @@ use tempo_contracts::precompiles::{
     ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
+    tip_fee_manager::DEFAULT_FEE_TOKEN,
     tip20::{ISSUER_ROLE, token_id_to_address},
 };
 use tokio::{
@@ -95,11 +96,11 @@ pub struct MaxTpsArgs {
     #[arg(short, long, default_value_t = 0)]
     from_mnemonic_index: u32,
 
-    #[arg(long, default_value_t = DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO)]
+    #[arg(long, default_value_t = DEFAULT_FEE_TOKEN)]
     fee_token: Address,
 
-    /// Target URLs for network connections
-    #[arg(long, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
+    /// Target URLs for network connections (comma-separated or multiple --target-urls)
+    #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append, default_values_t = vec!["http://localhost:8545".parse::<Url>().unwrap()])]
     target_urls: Vec<Url>,
 
     /// A limit of the maximum number of concurrent requests, prevents issues with too many
@@ -131,15 +132,15 @@ pub struct MaxTpsArgs {
     benchmark_mode: Option<String>,
 
     /// A weight that determines the likelihood of generating a TIP-20 transfer transaction.
-    #[arg(long, default_value_t = 0.8)]
+    #[arg(long, default_value_t = 1.0)]
     tip20_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX place transaction.
-    #[arg(long, default_value_t = 0.01)]
+    #[arg(long, default_value_t = 0.0)]
     place_order_weight: f64,
 
     /// A weight that determines the likelihood of generating a DEX swapExactAmountIn transaction.
-    #[arg(long, default_value_t = 0.19)]
+    #[arg(long, default_value_t = 0.0)]
     swap_weight: f64,
 
     /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.

@@ -17,6 +17,9 @@ interface IValidatorConfig {
     /// @notice Thrown when validator is not found
     error ValidatorNotFound();
 
+    /// @notice Thrown when public key is invalid (zero)
+    error InvalidPublicKey();
+
     /// @notice Thrown when inbound address is not in valid host:port format
     /// @param field The field name that failed validation
     /// @param input The invalid input that was provided
@@ -87,5 +90,14 @@ interface IValidatorConfig {
     /// @notice Change owner
     /// @param newOwner The new owner address
     function changeOwner(address newOwner) external;
+
+    /// @notice Get the epoch at which a fresh DKG ceremony will be triggered
+    ///
+    /// @return The epoch number, or 0 if no fresh DKG is scheduled. The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+    function getNextFullDkgCeremony() external view returns (uint64);
+
+    /// @notice Set the epoch at which a fresh DKG ceremony will be triggered (owner only)
+    /// @param epoch The epoch in which to run the fresh DKG ceremony. Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
+    function setNextFullDkgCeremony(uint64 epoch) external;
 
 }

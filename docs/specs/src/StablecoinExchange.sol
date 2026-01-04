@@ -2,12 +2,15 @@
 pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
+import { TIP403Registry } from "./TIP403Registry.sol";
 import { IStablecoinExchange } from "./interfaces/IStablecoinExchange.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 
 contract StablecoinExchange is IStablecoinExchange {
 
     address internal constant FACTORY = 0x20Fc000000000000000000000000000000000000;
+    TIP403Registry internal constant TIP403_REGISTRY =
+        TIP403Registry(0x403c000000000000000000000000000000000000);
 
     /// @notice Minimum allowed tick
     int16 public constant MIN_TICK = -2000;
@@ -27,8 +30,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Maximum valid price (PRICE_SCALE + int16.max)
     uint32 public constant MAX_PRICE = 132_767;
 
-    /// @notice Minimum order amount (10 units with 6 decimals)
-    uint128 public constant MIN_ORDER_AMOUNT = 10_000_000;
+    /// @notice Minimum order amount (100 units with 6 decimals)
+    uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
 
     /// @notice TIP20 token address prefix (12 bytes)
     bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
@@ -68,10 +71,8 @@ contract StablecoinExchange is IStablecoinExchange {
     /// User balances
     mapping(address user => mapping(address token => uint128 balance)) internal balances;
 
-    /// Last processed order ID
-    uint128 public activeOrderId;
-    /// Latest pending order ID
-    uint128 public pendingOrderId;
+    /// Next order ID to be assigned
+    uint128 public nextOrderId = 1;
 
     /*//////////////////////////////////////////////////////////////
                               Functions
@@ -118,11 +119,21 @@ contract StablecoinExchange is IStablecoinExchange {
         }
     }
 
-    /// @notice Generate deterministic key for token pair
-    /// @return key Deterministic pair key
-    function pairKey(address tokenA, address tokenB) public pure returns (bytes32 key) {
-        (tokenA, tokenB) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        key = keccak256(abi.encodePacked(tokenA, tokenB));
+    /// @notice Check if an account is authorized by a token's transfer policy
+    /// @param token The token to check the policy of
+    /// @param account The account to check authorization for
+    /// @return True if both the account and this contract are authorized
+    function _checkTransferPolicy(address token, address account) internal view returns (bool) {
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        return TIP403_REGISTRY.isAuthorized(policyId, account)
+            && TIP403_REGISTRY.isAuthorized(policyId, address(this));
+    }
+
+    /// @notice Generate deterministic key for ordered (base, quote) token pair
+    /// @return key pair key
+    /// @dev The first argument MUST be the base token and the second the quote token.
+    function pairKey(address base, address quote) public pure returns (bytes32 key) {
+        key = keccak256(abi.encodePacked(base, quote));
     }
 
     /// @notice Creates a new trading pair between base and quote tokens
@@ -148,7 +159,9 @@ contract StablecoinExchange is IStablecoinExchange {
 
         // Create new orderbook for pair
         Orderbook storage book = books[key];
-        if (book.base != address(0)) revert IStablecoinExchange.PairAlreadyExists();
+        if (book.base != address(0)) {
+            revert IStablecoinExchange.PairAlreadyExists();
+        }
         book.base = base;
         book.quote = quote;
 
@@ -158,7 +171,7 @@ contract StablecoinExchange is IStablecoinExchange {
         emit PairCreated(key, base, quote);
     }
 
-    /// @notice Internal function to place order in pending queue
+    /// @notice Internal function to place order and immediately add to orderbook
     /// @param base Base token address
     /// @param quote Quote token address
     /// @param amount Order amount in base token
@@ -167,7 +180,6 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param isFlip Whether this is a flip order
     /// @param flipTick Target tick for flip (ignored if not flip order)
     /// @return orderId The assigned order ID
-    /// @dev Orders are queued and processed at end of block
     function _placeOrder(
         address base,
         address quote,
@@ -182,18 +194,26 @@ contract StablecoinExchange is IStablecoinExchange {
         bytes32 key = pairKey(base, quote);
         Orderbook storage book = books[key];
 
-        if (book.base == address(0)) revert IStablecoinExchange.PairDoesNotExist();
+        if (book.base == address(0)) {
+            revert IStablecoinExchange.PairDoesNotExist();
+        }
 
-        if (tick < MIN_TICK || tick > MAX_TICK) revert IStablecoinExchange.TickOutOfBounds(tick);
+        if (tick < MIN_TICK || tick > MAX_TICK) {
+            revert IStablecoinExchange.TickOutOfBounds(tick);
+        }
         if (tick % TICK_SPACING != 0) revert IStablecoinExchange.InvalidTick();
 
-        if (amount < MIN_ORDER_AMOUNT) revert IStablecoinExchange.BelowMinimumOrderSize(amount);
+        if (amount < MIN_ORDER_AMOUNT) {
+            revert IStablecoinExchange.BelowMinimumOrderSize(amount);
+        }
 
         if (isFlip) {
             if (flipTick < MIN_TICK || flipTick > MAX_TICK) {
                 revert IStablecoinExchange.InvalidFlipTick();
             }
-            if (flipTick % TICK_SPACING != 0) revert IStablecoinExchange.InvalidFlipTick();
+            if (flipTick % TICK_SPACING != 0) {
+                revert IStablecoinExchange.InvalidFlipTick();
+            }
 
             if (isBid) {
                 if (flipTick <= tick) {
@@ -220,26 +240,29 @@ contract StablecoinExchange is IStablecoinExchange {
                 escrowAmount = amount;
             }
 
+            // Check if maker and DEX are authorized by both tokens' transfer policies
+            if (!_checkTransferPolicy(base, maker) || !_checkTransferPolicy(quote, maker)) {
+                if (revertOnTransferFail) {
+                    revert ITIP20.PolicyForbids();
+                } else {
+                    return 0;
+                }
+            }
+
             // Check if the user has a balance, transfer the rest
             uint128 userBalance = balances[maker][escrowToken];
             if (userBalance >= escrowAmount) {
                 balances[maker][escrowToken] -= escrowAmount;
-            } else {
+            } else if (revertOnTransferFail) {
                 balances[maker][escrowToken] = 0;
-                if (revertOnTransferFail) {
-                    ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance);
-                } else {
-                    try ITIP20(escrowToken)
-                        .transferFrom(maker, address(this), escrowAmount - userBalance) { }
-                    catch {
-                        return 0;
-                    }
-                }
+                ITIP20(escrowToken).transferFrom(maker, address(this), escrowAmount - userBalance);
+            } else {
+                // For flip orders (revertOnTransferFail = false), only use internal balance
+                return 0;
             }
         }
-        orderId = pendingOrderId + 1;
-        ++pendingOrderId;
+        orderId = nextOrderId;
+        ++nextOrderId;
 
         orders[orderId] = IStablecoinExchange.Order({
             orderId: orderId,
@@ -255,8 +278,53 @@ contract StablecoinExchange is IStablecoinExchange {
             flipTick: flipTick
         });
 
+        // Immediately link order into the active orderbook
+        _commitOrderToBook(orderId, key, tick, isBid, amount);
+
         emit OrderPlaced(orderId, maker, base, amount, isBid, tick);
         return orderId;
+    }
+
+    /// @notice Link an order into the active orderbook
+    /// @param orderId The order ID to link
+    /// @param bookKey The orderbook key
+    /// @param tick The tick level
+    /// @param isBid Whether this is a bid order
+    /// @param amount The order amount (for liquidity tracking)
+    function _commitOrderToBook(
+        uint128 orderId,
+        bytes32 bookKey,
+        int16 tick,
+        bool isBid,
+        uint128 amount
+    ) internal {
+        Orderbook storage book = books[bookKey];
+        IStablecoinExchange.TickLevel storage level = isBid ? book.bids[tick] : book.asks[tick];
+
+        uint128 prevTail = level.tail;
+        if (prevTail == 0) {
+            level.head = orderId;
+            level.tail = orderId;
+            _setTickBit(bookKey, tick, isBid);
+
+            // Update best bid/ask when new tick becomes active
+            if (isBid) {
+                if (tick > book.bestBidTick) {
+                    book.bestBidTick = tick;
+                }
+            } else {
+                if (tick < book.bestAskTick) {
+                    book.bestAskTick = tick;
+                }
+            }
+        } else {
+            orders[prevTail].next = orderId;
+            orders[orderId].prev = prevTail;
+            level.tail = orderId;
+        }
+
+        // Increment total liquidity for this tick level
+        level.totalLiquidity += amount;
     }
 
     /// @notice Place a limit order on the orderbook
@@ -291,122 +359,83 @@ contract StablecoinExchange is IStablecoinExchange {
 
     function cancel(uint128 orderId) external {
         IStablecoinExchange.Order storage order = orders[orderId];
-        if (order.maker == address(0)) revert IStablecoinExchange.OrderDoesNotExist();
-        if (order.maker != msg.sender) revert IStablecoinExchange.Unauthorized();
+        if (order.maker == address(0)) {
+            revert IStablecoinExchange.OrderDoesNotExist();
+        }
+        if (order.maker != msg.sender) {
+            revert IStablecoinExchange.Unauthorized();
+        }
+
+        _cancelOrder(orderId, order);
+    }
+
+    /// @notice Cancel an order where the maker is forbidden by TIP-403 policy
+    /// @dev Allows anyone to clean up stale orders from blacklisted makers
+    /// @param orderId The order ID to cancel
+    function cancelStaleOrder(uint128 orderId) external {
+        IStablecoinExchange.Order storage order = orders[orderId];
+        if (order.maker == address(0)) {
+            revert IStablecoinExchange.OrderDoesNotExist();
+        }
 
         Orderbook storage book = books[order.bookKey];
         address token = order.isBid ? book.quote : book.base;
 
-        // If the order is pending, delete it from storage without adjusting the orderbook
-        if (orderId > activeOrderId) {
-            // Credit escrow amount to user's withdrawable balance
-            uint128 escrowAmount;
-            if (order.isBid) {
-                // For bids, escrow quote tokens based on price
-                uint32 price = tickToPrice(order.tick);
-                escrowAmount =
-                    uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
-            } else {
-                // For asks, escrow base tokens
-                escrowAmount = order.remaining;
-            }
-            balances[order.maker][token] += escrowAmount;
-
-            delete orders[orderId];
-            emit OrderCancelled(orderId);
-            return;
-        } else {
-            bool isBid = order.isBid;
-            IStablecoinExchange.TickLevel storage level =
-                isBid ? book.bids[order.tick] : book.asks[order.tick];
-
-            if (order.prev != 0) {
-                orders[order.prev].next = order.next;
-            } else {
-                level.head = order.next;
-            }
-
-            if (order.next != 0) {
-                orders[order.next].prev = order.prev;
-            } else {
-                level.tail = order.prev;
-            }
-
-            // Decrement total liquidity
-            level.totalLiquidity -= order.remaining;
-
-            if (level.head == 0) {
-                _clearTickBit(order.bookKey, order.tick, isBid);
-            }
-
-            // Credit escrow amount to user's withdrawable balance
-            uint128 escrowAmount;
-            if (order.isBid) {
-                // For bids, escrow quote tokens based on price
-                uint32 price = tickToPrice(order.tick);
-                escrowAmount =
-                    uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
-            } else {
-                // For asks, escrow base tokens
-                escrowAmount = order.remaining;
-            }
-            balances[order.maker][token] += escrowAmount;
-
-            delete orders[orderId];
-
-            emit OrderCancelled(orderId);
+        // Check if maker is forbidden by the token's transfer policy
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (TIP403_REGISTRY.isAuthorized(policyId, order.maker)) {
+            revert IStablecoinExchange.OrderNotStale();
         }
+
+        _cancelOrder(orderId, order);
     }
 
-    // TODO: it might be nice to create some ISystem Tx interface that is used
-    // for contracts that are executed by the protocol at the end of the block.
-    // This makes it easy to distinguish when the protocol is responsible for calling a function
-    // TODO: natspec
-    function executeBlock() external {
-        if (msg.sender != address(0)) revert Unauthorized();
+    /// @notice Internal function to cancel an order and refund escrow
+    /// @dev Caller must validate authorization before calling
+    /// @param orderId The order ID to cancel
+    /// @param order Storage reference to the order
+    function _cancelOrder(uint128 orderId, IStablecoinExchange.Order storage order) internal {
+        Orderbook storage book = books[order.bookKey];
+        address token = order.isBid ? book.quote : book.base;
+        bool isBid = order.isBid;
+        IStablecoinExchange.TickLevel storage level =
+            isBid ? book.bids[order.tick] : book.asks[order.tick];
 
-        uint128 orderId = activeOrderId + 1;
-        uint128 pendingId = pendingOrderId;
-
-        for (orderId = orderId; orderId <= pendingId; orderId++) {
-            IStablecoinExchange.Order storage order = orders[orderId];
-
-            // If the order is already canceled, skip
-            if (order.maker == address(0)) continue;
-
-            Orderbook storage book = books[order.bookKey];
-            bool isBid = order.isBid;
-            IStablecoinExchange.TickLevel storage level =
-                isBid ? book.bids[order.tick] : book.asks[order.tick];
-
-            uint128 prevTail = level.tail;
-            if (prevTail == 0) {
-                level.head = orderId;
-                level.tail = orderId;
-                _setTickBit(order.bookKey, order.tick, isBid);
-
-                // Update best bid/ask when new tick becomes active
-                if (isBid) {
-                    if (order.tick > book.bestBidTick) {
-                        book.bestBidTick = order.tick;
-                    }
-                } else {
-                    if (order.tick < book.bestAskTick) {
-                        book.bestAskTick = order.tick;
-                    }
-                }
-            } else {
-                orders[prevTail].next = orderId;
-                order.prev = prevTail;
-                level.tail = orderId;
-            }
-
-            // Increment total liquidity for this tick level
-            level.totalLiquidity += order.remaining;
+        if (order.prev != 0) {
+            orders[order.prev].next = order.next;
+        } else {
+            level.head = order.next;
         }
 
-        // Update activeOrderId to last processed order
-        activeOrderId = orderId - 1;
+        if (order.next != 0) {
+            orders[order.next].prev = order.prev;
+        } else {
+            level.tail = order.prev;
+        }
+
+        // Decrement total liquidity
+        level.totalLiquidity -= order.remaining;
+
+        if (level.head == 0) {
+            _clearTickBit(order.bookKey, order.tick, isBid);
+        }
+
+        // Credit escrow amount to user's withdrawable balance
+        uint128 escrowAmount;
+        if (order.isBid) {
+            // For bids, escrow quote tokens based on price
+            uint32 price = tickToPrice(order.tick);
+            escrowAmount =
+                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
+        } else {
+            // For asks, escrow base tokens
+            escrowAmount = order.remaining;
+        }
+        balances[order.maker][token] += escrowAmount;
+
+        delete orders[orderId];
+
+        emit OrderCancelled(orderId);
     }
 
     /// @notice Withdraw tokens from exchange balance
@@ -456,7 +485,9 @@ contract StablecoinExchange is IStablecoinExchange {
         returns (IStablecoinExchange.Order memory order)
     {
         IStablecoinExchange.Order storage o = orders[orderId];
-        if (o.maker == address(0)) revert IStablecoinExchange.OrderDoesNotExist();
+        if (o.maker == address(0)) {
+            revert IStablecoinExchange.OrderDoesNotExist();
+        }
         return o;
     }
 
@@ -507,12 +538,13 @@ contract StablecoinExchange is IStablecoinExchange {
 
         // Credit maker with appropriate tokens
         if (isBid) {
-            // Bid order: maker gets base tokens
+            // Bid order: maker gets base tokens (exact amount)
             balances[order.maker][book.base] += fillAmount;
         } else {
-            // Ask order: maker gets quote tokens
+            // Ask order: maker gets quote tokens - round UP to favor maker
             uint32 price = tickToPrice(order.tick);
-            uint128 quoteAmount = (fillAmount * price) / PRICE_SCALE;
+            uint128 quoteAmount =
+                uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
             balances[order.maker][book.quote] += quoteAmount;
         }
 
@@ -566,6 +598,15 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @param token The token to transfer
     /// @param amount The amount to transfer
     function _decrementBalanceOrTransferFrom(address user, address token, uint128 amount) internal {
+        // Check if user is authorized by the token's transfer policy before using internal balance
+        uint64 policyId = ITIP20(token).transferPolicyId();
+        if (
+            !TIP403_REGISTRY.isAuthorized(policyId, user)
+                || !TIP403_REGISTRY.isAuthorized(policyId, address(this))
+        ) {
+            revert ITIP20.PolicyForbids();
+        }
+
         uint128 userBalance = balances[user][token];
         if (userBalance >= amount) {
             balances[user][token] -= amount;
@@ -693,8 +734,10 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
-                // For bids, we want remainingOut quote tokens
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // For bids: round UP baseNeeded and add 1 to ensure full order consumption.
+                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 // Calculate how much quote to receive for fillAmount of base
@@ -752,8 +795,9 @@ contract StablecoinExchange is IStablecoinExchange {
                     remainingOut = 0;
                 }
 
-                // Calculate how much quote to pay for fillAmount of base
-                uint128 quoteIn = (fillAmount * price) / PRICE_SCALE;
+                // Calculate how much quote taker pays (maker receives) - round UP to favor maker
+                uint128 quoteIn =
+                    uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
                 amountIn += quoteIn;
 
                 // Fill the order and get next order
@@ -860,10 +904,12 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseOut = (remainingIn * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
-                // Calculate actual quote needed for fillAmount of base
+                // Calculate quote consumed = what maker receives - round UP to favor maker
                 if (baseOut > currentOrder.remaining) {
                     fillAmount = currentOrder.remaining;
-                    remainingIn -= (fillAmount * price) / PRICE_SCALE;
+                    remainingIn -= uint128(
+                        (uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE
+                    );
                 } else {
                     fillAmount = baseOut;
                     remainingIn = 0;
@@ -917,7 +963,10 @@ contract StablecoinExchange is IStablecoinExchange {
 
                 uint32 price = tickToPrice(currentTick);
 
-                uint128 baseNeeded = (remainingOut * PRICE_SCALE) / price;
+                // Round UP + 1 to match execution. Note: if multiple orders are crossed
+                // within this tick, execution may charge slightly more (+1 per order boundary).
+                uint128 baseNeeded =
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
                 uint128 fillAmount;
 
                 if (baseNeeded > level.totalLiquidity) {
@@ -959,7 +1008,9 @@ contract StablecoinExchange is IStablecoinExchange {
                     remainingOut = 0;
                 }
 
-                uint128 quoteIn = (fillAmount * price) / PRICE_SCALE;
+                // Taker pays quote, maker receives quote - round UP to favor maker
+                uint128 quoteIn =
+                    uint128((uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE);
                 amountIn += quoteIn;
 
                 if (fillAmount == level.totalLiquidity) {
@@ -1031,9 +1082,12 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint128 baseOut = (remainingIn * PRICE_SCALE) / price;
                 uint128 fillAmount;
 
+                // Quote consumed = what maker receives - round UP to favor maker
                 if (baseOut > level.totalLiquidity) {
                     fillAmount = level.totalLiquidity;
-                    remainingIn -= (fillAmount * price) / PRICE_SCALE;
+                    remainingIn -= uint128(
+                        (uint256(fillAmount) * uint256(price) + PRICE_SCALE - 1) / PRICE_SCALE
+                    );
                 } else {
                     fillAmount = baseOut;
                     remainingIn = 0;
@@ -1191,18 +1245,53 @@ contract StablecoinExchange is IStablecoinExchange {
         bookKeys = new bytes32[](path.length - 1);
         baseForQuote = new bool[](path.length - 1);
 
+        // Track whether we are currently moving "up" the quote tree (child -> parent)
+        // or "down" (parent -> child). We start with the natural direction from
+        // `tokenIn` towards the LCA and flip once when we cross the LCA so that
+        // at most one hop has to check both orientations.
+        bool isBaseForQuote = true;
+
         for (uint256 i = 0; i < path.length - 1; i++) {
             address hopTokenIn = path[i];
             address hopTokenOut = path[i + 1];
 
-            bytes32 bookKey = pairKey(hopTokenIn, hopTokenOut);
+            address base;
+            address quote;
+            // Determine which token is base and which is quote using the current
+            // TIP-20 quoteToken relationships. While we are "going up" the tree,
+            // we expect hopTokenIn.quoteToken() == hopTokenOut; once this no longer
+            // holds, we flip to "going down" and expect hopTokenOut.quoteToken() == hopTokenIn
+            // for all remaining hops. This guarantees at most one hop checks both.
+            // First, try the "upward" direction (child -> parent) while we are goingUp.
+            if (isBaseForQuote && address(ITIP20(hopTokenIn).quoteToken()) == hopTokenOut) {
+                // hopTokenIn quotes hopTokenOut => base = hopTokenIn, quote = hopTokenOut
+                base = hopTokenIn;
+                quote = hopTokenOut;
+            } else {
+                // Upward match failed or we've already flipped; we now only accept
+                // the "downward" direction (parent -> child).
+                if (isBaseForQuote) {
+                    // Flip direction at most once when we cross the LCA
+                    isBaseForQuote = false;
+                }
+
+                // This check may not be strictly needed given how path is constructed
+                if (address(ITIP20(hopTokenOut).quoteToken()) == hopTokenIn) {
+                    // hopTokenOut quotes hopTokenIn => base = hopTokenOut, quote = hopTokenIn
+                    base = hopTokenOut;
+                    quote = hopTokenIn;
+                } else {
+                    revert IStablecoinExchange.PairDoesNotExist();
+                }
+            }
+
+            bytes32 bookKey = pairKey(base, quote);
             Orderbook storage orderbook = books[bookKey];
 
             // Validate pair exists
-            if (orderbook.base == address(0)) revert IStablecoinExchange.PairDoesNotExist();
-
-            // Determine direction
-            bool isBaseForQuote = (hopTokenIn == orderbook.base);
+            if (orderbook.base == address(0)) {
+                revert IStablecoinExchange.PairDoesNotExist();
+            }
 
             bookKeys[i] = bookKey;
             baseForQuote[i] = isBaseForQuote;

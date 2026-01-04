@@ -47,17 +47,21 @@ jobs:
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@cargo-hack
-      - run: cargo hack check --feature-powerset --depth 1
+      - run: cargo hack check --feature-powerset --depth 1 --partition ${{ matrix.partition }}/2
 
   docs:
     name: docs
-    runs-on: depot-ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5

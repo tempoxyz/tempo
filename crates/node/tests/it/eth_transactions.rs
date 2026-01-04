@@ -12,10 +12,7 @@ use tempo_chainspec::spec::TEMPO_BASE_FEE;
 async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;

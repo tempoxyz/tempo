@@ -157,14 +157,7 @@ mod tests {
             let mut token = TIP20Token::new(token_id);
 
             // Initialize and grant admin
-            token.initialize(
-                "name",
-                "symbol",
-                "currency",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )?;
+            token.initialize("name", "symbol", "currency", Address::ZERO, admin)?;
 
             // Test hasRole
             let has_admin = token.has_role(IRolesAuth::hasRoleCall {
@@ -206,14 +199,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
             // Initialize and grant admin
-            token.initialize(
-                "name",
-                "symbol",
-                "currency",
-                Address::ZERO,
-                admin,
-                Address::ZERO,
-            )?;
+            token.initialize("name", "symbol", "currency", Address::ZERO, admin)?;
 
             // Set custom admin for role
             token.set_role_admin(
@@ -241,14 +227,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
-            token.initialize(
-                "name",
-                "symbol",
-                "currency",
-                Address::ZERO,
-                Address::ZERO,
-                Address::ZERO,
-            )?;
+            token.initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)?;
             token.grant_role_internal(user, custom_role).unwrap();
 
             // Renounce role
@@ -270,14 +249,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Token::new(token_id);
-            token.initialize(
-                "name",
-                "symbol",
-                "currency",
-                Address::ZERO,
-                Address::ZERO,
-                Address::ZERO,
-            )?;
+            token.initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)?;
 
             // Try to grant role without permission
             let result = token.grant_role(

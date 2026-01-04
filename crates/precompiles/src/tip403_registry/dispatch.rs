@@ -26,6 +26,9 @@ impl Precompile for TIP403Registry {
                     self.policy_id_counter()
                 })
             }
+            ITIP403Registry::policyExistsCall::SELECTOR => {
+                view::<ITIP403Registry::policyExistsCall>(calldata, |call| self.policy_exists(call))
+            }
             ITIP403Registry::policyDataCall::SELECTOR => {
                 view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))
             }
@@ -65,7 +68,7 @@ impl Precompile for TIP403Registry {
                     |s, call| self.modify_policy_blacklist(s, call),
                 )
             }
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
@@ -80,7 +83,6 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::sol_types::SolValue;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
@@ -449,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();

@@ -17,6 +17,7 @@ tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
+tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
@@ -24,20 +25,24 @@ alloy = { workspace = true, features = [
   "signer-local",
   "signer-mnemonic",
   "sol-types",
+  "getrandom",
 ] }
 alloy-primitives.workspace = true
 clap = { version = "4.5.45", features = ["derive"] }
 commonware-codec.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
+commonware-math.workspace = true
 commonware-utils.workspace = true
 const-hex.workspace = true
 eyre.workspace = true
 indicatif = { workspace = true, features = ["rayon"] }
+itertools.workspace = true
 rand.workspace = true
-rayon = "1.10"
+rayon.workspace = true
 reth-evm.workspace = true
-reth-network-peers.workspace = true
-secp256k1.workspace = true
+reth-network-peers = { workspace = true, features = ["secp256k1"] }
+secp256k1 = { workspace = true, features = ["rand"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

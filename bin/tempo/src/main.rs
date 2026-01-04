@@ -16,6 +16,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod defaults;
+mod tempo_cmd;
 
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
@@ -108,6 +109,10 @@ fn main() -> eyre::Result<()> {
 
     tempo_node::init_version_metadata();
     defaults::init_defaults();
+
+    if let Some(result) = tempo_cmd::try_run_tempo_subcommand() {
+        return result;
+    }
 
     let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));

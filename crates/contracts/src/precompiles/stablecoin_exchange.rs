@@ -3,9 +3,7 @@ pub use IStablecoinExchange::{
     IStablecoinExchangeEvents as StablecoinExchangeEvents,
 };
 
-use alloy::sol;
-
-sol! {
+crate::sol! {
     /// StablecoinExchange interface for managing orderbook based trading of stablecoins.
     ///
     /// The StablecoinExchange provides a limit orderbook system where users can:
@@ -17,7 +15,7 @@ sol! {
     /// The exchange operates on pairs between base tokens and their designated quote tokens,
     /// using a tick-based pricing system for precise order matching.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IStablecoinExchange {
         // Structs
         struct Order {
@@ -52,7 +50,7 @@ sol! {
         function place(address token, uint128 amount, bool isBid, int16 tick) external returns (uint128 orderId);
         function placeFlip(address token, uint128 amount, bool isBid, int16 tick, int16 flipTick) external returns (uint128 orderId);
         function cancel(uint128 orderId) external;
-        function executeBlock() external;
+        function cancelStaleOrder(uint128 orderId) external;
 
         // Swap Functions
         function swapExactAmountIn(address tokenIn, address tokenOut, uint128 amountIn, uint128 minAmountOut) external returns (uint128 amountOut);
@@ -69,8 +67,7 @@ sol! {
 
         function getTickLevel(address base, int16 tick, bool isBid) external view returns (uint128 head, uint128 tail, uint128 totalLiquidity);
         function pairKey(address tokenA, address tokenB) external pure returns (bytes32);
-        function activeOrderId() external view returns (uint128);
-        function pendingOrderId() external view returns (uint128);
+        function nextOrderId() external view returns (uint128);
         function books(bytes32 pairKey) external view returns (Orderbook memory);
 
         // Constants (exposed as view functions)
@@ -78,6 +75,7 @@ sol! {
         function MAX_TICK() external pure returns (int16);
         function TICK_SPACING() external pure returns (int16);
         function PRICE_SCALE() external pure returns (uint32);
+        function MIN_ORDER_AMOUNT() external pure returns (uint128);
         function MIN_PRICE() external pure returns (uint32);
         function MAX_PRICE() external pure returns (uint32);
 
@@ -89,9 +87,6 @@ sol! {
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
         event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
         event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
-        /// Pre-Allegretto: OrderFilled event without taker parameter
-        event OrderFilled(uint128 indexed orderId, address indexed maker, uint128 amountFilled, bool partialFill);
-        /// Post-Allegretto: OrderFilled event with taker parameter
         event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderCancelled(uint128 indexed orderId);
 
@@ -111,6 +106,7 @@ sol! {
         error MaxInputExceeded();
         error BelowMinimumOrderSize(uint128 amount);
         error InvalidBaseToken();
+        error OrderNotStale();
     }
 }
 
@@ -188,5 +184,10 @@ impl StablecoinExchangeError {
     /// Creates an error for invalid base token.
     pub const fn invalid_base_token() -> Self {
         Self::InvalidBaseToken(IStablecoinExchange::InvalidBaseToken {})
+    }
+
+    /// Creates an error when order is not stale
+    pub const fn order_not_stale() -> Self {
+        Self::OrderNotStale(IStablecoinExchange::OrderNotStale {})
     }
 }

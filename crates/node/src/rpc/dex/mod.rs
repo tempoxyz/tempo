@@ -72,7 +72,7 @@ impl<
                 .as_ref()
                 .is_none_or(|f| f.is_bid.unwrap_or(false));
 
-            let cursor = params
+            let mut cursor = params
                 .cursor
                 .map(|cursor| parse_order_cursor(&cursor))
                 .transpose()?;
@@ -94,8 +94,16 @@ impl<
                     continue;
                 }
 
+                // If the cursor exists and the starting order is not in the book, skip this book
+                if let Some(cursor) = cursor
+                    && exchange.get_order(cursor).is_err()
+                {
+                    continue;
+                }
+
                 let starting_order = if all_orders.is_empty() {
-                    cursor // Use cursor only for the first book
+                    // If the cursor is in this book then use it
+                    cursor.take()
                 } else {
                     None
                 };
@@ -493,9 +501,9 @@ impl<'b> BookIterator<'b> {
     }
 
     /// Get the next initialized tick after the given tick
-    /// Returns None if there are no more ticks
+    /// Returns None if there are no more ticks or on error
     pub fn get_next_tick(&mut self, tick: i16) -> Option<i16> {
-        let (next_tick, more_ticks) = self.handler.next_initialized_tick(tick, self.bids);
+        let (next_tick, more_ticks) = self.handler.next_initialized_tick(tick, self.bids).ok()?;
 
         if more_ticks { Some(next_tick) } else { None }
     }

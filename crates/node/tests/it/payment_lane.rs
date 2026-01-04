@@ -14,10 +14,7 @@ use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -407,10 +404,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
 async fn test_payment_lane_ordering() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     // Create multiple accounts to avoid nonce ordering issues.
@@ -543,10 +537,7 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
 async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;

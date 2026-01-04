@@ -1,12 +1,10 @@
-use alloy::sol;
-
 pub use ITIP403Registry::{
     ITIP403RegistryErrors as TIP403RegistryError, ITIP403RegistryEvents as TIP403RegistryEvent,
 };
 
-sol! {
-   #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+crate::sol! {
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
     interface ITIP403Registry {
         // Enums
         enum PolicyType {
@@ -16,6 +14,7 @@ sol! {
 
         // View Functions
         function policyIdCounter() external view returns (uint64);
+        function policyExists(uint64 policyId) external view returns (bool);
         function policyData(uint64 policyId) external view returns (PolicyType policyType, address admin);
         function isAuthorized(uint64 policyId, address user) external view returns (bool);
 
@@ -35,6 +34,7 @@ sol! {
         // Errors
         error Unauthorized();
         error IncompatiblePolicyType();
+        error PolicyNotFound();
     }
 }
 
@@ -47,5 +47,10 @@ impl TIP403RegistryError {
     /// Creates an error for incompatible policy types
     pub const fn incompatible_policy_type() -> Self {
         Self::IncompatiblePolicyType(ITIP403Registry::IncompatiblePolicyType {})
+    }
+
+    /// Creates an error for non-existent policy
+    pub const fn policy_not_found() -> Self {
+        Self::PolicyNotFound(ITIP403Registry::PolicyNotFound {})
     }
 }

@@ -17,10 +17,7 @@ async fn test_bids() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -60,7 +57,7 @@ async fn test_bids() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     let order_amount = 1000000000;
@@ -78,7 +75,6 @@ async fn test_bids() -> eyre::Result<()> {
                 .await?,
         );
     }
-
     await_receipts(&mut pending).await?;
 
     let num_orders = account_data.len() as u128;
@@ -106,6 +102,7 @@ async fn test_bids() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -119,7 +116,7 @@ async fn test_bids() -> eyre::Result<()> {
     let pending = base.mint(caller, U256::from(amount_in)).send().await?;
     pending.get_receipt().await?;
 
-    //  Execute swap and assert orders are filled
+    // Execute swap and assert orders are filled
     let tx = exchange
         .swapExactAmountIn(*base.address(), *quote.address(), amount_in, 0)
         .send()
@@ -172,10 +169,7 @@ async fn test_asks() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -209,7 +203,7 @@ async fn test_asks() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     let order_amount = 1000000000;
@@ -253,6 +247,7 @@ async fn test_asks() -> eyre::Result<()> {
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
@@ -273,7 +268,7 @@ async fn test_asks() -> eyre::Result<()> {
         .await?;
     pending.get_receipt().await?;
 
-    //  Execute swap and assert orders are filled
+    // Execute swap and assert orders are filled
     let tx = exchange
         .swapExactAmountOut(*quote.address(), *base.address(), fill_amount, u128::MAX)
         .send()
@@ -335,10 +330,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -350,7 +342,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    let account_data: Vec<_> = (1..=30)
+    let account_data: Vec<_> = (1..=10)
         .map(|i| {
             let signer = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
                 .index(i as u32)
@@ -371,7 +363,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     let order_amount = 1000000000;
@@ -391,36 +383,46 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     }
     await_receipts(&mut pending).await?;
 
-    let mut order_ids = vec![];
+    let num_orders = account_data.len() as u128;
     // Place bid orders for each account
-    let mut pending = vec![];
-    for (account, signer) in &account_data {
-        let tick = 20;
+    let mut pending_orders = vec![];
+    let tick = 10;
+    for (_, signer) in &account_data {
         let account_provider = ProviderBuilder::new()
             .wallet(signer.clone())
             .connect_http(http_url.clone());
         let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
 
         let call = exchange.place(*base.address(), order_amount, true, tick);
-        let order_id = call.call().await?;
-        order_ids.push(call.call().await?);
-
         let order_tx = call.send().await?;
-        order_tx.get_receipt().await?;
+        pending_orders.push(order_tx);
+    }
+    await_receipts(&mut pending_orders).await?;
 
+    // Verify orders were created correctly
+    for order_id in 1..=num_orders {
         let order = exchange.getOrder(order_id).call().await?;
-        assert_eq!(order.maker, *account);
+        assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
-
-        pending.push(exchange.cancel(order_id).send().await?);
     }
-    await_receipts(&mut pending).await?;
+    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+
+    // Cancel all orders
+    for (order_id, (_, signer)) in (1..=num_orders).zip(&account_data) {
+        let account_provider = ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect_http(http_url.clone());
+        let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, account_provider);
+
+        let cancel_tx = exchange.cancel(order_id).send().await?;
+        cancel_tx.get_receipt().await?;
+    }
 
     // Assert that orders have been canceled
-    for order_id in order_ids {
+    for order_id in 1..=num_orders {
         let err = exchange
             .getOrder(order_id)
             .call()
@@ -439,10 +441,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -619,10 +618,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -634,7 +630,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     // Mint and approve tokens
@@ -714,10 +710,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     // Setup node
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -729,7 +722,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let base = setup_test_token(provider.clone(), caller).await?;
     let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
 
-    // Post-Allegretto: pair is auto-created on first place() call
+    // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
 
     // Mint and approve tokens

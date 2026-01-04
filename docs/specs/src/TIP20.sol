@@ -96,6 +96,11 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     //////////////////////////////////////////////////////////////*/
 
     function changeTransferPolicyId(uint64 newPolicyId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        // Validate that the policy exists
+        if (!TIP403_REGISTRY.policyExists(newPolicyId)) {
+            revert InvalidTransferPolicyId();
+        }
+
         emit TransferPolicyUpdate(msg.sender, transferPolicyId = newPolicyId);
     }
 
@@ -182,8 +187,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     function mintWithMemo(address to, uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
         _mint(to, amount);
-        emit Mint(to, amount);
         emit TransferWithMemo(address(0), to, amount, memo);
+        emit Mint(to, amount);
     }
 
     function burnWithMemo(uint256 amount, bytes32 memo) external onlyRole(ISSUER_ROLE) {
@@ -192,8 +197,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
             _totalSupply -= uint128(amount);
         }
 
-        emit Burn(msg.sender, amount);
         emit TransferWithMemo(msg.sender, address(0), amount, memo);
+        emit Burn(msg.sender, amount);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -205,9 +210,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         _;
     }
 
-    modifier notTokenAddress(address to) {
-        // Don't allow sending to other precompiled tokens.
-        if ((uint160(to) >> 64) == 0x20c000000000000000000000) {
+    modifier validRecipient(address to) {
+        // Don't allow sending to the zero address not other precompiled tokens.
+        if (to == address(0) || (uint160(to) >> 64) == 0x20c000000000000000000000) {
             revert InvalidRecipient();
         }
         _;
@@ -225,7 +230,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(msg.sender, to)
         returns (bool)
     {
@@ -242,7 +247,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
@@ -295,7 +300,9 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function _mint(address to, uint256 amount) internal {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) revert PolicyForbids();
+        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) {
+            revert PolicyForbids();
+        }
         if (_totalSupply + amount > supplyCap) revert SupplyCapExceeded(); // Catches overflow.
 
         // Handle reward accounting for opted-in receiver
@@ -320,7 +327,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(msg.sender, to)
     {
         _transfer(msg.sender, to, amount);
@@ -331,7 +338,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         public
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
@@ -356,7 +363,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         external
         virtual
         notPaused
-        notTokenAddress(to)
+        validRecipient(to)
         transferAuthorized(from, to)
         returns (bool)
     {
@@ -369,7 +376,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                             FEE MANAGEMENT
     //////////////////////////////////////////////////////////////*/
 
-    function transferFeePreTx(address from, uint256 amount) external {
+    function transferFeePreTx(address from, uint256 amount) external notPaused {
         require(msg.sender == TIP_FEE_MANAGER_ADDRESS);
         require(from != address(0));
 
@@ -436,14 +443,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         }
     }
 
-    /// @notice Starts a reward distribution. Post-Moderato, only immediate rewards (seconds_ == 0) are allowed.
-    /// Scheduled/streaming rewards (seconds_ > 0) are disabled and will revert with ScheduledRewardsDisabled.
-    function startReward(uint256 amount, uint32 seconds_)
-        external
-        virtual
-        notPaused
-        returns (uint64)
-    {
+    /// @notice Distributes rewards to opted-in token holders.
+    function distributeReward(uint256 amount) external virtual notPaused {
         if (amount == 0) revert InvalidAmount();
         if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) {
             revert PolicyForbids();
@@ -452,19 +453,13 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // Transfer tokens from sender to this contract
         _transfer(msg.sender, address(this), amount);
 
-        if (seconds_ == 0) {
-            // Immediate payout
-            if (optedInSupply == 0) {
-                revert NoOptedInSupply();
-            }
-            uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
-            globalRewardPerToken += deltaRPT;
-            emit RewardScheduled(msg.sender, 0, amount, 0);
-            return 0;
-        } else {
-            // Scheduled/streaming rewards are disabled post-Moderato
-            revert ScheduledRewardsDisabled();
+        // Immediate payout
+        if (optedInSupply == 0) {
+            revert NoOptedInSupply();
         }
+        uint256 deltaRPT = (amount * ACC_PRECISION) / optedInSupply;
+        globalRewardPerToken += deltaRPT;
+        emit RewardDistributed(msg.sender, amount);
     }
 
     function setRewardRecipient(address newRewardRecipient) external virtual notPaused {
@@ -490,7 +485,12 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     }
 
     function claimRewards() external virtual notPaused returns (uint256 maxAmount) {
-        if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)) revert PolicyForbids();
+        if (
+            !TIP403_REGISTRY.isAuthorized(transferPolicyId, address(this))
+                || !TIP403_REGISTRY.isAuthorized(transferPolicyId, msg.sender)
+        ) {
+            revert PolicyForbids();
+        }
 
         _updateRewardsAndGetRecipient(msg.sender);
 
@@ -512,5 +512,26 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
                         REWARD DISTRIBUTION VIEWS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Calculates the pending claimable rewards for an account without modifying state.
+    /// @param account The address to query pending rewards for.
+    /// @return pending The total pending claimable reward amount (stored balance + accrued pending rewards).
+    function getPendingRewards(address account) external view returns (uint256 pending) {
+        UserRewardInfo storage info = userRewardInfo[account];
+
+        // Start with the stored reward balance
+        pending = info.rewardBalance;
+
+        // If this account is self-delegated, calculate pending rewards from their own holdings
+        if (info.rewardRecipient == account) {
+            uint256 holderBalance = balanceOf[account];
+            if (holderBalance > 0) {
+                uint256 rewardPerTokenDelta = globalRewardPerToken - info.rewardPerToken;
+                if (rewardPerTokenDelta > 0) {
+                    uint256 accrued = (holderBalance * rewardPerTokenDelta) / ACC_PRECISION;
+                    pending += accrued;
+                }
+            }
+        }
+    }
 
     }

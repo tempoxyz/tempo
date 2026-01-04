@@ -5,7 +5,8 @@ use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
 
-const DEFAULT_MAX_MESSAGE_SIZE_BYTES: usize = reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
+const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
+    reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -21,6 +22,15 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
+    /// Deletes the initial. This is useful if the node came to an incorrect DKG
+    /// decision and needs to disable its current signing share so that its
+    /// peers don't blacklist it. This is a workaround until the locally stored
+    /// shares can be directly manipulated and deleted.
+    ///
+    /// CAREFUL: this operation is destructive and cannot be reversed.
+    #[arg(long = "consensus.delete-signing-share")]
+    pub delete_signing_share: bool,
+
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
     #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]
@@ -32,7 +42,7 @@ pub struct Args {
     pub metrics_address: SocketAddr,
 
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
-    pub max_message_size_bytes: usize,
+    pub max_message_size_bytes: u32,
 
     // pub storage_directory: camino::Utf8PathBuf,
     /// The number of worker threads assigned to consensus.
@@ -113,11 +123,8 @@ pub struct Args {
     /// Connections are still authenticated via public key cryptography, but
     /// anyone can attempt handshakes, increasing exposure to DoS attacks.
     /// Only enable in trusted network environments.
-    #[arg(
-        long = "consensus.allow-unregistered-handshakes",
-        default_value_t = false
-    )]
-    pub allow_unregistered_handshakes: bool,
+    #[arg(long = "consensus.bypass-ip-check", default_value_t = false)]
+    pub bypass_ip_check: bool,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).

@@ -166,6 +166,10 @@ impl StorageCtx {
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
+
+    pub fn is_static(&self) -> bool {
+        Self::with_storage(|s| s.is_static())
+    }
 }
 
 impl<'evm> StorageCtx {
@@ -259,6 +263,14 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn clear_transient(&mut self) {
         self.as_hashmap().clear_transient()
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    ///
+    /// USAGE: `TIP20Setup` automatically clears events of the configured
+    /// contract when `apply()` is called, unless explicitly asked no to.
+    pub fn clear_events(&mut self, address: Address) {
+        self.as_hashmap().clear_events(address);
     }
 
     /// Checks if a contract at the given address has bytecode deployed.

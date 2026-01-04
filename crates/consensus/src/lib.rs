@@ -4,7 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
-use alloy_evm::{block::BlockExecutionResult, revm::primitives::Address};
+use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_consensus_common::validation::{
@@ -14,21 +14,10 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::{hardfork::TempoHardforks, spec::TempoChainSpec};
-use tempo_contracts::precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
-};
+use tempo_chainspec::spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
-
-// End-of-block system transactions (required)
-const END_OF_BLOCK_SYSTEM_TX_COUNT: usize = 3;
-const END_OF_BLOCK_SYSTEM_TX_ADDRESSES: [Address; END_OF_BLOCK_SYSTEM_TX_COUNT] = [
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_EXCHANGE_ADDRESS,
-    Address::ZERO,
-];
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
@@ -148,32 +137,9 @@ impl Consensus<Block> for TempoConsensus {
             )));
         }
 
-        // If the moderator hardfork is not active, validate that the TIP20 Rewards Registry system
-        // tx is the first transaction in the block. If the block timestamp is post moderato, skip
-        // this step
-        if !self
-            .inner
-            .chain_spec()
-            .is_moderato_active_at_timestamp(block.timestamp())
-        {
-            // Check for optional rewards registry system transaction at the start
-            if let Some(first_tx) = transactions.first()
-                && first_tx.is_system_tx()
-                && first_tx.to().unwrap_or_default() != TIP20_REWARDS_REGISTRY_ADDRESS
-            {
-                return Err(ConsensusError::Other(
-                    "First transaction must be rewards registry if it's a system tx".to_string(),
-                ));
-            }
-        }
-
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
-            .get(
-                transactions
-                    .len()
-                    .saturating_sub(END_OF_BLOCK_SYSTEM_TX_COUNT)..,
-            )
+            .get(transactions.len().saturating_sub(SYSTEM_TX_COUNT)..)
             .map(|slice| {
                 slice
                     .iter()
@@ -182,17 +148,14 @@ impl Consensus<Block> for TempoConsensus {
             })
             .unwrap_or_default();
 
-        if end_of_block_system_txs.len() != END_OF_BLOCK_SYSTEM_TX_COUNT {
+        if end_of_block_system_txs.len() != SYSTEM_TX_COUNT {
             return Err(ConsensusError::Other(
                 "Block must contain end-of-block system txs".to_string(),
             ));
         }
 
         // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in end_of_block_system_txs
-            .into_iter()
-            .zip(END_OF_BLOCK_SYSTEM_TX_ADDRESSES)
-        {
+        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
             if tx.to().unwrap_or_default() != expected_to {
                 return Err(ConsensusError::Other(
                     "Invalid end-of-block system tx order".to_string(),

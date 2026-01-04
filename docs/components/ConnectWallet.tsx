@@ -1,23 +1,24 @@
 import * as React from 'react'
 import {
-  useAccount,
   useChains,
   useConnect,
+  useConnection,
   useConnectors,
   useSwitchChain,
 } from 'wagmi'
 import { Button, Logout } from './guides/Demo'
+import { filterSupportedInjectedConnectors } from './lib/wallets'
 
 export function ConnectWallet({
   showAddChain = true,
 }: {
   showAddChain?: boolean
 }) {
-  const { address, chain, connector } = useAccount()
+  const { address, chain, connector } = useConnection()
   const connect = useConnect()
   const connectors = useConnectors()
   const injectedConnectors = React.useMemo(
-    () => connectors.filter((connector) => connector.id !== 'webAuthn'),
+    () => filterSupportedInjectedConnectors(connectors),
     [connectors],
   )
   const switchChain = useSwitchChain()

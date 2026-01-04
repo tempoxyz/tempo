@@ -65,6 +65,9 @@ pub struct AccountKeychain {
     // macro is refactored and has 2 independent layouts (persistent and transient).
     // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
     transaction_key: Address,
+    // The transaction origin (tx.origin) - the EOA that signed the transaction.
+    // Used to ensure spending limits only apply when msg_sender == tx_origin.
+    tx_origin: Address,
 }
 
 impl AccountKeychain {
@@ -139,7 +142,7 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::KeyAuthorized(
             IAccountKeychain::KeyAuthorized {
                 account: msg_sender,
-                publicKey: call.keyId.into_word(),
+                publicKey: call.keyId,
                 signatureType: signature_type,
                 expiry: call.expiry,
             },
@@ -180,7 +183,7 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::KeyRevoked(
             IAccountKeychain::KeyRevoked {
                 account: msg_sender,
-                publicKey: call.keyId.into_word(),
+                publicKey: call.keyId,
             },
         ))
     }
@@ -222,7 +225,7 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
             IAccountKeychain::SpendingLimitUpdated {
                 account: msg_sender,
-                publicKey: call.keyId.into_word(),
+                publicKey: call.keyId,
                 token: call.token,
                 newLimit: call.newLimit,
             },
@@ -288,6 +291,14 @@ impl AccountKeychain {
     /// Uses transient storage, so the key is automatically cleared after the transaction.
     pub fn set_transaction_key(&mut self, key_id: Address) -> Result<()> {
         self.transaction_key.t_write(key_id)
+    }
+
+    /// Sets the transaction origin (tx.origin) for the current transaction.
+    ///
+    /// Called by the handler before transaction execution.
+    /// Uses transient storage, so it's automatically cleared after the transaction.
+    pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
+        self.tx_origin.t_write(origin)
     }
 
     /// Load and validate a key exists and is not revoked.
@@ -392,6 +403,12 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
         // Verify and update spending limits for this access key
         self.verify_and_update_spending(account, transaction_key, token, amount)
     }
@@ -423,6 +440,12 @@ impl AccountKeychain {
 
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        // Only apply spending limits if the caller is the tx origin.
+        let tx_origin = self.tx_origin.t_read()?;
+        if account != tx_origin {
             return Ok(());
         }
 
@@ -684,6 +707,123 @@ mod tests {
             })?;
             assert_eq!(key_info.expiry, 1000);
             assert!(!key_info.isRevoked);
+
+            Ok(())
+        })
+    }
+
+    /// Test that spending limits are only enforced when msg_sender == tx_origin.
+    ///
+    /// This test verifies the fix for the bug where spending limits were incorrectly
+    /// applied to contract-initiated transfers. The scenario:
+    ///
+    /// 1. EOA Alice uses an access key with spending limits
+    /// 2. Alice calls a contract that transfers tokens
+    /// 3. The contract's transfer should NOT be subject to Alice's spending limits
+    ///    (the contract is transferring its own tokens, not Alice's)
+    #[test]
+    fn test_spending_limits_only_apply_to_tx_origin() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let eoa_alice = Address::random(); // The EOA that signs the transaction
+        let access_key = Address::random(); // Alice's access key with spending limits
+        let contract_address = Address::random(); // A contract that Alice calls
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Alice authorizes an access key with a spending limit of 100 tokens
+            keychain.set_transaction_key(Address::ZERO)?; // Use main key for setup
+            keychain.set_tx_origin(eoa_alice)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa_alice, auth_call)?;
+
+            // Verify spending limit is set
+            let limit = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit,
+                U256::from(100),
+                "Initial spending limit should be 100"
+            );
+
+            // Now simulate a transaction where Alice uses her access key
+            keychain.set_transaction_key(access_key)?;
+            keychain.set_tx_origin(eoa_alice)?;
+
+            // Test 1: When msg_sender == tx_origin (Alice directly transfers)
+            // Spending limit SHOULD be enforced
+            keychain.authorize_transfer(eoa_alice, token, U256::from(30))?;
+
+            let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_after,
+                U256::from(70),
+                "Spending limit should be reduced to 70 after Alice's direct transfer"
+            );
+
+            // Test 2: When msg_sender != tx_origin (contract transfers its own tokens)
+            // Spending limit should NOT be enforced - the contract isn't spending Alice's tokens
+            keychain.authorize_transfer(contract_address, token, U256::from(1000))?;
+
+            let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_unchanged,
+                U256::from(70),
+                "Spending limit should remain 70 - contract transfer doesn't affect Alice's limit"
+            );
+
+            // Test 3: Alice can still spend her remaining limit
+            keychain.authorize_transfer(eoa_alice, token, U256::from(70))?;
+
+            let limit_depleted = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa_alice,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(
+                limit_depleted,
+                U256::ZERO,
+                "Spending limit should be depleted after Alice spends remaining 70"
+            );
+
+            // Test 4: Alice cannot exceed her spending limit
+            let exceed_result = keychain.authorize_transfer(eoa_alice, token, U256::from(1));
+            assert!(
+                exceed_result.is_err(),
+                "Should fail when Alice tries to exceed spending limit"
+            );
+
+            // Test 5: But contracts can still transfer (they're not subject to Alice's limits)
+            let contract_result =
+                keychain.authorize_transfer(contract_address, token, U256::from(999999));
+            assert!(
+                contract_result.is_ok(),
+                "Contract should still be able to transfer even though Alice's limit is depleted"
+            );
 
             Ok(())
         })

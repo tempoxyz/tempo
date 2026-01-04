@@ -10,7 +10,7 @@ Gets the tick level information at a specific tick on the Stablecoin DEX orderbo
 
 ```ts twoslash [example.ts]
 import { Actions } from 'tempo.ts/wagmi'
-import { Tick } from 'tempo.ts/viem'
+import { Tick } from 'viem/tempo'
 import { config } from './wagmi.config'
 
 const level = await Actions.dex.getTickLevel(config, {

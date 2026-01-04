@@ -1,5 +1,5 @@
 use commonware_consensus::{
-    Automaton, Relay, Reporter,
+    Automaton, CertifiableAutomaton, Relay, Reporter,
     marshal::Update,
     simplex::types::Context,
     types::{Epoch, Round, View},
@@ -110,8 +110,8 @@ impl Automaton for Mailbox {
 
     async fn genesis(&mut self, epoch: Epoch) -> Self::Digest {
         let (tx, rx) = oneshot::channel();
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         self.inner
             .send(
                 Genesis {
@@ -127,12 +127,8 @@ impl Automaton for Mailbox {
     }
 
     async fn propose(&mut self, context: Self::Context) -> oneshot::Receiver<Self::Digest> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
         self.inner
             .send(
@@ -153,12 +149,8 @@ impl Automaton for Mailbox {
         context: Self::Context,
         payload: Self::Digest,
     ) -> oneshot::Receiver<bool> {
-        // TODO: panicking here really is not good. there's actually no requirement on `Self::Context` nor `Self::Digest` to fulfill
-        // any invariants, so we could just turn them into `Result<Context, Error>` and be happy.
-        //
-        // XXX: comment taken from alto - what does this mean? is this relevant to us?
-        // > If we linked payloads to their parent, we would verify
-        // > the parent included in the payload matches the provided `Context`.
+        // XXX: Cannot propagate the error upstream because of the trait def.
+        // But if the actor no longer responds the application is dead.
         let (tx, rx) = oneshot::channel();
         self.inner
             .send(
@@ -175,6 +167,16 @@ impl Automaton for Mailbox {
             .expect("application is present and ready to receive verify requests");
         rx
     }
+}
+
+// TODO: figure out if this can be useful for tempo. The original PR implementing
+// this trait:
+// https://github.com/commonwarexyz/monorepo/pull/2565
+// Associated issue:
+// https://github.com/commonwarexyz/monorepo/issues/1767
+impl CertifiableAutomaton for Mailbox {
+    // NOTE: uses the default impl for CertifiableAutomaton which always
+    // returns true.
 }
 
 impl Relay for Mailbox {

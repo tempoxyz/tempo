@@ -18,11 +18,10 @@ use tempo_precompiles_macros::Storable;
 ///   a new order on the opposite side when fully filled
 ///
 /// # Order Lifecycle
-/// 1. Order is placed via `place()` or `placeFlip()` and added to pending queue
-/// 2. At end of block, pending orders are inserted into the active orderbook
-/// 3. Orders can be filled (fully or partially) by taker orders
-/// 4. Flip orders automatically create a new order on the opposite side when fully filled
-/// 5. Orders can be cancelled, removing them from the book
+/// 1. Order is placed via `place()` or `placeFlip()` and immediately added to the orderbook
+/// 2. Orders can be filled (fully or partially) by swaps
+/// 3. Flip orders automatically create a new order on the opposite side when fully filled
+/// 4. Orders can be cancelled, removing them from the book and refunding escrow
 ///
 /// # Price-Time Priority
 /// Orders are sorted by price (tick), then by insertion time.

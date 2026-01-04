@@ -9,13 +9,10 @@ pub mod storage;
 
 pub mod account_keychain;
 pub mod nonce;
-pub mod path_usd;
 pub mod stablecoin_exchange;
 pub mod tip20;
 pub mod tip20_factory;
-pub mod tip20_rewards_registry;
 pub mod tip403_registry;
-pub mod tip_account_registrar;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
@@ -25,14 +22,11 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    path_usd::PathUSD,
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
-    tip_account_registrar::TipAccountRegistrar,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
     tip20_factory::TIP20Factory,
-    tip20_rewards_registry::TIP20RewardsRegistry,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
 };
@@ -48,13 +42,12 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN_POST_ALLEGRETTO, DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, TIP_ACCOUNT_REGISTRAR,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_REWARDS_REGISTRY_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
@@ -80,30 +73,20 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
     let spec = cfg.spec;
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20_prefix(*address) {
-            let token_id = address_to_token_id_unchecked(*address);
-            if token_id == 0 {
-                Some(PathUSDPrecompile::create(chain_id, spec))
-            } else {
-                Some(TIP20Precompile::create(*address, chain_id, spec))
-            }
+            Some(TIP20Precompile::create(*address, chain_id, spec))
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20FactoryPrecompile::create(chain_id, spec))
-        } else if *address == TIP20_REWARDS_REGISTRY_ADDRESS {
-            Some(TIP20RewardsRegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP403_REGISTRY_ADDRESS {
             Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id, spec))
-        } else if *address == TIP_ACCOUNT_REGISTRAR {
-            Some(TipAccountRegistrarPrecompile::create(chain_id, spec))
         } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
             Some(StablecoinExchangePrecompile::create(chain_id, spec))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
             Some(ValidatorConfigPrecompile::create(chain_id, spec))
-        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS && spec.is_allegretto() {
-            // AccountKeychain is only available after Allegretto hardfork
+        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychainPrecompile::create(chain_id, spec))
         } else {
             None
@@ -113,6 +96,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
 sol! {
     error DelegateCallNotAllowed();
+    error StaticCallNotAllowed();
 }
 
 macro_rules! tempo_precompile {
@@ -129,6 +113,7 @@ macro_rules! tempo_precompile {
                 $input.gas,
                 $chain_id,
                 $spec,
+                $input.is_static,
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
@@ -142,24 +127,6 @@ impl TipFeeManagerPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
         tempo_precompile!("TipFeeManager", chain_id, spec, |input| {
             TipFeeManager::new()
-        })
-    }
-}
-
-pub struct TipAccountRegistrarPrecompile;
-impl TipAccountRegistrarPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipAccountRegistrar", chain_id, spec, |input| {
-            TipAccountRegistrar::new()
-        })
-    }
-}
-
-pub struct TIP20RewardsRegistryPrecompile;
-impl TIP20RewardsRegistryPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20RewardsRegistry", chain_id, spec, |input| {
-            TIP20RewardsRegistry::new()
         })
     }
 }
@@ -219,13 +186,6 @@ impl AccountKeychainPrecompile {
     }
 }
 
-pub struct PathUSDPrecompile;
-impl PathUSDPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("PathUSD", chain_id, spec, |input| { PathUSD::new() })
-    }
-}
-
 pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
@@ -255,6 +215,12 @@ pub fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -267,6 +233,12 @@ fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::new_reverted(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+        ));
+    }
     let Ok(call) = T::abi_decode(calldata) else {
         return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
     };
@@ -281,24 +253,17 @@ fn fill_precompile_output(
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
-    if !output.reverted && storage.spec().is_allegretto() {
+    if !output.reverted {
         output.gas_refunded = storage.gas_refunded();
     }
     output
 }
 
-/// Helper function to return an unknown function selector error
-///
-/// Before Moderato: Returns a generic PrecompileError::Other
-/// Moderato onwards: Returns an ABI-encoded UnknownFunctionSelector error with the selector
+/// Helper function to return an unknown function selector error.
+/// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
 #[inline]
-pub fn unknown_selector(selector: [u8; 4], gas: u64, spec: TempoHardfork) -> PrecompileResult {
-    if spec.is_moderato() {
-        error::TempoPrecompileError::UnknownFunctionSelector(selector)
-            .into_precompile_result(gas, |_: ()| Bytes::new())
-    } else {
-        Err(PrecompileError::Other("Unknown function selector".into()))
-    }
+pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
+    error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
 #[cfg(test)]
@@ -321,8 +286,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::TIP20Token;
-    use alloy::primitives::{Address, Bytes, U256};
+    use crate::tip20::{TIP20Token, token_id_to_address};
+    use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -330,7 +295,9 @@ mod tests {
     use revm::{
         context::ContextTr,
         database::{CacheDB, EmptyDB},
+        state::{AccountInfo, Bytecode},
     };
+    use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_precompile_delegatecall() {
@@ -351,6 +318,7 @@ mod tests {
             internals: evm_internals,
             gas: 0,
             value: U256::ZERO,
+            is_static: false,
             target_address,
             bytecode_address,
         };
@@ -365,5 +333,79 @@ mod tests {
             }
             Err(_) => panic!("expected reverted output"),
         }
+    }
+
+    #[test]
+    fn test_precompile_static_call() {
+        const ID: u64 = 1;
+        let (chain_id, spec) = (1, TempoHardfork::default());
+        let (precompile, token_address) = (
+            tempo_precompile!("TIP20Token", chain_id, spec, |i| { TIP20Token::new(ID) }),
+            token_id_to_address(ID),
+        );
+
+        let call_static = |calldata: Bytes| {
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                token_address,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 100_000,
+                is_static: true,
+                value: U256::ZERO,
+                target_address: token_address,
+                bytecode_address: token_address,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
+        };
+
+        // Static calls into mutating functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into mutate void functions should fail
+        let result = call_static(Bytes::from(
+            ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::from(100),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(output.reverted);
+        assert!(StaticCallNotAllowed::abi_decode(&output.bytes).is_ok());
+
+        // Static calls into view functions should succeed
+        let result = call_static(Bytes::from(
+            ITIP20::balanceOfCall {
+                account: Address::random(),
+            }
+            .abi_encode(),
+        ));
+        let output = result.expect("expected Ok");
+        assert!(
+            !output.reverted,
+            "view function should not revert in static context"
+        );
     }
 }

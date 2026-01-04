@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { tempoTestnet } from 'viem/chains'
 import { isAddress, isHash } from 'viem'
 import type * as z from 'zod/mini'
 import LucideExternalLink from '~icons/lucide/external-link'
@@ -65,11 +66,11 @@ type IndexSupplyQueryProps = {
 }
 
 function getExplorerHost() {
-  const { VITE_LOCAL, VITE_LOCAL_EXPLORER } = import.meta.env
-  if (VITE_LOCAL === 'true' && VITE_LOCAL_EXPLORER !== undefined) {
-    return VITE_LOCAL_EXPLORER
+  const { VITE_ENVIRONMENT, VITE_EXPLORER_OVERRIDE } = import.meta.env
+  if (VITE_ENVIRONMENT !== 'testnet' && VITE_EXPLORER_OVERRIDE !== undefined) {
+    return VITE_EXPLORER_OVERRIDE
   }
-  return 'https://explore.tempo.xyz'
+  return tempoTestnet.blockExplorers.default.url
 }
 
 function classifyHash(value: string | number | boolean | null): {

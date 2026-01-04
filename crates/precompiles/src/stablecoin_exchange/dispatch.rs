@@ -6,7 +6,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
+    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
     unknown_selector, view,
 };
 
@@ -39,6 +39,7 @@ impl Precompile for StablecoinExchange {
                         call.isBid,
                         call.tick,
                         call.flipTick,
+                        false,
                     )
                 })
             }
@@ -64,7 +65,7 @@ impl Precompile for StablecoinExchange {
 
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    Ok(self.pair_key(call.tokenA, call.tokenB))
+                    Ok(compute_book_key(call.tokenA, call.tokenB))
                 })
             }
 
@@ -74,17 +75,9 @@ impl Precompile for StablecoinExchange {
                 })
             }
 
-            IStablecoinExchange::activeOrderIdCall::SELECTOR => {
-                view::<IStablecoinExchange::activeOrderIdCall>(calldata, |_call| {
-                    self.active_order_id()
-                })
+            IStablecoinExchange::nextOrderIdCall::SELECTOR => {
+                view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
             }
-            IStablecoinExchange::pendingOrderIdCall::SELECTOR => {
-                view::<IStablecoinExchange::pendingOrderIdCall>(calldata, |_call| {
-                    self.pending_order_id()
-                })
-            }
-
             IStablecoinExchange::createPairCall::SELECTOR => {
                 mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
                     self.create_pair(call.base)
@@ -99,6 +92,13 @@ impl Precompile for StablecoinExchange {
                 mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
                     self.cancel(s, call.orderId)
                 })
+            }
+            IStablecoinExchange::cancelStaleOrderCall::SELECTOR => {
+                mutate_void::<IStablecoinExchange::cancelStaleOrderCall>(
+                    calldata,
+                    msg_sender,
+                    |_s, call| self.cancel_stale_order(call.orderId),
+                )
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<IStablecoinExchange::swapExactAmountInCall>(
@@ -140,13 +140,6 @@ impl Precompile for StablecoinExchange {
                     self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
                 })
             }
-            IStablecoinExchange::executeBlockCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::executeBlockCall>(
-                    calldata,
-                    msg_sender,
-                    |_s, _call| self.execute_block(msg_sender),
-                )
-            }
             IStablecoinExchange::MIN_TICKCall::SELECTOR => {
                 view::<IStablecoinExchange::MIN_TICKCall>(calldata, |_call| {
                     Ok(crate::stablecoin_exchange::MIN_TICK)
@@ -167,6 +160,11 @@ impl Precompile for StablecoinExchange {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
                 })
             }
+            IStablecoinExchange::MIN_ORDER_AMOUNTCall::SELECTOR => {
+                view::<IStablecoinExchange::MIN_ORDER_AMOUNTCall>(calldata, |_call| {
+                    Ok(crate::stablecoin_exchange::MIN_ORDER_AMOUNT)
+                })
+            }
             IStablecoinExchange::MIN_PRICECall::SELECTOR => {
                 view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| Ok(self.min_price()))
             }
@@ -184,7 +182,7 @@ impl Precompile for StablecoinExchange {
                 })
             }
 
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
@@ -194,19 +192,16 @@ impl Precompile for StablecoinExchange {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
     use crate::{
         Precompile,
-        path_usd::TRANSFER_ROLE,
         stablecoin_exchange::{IStablecoinExchange, MIN_ORDER_AMOUNT, StablecoinExchange},
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::{Address, Bytes, U256},
+        primitives::{Address, U256},
         sol_types::{SolCall, SolValue},
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
@@ -222,7 +217,6 @@ mod tests {
         // Initialize quote token (PathUSD)
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
-            .with_role(user, *TRANSFER_ROLE)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange.address, U256::from(amount))
             .apply()?;
@@ -238,9 +232,6 @@ mod tests {
 
         // Place an order to provide liquidity
         exchange.place(user, base.address(), MIN_ORDER_AMOUNT, true, 0)?;
-
-        // Execute block to activate orders
-        exchange.execute_block(Address::ZERO)?;
 
         Ok((exchange, base.address(), quote.address(), user))
     }
@@ -323,8 +314,8 @@ mod tests {
     }
 
     #[test]
-    fn test_min_price_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_min_price() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -339,35 +330,7 @@ mod tests {
             let output = result?.bytes;
             let returned_value = u32::abi_decode(&output)?;
 
-            assert_eq!(
-                returned_value, 67_232,
-                "Pre-moderato MIN_PRICE should be 67_232"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_min_price_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::ZERO;
-            let call = IStablecoinExchange::MIN_PRICECall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?.bytes;
-            let returned_value = u32::abi_decode(&output)?;
-
-            assert_eq!(
-                returned_value, 98_000,
-                "Post-moderato MIN_PRICE should be 98_000"
-            );
+            assert_eq!(returned_value, 98_000, "MIN_PRICE should be 98_000");
             Ok(())
         })
     }
@@ -399,8 +362,8 @@ mod tests {
     }
 
     #[test]
-    fn test_max_price_pre_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Adagio);
+    fn test_max_price() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinExchange::new();
             exchange.initialize()?;
@@ -415,35 +378,7 @@ mod tests {
             let output = result?.bytes;
             let returned_value = u32::abi_decode(&output)?;
 
-            assert_eq!(
-                returned_value, 132_767,
-                "Pre-moderato MAX_PRICE should be 132_767"
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_max_price_post_moderato() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::ZERO;
-            let call = IStablecoinExchange::MAX_PRICECall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?.bytes;
-            let returned_value = u32::abi_decode(&output)?;
-
-            assert_eq!(
-                returned_value, 102_000,
-                "Post-moderato MAX_PRICE should be 102_000"
-            );
+            assert_eq!(returned_value, 102_000, "MAX_PRICE should be 102_000");
             Ok(())
         })
     }
@@ -547,7 +482,6 @@ mod tests {
 
             // Place an ask order to provide liquidity for selling base
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
-            exchange.execute_block(Address::ZERO)?;
 
             // Set balance for the swapper
             exchange.set_balance(user, quote_token, 1_000_000u128)?;
@@ -599,7 +533,6 @@ mod tests {
 
             // Place an ask order to provide liquidity for selling base
             exchange.place(user, base_token, MIN_ORDER_AMOUNT, false, 0)?;
-            exchange.execute_block(Address::ZERO)?;
 
             let sender = Address::random();
 
@@ -619,89 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn test_active_order_id_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            let call = IStablecoinExchange::activeOrderIdCall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?;
-            let active_order_id = u128::abi_decode(&output.bytes)?;
-            assert_eq!(active_order_id, 0); // Should be 0 initially
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_pending_order_id_call() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            let call = IStablecoinExchange::pendingOrderIdCall {};
-            let calldata = call.abi_encode();
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-
-            let output = result?;
-            let pending_order_id = u128::abi_decode(&output.bytes)?;
-            assert_eq!(pending_order_id, 0); // Should be 0 initially
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Moderato);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            // Use an invalid selector that doesn't match any function - should return Ok with reverted status
-            let calldata = Bytes::from([0x12, 0x34, 0x56, 0x78]);
-
-            let result = exchange.call(&calldata, sender);
-            assert!(result.is_ok());
-            assert!(result?.reverted);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_missing_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
-            exchange.initialize()?;
-
-            let sender = Address::random();
-
-            // Use calldata that's too short to contain a selector
-            let calldata = Bytes::from([0x12, 0x34]);
-
-            let result = exchange.call(&calldata, sender);
-            assert!(matches!(result, Err(PrecompileError::Other(_))));
-            Ok(())
-        })
-    }
-
-    #[test]
     fn stablecoin_exchange_test_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -714,6 +564,7 @@ mod tests {
                 IStablecoinExchangeCalls::name_by_selector,
             );
 
+            // All selectors should be supported
             assert_full_coverage([unsupported]);
 
             Ok(())

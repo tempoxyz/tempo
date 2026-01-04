@@ -11,15 +11,11 @@ publish.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = []
-test-utils = []
-
 [dependencies]
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 tempo-precompiles-macros.workspace = true
-alloy = { workspace = true, features = ["contract", "sol-types", "rpc"] }
+alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm.workspace = true
 revm.workspace = true
 
@@ -39,6 +35,11 @@ proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+
+[features]
+default = ["rpc"]
+test-utils = ["alloy/getrandom"]
+rpc = ["tempo-contracts/rpc"]
 
 [[test]]
 name = "storage"

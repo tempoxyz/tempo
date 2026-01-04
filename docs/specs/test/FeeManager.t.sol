@@ -19,7 +19,6 @@ contract FeeManagerTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        // Create test tokens
         userToken = TIP20(factory.createToken("UserToken", "USR", "USD", pathUSD, admin));
         validatorToken = TIP20(factory.createToken("ValidatorToken", "VAL", "USD", pathUSD, admin));
         altToken = TIP20(factory.createToken("AltToken", "ALT", "USD", pathUSD, admin));
@@ -43,14 +42,14 @@ contract FeeManagerTest is BaseTest {
         validatorToken.mint(validator, 10_000e18);
         userToken.mint(admin, 100_000e18);
         validatorToken.mint(admin, 100_000e18);
+        validatorToken.mint(address(amm), 100_000e18);
 
         userToken.approve(address(amm), type(uint256).max);
         validatorToken.approve(address(amm), type(uint256).max);
 
-        // Create pools with initial liquidity
-        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(userToken), address(pathUSD), 20_000e18, admin);
-        amm.mintWithValidatorToken(address(validatorToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(userToken), address(validatorToken), 20_000e18, admin);
+        amm.mint(address(userToken), address(pathUSD), 20_000e18, admin);
+        amm.mint(address(validatorToken), address(pathUSD), 20_000e18, admin);
         vm.stopPrank();
     }
 
@@ -105,7 +104,6 @@ contract FeeManagerTest is BaseTest {
         vm.prank(validator);
         vm.coinbase(validator);
 
-        // Create a non-USD token
         TIP20 eurToken = TIP20(factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin));
 
         if (!isTempo) {
@@ -188,6 +186,30 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
+    function test_collectFeePreTx_RevertsIf_InsufficientLiquidity() public {
+        vm.prank(validator, validator);
+        amm.setValidatorToken(address(altToken));
+
+        vm.startPrank(user);
+        userToken.approve(address(amm), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(address(0));
+        vm.coinbase(validator);
+
+        if (!isTempo) {
+            vm.expectRevert("INSUFFICIENT_LIQUIDITY_FOR_FEE_SWAP");
+        }
+
+        try amm.collectFeePreTx(user, address(userToken), 100e18) {
+            if (isTempo) {
+                revert CallShouldHaveReverted();
+            }
+        } catch {
+            // Expected to revert
+        }
+    }
+
     function test_collectFeePostTx_DifferentTokens() public {
         vm.prank(validator, validator);
         amm.setValidatorToken(address(validatorToken));
@@ -232,59 +254,7 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_executeBlock() public {
-        vm.prank(validator, validator);
-        amm.setValidatorToken(address(validatorToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
-        uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
-        uint256 maxAmount = 100e18;
-        uint256 actualUsed = 80e18;
-
-        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
-        (uint128 reservesBefore0, uint128 reservesBefore1) = amm.pools(poolId);
-
-        vm.startPrank(address(0));
-        vm.coinbase(validator);
-
-        try amm.collectFeePreTx(user, address(userToken), maxAmount) {
-            amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
-            amm.executeBlock();
-            vm.stopPrank();
-
-            assertGt(validatorToken.balanceOf(validator), validatorBalanceBefore);
-
-            (uint128 reservesAfter0, uint128 reservesAfter1) = amm.pools(poolId);
-
-            assertTrue(reservesAfter0 != reservesBefore0 || reservesAfter1 != reservesBefore1);
-        } catch (bytes memory err) {
-            vm.stopPrank();
-            bytes4 errorSelector = bytes4(err);
-            assertTrue(errorSelector == 0xaa4bc69a);
-        }
-    }
-
-    function test_executeBlock_RevertsIf_NotProtocol() public {
-        vm.prank(user);
-
-        if (!isTempo) {
-            vm.expectRevert("ONLY_PROTOCOL");
-        }
-
-        try amm.executeBlock() {
-            if (isTempo) {
-                revert CallShouldHaveReverted();
-            }
-        } catch {
-            // Expected to revert
-        }
-    }
-
     function test_defaultValidatorTokenIsPathUSD() public {
-        // Validator with no preference should use PATH_USD
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();
@@ -296,54 +266,18 @@ contract FeeManagerTest is BaseTest {
         vm.coinbase(validator);
 
         try amm.collectFeePreTx(user, address(userToken), maxAmount) {
+            uint256 validatorBalanceBefore = amm.collectedFees(validator, _PATH_USD);
+
             amm.collectFeePostTx(user, maxAmount, actualUsed, address(userToken));
 
-            uint256 pathUSDBalanceBefore = pathUSD.balanceOf(validator);
-            amm.executeBlock();
+            uint256 validatorBalanceAfter = amm.collectedFees(validator, _PATH_USD);
             vm.stopPrank();
 
-            assertGt(pathUSD.balanceOf(validator), pathUSDBalanceBefore);
+            assertGt(validatorBalanceAfter, validatorBalanceBefore);
         } catch (bytes memory err) {
             vm.stopPrank();
             bytes4 errorSelector = bytes4(err);
             assertTrue(errorSelector == 0xaa4bc69a);
-        }
-    }
-
-    function test_setValidatorToken_RevertsIf_PendingFees() public {
-        vm.prank(validator, validator);
-        amm.setValidatorToken(address(validatorToken));
-
-        vm.startPrank(user);
-        userToken.approve(address(amm), type(uint256).max);
-        vm.stopPrank();
-
-        vm.prank(address(0));
-        vm.coinbase(validator);
-
-        try amm.collectFeePreTx(user, address(userToken), 100e18) {
-            vm.prank(address(0));
-            vm.coinbase(validator);
-            amm.collectFeePostTx(user, 100e18, 80e18, address(userToken));
-        } catch (bytes memory err) {
-            bytes4 errorSelector = bytes4(err);
-            assertTrue(errorSelector == 0xaa4bc69a);
-            return;
-        }
-
-        vm.prank(validator, validator);
-        vm.coinbase(validator);
-
-        if (!isTempo) {
-            vm.expectRevert("CANNOT_CHANGE_WITH_PENDING_FEES");
-        }
-
-        try amm.setValidatorToken(address(altToken)) {
-            if (isTempo) {
-                revert CallShouldHaveReverted();
-            }
-        } catch {
-            // Expected to revert
         }
     }
 

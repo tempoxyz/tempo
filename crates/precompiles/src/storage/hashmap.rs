@@ -14,6 +14,7 @@ pub struct HashMapStorageProvider {
     timestamp: U256,
     beneficiary: Address,
     spec: TempoHardfork,
+    is_static: bool,
 }
 
 impl HashMapStorageProvider {
@@ -37,6 +38,7 @@ impl HashMapStorageProvider {
             ),
             beneficiary: Address::ZERO,
             spec,
+            is_static: false,
         }
     }
 
@@ -136,6 +138,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
+
+    fn is_static(&self) -> bool {
+        self.is_static
+    }
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -168,5 +174,13 @@ impl HashMapStorageProvider {
 
     pub fn clear_transient(&mut self) {
         self.transient.clear();
+    }
+
+    pub fn clear_events(&mut self, address: Address) {
+        let _ = self
+            .events
+            .entry(address)
+            .and_modify(|v| v.clear())
+            .or_default();
     }
 }

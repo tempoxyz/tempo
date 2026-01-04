@@ -25,6 +25,11 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::getValidatorsCall::SELECTOR => {
                 view::<IValidatorConfig::getValidatorsCall>(calldata, |_call| self.get_validators())
             }
+            IValidatorConfig::getNextFullDkgCeremonyCall::SELECTOR => {
+                view::<IValidatorConfig::getNextFullDkgCeremonyCall>(calldata, |_call| {
+                    self.get_next_full_dkg_ceremony()
+                })
+            }
 
             // Mutate functions
             IValidatorConfig::addValidatorCall::SELECTOR => {
@@ -53,8 +58,15 @@ impl Precompile for ValidatorConfig {
                     self.change_owner(s, call)
                 })
             }
+            IValidatorConfig::setNextFullDkgCeremonyCall::SELECTOR => {
+                mutate_void::<IValidatorConfig::setNextFullDkgCeremonyCall>(
+                    calldata,
+                    msg_sender,
+                    |s, call| self.set_next_full_dkg_ceremony(s, call),
+                )
+            }
 
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
+            _ => unknown_selector(selector, self.storage.gas_used()),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
@@ -73,14 +85,13 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::SolValue,
     };
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1).with_spec(TempoHardfork::Moderato);
+        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {

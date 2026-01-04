@@ -14,7 +14,6 @@ workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
 tempo-evm.workspace = true
-tempo-precompiles.workspace = true
 tempo-primitives.workspace = true
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
@@ -22,6 +21,7 @@ tempo-payload-types.workspace = true
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
 reth-consensus-common.workspace = true
+reth-engine-tree.workspace = true
 reth-errors.workspace = true
 reth-evm.workspace = true
 reth-metrics.workspace = true
@@ -34,7 +34,6 @@ reth-payload-primitives.workspace = true
 
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
-alloy-sol-types.workspace = true
 alloy-rlp = "0.3"
 
 metrics.workspace = true

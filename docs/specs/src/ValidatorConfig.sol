@@ -21,6 +21,9 @@ contract ValidatorConfig is IValidatorConfig {
     /// @notice Mapping from validator address to validator info
     mapping(address => Validator) public validators;
 
+    /// @notice The epoch at which a fresh DKG ceremony will be triggered
+    uint64 public nextDkgCeremony;
+
     /// @notice Check if caller is the owner
     modifier onlyOwner() {
         if (msg.sender != owner) {
@@ -55,6 +58,11 @@ contract ValidatorConfig is IValidatorConfig {
         string calldata inboundAddress,
         string calldata outboundAddress
     ) external onlyOwner {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if (publicKey == bytes32(0)) {
+            revert InvalidPublicKey();
+        }
+
         // Check if validator already exists (public key must be non-zero for existing validators)
         if (validators[newValidatorAddress].publicKey != bytes32(0)) {
             revert ValidatorAlreadyExists();
@@ -88,6 +96,11 @@ contract ValidatorConfig is IValidatorConfig {
         string calldata inboundAddress,
         string calldata outboundAddress
     ) external {
+        // Reject zero public key - zero is used as sentinel value for non-existence
+        if (publicKey == bytes32(0)) {
+            revert InvalidPublicKey();
+        }
+
         // Check if caller is a validator
         if (validators[msg.sender].publicKey == bytes32(0)) {
             revert ValidatorNotFound();
@@ -138,6 +151,16 @@ contract ValidatorConfig is IValidatorConfig {
     /// @inheritdoc IValidatorConfig
     function changeOwner(address newOwner) external onlyOwner {
         owner = newOwner;
+    }
+
+    /// @inheritdoc IValidatorConfig
+    function getNextFullDkgCeremony() external view returns (uint64) {
+        return nextDkgCeremony;
+    }
+
+    /// @inheritdoc IValidatorConfig
+    function setNextFullDkgCeremony(uint64 epoch) external onlyOwner {
+        nextDkgCeremony = epoch;
     }
 
     /// @notice Internal function to validate host:port format (for inboundAddress)
