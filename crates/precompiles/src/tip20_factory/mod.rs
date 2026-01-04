@@ -139,14 +139,26 @@ impl TIP20Factory {
         currency: &str,
         admin: Address,
     ) -> Result<Address> {
-        // TODO: validate reserved address and that the address is not populated
+        // Validate that the address has a TIP20 prefix
+        if !is_tip20_prefix(address) {
+            return Err(TIP20Error::invalid_token().into());
+        }
+
+        // Validate that the address is not already deployed
+        if self.is_tip20(address)? {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
+                    token: address,
+                }),
+            ));
+        }
 
         let mut token = TIP20Token::from_address(address)?;
         token.initialize(name, symbol, currency, Address::ZERO, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {
-                token: PATH_USD_ADDRESS,
+                token: address,
                 name: name.into(),
                 symbol: symbol.into(),
                 currency: currency.into(),
@@ -156,7 +168,7 @@ impl TIP20Factory {
             },
         ))?;
 
-        Ok(PATH_USD_ADDRESS)
+        Ok(address)
     }
 }
 
