@@ -139,6 +139,7 @@ impl TIP20Factory {
         name: &str,
         symbol: &str,
         currency: &str,
+        quote_token: Address,
         admin: Address,
     ) -> Result<Address> {
         // Validate that the address has a TIP20 prefix
@@ -153,6 +154,12 @@ impl TIP20Factory {
                     token: address,
                 }),
             ));
+        }
+
+        // Ensure that the quote token is a valid TIP20 that is currently deployed or the quote
+        // token is address(0)
+        if !self.is_tip20(quote_token)? || !quote_token.is_zero() {
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         let mut token = TIP20Token::from_address(address)?;

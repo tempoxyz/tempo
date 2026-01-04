@@ -232,7 +232,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    B256::ZERO,
+                    address!("20C0000000000000000000000000000000000001"),
                     &mut evm,
                 )?;
 
@@ -244,7 +244,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    B256::ZERO,
+                    address!("20C0000000000000000000000000000000000002"),
                     &mut evm,
                 )?;
 
@@ -256,7 +256,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    B256::ZERO,
+                    address!("20C0000000000000000000000000000000000003"),
                     &mut evm,
                 )?;
 
@@ -547,7 +547,7 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
-    salt: B256,
+    address: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -560,17 +560,7 @@ fn create_and_mint_token(
             "TIP20Factory must be initialized before creating tokens"
         );
         let token_address = factory
-            .create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.into(),
-                    symbol: symbol.into(),
-                    currency: currency.into(),
-                    quoteToken: quote_token,
-                    admin,
-                    salt,
-                },
-            )
+            .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
             .expect("Could not create token");
 
         let mut token =
