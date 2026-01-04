@@ -87,8 +87,8 @@ async fn test_is_tip20_checks_code_deployment() -> eyre::Result<()> {
     // Create an address with valid TIP20 prefix but no code deployed
     // Using a fake address that has the prefix but was never created
     let mut fake_tip20_bytes = [0u8; 20];
-    fake_tip20_bytes[..10].copy_from_slice(&[0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    fake_tip20_bytes[10..].copy_from_slice(&[0xFF; 10]); // Random suffix
+    fake_tip20_bytes[..12].copy_from_slice(&[0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    fake_tip20_bytes[12..].copy_from_slice(&[0xFF; 8]); // Random suffix
     let non_existent_tip20_addr = alloy::primitives::Address::from(fake_tip20_bytes);
 
     // Verify this address has valid TIP20 prefix

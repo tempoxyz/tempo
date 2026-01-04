@@ -716,8 +716,8 @@ mod tests {
 
     #[test]
     fn test_payment_classification_aa_partial_match() {
-        // First 10 bytes (20 hex chars) match TIP20_PAYMENT_PREFIX, remaining 10 bytes differ
-        let payment_addr = address!("20c0000000000000000011111111111111111111");
+        // First 12 bytes match TIP20_PAYMENT_PREFIX, remaining 8 bytes differ
+        let payment_addr = address!("20c0000000000000000000001111111111111111");
         let call = Call {
             to: TxKind::Call(payment_addr),
             value: U256::ZERO,

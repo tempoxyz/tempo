@@ -10,7 +10,7 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
-use alloy_primitives::{Address, B256, Signature, U256};
+use alloy_primitives::{Address, B256, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
@@ -46,12 +46,8 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .watch()
         .await?;
 
-    // Verify default user token matches the genesis-created AlphaUSD (salt=1)
-    let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, &provider);
-    let expected_default_token = factory
-        .getTokenAddress(user_address, B256::from(U256::from(1)))
-        .call()
-        .await?;
+    // Verify default user token matches the genesis-created AlphaUSD (reserved address)
+    let expected_default_token = address!("20C0000000000000000000000000000000000001");
     assert_eq!(
         fee_manager.userTokens(user_address).call().await?,
         expected_default_token
