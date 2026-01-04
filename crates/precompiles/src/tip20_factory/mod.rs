@@ -129,17 +129,27 @@ impl TIP20Factory {
         Ok(token_address)
     }
 
-    /// Creates a token at a reserved address. Internal function only, to create pathUSD at genesis.
-    pub fn create_path_usd(&mut self, admin: Address) -> Result<Address> {
-        let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-        path_usd.initialize("PathUSD", "PUSD", "USD", Address::ZERO, admin)?;
+    /// Creates a token at a reserved address
+    /// Internal function used to deploy TIP20s at reserved addresses at genesis or hardforks
+    pub fn create_token_reserved_address(
+        &mut self,
+        address: Address,
+        name: &str,
+        symbol: &str,
+        currency: &str,
+        admin: Address,
+    ) -> Result<Address> {
+        // TODO: validate reserved address and that the address is not populated
+
+        let mut token = TIP20Token::from_address(address)?;
+        token.initialize(name, symbol, currency, Address::ZERO, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {
                 token: PATH_USD_ADDRESS,
-                name: "PathUSD".to_string(),
-                symbol: "PUSD".to_string(),
-                currency: "USD".to_string(),
+                name: name.into(),
+                symbol: symbol.into(),
+                currency: currency.into(),
                 quoteToken: Address::ZERO,
                 admin,
                 salt: B256::ZERO,
