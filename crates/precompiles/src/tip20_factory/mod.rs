@@ -31,15 +31,15 @@ pub struct TIP20Factory {}
 fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u128) {
     let hash = keccak256((sender, salt).abi_encode());
 
-    // Take first 10 bytes of hash as lower bytes (padded to u128)
+    // Take first 8 bytes of hash as lower bytes (padded to u128)
     let mut padded = [0u8; 16];
-    padded[6..].copy_from_slice(&hash[..10]);
+    padded[8..].copy_from_slice(&hash[..8]);
     let lower_bytes = u128::from_be_bytes(padded);
 
-    // Construct the address: TIP20_PREFIX (10 bytes) || hash[..10] (10 bytes)
+    // Construct the address: TIP20_PREFIX (12 bytes) || hash[..8] (8 bytes)
     let mut address_bytes = [0u8; 20];
-    address_bytes[..10].copy_from_slice(&TIP20_PREFIX_BYTES);
-    address_bytes[10..].copy_from_slice(&hash[..10]);
+    address_bytes[..12].copy_from_slice(&TIP20_PREFIX_BYTES);
+    address_bytes[12..].copy_from_slice(&hash[..8]);
 
     (Address::from(address_bytes), lower_bytes)
 }
