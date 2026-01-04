@@ -269,6 +269,7 @@ impl TIP20Setup {
             "PathUSD",
             "PUSD",
             "USD",
+            Address::ZERO,
             admin,
         )?;
 
