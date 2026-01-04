@@ -224,7 +224,7 @@ impl GenesisArgs {
         let (alpha_token_address, beta_token_address, theta_token_address) =
             if !self.no_extra_tokens {
                 println!("Initializing TIP20 tokens");
-                let (_, alpha) = create_and_mint_token(
+                let alpha = create_and_mint_token(
                     "AlphaUSD",
                     "AlphaUSD",
                     "USD",
@@ -232,10 +232,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    B256::ZERO,
                     &mut evm,
                 )?;
 
-                let (_, beta) = create_and_mint_token(
+                let beta = create_and_mint_token(
                     "BetaUSD",
                     "BetaUSD",
                     "USD",
@@ -243,10 +244,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    B256::ZERO,
                     &mut evm,
                 )?;
 
-                let (_, theta) = create_and_mint_token(
+                let theta = create_and_mint_token(
                     "ThetaUSD",
                     "ThetaUSD",
                     "USD",
@@ -254,6 +256,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    B256::ZERO,
                     &mut evm,
                 )?;
 
