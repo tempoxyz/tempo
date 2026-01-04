@@ -267,7 +267,7 @@ impl TIP20Setup {
         Self::factory()?.create_token_reserved_address(
             PATH_USD_ADDRESS,
             "PathUSD",
-            "PUSD", 
+            "PUSD",
             "USD",
             admin,
         )?;
