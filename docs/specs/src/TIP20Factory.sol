@@ -68,7 +68,7 @@ contract TIP20Factory is ITIP20Factory {
         return TempoUtilities.isTIP20(token);
     }
 
-    function getTokenAddress(address sender, bytes32 salt) external view returns (address) {
+    function getTokenAddress(address sender, bytes32 salt) external pure returns (address) {
         uint64 lowerBytes = uint64(bytes8(keccak256(abi.encode(sender, salt))));
         if (lowerBytes < reservedSize) {
             revert AddressReserved();

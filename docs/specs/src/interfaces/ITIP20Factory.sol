@@ -54,6 +54,6 @@ interface ITIP20Factory {
     /// @param sender The address that will call createToken
     /// @param salt The salt to use for deterministic deployment
     /// @return The predicted token address
-    function getTokenAddress(address sender, bytes32 salt) external view returns (address);
+    function getTokenAddress(address sender, bytes32 salt) external pure returns (address);
 
 }
