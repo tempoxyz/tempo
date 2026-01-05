@@ -316,6 +316,37 @@ mod tests {
     }
 
     #[test]
+    fn test_create_token_already_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            TIP20Setup::path_usd(sender).apply()?;
+
+            let salt = B256::random();
+            let create_token_call = ITIP20Factory::createTokenCall {
+                name: "Test Token".to_string(),
+                symbol: "TEST".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: PATH_USD_ADDRESS,
+                admin: sender,
+                salt,
+            };
+
+            let token = factory.create_token(sender, create_token_call.clone())?;
+            let result = factory.create_token(sender, create_token_call);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::TokenAlreadyExists(
+                    ITIP20Factory::TokenAlreadyExists { token }
+                ))
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_is_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
