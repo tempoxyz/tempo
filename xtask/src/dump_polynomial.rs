@@ -74,8 +74,11 @@ impl DumpPolynomial {
         let block = provider
             .get_block_by_number(boundary_block.into())
             .await
-            .wrap_err("failed to fetch block")?
-            .ok_or_else(|| eyre!("block {} not found", boundary_block))?;
+            map_or_else(
+                |err| Err(Report::new(err)),
+                || eyre!("block not found"),
+            )
+            .wrap_err_with(|| format!("failed to fetch block number `{boundary_block}`"))?;
 
         let extra_data = &block.header.inner.extra_data;
 
