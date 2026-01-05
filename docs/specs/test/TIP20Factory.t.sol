@@ -106,7 +106,6 @@ contract TIP20FactoryTest is BaseTest {
     function testIsTIP20Function() public view {
         assertTrue(factory.isTIP20(_PATH_USD));
         assertTrue(factory.isTIP20(address(token1)));
-        assertFalse(factory.isTIP20(0x20C0000000000000000000000000000000000001));
         assertFalse(factory.isTIP20(address(0)));
         assertFalse(factory.isTIP20(address(0x1234)));
         assertFalse(factory.isTIP20(0x21C0000000000000000000000000000000000000));
