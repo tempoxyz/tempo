@@ -138,7 +138,6 @@ fn subblocks_are_included() {
     });
 }
 
-#[ignore = "double check: assertion consistently fails on 23 actual vs 28 expected messages"]
 #[test_traced]
 fn subblocks_are_included_with_failing_txs() {
     let _ = tempo_eyre::install();
