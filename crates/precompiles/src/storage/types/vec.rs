@@ -12,10 +12,7 @@
 //! - Element at index `i` starts at slot `data_start + i * T::SLOTS`
 
 use alloy::primitives::{Address, U256};
-use std::{
-    marker::PhantomData,
-    ops::{Index, IndexMut},
-};
+use std::ops::{Index, IndexMut};
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -151,14 +148,10 @@ where
 /// Vectors have a maximum capacity of `u32::MAX / element_size` to prevent
 /// arithmetic overflow in storage slot calculations.
 #[derive(Debug, Clone)]
-pub struct VecHandler<T>
-where
-    T: Storable,
-{
+pub struct VecHandler<T: Storable> {
     len_slot: U256,
     address: Address,
     cache: HandlerCache<usize, T::Handler>,
-    _ty: PhantomData<T>,
 }
 
 impl<T> Handler<Vec<T>> for VecHandler<T>
@@ -213,7 +206,6 @@ where
             len_slot,
             address,
             cache: HandlerCache::new(),
-            _ty: PhantomData,
         }
     }
 

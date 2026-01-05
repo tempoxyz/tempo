@@ -55,6 +55,7 @@ tempo_precompiles_macros::storable_nested_arrays!();
 ///     slot.write(42)?;
 /// }
 /// ```
+#[derive(Debug, Clone)]
 pub struct ArrayHandler<T: StorableType, const N: usize> {
     base_slot: U256,
     address: Address,
