@@ -74,7 +74,7 @@ impl DumpPolynomial {
             let epocher = FixedEpocher::new(NZU64!(epoch_length));
             epocher
                 .last(Epoch::new(epoch))
-                .expect("fixed epocher always returns boundary")
+            .expect("fixed epocher is valid for all epochs")
         };
 
         let provider = ProviderBuilder::new()
