@@ -44,10 +44,19 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Self::new(internals, u64::MAX, cfg.chain_id, cfg.spec, false)
     }
 
-    pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
-        self.internals.load_account(account)?;
-        self.internals.touch_account(account);
-        Ok(())
+    /// Ensures that an account is loaded.
+    ///
+    /// Returns whether the account is cold, or not.
+    ///
+    /// # NOTE: the `is_cold` check is only relevant when checking arbitrary accounts, not when
+    /// performing storage operations in a precompile.
+    pub fn ensure_loaded_account(&mut self, account: Address) -> Result<bool, EvmInternalsError> {
+        if self.internals.load_account(account)?.is_cold {
+            self.internals.touch_account(account);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
@@ -66,7 +75,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
+        _ = self.ensure_loaded_account(address)?;
         self.deduct_gas(code.len() as u64 * revm::interpreter::gas::CODEDEPOSIT)?;
 
         self.internals.set_code(address, code);
@@ -80,9 +89,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
+        let is_cold = self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?.map(|a| &a.info);
-        let is_cold = account.is_cold;
 
         // deduct gas
         self.gas_remaining = self
@@ -101,7 +109,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
+        let _ = self.ensure_loaded_account(address)?;
         let result = self.internals.sstore(address, key, value)?;
 
         self.deduct_gas(revm::interpreter::gas::sstore_cost(
@@ -149,7 +157,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
+        let _ = self.ensure_loaded_account(address)?;
         let val = self.internals.sload(address, key)?;
 
         self.deduct_gas(revm::interpreter::gas::sload_cost(
