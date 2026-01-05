@@ -14,7 +14,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
 #[clap(group = clap::ArgGroup::new("target").required(true))]
-pub(crate) struct DumpPolynomial {
+pub(crate) struct GetDkgOutcome {
     /// RPC endpoint URL (http://, https://, ws://, or wss://)
     #[arg(long)]
     rpc_url: String,
