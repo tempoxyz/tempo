@@ -92,7 +92,7 @@ impl AmmLiquidityCache {
         for validator_token in missing_in_cache {
             // This might race other fetches but we're OK with it.
             let pool_key = PoolKey::new(user_token, validator_token).get_id();
-            let slot = TipFeeManager::new().pools.at(pool_key).base_slot();
+            let slot = TipFeeManager::new().pools[pool_key].base_slot();
             let pool = state_provider
                 .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
                 .unwrap_or_default();
@@ -151,7 +151,7 @@ impl AmmLiquidityCache {
         P: StateProviderFactory + ChainSpecProvider<ChainSpec: TempoHardforks>,
     {
         let beneficiary = header.beneficiary();
-        let validator_token_slot = TipFeeManager::new().validator_tokens.at(beneficiary).slot();
+        let validator_token_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
 
         let cached_preference = self
             .inner

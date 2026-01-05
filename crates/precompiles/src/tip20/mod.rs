@@ -163,11 +163,11 @@ impl TIP20Token {
 
     // View functions
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances.at(call.account).read()
+        self.balances[call.account].read()
     }
 
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
-        self.allowances.at(call.owner).at(call.spender).read()
+        self.allowances[call.owner][call.spender].read()
     }
 
     // Admin functions
@@ -642,19 +642,19 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances.at(account).read()
+        self.balances[account].read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances.at(account).write(amount)
+        self.balances[account].write(amount)
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
-        self.allowances.at(owner).at(spender).read()
+        self.allowances[owner][spender].read()
     }
 
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
-        self.allowances.at(owner).at(spender).write(amount)
+        self.allowances[owner][spender].write(amount)
     }
 
     fn set_total_supply(&mut self, amount: U256) -> Result<()> {

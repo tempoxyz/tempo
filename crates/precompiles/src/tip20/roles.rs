@@ -111,24 +111,24 @@ impl TIP20Token {
 
     // Internal implementation functions
     pub fn has_role_internal(&self, account: Address, role: B256) -> Result<bool> {
-        self.roles.at(account).at(role).read()
+        self.roles[account][role].read()
     }
 
     pub fn grant_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
-        self.roles.at(account).at(role).write(true)
+        self.roles[account][role].write(true)
     }
 
     fn revoke_role_internal(&mut self, account: Address, role: B256) -> Result<()> {
-        self.roles.at(account).at(role).write(false)
+        self.roles[account][role].write(false)
     }
 
     /// If sloads 0, will be equal to DEFAULT_ADMIN_ROLE
     fn get_role_admin_internal(&self, role: B256) -> Result<B256> {
-        self.role_admins.at(role).read()
+        self.role_admins[role].read()
     }
 
     fn set_role_admin_internal(&mut self, role: B256, admin_role: B256) -> Result<()> {
-        self.role_admins.at(role).write(admin_role)
+        self.role_admins[role].write(admin_role)
     }
 
     fn check_role_internal(&self, account: Address, role: B256) -> Result<()> {

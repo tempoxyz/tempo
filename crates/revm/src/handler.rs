@@ -1354,8 +1354,7 @@ where
     journal.load_account(token)?;
     let balance_slot = TIP20Token::from_address(token)
         .expect("TIP20 prefix already validated")
-        .balances
-        .at(sender)
+        .balances[sender]
         .slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
@@ -1478,7 +1477,7 @@ mod tests {
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let balance_slot = TIP20Token::from_address(token)?.balances.at(account).slot();
+        let balance_slot = TIP20Token::from_address(token)?.balances[account].slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
@@ -1508,7 +1507,7 @@ mod tests {
         let tx_fee_token = Address::random();
 
         // Set validator token
-        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+        let validator_slot = TipFeeManager::new().validator_tokens[validator].slot();
         ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
         ctx.journaled_state
             .sstore(
@@ -1526,7 +1525,7 @@ mod tests {
         }
 
         // Set user token
-        let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
+        let user_slot = TipFeeManager::new().user_tokens[user].slot();
         ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,
