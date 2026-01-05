@@ -21,6 +21,8 @@ tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
+  "providers",
+  "reqwest",
   "signers",
   "signer-local",
   "signer-mnemonic",

@@ -2,8 +2,8 @@
 use std::net::SocketAddr;
 
 use crate::{
-    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet,
+    dump_polynomial::DumpPolynomial, generate_devnet::GenerateDevnet,
+    generate_genesis::GenerateGenesis, generate_localnet::GenerateLocalnet,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -11,6 +11,7 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
+mod dump_polynomial;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
@@ -20,6 +21,9 @@ mod genesis_args;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::DumpPolynomial(args) => {
+            args.run().await.wrap_err("failed to dump polynomial")
+        }
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -44,11 +48,8 @@ struct Args {
 }
 
 #[derive(Debug, clap::Subcommand)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "the variant names map to actual cli inputs and are desired"
-)]
 enum Action {
+    DumpPolynomial(DumpPolynomial),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
