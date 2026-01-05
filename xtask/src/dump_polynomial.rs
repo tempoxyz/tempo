@@ -37,7 +37,8 @@ struct DkgOutcomeInfo {
     /// The epoch for which this outcome is used
     epoch: u64,
     /// Block number where this outcome was stored
-    boundary_block: u64,
+    block_number: u64,
+    block_hash: B256,
     /// Dealers in this DKG ceremony (ed25519 public keys)
     dealers: Vec<String>,
     /// Players in this DKG ceremony (ed25519 public keys)
