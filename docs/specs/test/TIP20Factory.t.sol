@@ -173,7 +173,7 @@ contract TIP20FactoryTest is BaseTest {
     /// @notice Fuzz test: Addresses without TIP20 prefix should be invalid
     function testFuzz_isTIP20WithInvalidPrefix(uint160 randomAddr) public view {
         // Ensure address doesn't have the TIP20 prefix
-        vm.assume(bytes10(bytes20(address(randomAddr))) != 0x20c00000000000000000);
+        vm.assume(bytes12(bytes20(address(randomAddr))) != 0x20c000000000000000000000);
 
         assertFalse(factory.isTIP20(address(randomAddr)));
     }
@@ -221,7 +221,7 @@ contract TIP20FactoryTest is BaseTest {
         // Calculate what the token's address will be using the deterministic formula
         address nextTokenAddr = address(
             uint160(0x20C0000000000000000000000000000000000000)
-                | uint160(uint80(bytes10(keccak256(abi.encode(address(this), salt)))))
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), salt)))))
         );
 
         // The address is not yet a valid TIP20 until it's deployed
@@ -235,6 +235,19 @@ contract TIP20FactoryTest is BaseTest {
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
         }
+    }
+
+    /// @notice Test deterministic address with zero sender and zero salt
+    function test_DeterministicAddressWithZeroSenderAndSalt() public {
+        vm.prank(address(0));
+        address tokenAddr =
+            factory.createToken("Zero Token", "ZERO", "USD", ITIP20(_PATH_USD), admin, bytes32(0));
+
+        assertEq(
+            tokenAddr,
+            0x20C000000000000000000000AD3228B676F7D3cd,
+            "Token should be at deterministic address"
+        );
     }
 
 }

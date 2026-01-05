@@ -19,7 +19,7 @@ library TempoUtilities {
 
         // If this is tempo mainnet, we use code == 0xEF check
         // Otherwise we just check that the address has code
-        return bytes10(bytes20(token)) == bytes10(0x20c00000000000000000)
+        return bytes12(bytes20(token)) == bytes12(0x20c000000000000000000000)
             && ((isTempo && token.code.length == 1 && token.code[0] == hex"EF")
                 || (!isTempo && token.code.length > 0));
     }
