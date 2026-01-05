@@ -40,7 +40,7 @@ use tempo_precompiles::{
     tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending,
+    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
 };
 
 use crate::{
@@ -336,8 +336,21 @@ where
                 // For AA transactions with CREATE as the first call, the nonce was bumped by
                 // make_create_frame during execution. Since checkpoint_revert rolled that back,
                 // we need to manually bump the nonce here to ensure it persists even on failure.
-                // This maintains the invariant that nonces always increment regardless of tx outcome.
-                if calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+                //
+                // However, this only applies when using the protocol nonce (nonce_key == 0).
+                // When using 2D nonces (nonce_key != 0), replay protection is handled by the
+                // NonceManager, and the protocol nonce is only used for CREATE address derivation.
+                // Since the CREATE reverted, no contract was deployed, so the address wasn't
+                // "claimed" and we don't need to burn the protocol nonce.
+                let uses_protocol_nonce = evm
+                    .ctx()
+                    .tx()
+                    .tempo_tx_env
+                    .as_ref()
+                    .map(|aa| aa.nonce_key.is_zero())
+                    .unwrap_or(true);
+
+                if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
                     let caller = evm.ctx().tx().caller();
                     if let Ok(mut caller_acc) =
                         evm.ctx().journal_mut().load_account_with_code_mut(caller)
@@ -1075,6 +1088,13 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+            // Validate AA transaction structure (calls list, CREATE rules)
+            validate_calls(
+                &aa_env.aa_calls,
+                !aa_env.tempo_authorization_list.is_empty(),
+            )
+            .map_err(TempoInvalidTransaction::from)?;
+
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
 
