@@ -45,7 +45,7 @@ pub(super) fn generate_struct(
             encode_type_impl: None,
         },
     )
-    .expand(struct_name, &quote!(alloy_sol_types));
+    .expand(struct_name);
 
     let derives = &def.derives;
     let attrs = &def.attrs;

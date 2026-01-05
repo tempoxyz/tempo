@@ -1,8 +1,6 @@
 //! Shared utilities for code generation.
 
-use alloy_sol_macro_expander::{
-    InterfaceCodegen, SolInterfaceKind, expand_tokenize_simple, selector,
-};
+use alloy_sol_macro_expander::{InterfaceCodegen, SolInterfaceKind, gen_tokenize, selector};
 use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 use syn::{GenericArgument, PathArguments, Type, TypePath};
@@ -202,7 +200,7 @@ pub(super) struct EncodedParams {
 pub(super) fn encode_params(names: &[Ident], types: &[Type]) -> syn::Result<EncodedParams> {
     let sol_types = types_to_sol_types(types)?;
     let param_tuple = quote! { (#(#sol_types,)*) };
-    let tokenize_impl = expand_tokenize_simple(names, &sol_types, &quote!(alloy_sol_types));
+    let tokenize_impl = gen_tokenize(names, &sol_types, false);
     Ok(EncodedParams {
         param_tuple,
         tokenize_impl,
@@ -262,7 +260,7 @@ pub(super) fn generate_sol_interface_container(
         field_counts.iter().copied().min().unwrap_or(0) * 32,
         kind,
     )
-    .expand(&quote!(::alloy_sol_types))
+    .expand()
 }
 
 /// Generate Error container enum from variants.

@@ -126,7 +126,6 @@ fn generate_method_code(method: &MethodDef, registry: &TypeRegistry) -> syn::Res
                     &return_sol_types,
                     &return_rust_types,
                     StructLayout::Named,
-                    &quote!(alloy_sol_types),
                 ),
                 quote! { (#ret_sol,) },
                 ReturnInfo::Single {
@@ -150,14 +149,7 @@ fn generate_method_code(method: &MethodDef, registry: &TypeRegistry) -> syn::Res
                         }
                     }
                 },
-                gen_from_into_tuple(
-                    &return_name,
-                    &[],
-                    &[],
-                    &[],
-                    StructLayout::Unit,
-                    &quote!(alloy_sol_types),
-                ),
+                gen_from_into_tuple(&return_name, &[], &[], &[], StructLayout::Unit),
                 quote! { () },
                 ReturnInfo::Empty {
                     return_name: return_name.clone(),
@@ -176,11 +168,10 @@ fn generate_method_code(method: &MethodDef, registry: &TypeRegistry) -> syn::Res
         &param_sol_types,
         &param_rust_types,
         call_layout,
-        &quote!(alloy_sol_types),
     );
 
     let sol_call_impl = CallCodegen::new(call_tuple, return_sol_tuple, tokenize_impl, return_info)
-        .expand(&call_name, &signature, &quote!(alloy_sol_types));
+        .expand(&call_name, &signature);
 
     // Wrap trait impls in const blocks to avoid type alias conflicts between calls
     Ok(quote! {

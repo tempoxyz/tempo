@@ -287,11 +287,8 @@ fn generate_sol_error_impl(variant: &EnumVariantDef, signature: &str) -> syn::Re
     let sol_types = common::types_to_sol_types(&variant.field_raw_types())?;
     let rust_types = variant.field_types();
 
-    let error_impl = ErrorCodegen::new(param_names, sol_types, rust_types, false).expand(
-        struct_name,
-        signature,
-        &quote!(alloy_sol_types),
-    );
+    let error_impl =
+        ErrorCodegen::new(param_names, sol_types, rust_types, false).expand(struct_name, signature);
 
     Ok(quote! {
         #[allow(non_camel_case_types, non_snake_case, clippy::pub_underscore_fields, clippy::style)]
@@ -341,14 +338,8 @@ fn generate_sol_event_impl(variant: &EnumVariantDef, signature: &str) -> syn::Re
     } else {
         StructLayout::Named
     };
-    let from_tuple = gen_from_into_tuple(
-        struct_name,
-        &field_names,
-        &sol_types,
-        &rust_types,
-        layout,
-        &quote!(alloy_sol_types),
-    );
+    let from_tuple =
+        gen_from_into_tuple(struct_name, &field_names, &sol_types, &rust_types, layout);
 
     let fields: Vec<EventFieldInfo> = field_data
         .iter()
@@ -361,8 +352,7 @@ fn generate_sol_event_impl(variant: &EnumVariantDef, signature: &str) -> syn::Re
         })
         .collect();
 
-    let event_impl =
-        EventCodegen::new(false, fields).expand(struct_name, signature, &quote!(alloy_sol_types));
+    let event_impl = EventCodegen::new(false, fields).expand(struct_name, signature);
 
     // Wrap in const block to avoid type alias conflicts between events
     Ok(quote! {
