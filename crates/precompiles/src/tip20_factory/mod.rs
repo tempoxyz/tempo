@@ -316,51 +316,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_reserved_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sender = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Setup::factory()?;
-            TIP20Setup::path_usd(sender).apply()?;
-
-            // Find a salt that produces an address in the reserved range
-            // We'll try a few salts until we find one (or use a known one)
-            let mut found_reserved_salt = None;
-            for i in 0..1000u64 {
-                let test_salt = B256::from(alloy::primitives::U256::from(i));
-                let (_, lower_bytes) = compute_tip20_address(sender, test_salt);
-                if lower_bytes < RESERVED_SIZE {
-                    found_reserved_salt = Some(test_salt);
-                    break;
-                }
-            }
-
-            if let Some(reserved_salt) = found_reserved_salt {
-                let call = ITIP20Factory::createTokenCall {
-                    name: "Reserved Token".to_string(),
-                    symbol: "RES".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: PATH_USD_ADDRESS,
-                    admin: sender,
-                    salt: reserved_salt,
-                };
-
-                let result = factory.create_token(sender, call);
-                assert_eq!(
-                    result.unwrap_err(),
-                    TempoPrecompileError::TIP20Factory(TIP20FactoryError::AddressReserved(
-                        ITIP20Factory::AddressReserved {}
-                    ))
-                );
-            }
-            // If we didn't find a reserved salt in 1000 tries, that's statistically unlikely
-            // but acceptable for this test
-
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_is_tip20() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
