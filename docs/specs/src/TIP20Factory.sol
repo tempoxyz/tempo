@@ -5,8 +5,12 @@ import { TIP20 } from "./TIP20.sol";
 import { TempoUtilities } from "./TempoUtilities.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { ITIP20Factory } from "./interfaces/ITIP20Factory.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 contract TIP20Factory is ITIP20Factory {
+
+    // Foundry cheatcode VM for deployCodeTo
+    Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     uint256 internal immutable reservedSize = 1024;
 
@@ -42,11 +46,18 @@ contract TIP20Factory is ITIP20Factory {
             revert TokenAlreadyExists(tokenAddr);
         }
 
-        // Deploy TIP20 contract using CREATE2 to the deterministic address
-        TIP20 token = new TIP20{ salt: bytes32(uint256(lowerBytes)) }(
-            name, symbol, currency, quoteToken, admin
+        // NOTE: In the actual Tempo precompile implementation, the contract is deployed
+        // at the deterministic address using the factory precompile. For spec testing purposes,
+        // we emulate this behavior using Foundry's vm.etch() cheatcode to place the
+        // contract bytecode at the calculated address.
+        bytes memory creationCode = vm.getCode("TIP20.sol");
+        vm.etch(
+            tokenAddr,
+            abi.encodePacked(creationCode, abi.encode(name, symbol, currency, quoteToken, admin))
         );
-        require(address(token) == tokenAddr, "Address mismatch");
+        (bool success, bytes memory runtimeBytecode) = tokenAddr.call("");
+        require(success, "TIP20Factory: Failed to deploy TIP20");
+        vm.etch(tokenAddr, runtimeBytecode);
 
         emit TokenCreated(tokenAddr, name, symbol, currency, quoteToken, admin, salt);
 

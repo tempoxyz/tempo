@@ -27,8 +27,8 @@ contract TIP20FactoryTest is BaseTest {
         // Non-USD token with USD quote token should succeed
         bytes32 eurSalt = bytes32("eur_currency");
         address expectedAddr = address(
-            uint160(0x20C0000000000000000000000000000000000000)
-                | uint160(uint80(bytes10(keccak256(abi.encode(address(this), eurSalt)))))
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), eurSalt)))))
         );
 
         if (!isTempo) {
@@ -47,8 +47,8 @@ contract TIP20FactoryTest is BaseTest {
         // Non-USD token with non-USD quote token should succeed
         bytes32 testSalt = bytes32("test_currency");
         expectedAddr = address(
-            uint160(0x20C0000000000000000000000000000000000000)
-                | uint160(uint80(bytes10(keccak256(abi.encode(address(this), testSalt)))))
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), testSalt)))))
         );
 
         if (!isTempo) {
@@ -116,8 +116,8 @@ contract TIP20FactoryTest is BaseTest {
         // Test that same sender + salt produces same address
         bytes32 salt = bytes32("deterministic");
         address expectedAddr = address(
-            uint160(0x20C0000000000000000000000000000000000000)
-                | uint160(uint80(bytes10(keccak256(abi.encode(address(this), salt)))))
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), salt)))))
         );
 
         address tokenAddr =
