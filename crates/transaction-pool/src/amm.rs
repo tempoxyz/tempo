@@ -17,7 +17,6 @@ use tempo_precompiles::{
         TipFeeManager,
         amm::{Pool, PoolKey, compute_amount_out},
     },
-    tip20::{address_to_token_id_unchecked, token_id_to_address},
 };
 use tempo_primitives::TempoReceipt;
 use tempo_revm::IntoAddress;
@@ -59,7 +58,6 @@ impl AmmLiquidityCache {
         fee: U256,
         state_provider: &impl StateProvider,
     ) -> Result<bool, ProviderError> {
-        let user_id = address_to_token_id_unchecked(user_token);
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let mut missing_in_cache = Vec::new();
@@ -67,22 +65,20 @@ impl AmmLiquidityCache {
         // search through latest observed validator tokens and find any cached pools that have enough liquidity
         {
             let inner = self.inner.read();
-            for token in &inner.unique_tokens {
+            for validator_token in &inner.unique_tokens {
                 // If user token matches one of the recently seen validator tokens,
                 // short circuit and return true. We assume that validators are willing to
                 // accept transactions that pay fees in their token directly.
-                if token == &user_token {
+                if validator_token == &user_token {
                     return Ok(true);
                 }
 
-                let validator_id = address_to_token_id_unchecked(*token);
-
-                if let Some(validator_reserve) = inner.cache.get(&(user_id, validator_id)) {
+                if let Some(validator_reserve) = inner.cache.get(&(user_token, *validator_token)) {
                     if *validator_reserve >= amount_out {
                         return Ok(true);
                     }
                 } else {
-                    missing_in_cache.push(validator_id);
+                    missing_in_cache.push(*validator_token);
                 }
             }
         }
@@ -93,10 +89,9 @@ impl AmmLiquidityCache {
         }
 
         // Otherwise, load pools that weren't found in cache and check if they have enough liquidity
-        for token in missing_in_cache {
+        for validator_token in missing_in_cache {
             // This might race other fetches but we're OK with it.
-            let pool_key =
-                PoolKey::new(token_id_to_address(user_id), token_id_to_address(token)).get_id();
+            let pool_key = PoolKey::new(user_token, validator_token).get_id();
             let slot = TipFeeManager::new().pools[pool_key].base_slot();
             let pool = state_provider
                 .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
@@ -104,8 +99,10 @@ impl AmmLiquidityCache {
             let reserve = U256::from(Pool::decode_from_slot(pool).reserve_validator_token);
 
             let mut inner = self.inner.write();
-            inner.cache.insert((user_id, token), reserve);
-            inner.slot_to_pool.insert(slot, (user_id, token));
+            inner.cache.insert((user_token, validator_token), reserve);
+            inner
+                .slot_to_pool
+                .insert(slot, (user_token, validator_token));
 
             // If the pool has enough liquidity, short circuit and return true
             if reserve >= amount_out {
@@ -207,10 +204,10 @@ impl AmmLiquidityCache {
 #[derive(Debug, Default)]
 struct AmmLiquidityCacheInner {
     /// Cache for (user_token, validator_token) -> liquidity
-    cache: HashMap<(u64, u64), U256>,
+    cache: HashMap<(Address, Address), U256>,
 
     /// Reverse index for mapping AMM slot to a pool.
-    slot_to_pool: HashMap<U256, (u64, u64)>,
+    slot_to_pool: HashMap<U256, (Address, Address)>,
 
     /// Latest observed validator tokens.
     last_seen_tokens: VecDeque<Address>,

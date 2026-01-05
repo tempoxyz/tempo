@@ -19,9 +19,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_exchange::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{
-        ITIP20, TIP20Token, address_to_token_id_unchecked, is_tip20_prefix, validate_usd_currency,
-    },
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -1064,9 +1062,7 @@ impl StablecoinExchange {
             book.base
         };
 
-        // Check if maker is forbidden by the token's transfer policy
-        let token_id = address_to_token_id_unchecked(token);
-        let token_contract = TIP20Token::new(token_id);
+        let token_contract = TIP20Token::from_address(token)?;
         let policy_id = token_contract.transfer_policy_id()?;
 
         let registry = TIP403Registry::new();
@@ -1877,7 +1873,7 @@ mod tests {
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
-            let mut base = TIP20Token::new(1);
+            let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
                 user,
                 ITIP20::transferCall {
@@ -3488,7 +3484,7 @@ mod tests {
             assert!(book_before.base.is_zero(),);
 
             // Transfer tokens to exchange first
-            let mut base = TIP20Token::new(1);
+            let mut base = TIP20Token::from_address(base_token)?;
             base.transfer(
                 user,
                 ITIP20::transferCall {

@@ -144,20 +144,17 @@ mod tests {
     use alloy::primitives::keccak256;
 
     use super::*;
-    use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::setup_storage};
+    use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::TIP20Setup};
 
     #[test]
     fn test_role_contract_grant_and_check() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let mut storage = crate::storage::hashmap::HashMapStorageProvider::new(1);
+        let admin = Address::random();
         let user = Address::random();
         let custom_role = keccak256(b"CUSTOM_ROLE");
-        let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Token::new(token_id);
-
-            // Initialize and grant admin
-            token.initialize("name", "symbol", "currency", Address::ZERO, admin)?;
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
             // Test hasRole
             let has_admin = token.has_role(IRolesAuth::hasRoleCall {
@@ -191,15 +188,13 @@ mod tests {
 
     #[test]
     fn test_role_admin_functions() -> eyre::Result<()> {
-        let (mut storage, admin) = setup_storage();
+        let mut storage = crate::storage::hashmap::HashMapStorageProvider::new(1);
+        let admin = Address::random();
         let custom_role = keccak256(b"CUSTOM_ROLE");
         let admin_role = keccak256(b"ADMIN_ROLE");
-        let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Token::new(token_id);
-            // Initialize and grant admin
-            token.initialize("name", "symbol", "currency", Address::ZERO, admin)?;
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
             // Set custom admin for role
             token.set_role_admin(
@@ -221,13 +216,13 @@ mod tests {
 
     #[test]
     fn test_renounce_role() -> eyre::Result<()> {
-        let (mut storage, user) = setup_storage();
+        let mut storage = crate::storage::hashmap::HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
         let custom_role = keccak256(b"CUSTOM_ROLE");
-        let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Token::new(token_id);
-            token.initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)?;
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
             token.grant_role_internal(user, custom_role).unwrap();
 
             // Renounce role
@@ -242,14 +237,14 @@ mod tests {
 
     #[test]
     fn test_unauthorized_access() -> eyre::Result<()> {
-        let (mut storage, user) = setup_storage();
+        let mut storage = crate::storage::hashmap::HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
         let other = Address::random();
         let custom_role = keccak256(b"CUSTOM_ROLE");
-        let token_id = 1;
 
         StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Token::new(token_id);
-            token.initialize("name", "symbol", "currency", Address::ZERO, Address::ZERO)?;
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
             // Try to grant role without permission
             let result = token.grant_role(

@@ -18,7 +18,7 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{self, ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -208,7 +208,8 @@ pub trait TempoStateAccess<M = ()> {
         // Ensure the currency is USD
         // load fee token account to ensure that we can load storage for it.
         self.with_read_only_storage_ctx(spec, || {
-            let token = TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token));
+            // SAFETY: prefix already checked above
+            let token = TIP20Token::from_address(fee_token)?;
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
         })
     }
@@ -412,7 +413,7 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
-    use tempo_precompiles::tip20;
+    use tempo_precompiles::PATH_USD_ADDRESS;
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
@@ -575,15 +576,13 @@ mod tests {
 
     #[test]
     fn test_read_token_balance_typed_storage() -> eyre::Result<()> {
-        // Create a TIP-20 token address
-        let token_id = 1u64;
-        let token_address = tip20::token_id_to_address(token_id);
+        let token_address = PATH_USD_ADDRESS;
         let account = Address::random();
         let expected_balance = U256::from(1000u64);
 
         // Set up CacheDB with balance
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let balance_slot = TIP20Token::new(token_id).balances[account].slot();
+        let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage

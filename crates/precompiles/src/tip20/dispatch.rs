@@ -235,7 +235,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
-        primitives::{Bytes, U256},
+        primitives::{Bytes, U256, address},
         sol_types::{SolInterface, SolValue},
     };
     use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
@@ -722,10 +722,9 @@ mod tests {
         let caller = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // Create token without initialization (no bytecode deployed)
-            let mut token = TIP20Token::new(1);
+            let uninitialized_addr = address!("20C0000000000000000000000000000000000999");
+            let mut token = TIP20Token::from_address(uninitialized_addr)?;
 
-            // Any mutable call should revert with invalid_token error
             let calldata = ITIP20::approveCall {
                 spender: Address::random(),
                 amount: U256::random(),
@@ -736,10 +735,6 @@ mod tests {
             assert!(result.reverted);
             let expected: Bytes = TIP20Error::uninitialized().selector().into();
             assert_eq!(result.bytes, expected);
-
-            TIP20Setup::create("Test", "TST", caller).apply()?;
-            let result = token.call(&calldata, caller)?;
-            assert!(!result.reverted);
 
             Ok(())
         })
