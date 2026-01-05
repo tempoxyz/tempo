@@ -1,5 +1,6 @@
 //! Dump DKG outcome from a block's extra_data.
 
+use alloy::primitives::Bytes;
 use alloy::providers::{Provider, ProviderBuilder};
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
@@ -44,8 +45,7 @@ struct DkgOutcomeInfo {
 
 #[derive(Serialize)]
 struct SharingInfo {
-    /// The constant term (group public key)
-    #[serde(with = "::const_hex::serialize")]
+    /// The network identity (group public key)
     network_identity: Bytes,
     /// Threshold required for signing
     threshold: u32,
@@ -65,7 +65,7 @@ impl DumpPolynomial {
 
         let boundary_block = epocher
             .last(epoch)
-            .ok_or_else(|| eyre!("invalid epoch {}", self.epoch))?;
+            .expect("fixed epocher always returns boundary");
 
         let provider = ProviderBuilder::new()
             .connect(&self.rpc_url)
@@ -75,11 +75,8 @@ impl DumpPolynomial {
         let block = provider
             .get_block_by_number(boundary_block.into())
             .await
-            map_or_else(
-                |err| Err(Report::new(err)),
-                || eyre!("block not found"),
-            )
-            .wrap_err_with(|| format!("failed to fetch block number `{boundary_block}`"))?;
+            .wrap_err_with(|| format!("failed to fetch block number `{boundary_block}`"))?
+            .ok_or_else(|| eyre!("block {boundary_block} not found"))?;
 
         let extra_data = &block.header.inner.extra_data;
 
@@ -94,7 +91,6 @@ impl DumpPolynomial {
             .wrap_err("failed to parse DKG outcome from extra_data")?;
 
         let sharing = outcome.sharing();
-        let constant_term_bytes = sharing.public().encode();
 
         let info = DkgOutcomeInfo {
             epoch: outcome.epoch.get(),
@@ -104,7 +100,7 @@ impl DumpPolynomial {
             next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
             is_next_full_dkg: outcome.is_next_full_dkg,
             sharing: SharingInfo {
-                constant_term: const_hex::encode_prefixed(&constant_term_bytes),
+                network_identity: Bytes::copy_from_slice(&sharing.public().encode()),
                 threshold: sharing.required(),
                 total_participants: sharing.total().get(),
             },
