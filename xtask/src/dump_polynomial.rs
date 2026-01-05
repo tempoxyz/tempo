@@ -11,18 +11,23 @@ use serde::Serialize;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 #[derive(Debug, clap::Args)]
+#[clap(group = clap::ArgGroup::new("target").required(true))]
 pub(crate) struct DumpPolynomial {
     /// RPC endpoint URL (http://, https://, ws://, or wss://)
     #[arg(long)]
     rpc_url: String,
 
-    /// Epoch number to query
-    #[arg(long)]
-    epoch: u64,
+    /// Block number to query directly (use when epoch length varies)
+    #[arg(long, group = "target")]
+    block: Option<u64>,
 
-    /// Epoch length (blocks per epoch)
+    /// Epoch number to query (requires --epoch-length)
+    #[arg(long, group = "target", requires = "epoch_length")]
+    epoch: Option<u64>,
+
+    /// Epoch length in blocks (required with --epoch)
     #[arg(long)]
-    epoch_length: u64,
+    epoch_length: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -59,13 +64,16 @@ fn pubkey_to_hex(pk: &PublicKey) -> String {
 
 impl DumpPolynomial {
     pub(crate) async fn run(self) -> eyre::Result<()> {
-        let epoch_length = NZU64!(self.epoch_length);
-        let epocher = FixedEpocher::new(epoch_length);
-        let epoch = Epoch::new(self.epoch);
-
-        let boundary_block = epocher
-            .last(epoch)
-            .expect("fixed epocher always returns boundary");
+        let boundary_block = if let Some(block) = self.block {
+            block
+        } else {
+            let epoch = self.epoch.expect("epoch required when block not provided");
+            let epoch_length = self.epoch_length.expect("epoch_length required with epoch");
+            let epocher = FixedEpocher::new(NZU64!(epoch_length));
+            epocher
+                .last(Epoch::new(epoch))
+                .expect("fixed epocher always returns boundary")
+        };
 
         let provider = ProviderBuilder::new()
             .connect(&self.rpc_url)
