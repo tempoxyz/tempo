@@ -45,7 +45,8 @@ struct DkgOutcomeInfo {
 #[derive(Serialize)]
 struct SharingInfo {
     /// The constant term (group public key)
-    constant_term: String,
+    #[serde(with = "::const_hex::serialize")]
+    network_identity: Bytes,
     /// Threshold required for signing
     threshold: u32,
     /// Total number of participants
