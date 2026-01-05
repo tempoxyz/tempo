@@ -46,9 +46,8 @@ use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 use super::{
-    Mailbox, executor,
-    executor::ExecutorMailbox,
-    ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
+    Mailbox,
+    ingress::{Broadcast, Genesis, Message, Propose, Verify},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -84,7 +83,6 @@ where
             inner: Inner {
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
-                last_finalized_height: config.last_finalized_height,
 
                 new_payload_wait_time: config.new_payload_wait_time,
 
@@ -92,6 +90,8 @@ where
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
+                executor: config.executor,
+
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
@@ -110,7 +110,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
+        let Ok(initialized) = inner.into_initialized(dkg_manager).await else {
             // Drop the error because into_initialized generates an error event.
             return;
         };
@@ -158,13 +158,6 @@ where
                     move |_| inner.handle_broadcast(broadcast)
                 });
             }
-            Message::Finalized(finalized) => {
-                // XXX: being able to finalize is the only stop condition.
-                // There is no point continuing if this doesn't work.
-                self.inner
-                    .handle_finalized(*finalized)
-                    .wrap_err("failed finalizing block")?;
-            }
             Message::Genesis(genesis) => {
                 self.context.with_label("genesis").spawn({
                     let inner = self.inner.clone();
@@ -192,7 +185,6 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
-    last_finalized_height: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: Mailbox,
@@ -200,6 +192,7 @@ struct Inner<TState> {
     marshal: crate::alias::marshal::Mailbox,
 
     execution_node: TempoFullNode,
+    executor: crate::executor::Mailbox,
     subblocks: subblocks::Mailbox,
     scheme_provider: SchemeProvider,
 
@@ -226,12 +219,6 @@ impl Inner<Init> {
 
         self.marshal.proposed(round, latest_proposed).await;
         Ok(())
-    }
-
-    #[instrument(skip_all)]
-    /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.state.executor_mailbox.forward_finalized(finalized)
     }
 
     #[instrument(
@@ -436,7 +423,7 @@ impl Inner<Init> {
             if parent.1 != payload
                 && let Err(error) = self
                     .state
-                    .executor_mailbox
+                    .executor
                     .canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
@@ -500,7 +487,7 @@ impl Inner<Init> {
 
         ready(
             self.state
-                .executor_mailbox
+                .executor
                 .canonicalize_head(parent.height(), parent.digest()),
         )
         .and_then(|ack| ack.map_err(eyre::Report::new))
@@ -673,7 +660,7 @@ impl Inner<Init> {
 
         if let Err(error) = self
             .state
-            .executor_mailbox
+            .executor
             .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
@@ -711,35 +698,22 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
+    async fn into_initialized(
         self,
-        context: TContext,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
-        let executor = executor::Builder {
-            execution_node: self.execution_node.clone(),
-            last_finalized_height: self.last_finalized_height,
-            marshal: self.marshal.clone(),
-        }
-        .build(context.with_label("executor"))
-        .wrap_err("unable to instantiate executor actor")?;
-
-        let executor_mailbox = executor.mailbox().clone();
-        let executor_handle = executor.start();
-
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
-            last_finalized_height: self.last_finalized_height,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
+            executor: self.executor.clone(),
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
-                executor_mailbox,
-                _executor_handle: AbortOnDrop(executor_handle).into(),
+                executor: self.executor.clone(),
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
@@ -758,13 +732,8 @@ pub(in crate::consensus) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<(Round, Block)>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
-    /// The communication channel to the [`executor::Executor`] task.
-    executor_mailbox: ExecutorMailbox,
-    /// The handle to the spawned executor task.
-    ///
-    /// If the last instance of this is dropped (the application task is aborted),
-    /// this ensures that the task is aborted as well.
-    _executor_handle: Arc<AbortOnDrop>,
+    /// The communication channel to the executor agent.
+    executor: crate::executor::Mailbox,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -955,21 +924,6 @@ fn report_verification_result(
         }
     }
     Ok(())
-}
-
-/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance is dropped.
-struct AbortOnDrop(Handle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl std::fmt::Debug for AbortOnDrop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AbortOnDrop").finish_non_exhaustive()
-    }
 }
 
 async fn get_parent(
