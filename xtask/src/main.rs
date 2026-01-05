@@ -11,7 +11,7 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
-mod dump_polynomial;
+mod get_dkg_outcome;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
