@@ -15,7 +15,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::UnsafeCell, collections::HashMap, hash::Hash};
+use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -317,13 +317,11 @@ pub trait StorageKey {
 /// Enables `Index` implementations on handlers by storing child handlers and
 /// returning references that remain valid across insertions.
 ///
-/// # SAFETY
-///
-/// This type uses `UnsafeCell` for interior mutability. Callers must ensure
-/// that the closure passed to `get_or_insert` isn't reentrant.
+/// Uses `RefCell` for interior mutability with runtime borrow checking.
+/// Re-entrant access will panic rather than cause undefined behavior.
 #[derive(Debug, Default)]
 pub(super) struct HandlerCache<K, H> {
-    inner: UnsafeCell<HashMap<K, Box<H>>>,
+    inner: RefCell<HashMap<K, Box<H>>>,
 }
 
 impl<K, H> HandlerCache<K, H> {
@@ -331,7 +329,7 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(HashMap::new()),
+            inner: RefCell::new(HashMap::new()),
         }
     }
 }
@@ -345,34 +343,22 @@ impl<K, H> Clone for HandlerCache<K, H> {
 
 impl<K: Hash + Eq, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
-    ///
-    /// # SAFETY
-    ///
-    /// This method is safe to call as long as the closure `f` doesn't re-enter.
     #[inline]
     pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
-        // SAFETY: Same guarantees as get_or_insert_mut
-        unsafe {
-            let cache = &mut *self.inner.get();
-            cache.entry(key).or_insert_with(|| Box::new(f()))
-        }
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, so `Box` is never moved or deallocated during handler lifetime.
+        unsafe { &*(boxed.as_ref() as *const H) }
     }
 
     /// Returns a mutable reference to a lazily initialized handler for the given key.
-    ///
-    /// # SAFETY
-    ///
-    /// This method is safe to call as long as the closure `f` doesn't re-enter.
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: K, f: impl FnOnce() -> H) -> &mut H {
-        // SAFETY:
-        // 1. Single-threaded access (EVM execution model)
-        // 2. Box ensures stable heap address even when HashMap rehashes
-        // 3. Append-only: we only insert, never remove entries
-        // 4. Caller must ensure `f()` doesn't access (reenter) this cache
-        unsafe {
-            let cache = &mut *self.inner.get();
-            cache.entry(key).or_insert_with(|| Box::new(f()))
-        }
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, `&mut self` ensures exclusive access.
+        unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
 }
