@@ -12,12 +12,15 @@
 //! - **Unpacked**: When `T::BYTES > 16` or doesn't divide 32, each element uses full slot(s)
 
 use alloy::primitives::{Address, U256};
-use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
 use tempo_precompiles_macros;
 
 use crate::{
     error::Result,
-    storage::{Handler, LayoutCtx, Storable, StorableType, packing, types::Slot},
+    storage::{
+        Handler, LayoutCtx, Storable, StorableType, packing,
+        types::{HandlerCache, Slot},
+    },
 };
 
 // fixed-size arrays: [T; N] for primitive types T and sizes 1-32
@@ -47,32 +50,26 @@ tempo_precompiles_macros::storable_nested_arrays!();
 /// handler.write([1; 32])?;
 ///
 /// // Individual element operations
-/// if let Some(slot) = handler.at(0) {
+/// if let Some(slot) = handler[0] {
 ///     let elem = slot.read()?;
 ///     slot.write(42)?;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct ArrayHandler<T, const N: usize>
-where
-    T: StorableType,
-{
+pub struct ArrayHandler<T: StorableType, const N: usize> {
     base_slot: U256,
     address: Address,
-    _phantom: PhantomData<T>,
+    cache: HandlerCache<usize, T::Handler>,
 }
 
-impl<T, const N: usize> ArrayHandler<T, N>
-where
-    T: StorableType,
-{
+impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
     /// Creates a new handler for the array at the given base slot and address.
     #[inline]
     pub fn new(base_slot: U256, address: Address) -> Self {
         Self {
             base_slot,
             address,
-            _phantom: PhantomData,
+            cache: HandlerCache::new(),
         }
     }
 
@@ -103,41 +100,72 @@ where
         N == 0
     }
 
-    /// Returns a `Slot<T>` accessor for the element at the given index.
+    /// Returns a `Handler` for the element at the given index.
     ///
-    /// The returned `Slot` automatically handles packing based on `T::BYTES`.
+    /// The returned handler automatically handles packing based on `T::BYTES`.
+    /// The handler is computed on first access and cached for subsequent accesses.
     ///
     /// Returns `None` if the index is out of bounds (>= N).
     #[inline]
-    pub fn at(&self, index: usize) -> Option<T::Handler>
-    where
-        T: StorableType,
-    {
+    pub fn at(&mut self, index: usize) -> Option<&T::Handler> {
         if index >= N {
             return None;
         }
+        let (base_slot, address) = (self.base_slot, self.address);
+        Some(
+            self.cache
+                .get_or_insert(index, || Self::compute_handler(base_slot, address, index)),
+        )
+    }
 
+    /// Computes the handler for a given index (unchecked).
+    #[inline]
+    fn compute_handler(base_slot: U256, address: Address, index: usize) -> T::Handler {
         // Pack small elements into shared slots, use T::SLOTS for multi-slot types
-        let (base_slot, layout_ctx) = if T::BYTES <= 16 {
+        let (slot, layout_ctx) = if T::BYTES <= 16 {
             let location = packing::calc_element_loc(index, T::BYTES);
             (
-                self.base_slot + U256::from(location.offset_slots),
+                base_slot + U256::from(location.offset_slots),
                 LayoutCtx::packed(location.offset_bytes),
             )
         } else {
-            (
-                self.base_slot + U256::from(index * T::SLOTS),
-                LayoutCtx::FULL,
-            )
+            (base_slot + U256::from(index * T::SLOTS), LayoutCtx::FULL)
         };
 
-        Some(T::handle(base_slot, layout_ctx, self.address))
+        T::handle(slot, layout_ctx, address)
     }
 }
 
-impl<T, const N: usize> Handler<[T; N]> for ArrayHandler<T, N>
+impl<T: StorableType, const N: usize> Index<usize> for ArrayHandler<T, N> {
+    type Output = T::Handler;
+
+    /// Returns a reference to the cached handler for the given index.
+    ///
+    /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
+    /// For gracefully checked access use `.at(index)` instead.
+    fn index(&self, index: usize) -> &Self::Output {
+        assert!(index < N, "index out of bounds: {index} >= {N}");
+        let (base_slot, address) = (self.base_slot, self.address);
+        self.cache
+            .get_or_insert(index, || Self::compute_handler(base_slot, address, index))
+    }
+}
+
+impl<T: StorableType, const N: usize> IndexMut<usize> for ArrayHandler<T, N> {
+    /// Returns a mutable reference to the cached handler for the given index.
+    ///
+    /// **WARNING:** Panics if OOB. Caller must ensure that the index is valid.
+    /// For gracefully checked access use `.at(index)` instead.
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        assert!(index < N, "index out of bounds: {index} >= {N}");
+        let (base_slot, address) = (self.base_slot, self.address);
+        self.cache
+            .get_or_insert_mut(index, || Self::compute_handler(base_slot, address, index))
+    }
+}
+
+impl<T: StorableType, const N: usize> Handler<[T; N]> for ArrayHandler<T, N>
 where
-    T: StorableType,
     [T; N]: Storable,
 {
     /// Reads the entire array from storage.

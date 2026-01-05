@@ -73,8 +73,6 @@ contract BaseTest is Test {
                 abi.encode("pathUSD", "pathUSD", "USD", address(0), pathUSDAdmin),
                 _PATH_USD
             );
-            // Set TIP20Factory's token_id_counter to 1 since PathUSD is at token_id=0
-            vm.store(_TIP20FACTORY, bytes32(uint256(0)), bytes32(uint256(1)));
             deployCodeTo("Nonce", _NONCE);
             // Deploy ValidatorConfig with admin as owner
             deployCodeTo("ValidatorConfig.sol", abi.encode(admin), _VALIDATOR_CONFIG);
@@ -124,13 +122,12 @@ contract BaseTest is Test {
                 )
             );
             vm.store(_PATH_USD, tempoAdminRoleSlot, bytes32(uint256(1)));
-
-            // Set TIP20Factory's token_id_counter to 1 since PathUSD is at token_id=0
-            vm.store(_TIP20FACTORY, bytes32(uint256(0)), bytes32(uint256(1)));
         }
 
-        token1 = TIP20(factory.createToken("TOKEN1", "T1", "USD", pathUSD, admin));
-        token2 = TIP20(factory.createToken("TOKEN2", "T2", "USD", pathUSD, admin));
+        token1 =
+            TIP20(factory.createToken("TOKEN1", "T1", "USD", pathUSD, admin, bytes32("token1")));
+        token2 =
+            TIP20(factory.createToken("TOKEN2", "T2", "USD", pathUSD, admin, bytes32("token2")));
     }
 
 }

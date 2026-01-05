@@ -19,9 +19,6 @@ impl Precompile for TIP20Factory {
             .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
         let result = match selector {
-            ITIP20Factory::tokenIdCounterCall::SELECTOR => {
-                view::<ITIP20Factory::tokenIdCounterCall>(calldata, |_call| self.token_id_counter())
-            }
             ITIP20Factory::createTokenCall::SELECTOR => {
                 mutate::<ITIP20Factory::createTokenCall>(calldata, msg_sender, |s, call| {
                     self.create_token(s, call)
@@ -29,6 +26,11 @@ impl Precompile for TIP20Factory {
             }
             ITIP20Factory::isTIP20Call::SELECTOR => {
                 view::<ITIP20Factory::isTIP20Call>(calldata, |call| self.is_tip20(call.token))
+            }
+            ITIP20Factory::getTokenAddressCall::SELECTOR => {
+                view::<ITIP20Factory::getTokenAddressCall>(calldata, |call| {
+                    self.get_token_address(call)
+                })
             }
             _ => unknown_selector(selector, self.storage.gas_used()),
         };

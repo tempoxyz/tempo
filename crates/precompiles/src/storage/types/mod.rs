@@ -15,6 +15,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
+use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -37,9 +38,7 @@ impl Layout {
     /// Returns true if this field can be packed with adjacent fields.
     pub const fn is_packable(&self) -> bool {
         match self {
-            // TODO(rusowsky): use `Self::Bytes(n) => *n < 32` to reduce gas usage.
-            // Note that this requires a hardfork and must be properly coordinated.
-            Self::Bytes(_) => true,
+            Self::Bytes(n) => *n < 32,
             Self::Slots(_) => false,
         }
     }
@@ -209,7 +208,7 @@ pub trait Storable: StorableType + Sized {
                 // For packed context, we need to preserve other fields in the slot
                 let bytes = Self::BYTES;
                 let current = storage.load(slot)?;
-                let cleared = crate::storage::packing::zero_packed_value(current, offset, bytes)?;
+                let cleared = crate::storage::packing::delete_from_word(current, offset, bytes)?;
                 storage.store(slot, cleared)
             }
         }
@@ -233,12 +232,17 @@ pub(in crate::storage::types) mod sealed {
 /// `Packable` is used by the storage packing system to efficiently pack multiple
 /// small values into a single 32-byte storage slot.
 ///
-/// # Safety
+/// # Warning
 ///
-/// Implementations must ensure:
-/// - `IS_PACKABLE` is true for the implementing type (enforced at compile time)
-/// - Round-trip conversions preserve data: `from_word(to_word(x)) == x`
-pub trait Packable: sealed::OnlyPrimitives + StorableType {
+/// `IS_PACKABLE` must be true for the implementing type (enforced at compile time)
+pub trait Packable: FromWord + StorableType {}
+
+/// Trait for primitive types that fit into a single EVM storage slot.
+///
+/// # Warning
+///
+/// Round-trip conversions must preserve data: `from_word(to_word(x)) == x`
+pub trait FromWord: sealed::OnlyPrimitives {
     /// Encode this type to a single U256 word.
     fn to_word(&self) -> U256;
 
@@ -261,7 +265,7 @@ impl<T: Packable> Storable for T {
             None => storage.load(slot).and_then(Self::from_word),
             Some(offset) => {
                 let slot_value = storage.load(slot)?;
-                packing::extract_packed_value(slot_value, offset, Self::BYTES)
+                packing::extract_from_word(slot_value, offset, Self::BYTES)
             }
         }
     }
@@ -274,7 +278,7 @@ impl<T: Packable> Storable for T {
             None => storage.store(slot, self.to_word()),
             Some(offset) => {
                 let current = storage.load(slot)?;
-                let updated = packing::insert_packed_value(current, self, offset, Self::BYTES)?;
+                let updated = packing::insert_into_word(current, self, offset, Self::BYTES)?;
                 storage.store(slot, updated)
             }
         }
@@ -308,5 +312,56 @@ pub trait StorageKey {
         buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(&buf).0)
+    }
+}
+
+/// Cache for computed handlers with stable references.
+///
+/// Enables `Index` implementations on handlers by storing child handlers and
+/// returning references that remain valid across insertions.
+///
+/// Uses `RefCell` for interior mutability with runtime borrow checking.
+/// Re-entrant access will panic rather than cause undefined behavior.
+#[derive(Debug, Default)]
+pub(super) struct HandlerCache<K, H> {
+    inner: RefCell<HashMap<K, Box<H>>>,
+}
+
+impl<K, H> HandlerCache<K, H> {
+    /// Creates a new empty handler cache.
+    #[inline]
+    pub(super) fn new() -> Self {
+        Self {
+            inner: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K, H> Clone for HandlerCache<K, H> {
+    /// Creates a new empty cache (cached handlers are not cloned).
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Hash + Eq, H> HandlerCache<K, H> {
+    /// Returns a reference to a lazily initialized handler for the given key.
+    #[inline]
+    pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, so `Box` is never moved or deallocated during handler lifetime.
+        unsafe { &*(boxed.as_ref() as *const H) }
+    }
+
+    /// Returns a mutable reference to a lazily initialized handler for the given key.
+    #[inline]
+    pub(super) fn get_or_insert_mut(&mut self, key: K, f: impl FnOnce() -> H) -> &mut H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, `&mut self` ensures exclusive access.
+        unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
 }

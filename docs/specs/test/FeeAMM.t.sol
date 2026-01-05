@@ -19,8 +19,11 @@ contract FeeAMMTest is BaseTest {
         super.setUp();
 
         // Create tokens using TIP20Factory
-        userToken = TIP20(factory.createToken("User", "USR", "USD", pathUSD, admin));
-        validatorToken = TIP20(factory.createToken("Validator", "VAL", "USD", pathUSD, admin));
+        userToken =
+            TIP20(factory.createToken("User", "USR", "USD", pathUSD, admin, bytes32("user")));
+        validatorToken = TIP20(
+            factory.createToken("Validator", "VAL", "USD", pathUSD, admin, bytes32("validator"))
+        );
 
         // Grant ISSUER_ROLE to admin so we can mint tokens
         userToken.grantRole(_ISSUER_ROLE, admin);
@@ -111,7 +114,8 @@ contract FeeAMMTest is BaseTest {
         }
 
         // ONLY_USD_TOKENS (valid TIP20 but non-USD currency)
-        TIP20 eurToken = TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin));
+        TIP20 eurToken =
+            TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try amm.mint(address(eurToken), address(validatorToken), 1e18, alice) {
             revert CallShouldHaveReverted();

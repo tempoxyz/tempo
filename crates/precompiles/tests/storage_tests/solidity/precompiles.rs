@@ -10,19 +10,6 @@ use tempo_precompiles_macros::{
 use utils::*;
 
 #[test]
-fn test_tip20_factory_layout() {
-    use tempo_precompiles::tip20_factory::slots;
-
-    let sol_path = testdata("tip20_factory.sol");
-    let solc_layout = load_solc_layout(&sol_path);
-    let rust_layout = layout_fields!(token_id_counter);
-
-    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
-        panic_layout_mismatch("Layout", errors, &sol_path);
-    }
-}
-
-#[test]
 fn test_tip403_registry_layout() {
     use tempo_precompiles::tip403_registry::{__packing_policy_data::*, slots};
 
@@ -200,18 +187,6 @@ fn export_all_storage_constants() {
             "bytes": field.bytes
         })
     };
-
-    // TIP20 Factory
-    {
-        use tempo_precompiles::tip20_factory::slots;
-        let fields = layout_fields!(token_id_counter);
-        all_constants.insert(
-            "tip20_factory".to_string(),
-            json!({
-                "fields": fields.iter().map(field_to_json).collect::<Vec<_>>()
-            }),
-        );
-    }
 
     // TIP403 Registry
     {
