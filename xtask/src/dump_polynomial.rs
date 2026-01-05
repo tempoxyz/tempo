@@ -90,7 +90,10 @@ impl DumpPolynomial {
 
         let extra_data = &block.header.inner.extra_data;
 
-        if extra_data.is_empty() {
+        eyre::ensure!(
+            !extra_data.is_empty(),
+            "<msg>",
+        )
             return Err(eyre!(
                 "block {} has empty extra_data (not an epoch boundary?)",
                 boundary_block
