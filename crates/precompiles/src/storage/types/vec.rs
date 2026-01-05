@@ -150,6 +150,7 @@ where
 ///
 /// Vectors have a maximum capacity of `u32::MAX / element_size` to prevent
 /// arithmetic overflow in storage slot calculations.
+#[derive(Debug, Clone)]
 pub struct VecHandler<T>
 where
     T: Storable,
