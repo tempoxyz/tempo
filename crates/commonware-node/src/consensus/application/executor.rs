@@ -15,15 +15,17 @@ use commonware_consensus::{Block as _, marshal::Update};
 
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
     select_biased,
 };
-use reth_provider::BlockNumReader as _;
+use reth_provider::{BlockHashReader, BlockNumReader as _};
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tracing::{Level, Span, debug, info, info_span, instrument, warn, warn_span};
+use tracing::{
+    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
+};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -31,10 +33,6 @@ pub(super) struct Builder {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     pub(super) execution_node: TempoFullNode,
-
-    /// The genesis block of the network. Used to populate fields on
-    /// the send the initial forkchoice state.
-    pub(super) genesis_block: Arc<Block>,
 
     /// The last finalized height according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the
@@ -54,7 +52,6 @@ impl Builder {
     {
         let Self {
             execution_node,
-            genesis_block,
             last_finalized_height,
             marshal,
         } = self;
@@ -67,8 +64,15 @@ impl Builder {
             .provider
             .last_block_number()
             .wrap_err("unable to read latest block number from execution layer")?;
+        let last_finalized_block_hash = execution_node
+            .provider
+            .block_hash(last_execution_finalized_height)
+            .map_or_else(
+                |e| Err(eyre::Report::new(e)),
+                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
+            )
+            .wrap_err("failed to read the last finalized block hash")?;
 
-        let genesis_hash = genesis_block.block_hash();
         Ok(Executor {
             context: ContextCell::new(context),
             execution_node,
@@ -79,9 +83,9 @@ impl Builder {
             my_mailbox,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
-                    head_block_hash: genesis_hash,
-                    safe_block_hash: genesis_hash,
-                    finalized_block_hash: genesis_hash,
+                    head_block_hash: last_finalized_block_hash,
+                    safe_block_hash: last_finalized_block_hash,
+                    finalized_block_hash: last_finalized_block_hash,
                 },
                 head_height: 0,
                 finalized_height: 0,
@@ -242,13 +246,20 @@ where
                     //
                     // Backfills will be spawned as tasks and will also send
                     // resolved the blocks to this queue.
-                    self.handle_message(msg).await;
+                    if let Err(error) = self.handle_message(msg).await {
+                        error_span!("shutdown").in_scope(|| error!(
+                            %error,
+                            "executor encountered fatal fork choice update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        ));
+                        break;
+                    }
                 },
             }
         }
     }
 
-    async fn handle_message(&mut self, message: Message) {
+    async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
             Command::CanonicalizeHead {
@@ -256,14 +267,19 @@ where
                 digest,
                 ack,
             } => {
+                // Errors are logged inside canonicalize; head canonicalization failures
+                // are non-fatal and will be retried on the next block.
                 let _ = self
                     .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
                     .await;
             }
             Command::Finalize(finalized) => {
-                let _ = self.finalize(cause, *finalized).await;
+                self.finalize(cause, *finalized)
+                    .await
+                    .wrap_err("failed handling finalization")?;
             }
         }
+        Ok(())
     }
 
     /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
@@ -336,25 +352,30 @@ where
 
     #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
-    async fn finalize(&mut self, cause: Span, finalized: super::ingress::Finalized) {
+    async fn finalize(
+        &mut self,
+        cause: Span,
+        finalized: super::ingress::Finalized,
+    ) -> eyre::Result<()> {
         match finalized.inner {
             Update::Tip(height, digest) => {
-                let _: Result<_, _> = self
-                    .canonicalize(
-                        Span::current(),
-                        HeadOrFinalized::Finalized,
-                        height,
-                        digest,
-                        oneshot::channel().0,
-                    )
-                    .await;
+                self.canonicalize(
+                    Span::current(),
+                    HeadOrFinalized::Finalized,
+                    height,
+                    digest,
+                    oneshot::channel().0,
+                )
+                .await
+                .wrap_err("failed canonicalizing finalization tip")?;
             }
             Update::Block(block, acknowledgment) => {
-                let _: Result<_, _> = self
-                    .forward_finalized(Span::current(), block, acknowledgment)
-                    .await;
+                self.forward_finalized(Span::current(), block, acknowledgment)
+                    .await
+                    .wrap_err("failed forwarding finalized block to execution layer")?;
             }
         }
+        Ok(())
     }
 
     /// Finalizes `block` by sending it to the execution layer.
@@ -392,22 +413,15 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        if let Err(error) = self
-            .canonicalize(
-                Span::current(),
-                HeadOrFinalized::Finalized,
-                block.height(),
-                block.digest(),
-                oneshot::channel().0,
-            )
-            .await
-        {
-            warn!(
-                %error,
-                "failed canonicalizing finalized block; will still attempt \
-                forwarding it to the execution layer",
-            );
-        }
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            block.height(),
+            block.digest(),
+            oneshot::channel().0,
+        )
+        .await
+        .wrap_err("failed canonicalizing finalized block")?;
 
         if let Ok(execution_height) = self
             .execution_node

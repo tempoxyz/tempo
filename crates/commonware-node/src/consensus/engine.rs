@@ -323,7 +323,7 @@ where
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox,
+                epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
@@ -354,6 +354,7 @@ where
             marshal,
 
             epoch_manager,
+            epoch_manager_mailbox,
 
             subblocks,
         })
@@ -396,6 +397,7 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
+    epoch_manager_mailbox: epoch::manager::Mailbox,
 
     subblocks: subblocks::Actor<TContext>,
 }
@@ -445,10 +447,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        boundary_certificates_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -463,7 +461,6 @@ where
                 broadcast_network,
                 marshal_network,
                 dkg_channel,
-                boundary_certificates_channel,
                 subblocks_channel,
             )
             .await
@@ -500,10 +497,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        boundary_certificates_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -516,17 +509,17 @@ where
         let application = self.application.start(self.dkg_manager_mailbox.clone());
 
         let marshal = self.marshal.start(
-            Reporters::from((self.application_mailbox, self.dkg_manager_mailbox.clone())),
+            Reporters::from((
+                self.epoch_manager_mailbox,
+                Reporters::from((self.application_mailbox, self.dkg_manager_mailbox.clone())),
+            )),
             self.broadcast_mailbox,
             resolver,
         );
 
-        let epoch_manager = self.epoch_manager.start(
-            pending_channel,
-            recovered_channel,
-            resolver_channel,
-            boundary_certificates_channel,
-        );
+        let epoch_manager =
+            self.epoch_manager
+                .start(pending_channel, recovered_channel, resolver_channel);
 
         let subblocks = self
             .context

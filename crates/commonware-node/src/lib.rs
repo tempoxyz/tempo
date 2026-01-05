@@ -25,10 +25,10 @@ use tempo_node::TempoFullNode;
 
 use crate::config::PEERSETS_TO_TRACK;
 pub use crate::config::{
-    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
-    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
+    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
+    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
 pub use args::Args;
@@ -78,11 +78,6 @@ pub async fn run_consensus_stack(
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let boundary_certificates = network.register(
-        BOUNDARY_CERT_CHANNEL_IDENT,
-        BOUNDARY_CERT_LIMIT,
-        message_backlog,
-    );
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let fee_recipient = config
@@ -149,7 +144,6 @@ pub async fn run_consensus_stack(
             broadcaster,
             marshal,
             dkg,
-            boundary_certificates,
             subblocks,
         ),
     );

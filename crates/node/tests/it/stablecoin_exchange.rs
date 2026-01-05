@@ -7,7 +7,7 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, ITIP20Instance},
 };
 use tempo_precompiles::{
-    STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::MIN_ORDER_AMOUNT, tip20::token_id_to_address,
+    PATH_USD_ADDRESS, STABLECOIN_EXCHANGE_ADDRESS, stablecoin_exchange::MIN_ORDER_AMOUNT,
 };
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
@@ -27,7 +27,7 @@ async fn test_bids() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let base = setup_test_token(provider.clone(), caller).await?;
-    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
 
     let account_data: Vec<_> = (1..=10)
         .map(|i| {
@@ -179,7 +179,7 @@ async fn test_asks() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let base = setup_test_token(provider.clone(), caller).await?;
-    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
 
     let account_data: Vec<_> = (1..=3)
         .map(|i| {
@@ -340,7 +340,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let base = setup_test_token(provider.clone(), caller).await?;
-    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
 
     let account_data: Vec<_> = (1..=10)
         .map(|i| {
@@ -451,7 +451,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     // Setup tokens: PathUSD (token_id=0) <- USDC (token_id=2) and PathUSD <- EURC (token_id=3)
-    let linking_usd = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let linking_usd = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
     let usdc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=2
     let eurc = setup_test_token(provider.clone(), caller).await?; // This will be token_id=3
 
@@ -628,7 +628,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let base = setup_test_token(provider.clone(), caller).await?;
-    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
 
     // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
@@ -720,7 +720,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let base = setup_test_token(provider.clone(), caller).await?;
-    let quote = ITIP20Instance::new(token_id_to_address(0), provider.clone());
+    let quote = ITIP20Instance::new(PATH_USD_ADDRESS, provider.clone());
 
     // Pair is auto-created on first place() call
     let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());

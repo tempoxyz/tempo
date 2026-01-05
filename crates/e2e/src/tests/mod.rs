@@ -8,6 +8,7 @@ mod dkg;
 mod linkage;
 mod restart;
 mod subblocks;
+mod sync;
 
 #[test_traced]
 fn spawning_execution_node_works() {

@@ -10,14 +10,14 @@ use alloy::{
 };
 use alloy_eips::{BlockId, Encodable2718};
 use alloy_network::{AnyReceiptEnvelope, EthereumWallet};
-use alloy_primitives::{Address, Signature, U256};
+use alloy_primitives::{Address, Signature, U256, address};
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::{
     IFeeManager, ITIP20,
     ITIPFeeAMM::{self},
 };
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::token_id_to_address};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{calc_gas_balance_spending, tempo_transaction::Call},
@@ -46,10 +46,11 @@ async fn test_set_user_token() -> eyre::Result<()> {
         .watch()
         .await?;
 
-    // Initial token should be predeployed token
+    // Verify default user token matches the genesis-created AlphaUSD (reserved address)
+    let expected_default_token = address!("20C0000000000000000000000000000000000001");
     assert_eq!(
         fee_manager.userTokens(user_address).call().await?,
-        token_id_to_address(1)
+        expected_default_token
     );
 
     let validator = provider
@@ -202,8 +203,7 @@ async fn test_set_validator_token() -> eyre::Result<()> {
         .validatorTokens(validator_address)
         .call()
         .await?;
-    // Initial token should be PathUSD (token_id 0)
-    assert_eq!(initial_token, token_id_to_address(0));
+    assert_eq!(initial_token, PATH_USD_ADDRESS);
 
     let set_receipt = fee_manager
         .setValidatorToken(*validator_token.address())

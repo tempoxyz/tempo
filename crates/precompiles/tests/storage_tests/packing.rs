@@ -559,9 +559,9 @@ fn test_partial_update_preserves_adjacent_fields() {
             .read()
             .unwrap();
 
-        let extracted_a: u64 = extract_packed_value(slot0, 0, 8).unwrap();
-        let extracted_b: u64 = extract_packed_value(slot0, 8, 8).unwrap();
-        let extracted_c: u64 = extract_packed_value(slot0, 16, 8).unwrap();
+        let extracted_a: u64 = extract_from_word(slot0, 0, 8).unwrap();
+        let extracted_b: u64 = extract_from_word(slot0, 8, 8).unwrap();
+        let extracted_c: u64 = extract_from_word(slot0, 16, 8).unwrap();
 
         assert_eq!(extracted_a, 0x1111111111111111, "field a was corrupted");
         assert_eq!(extracted_b, 0x9999999999999999, "field b was not updated");

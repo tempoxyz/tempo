@@ -13,7 +13,7 @@ import { config } from './wagmi.config'
 const unwatch = Actions.token.watchCreate(config, {
   onTokenCreated: (args, log) => {
     console.log('Token:', args.token)
-    console.log('Token ID:', args.tokenId)
+    console.log('Salt:', args.salt)
     console.log('Name:', args.name)
     console.log('Symbol:', args.symbol)
     console.log('Currency:', args.currency)
@@ -53,8 +53,8 @@ declare function onTokenCreated(args: Args, log: Log): void
 type Args = {
   /** Address of the created token */
   token: Address
-  /** ID of the created token */
-  tokenId: bigint
+  /** Salt used for deterministic address derivation */
+  salt: Hex
   /** Name of the token */
   name: string
   /** Symbol of the token */
@@ -78,8 +78,6 @@ Callback to invoke when a new TIP20 token is created.
 type Args = {
   /** Filter by token address(es) */
   token?: Address | Address[] | null
-  /** Filter by token ID(s) */
-  tokenId?: bigint | bigint[] | null
 }
 ```
 

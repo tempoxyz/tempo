@@ -19,8 +19,11 @@ contract FeeAMMTest is BaseTest {
         super.setUp();
 
         // Create tokens using TIP20Factory
-        userToken = TIP20(factory.createToken("User", "USR", "USD", pathUSD, admin));
-        validatorToken = TIP20(factory.createToken("Validator", "VAL", "USD", pathUSD, admin));
+        userToken =
+            TIP20(factory.createToken("User", "USR", "USD", pathUSD, admin, bytes32("user")));
+        validatorToken = TIP20(
+            factory.createToken("Validator", "VAL", "USD", pathUSD, admin, bytes32("validator"))
+        );
 
         // Grant ISSUER_ROLE to admin so we can mint tokens
         userToken.grantRole(_ISSUER_ROLE, admin);
@@ -45,12 +48,24 @@ contract FeeAMMTest is BaseTest {
         uint256 amountV = 10_000e18; // above 2*MIN_LIQUIDITY and within alice balance
         uint256 minLiq = 1000; // MIN_LIQUIDITY constant
 
+        // Expected liquidity: amountV/2 - MIN_LIQUIDITY
+        uint256 expectedLiquidity = amountV / 2 - minLiq;
+
+        // Expect Mint event with correct args
+        vm.expectEmit(true, true, true, true);
+        emit IFeeAMM.Mint(
+            alice, // sender
+            alice, // recipient
+            address(userToken), // userToken
+            address(validatorToken), // validatorToken
+            amountV, // amountValidatorToken
+            expectedLiquidity // liquidity
+        );
+
         vm.prank(alice);
         uint256 liquidity = amm.mint(address(userToken), address(validatorToken), amountV, alice);
 
-        // Expected liquidity: amountV/2 - MIN_LIQUIDITY
-        uint256 expected = amountV / 2 - minLiq;
-        assertEq(liquidity, expected);
+        assertEq(liquidity, expectedLiquidity);
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
         (uint128 uRes, uint128 vRes) = _reserves(poolId);
@@ -58,8 +73,8 @@ contract FeeAMMTest is BaseTest {
         assertEq(uint256(uRes), 0);
         assertEq(uint256(vRes), amountV);
 
-        assertEq(amm.totalSupply(poolId), expected + minLiq); // includes locked MIN_LIQUIDITY
-        assertEq(amm.liquidityBalances(poolId, alice), expected);
+        assertEq(amm.totalSupply(poolId), expectedLiquidity + minLiq); // includes locked MIN_LIQUIDITY
+        assertEq(amm.liquidityBalances(poolId, alice), expectedLiquidity);
     }
 
     function test_Mint_InitialLiquidity_RevertsIf_TooSmall() public {
@@ -99,7 +114,8 @@ contract FeeAMMTest is BaseTest {
         }
 
         // ONLY_USD_TOKENS (valid TIP20 but non-USD currency)
-        TIP20 eurToken = TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin));
+        TIP20 eurToken =
+            TIP20(factory.createToken("Euro", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try amm.mint(address(eurToken), address(validatorToken), 1e18, alice) {
             revert CallShouldHaveReverted();

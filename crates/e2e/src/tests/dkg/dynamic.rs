@@ -159,7 +159,7 @@ impl AssertValidatorIsAdded {
             }
 
             // Then, all how_many_initial + 1 nodes must observe an epoch with the
-            // same number of participants (= how_many_intial + 1).
+            // same number of participants (= how_many_initial + 1).
             loop {
                 context.sleep(Duration::from_secs(1)).await;
 
@@ -234,7 +234,7 @@ impl AssertValidatorIsRemoved {
 
             tracing::debug!(
                 block.number = receipt.block_number,
-                "chanegValidatorStatus call returned receipt"
+                "changeValidatorStatus call returned receipt"
             );
 
             tracing::info!("validator was removed");

@@ -441,10 +441,13 @@ System level functions `systemTransferFrom`, `transferFeePreTx`, and `transferFe
 See [rewards distribution](/protocol/tip20-rewards/spec) for more information.
 
 ## TIP20Factory
-The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory maintains an internal `tokenIdCounter` that increments with each deployment, and uses this counter to derive deterministic “vanity” deployment addresses under a fixed 12-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address, and that integrators can infer a token’s identifier directly from its address. The `TIP20Factory` precompile is deployed at 0x20Fc000000000000000000000000000000000000`.
-Newly created TIP-20 addresses are deployed a vanity address derived from `TIP20_PREFIX || tokenId`, where:
-- `TIP20_PREFIX` is the 12-byte prefix `0x20C0000000000000000000000000`
-- `tokenId` is the current monotonically increasing counter value, encoded into the least significant bytes of the address (eg. `0x20C0000000000000000000000000000000000001`)
+The `TIP20Factory` contract is the canonical entrypoint for creating new TIP-20 tokens on Tempo. The factory derives deterministic deployment addresses using a caller-provided salt, combined with the caller's address, under a fixed 12-byte TIP-20 prefix. This ensures that every TIP-20 token exists at a predictable, collision-free address. The `TIP20Factory` precompile is deployed at `0x20Fc000000000000000000000000000000000000`.
+
+Newly created TIP-20 addresses are deployed to a deterministic address derived from `TIP20_PREFIX || lowerBytes`, where:
+- `TIP20_PREFIX` is the 12-byte prefix `20C000000000000000000000`
+- `lowerBytes` is the highest 64 bits of `keccak256(msg.sender, salt)`
+
+The first 1000 addresses (where `lowerBytes < 1000`) are reserved for protocol use and cannot be deployed to via the factory.
 
 When creating a token, the factory performs several checks to guarantee consistency across the TIP-20 ecosystem:
 
@@ -458,7 +461,7 @@ The complete `TIP20Factory` interface is defined below:
 
 ```solidity
 /// @title TIP-20 Factory Interface
-/// @notice Deploys and initializes new TIP-20 tokens at deterministic vanity addresses
+/// @notice Deploys and initializes new TIP-20 tokens at deterministic addresses
 interface ITIP20Factory {
     /// @notice Creates and deploys a new TIP-20 token
     /// @param name The token's ERC-20 name
@@ -466,13 +469,15 @@ interface ITIP20Factory {
     /// @param currency The token's currency identifier (e.g. "USD")
     /// @param quoteToken The TIP-20 quote token used for exchange pricing
     /// @param admin The address to receive DEFAULT_ADMIN_ROLE on the new token
+    /// @param salt A unique salt for deterministic address derivation
     ///
     /// @return token The deployed TIP-20 token address
     /// @dev
-    ///  - Computes the TIP-20 deployment address as TIP20_PREFIX || tokenId
+    ///  - Computes the TIP-20 deployment address as TIP20_PREFIX || lowerBytes,
+    ///    where lowerBytes is the highest 80 bits of keccak256(msg.sender, salt)
+    ///  - Reverts with AddressReserved if lowerBytes < 1000
     ///  - Ensures the provided quote token is itself a valid TIP-20
     ///  - Enforces USD-denomination rules (USD tokens must use USD quote tokens)
-    ///  - Rejects configurations that would form circular quote-token chains
     ///  - Initializes the token with default settings:
     ///         transferPolicyId = 1 (always-allow)
     ///         supplyCap        = type(uint128).max
@@ -485,7 +490,8 @@ interface ITIP20Factory {
         string memory symbol,
         string memory currency,
         ITIP20 quoteToken,
-        address admin
+        address admin,
+        bytes32 salt
     ) external returns (address token);
 
     // =========================================================================
@@ -495,12 +501,8 @@ interface ITIP20Factory {
     /// @notice Returns true if `token` is a valid TIP-20 address
     /// @param token The address to check
     /// @return True if the address is a well-formed TIP-20
-    /// @dev Checks the TIP-20 prefix and ensures its embedded ID <= tokenIdCounter
+    /// @dev Checks the TIP-20 prefix and verifies the token has code deployed
     function isTIP20(address token) external view returns (bool);
-
-    /// @notice Returns the next token ID that will be assigned on creation
-    /// @return The current tokenIdCounter value
-    function tokenIdCounter() external view returns (uint256);
 
     // =========================================================================
     //                                Events
@@ -508,25 +510,28 @@ interface ITIP20Factory {
 
     /// @notice Emitted when a new TIP-20 token is created
     /// @param token The newly deployed TIP-20 address
-    /// @param id The assigned token ID used in address construction
     /// @param name The token name
     /// @param symbol The token symbol
     /// @param currency The token currency
     /// @param quoteToken The token's assigned quote token
     /// @param admin The address receiving DEFAULT_ADMIN_ROLE
+    /// @param salt The salt used for deterministic address derivation
     event TokenCreated(
         address indexed token,
-        uint256 indexed id,
         string name,
         string symbol,
         string currency,
-        ITIP20 indexed quoteToken,
-        address admin
+        ITIP20 quoteToken,
+        address admin,
+        bytes32 salt
     );
 
     // =========================================================================
     //                                Errors
     // =========================================================================
+
+    /// @notice The computed address falls within the reserved range (lowerBytes < 1000)
+    error AddressReserved();
 
     /// @notice The provided quote token address is invalid or not a TIP-20
     error InvalidQuoteToken();

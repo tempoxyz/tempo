@@ -6,7 +6,7 @@ use revm::precompile::{PrecompileError, PrecompileResult};
 
 use crate::{
     Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange},
+    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
     unknown_selector, view,
 };
 
@@ -39,6 +39,7 @@ impl Precompile for StablecoinExchange {
                         call.isBid,
                         call.tick,
                         call.flipTick,
+                        false,
                     )
                 })
             }
@@ -64,7 +65,7 @@ impl Precompile for StablecoinExchange {
 
             IStablecoinExchange::pairKeyCall::SELECTOR => {
                 view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    Ok(self.pair_key(call.tokenA, call.tokenB))
+                    Ok(compute_book_key(call.tokenA, call.tokenB))
                 })
             }
 
@@ -91,6 +92,13 @@ impl Precompile for StablecoinExchange {
                 mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
                     self.cancel(s, call.orderId)
                 })
+            }
+            IStablecoinExchange::cancelStaleOrderCall::SELECTOR => {
+                mutate_void::<IStablecoinExchange::cancelStaleOrderCall>(
+                    calldata,
+                    msg_sender,
+                    |_s, call| self.cancel_stale_order(call.orderId),
+                )
             }
             IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
                 mutate::<IStablecoinExchange::swapExactAmountInCall>(

@@ -1,17 +1,27 @@
 use super::ITIP20;
 use crate::{
-    Precompile, fill_precompile_output, input_cost, metadata, mutate, mutate_void,
+    Precompile,
+    error::TempoPrecompileError,
+    fill_precompile_output, input_cost, metadata, mutate, mutate_void,
     tip20::{IRolesAuth, TIP20Token},
     unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::TIP20Error;
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
+
+        // Ensure that the token is initialized (has bytecode)
+        // Note that if the initialization check fails, this is treated as uninitialized
+        if !self.is_initialized().unwrap_or(false) {
+            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
+                .into_precompile_result(self.storage.gas_used());
+        }
 
         let selector: [u8; 4] = calldata
             .get(..4)
@@ -225,7 +235,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
-        primitives::{Bytes, U256},
+        primitives::{Bytes, U256, address},
         sol_types::{SolInterface, SolValue},
     };
     use tempo_contracts::precompiles::{RolesAuthError, TIP20Error};
@@ -701,6 +711,30 @@ mod tests {
             assert!(output.reverted);
             let expected: Bytes = RolesAuthError::unauthorized().selector().into();
             assert_eq!(output.bytes, expected);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_call_uninitialized_token_reverts() -> eyre::Result<()> {
+        let (mut storage, _) = setup_storage();
+        let caller = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let uninitialized_addr = address!("20C0000000000000000000000000000000000999");
+            let mut token = TIP20Token::from_address(uninitialized_addr)?;
+
+            let calldata = ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::random(),
+            }
+            .abi_encode();
+            let result = token.call(&calldata, caller)?;
+
+            assert!(result.reverted);
+            let expected: Bytes = TIP20Error::uninitialized().selector().into();
+            assert_eq!(result.bytes, expected);
 
             Ok(())
         })

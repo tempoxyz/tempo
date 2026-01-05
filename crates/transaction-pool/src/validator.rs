@@ -19,8 +19,11 @@ use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
 };
-use tempo_primitives::{subblock::has_sub_block_nonce_key_prefix, transaction::TempoTransaction};
-use tempo_revm::TempoStateAccess;
+use tempo_primitives::{
+    subblock::has_sub_block_nonce_key_prefix,
+    transaction::{RecoveredTempoAuthorization, TempoTransaction},
+};
+use tempo_revm::{TempoBatchCallEnv, TempoStateAccess, calculate_aa_batch_intrinsic_gas};
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -127,11 +130,7 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new()
-            .keys
-            .at(transaction.sender())
-            .at(key_id)
-            .base_slot();
+        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider
@@ -192,6 +191,76 @@ where
         Ok(())
     }
 
+    /// Validates that the gas limit of an AA transaction is sufficient for its intrinsic gas cost.
+    ///
+    /// This prevents transactions from being admitted to the mempool that would fail during execution
+    /// due to insufficient gas for:
+    /// - Per-call cold account access (2600 gas per call target)
+    /// - Calldata gas for ALL calls in the batch
+    /// - Signature verification gas (P256/WebAuthn signatures)
+    /// - Per-call CREATE costs
+    /// - Key authorization costs
+    ///
+    /// Without this validation, malicious transactions could clog the mempool at zero cost by
+    /// passing pool validation (which only sees the first call's input) but failing at execution time.
+    fn ensure_aa_intrinsic_gas(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(aa_tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        let tx = aa_tx.tx();
+
+        // Build the TempoBatchCallEnv needed for gas calculation
+        let aa_env = TempoBatchCallEnv {
+            signature: aa_tx.signature().clone(),
+            valid_before: tx.valid_before,
+            valid_after: tx.valid_after,
+            aa_calls: tx.calls.clone(),
+            tempo_authorization_list: tx
+                .tempo_authorization_list
+                .iter()
+                .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
+                .collect(),
+            nonce_key: tx.nonce_key,
+            subblock_transaction: tx.subblock_proposer().is_some(),
+            key_authorization: tx.key_authorization.clone(),
+            signature_hash: aa_tx.signature_hash(),
+            override_key_id: None,
+        };
+
+        // Calculate the intrinsic gas for the AA transaction
+        let init_and_floor_gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
+                .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+
+        let gas_limit = tx.gas_limit;
+
+        // Check if gas limit is sufficient for initial gas
+        if gas_limit < init_and_floor_gas.initial_gas {
+            return Err(
+                TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_and_floor_gas.initial_gas,
+                },
+            );
+        }
+
+        // Check floor gas (Prague+ / EIP-7623)
+        if gas_limit < init_and_floor_gas.floor_gas {
+            return Err(
+                TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_and_floor_gas.floor_gas,
+                },
+            );
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -234,6 +303,17 @@ where
         if let Some(tx) = transaction.inner().as_aa()
             && let Err(err) = self.ensure_valid_conditionals(tx.tx())
         {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate AA transaction intrinsic gas.
+        // This ensures the gas limit covers all AA-specific costs (per-call overhead,
+        // signature verification, etc.) to prevent mempool DoS attacks where transactions
+        // pass pool validation but fail at execution time.
+        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -807,12 +887,8 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = TIP403Registry::new().policy_data.at(policy_id).base_slot();
-        let policy_set_slot = TIP403Registry::new()
-            .policy_set
-            .at(policy_id)
-            .at(fee_payer)
-            .slot();
+        let policy_data_slot = TIP403Registry::new().policy_data[policy_id].base_slot();
+        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
 
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,
@@ -843,6 +919,89 @@ mod tests {
                 );
             }
             other => panic!("Expected Invalid outcome, got: {other:?}"),
+        }
+    }
+
+    /// Test AA intrinsic gas validation rejects insufficient gas and accepts sufficient gas.
+    /// This is the fix for the audit finding about mempool DoS via gas calculation mismatch.
+    #[tokio::test]
+    async fn test_aa_intrinsic_gas_validation() {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create AA tx with given gas limit
+        let create_aa_tx = |gas_limit: u64| {
+            let calls: Vec<Call> = (0..10)
+                .map(|i| Call {
+                    to: TxKind::Call(Address::from([i as u8; 20])),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::from(vec![0x00; 100]),
+                })
+                .collect();
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 2_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Intrinsic gas for 10 calls: 21k base + 10*2600 cold access + 10*100*4 calldata = ~51k
+        // Test 1: 30k gas should be rejected
+        let tx_low_gas = create_aa_tx(30_000);
+        let validator = setup_validator(&tx_low_gas, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_low_gas)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                assert!(
+                    err.to_string()
+                        .contains("Insufficient gas for AA transaction"),
+                    "Expected InsufficientGasForAAIntrinsicCost, got: {err}"
+                );
+            }
+            other => panic!("Expected Invalid outcome, got: {other:?}"),
+        }
+
+        // Test 2: 100k gas should pass intrinsic gas check
+        let tx_high_gas = create_aa_tx(100_000);
+        let validator = setup_validator(&tx_high_gas, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx_high_gas)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = &outcome {
+            assert!(
+                !err.to_string()
+                    .contains("Insufficient gas for AA transaction"),
+                "Unexpected InsufficientGasForAAIntrinsicCost: {err}"
+            );
         }
     }
 }

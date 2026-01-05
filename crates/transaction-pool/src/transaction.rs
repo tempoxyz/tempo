@@ -85,7 +85,7 @@ impl TempoPooledTransaction {
         *self.nonce_key_slot.get_or_init(|| {
             let nonce_key = self.nonce_key()?;
             let sender = self.sender();
-            let slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
+            let slot = NonceManager::new().nonces[sender][nonce_key].slot();
             Some(slot)
         })
     }
@@ -196,6 +196,13 @@ pub enum TempoPoolTransactionError {
         "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
     )]
     InsufficientLiquidity(Address),
+
+    /// Thrown when an AA transaction's gas limit is insufficient for the calculated intrinsic gas.
+    /// This includes per-call costs, signature verification, and other AA-specific gas costs.
+    #[error(
+        "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
+    )]
+    InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -209,7 +216,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter { .. }
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_) => false,
-            Self::NonZeroValue | Self::SubblockNonceKey => true,
+            Self::NonZeroValue
+            | Self::SubblockNonceKey
+            | Self::InsufficientGasForAAIntrinsicCost { .. } => true,
         }
     }
 
