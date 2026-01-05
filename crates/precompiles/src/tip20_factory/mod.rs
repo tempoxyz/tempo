@@ -111,11 +111,8 @@ impl TIP20Factory {
         }
 
         // If token is USD, its quote token must also be USD
-        if call.currency == USD_CURRENCY {
-            let quote_token_currency = TIP20Token::from_address(call.quoteToken)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
+        if call.currency == USD_CURRENCY && quote_token_currency != TIP20Token::from_address(call.quoteToken)?.currency()? != {
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         // Check if address is in reserved range
@@ -179,11 +176,8 @@ impl TIP20Factory {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
-            if currency == USD_CURRENCY {
-                let quote_token_currency = TIP20Token::from_address(quote_token)?.currency()?;
-                if quote_token_currency != USD_CURRENCY {
-                    return Err(TIP20Error::invalid_quote_token().into());
-                }
+            if currency == USD_CURRENCY && quote_token_currency != TIP20Token::from_address(quote_token)?.currency()? {
+                return Err(TIP20Error::invalid_quote_token().into());
             }
         }
 
