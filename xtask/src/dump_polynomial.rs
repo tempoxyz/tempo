@@ -1,7 +1,9 @@
 //! Dump DKG outcome from a block's extra_data.
 
-use alloy::primitives::Bytes;
-use alloy::providers::{Provider, ProviderBuilder};
+use alloy::{
+    primitives::Bytes,
+    providers::{Provider, ProviderBuilder},
+};
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
