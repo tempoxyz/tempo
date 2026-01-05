@@ -173,22 +173,17 @@ impl TIP20Factory {
             ));
         }
 
-        // Ensure that the quote token is a valid TIP20 that is currently deployed or the quote
-        // quote_token must be a valid TIP20 or address(0)
-        if !(self.is_tip20(quote_token)? || quote_token.is_zero()) {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // Ensure that the quote token is a valid TIP20 that is currently deployed.
-        if !self.is_tip20(quote_token)? {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // If token is USD, its quote token must also be USD
-        if currency == USD_CURRENCY {
-            let quote_token_currency = TIP20Token::from_address(quote_token)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
+        // quote_token must be address(0) or a valid TIP20
+        if !quote_token.is_zero() {
+            if !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
+            }
+            // If token is USD, its quote token must also be USD
+            if currency == USD_CURRENCY {
+                let quote_token_currency = TIP20Token::from_address(quote_token)?.currency()?;
+                if quote_token_currency != USD_CURRENCY {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
             }
         }
 
