@@ -1,8 +1,9 @@
-//! Dump polynomial commitment from a block's extra_data.
+//! Dump DKG outcome from a block's extra_data.
 
 use alloy::providers::{Provider, ProviderBuilder};
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::NZU64;
 use eyre::{Context as _, eyre};
 use serde::Serialize;
@@ -24,12 +25,35 @@ pub(crate) struct DumpPolynomial {
 }
 
 #[derive(Serialize)]
-struct PolynomialInfo {
+struct DkgOutcomeInfo {
+    /// The epoch for which this outcome is used
     epoch: u64,
+    /// Block number where this outcome was stored
     boundary_block: u64,
+    /// Dealers in this DKG ceremony (ed25519 public keys)
+    dealers: Vec<String>,
+    /// Players in this DKG ceremony (ed25519 public keys)
+    players: Vec<String>,
+    /// Players for the next DKG ceremony (ed25519 public keys)
+    next_players: Vec<String>,
+    /// Whether the next DKG should be a full ceremony (new polynomial)
+    is_next_full_dkg: bool,
+    /// The shared public polynomial info
+    sharing: SharingInfo,
+}
+
+#[derive(Serialize)]
+struct SharingInfo {
+    /// The constant term (group public key)
     constant_term: String,
+    /// Threshold required for signing
     threshold: u32,
+    /// Total number of participants
     total_participants: u32,
+}
+
+fn pubkey_to_hex(pk: &PublicKey) -> String {
+    const_hex::encode_prefixed(pk.as_ref())
 }
 
 impl DumpPolynomial {
@@ -67,14 +91,19 @@ impl DumpPolynomial {
 
         let sharing = outcome.sharing();
         let constant_term_bytes = sharing.public().encode();
-        let constant_term = const_hex::encode_prefixed(&constant_term_bytes);
 
-        let info = PolynomialInfo {
-            epoch: self.epoch,
+        let info = DkgOutcomeInfo {
+            epoch: outcome.epoch.get(),
             boundary_block,
-            constant_term,
-            threshold: sharing.required(),
-            total_participants: sharing.total().get(),
+            dealers: outcome.dealers().iter().map(pubkey_to_hex).collect(),
+            players: outcome.players().iter().map(pubkey_to_hex).collect(),
+            next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
+            is_next_full_dkg: outcome.is_next_full_dkg,
+            sharing: SharingInfo {
+                constant_term: const_hex::encode_prefixed(&constant_term_bytes),
+                threshold: sharing.required(),
+                total_participants: sharing.total().get(),
+            },
         };
 
         println!("{}", serde_json::to_string_pretty(&info)?);
