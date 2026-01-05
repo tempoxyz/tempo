@@ -23,6 +23,7 @@ alloy = { workspace = true, features = [
   "genesis",
   "providers",
   "reqwest",
+  "reqwest-rustls-tls",
   "signers",
   "signer-local",
   "signer-mnemonic",
