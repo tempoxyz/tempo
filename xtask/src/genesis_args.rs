@@ -204,8 +204,9 @@ impl GenesisArgs {
         // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
 
         // Deploy TestUSD fee token
-        let pathusd_admin = self.pathusd_admin.unwrap_or(addresses[0]);
-        let validator_admin = self.validator_admin.unwrap_or(addresses[0]);
+        println!("{:?}", self.pathusd_admin);
+        let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
+        let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
         let mut evm = setup_tempo_evm(self.chain_id);
 
         deploy_arachnid_create2_factory(&mut evm);
@@ -272,16 +273,15 @@ impl GenesisArgs {
 
         println!("Initializing validator config");
         let validator_onchain_addresses = if self.validator_addresses.is_empty() {
-            None
+            &addresses[1..self.validators.len() + 1]
         } else {
-            Some(&self.validator_addresses[..])
+            &self.validator_addresses[0..self.validators.len()]
         };
         initialize_validator_config(
             validator_admin,
             &mut evm,
             &consensus_config,
             // Skip first address (used as default admin)
-            &addresses[1..],
             validator_onchain_addresses,
             self.no_dkg_in_genesis,
         )?;
@@ -708,8 +708,7 @@ fn initialize_validator_config(
     admin: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
     consensus_config: &Option<ConsensusConfig>,
-    fallback_addresses: &[Address],
-    custom_validator_addresses: Option<&[Address]>,
+    onchain_validator_addresses: &[Address],
     no_dkg_in_genesis: bool,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
@@ -726,20 +725,19 @@ fn initialize_validator_config(
 
         if let Some(consensus_config) = consensus_config.clone() {
             let num_validators = consensus_config.validators.len();
-            let addrs = custom_validator_addresses.unwrap_or(fallback_addresses);
 
-            if addrs.len() < num_validators {
+            if onchain_validator_addresses.len() < num_validators {
                 return Err(eyre!(
                     "need {} addresses for all validators, but only {} were provided",
                     num_validators,
-                    addrs.len()
+                    onchain_validator_addresses.len()
                 ));
             }
 
             println!("writing {num_validators} validators into contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
                 #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let newValidatorAddress = addrs[i];
+                let newValidatorAddress = onchain_validator_addresses[i];
                 let public_key = validator.public_key();
                 let addr = validator.addr;
                 validator_config
