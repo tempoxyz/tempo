@@ -1,11 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
-import type { Chain } from 'viem'
-import { Actions } from 'viem/tempo'
 import { Hooks } from 'tempo.ts/wagmi'
-import type { Client, Transport } from 'viem'
+import type { Chain, Client, Transport } from 'viem'
 import { parseUnits } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
+import { Actions } from 'viem/tempo'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
 import { Button, Login, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
@@ -36,7 +35,7 @@ export function AddFunds(props: DemoStepProps) {
 
       if (import.meta.env.VITE_ENVIRONMENT !== 'local')
         await Actions.faucet.fundSync(
-          client,
+          client as unknown as Client<Transport, Chain>,
           { account: address },
         )
       else {
