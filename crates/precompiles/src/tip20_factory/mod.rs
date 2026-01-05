@@ -111,7 +111,7 @@ impl TIP20Factory {
         }
 
         // If token is USD, its quote token must also be USD
-        if call.currency == USD_CURRENCY && quote_token_currency != TIP20Token::from_address(call.quoteToken)?.currency()? != {
+        if call.currency == USD_CURRENCY && TIP20Token::from_address(call.quoteToken)?.currency()? != USD_CURRENCY{
             return Err(TIP20Error::invalid_quote_token().into());
         }
 
@@ -176,7 +176,7 @@ impl TIP20Factory {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
-            if currency == USD_CURRENCY && quote_token_currency != TIP20Token::from_address(quote_token)?.currency()? {
+            if currency == USD_CURRENCY && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         }
