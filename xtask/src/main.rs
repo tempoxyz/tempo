@@ -21,9 +21,7 @@ mod genesis_args;
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
-        Action::DumpPolynomial(args) => {
-            args.run().await.wrap_err("failed to dump polynomial")
-        }
+        Action::DumpPolynomial(args) => args.run().await.wrap_err("failed to dump polynomial"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
