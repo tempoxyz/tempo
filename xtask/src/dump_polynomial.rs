@@ -28,7 +28,7 @@ pub(crate) struct GetDkgOutcome {
     epoch: Option<u64>,
 
     /// Epoch length in blocks (required with --epoch)
-    #[arg(long)]
+    #[arg(long, requires = "epoch")]
     epoch_length: Option<u64>,
 }
 
