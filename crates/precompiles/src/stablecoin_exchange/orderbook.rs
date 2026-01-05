@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Handler, Mapping, Slot},
+    storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -208,31 +208,38 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
-    pub fn get_tick_level_handler(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
+    pub fn tick_level_handler(&self, tick: i16, is_bid: bool) -> &TickLevelHandler {
         if is_bid {
-            self.bids.at(tick)
+            &self.bids[tick]
         } else {
-            self.asks.at(tick)
+            &self.asks[tick]
         }
     }
 
-    fn get_tick_bit_handler(&self, tick: i16, is_bid: bool) -> Result<Slot<U256>> {
+    pub fn tick_level_handler_mut(&mut self, tick: i16, is_bid: bool) -> &mut TickLevelHandler {
+        if is_bid {
+            &mut self.bids[tick]
+        } else {
+            &mut self.asks[tick]
+        }
+    }
+
+    fn calc_tick_word_idx(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
-        let word_index = tick >> 8;
-
-        if is_bid {
-            Ok(self.bid_bitmap.at(word_index))
-        } else {
-            Ok(self.ask_bitmap.at(word_index))
-        }
+        Ok(tick >> 8)
     }
 
     /// Set bit in bitmap to mark tick as active
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &mut self.bid_bitmap[word_index]
+        } else {
+            &mut self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -247,7 +254,12 @@ impl OrderbookHandler {
 
     /// Clear bit in bitmap to mark tick as inactive
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &mut self.bid_bitmap[word_index]
+        } else {
+            &mut self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -262,7 +274,12 @@ impl OrderbookHandler {
 
     /// Check if a tick is initialized (has orders)
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
-        let bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &self.bid_bitmap[word_index]
+        } else {
+            &self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let word = bitmap.read()?;
@@ -304,7 +321,7 @@ impl OrderbookHandler {
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = self.ask_bitmap.at(word_index).read()?;
+            let word = self.ask_bitmap[word_index].read()?;
 
             // Mask off bits below bit_index to only consider ticks >= next_tick
             let mask = if bit_index == 0 {
@@ -354,7 +371,7 @@ impl OrderbookHandler {
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = self.bid_bitmap.at(word_index).read()?;
+            let word = self.bid_bitmap[word_index].read()?;
 
             // Mask off bits above bit_index to only consider ticks <= next_tick
             let mask = if bit_index == 255 {
@@ -547,7 +564,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test full lifecycle (set, check, clear, check) for positive and negative ticks
                 // Include boundary cases, word boundaries, and various representative values
@@ -590,7 +607,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test MIN_TICK
                 book_handler.set_tick_bit(MIN_TICK, true)?;
@@ -625,7 +642,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 let tick = 100;
 
@@ -662,7 +679,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Ticks that span word boundary at 256
                 book_handler.set_tick_bit(255, true)?; // word_index = 0, bit_index = 255
@@ -680,7 +697,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test ticks in different words (both positive and negative)
 
@@ -727,7 +744,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.set_tick_bit(MAX_TICK + 1, true);
@@ -758,7 +775,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.delete_tick_bit(MAX_TICK + 1, true);
@@ -788,7 +805,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
-                let book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.is_tick_initialized(MAX_TICK + 1, true);
@@ -819,7 +836,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0)
                 book_handler.set_tick_bit(10, false)?;
@@ -850,7 +867,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words: 100 (word 0), 300 (word 1), 600 (word 2)
                 book_handler.set_tick_bit(100, false)?;
@@ -882,7 +899,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0) for bids
                 book_handler.set_tick_bit(10, true)?;
@@ -913,7 +930,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words for bids: 600 (word 2), 300 (word 1), 100 (word 0)
                 book_handler.set_tick_bit(600, true)?;
@@ -945,7 +962,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set negative ticks for asks
                 book_handler.set_tick_bit(-500, false)?;
@@ -991,7 +1008,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test exact word boundaries (256, 512, -256, -512)
                 book_handler.set_tick_bit(255, false)?; // Last bit of word 0

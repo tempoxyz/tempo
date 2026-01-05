@@ -11,11 +11,12 @@ import { Test } from "forge-std/Test.sol";
 contract TIP20FactoryTest is BaseTest {
 
     function testCreateUsdToken_RevertsIf_NonUsdQuoteToken() public {
-        address nonUsdTokenAddr =
-            factory.createToken("Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin);
+        address nonUsdTokenAddr = factory.createToken(
+            "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, bytes32("eur")
+        );
         ITIP20 nonUsdToken = ITIP20(nonUsdTokenAddr);
 
-        try factory.createToken("USD Token", "USD", "USD", nonUsdToken, admin) {
+        try factory.createToken("USD Token", "USD", "USD", nonUsdToken, admin, bytes32("usd")) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
@@ -24,36 +25,40 @@ contract TIP20FactoryTest is BaseTest {
 
     function testCreateTokenCurrencyValidation() public {
         // Non-USD token with USD quote token should succeed
-        uint256 currentCounter = factory.tokenIdCounter();
-        address expectedAddr =
-            address(uint160(0x20C0000000000000000000000000000000000000) | uint160(currentCounter));
+        bytes32 eurSalt = bytes32("eur_currency");
+        address expectedAddr = address(
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), eurSalt)))))
+        );
 
         if (!isTempo) {
             vm.expectEmit(true, true, false, true);
             emit ITIP20Factory.TokenCreated(
-                expectedAddr, currentCounter, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin
+                expectedAddr, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, eurSalt
             );
         }
 
         address eurTokenAddr =
-            factory.createToken("Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin);
+            factory.createToken("Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, eurSalt);
         ITIP20 eurToken = ITIP20(eurTokenAddr);
         assertEq(eurToken.currency(), "EUR");
         assertEq(address(eurToken.quoteToken()), _PATH_USD);
 
         // Non-USD token with non-USD quote token should succeed
-        currentCounter = factory.tokenIdCounter();
-        expectedAddr =
-            address(uint160(0x20C0000000000000000000000000000000000000) | uint160(currentCounter));
+        bytes32 testSalt = bytes32("test_currency");
+        expectedAddr = address(
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), testSalt)))))
+        );
 
         if (!isTempo) {
             vm.expectEmit(true, true, false, true);
             emit ITIP20Factory.TokenCreated(
-                expectedAddr, currentCounter, "Test", "Test", "EUR", eurToken, admin
+                expectedAddr, "Test", "Test", "EUR", eurToken, admin, testSalt
             );
         }
 
-        address tokenAddr = factory.createToken("Test", "Test", "EUR", eurToken, admin);
+        address tokenAddr = factory.createToken("Test", "Test", "EUR", eurToken, admin, testSalt);
         ITIP20 nonUSDToken = ITIP20(tokenAddr);
         assertEq(nonUSDToken.currency(), "EUR");
         assertEq(address(nonUSDToken.quoteToken()), eurTokenAddr);
@@ -61,8 +66,9 @@ contract TIP20FactoryTest is BaseTest {
 
     function testCreateTokenWithValidQuoteToken() public {
         // Create token with PathUSD as the quote token
-        address tokenAddr =
-            factory.createToken("Test Token", "TEST", "USD", ITIP20(_PATH_USD), admin);
+        address tokenAddr = factory.createToken(
+            "Test Token", "TEST", "USD", ITIP20(_PATH_USD), admin, bytes32("valid")
+        );
 
         ITIP20 token = ITIP20(tokenAddr);
         assertEq(token.name(), "Test Token");
@@ -77,7 +83,8 @@ contract TIP20FactoryTest is BaseTest {
             "TEST",
             "USD",
             ITIP20(address(0x1234)), // Invalid address
-            admin
+            admin,
+            bytes32("invalid")
         ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
@@ -87,7 +94,9 @@ contract TIP20FactoryTest is BaseTest {
 
     function testCreateTokenWithZeroAddressReverts() public {
         // Try to create token with zero address as quote token
-        try factory.createToken("Test Token", "TEST", "USD", ITIP20(address(0)), admin) {
+        try factory.createToken(
+            "Test Token", "TEST", "USD", ITIP20(address(0)), admin, bytes32("zero")
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
@@ -96,20 +105,65 @@ contract TIP20FactoryTest is BaseTest {
 
     function testIsTIP20Function() public view {
         assertTrue(factory.isTIP20(_PATH_USD));
-        assertTrue(factory.isTIP20(0x20C0000000000000000000000000000000000001));
+        assertTrue(factory.isTIP20(address(token1)));
         assertFalse(factory.isTIP20(address(0)));
         assertFalse(factory.isTIP20(address(0x1234)));
         assertFalse(factory.isTIP20(0x21C0000000000000000000000000000000000000));
     }
 
-    function testTokenIdCounter() public {
-        uint256 currCounter = factory.tokenIdCounter();
+    function testDeterministicAddressGeneration() public {
+        // Test that same sender + salt produces same address
+        bytes32 salt = bytes32("deterministic");
+        address expectedAddr = address(
+            (uint160(0x20C000000000000000000000) << 64)
+                | uint160(uint64(bytes8(keccak256(abi.encode(address(this), salt)))))
+        );
 
-        factory.createToken("Token 1", "TK1", "USD", ITIP20(_PATH_USD), admin);
-        assertEq(factory.tokenIdCounter(), currCounter + 1);
+        address tokenAddr =
+            factory.createToken("Token 1", "TK1", "USD", ITIP20(_PATH_USD), admin, salt);
+        assertEq(tokenAddr, expectedAddr, "Address should match deterministic calculation");
 
-        factory.createToken("Token 2", "TK2", "USD", ITIP20(_PATH_USD), admin);
-        assertEq(factory.tokenIdCounter(), currCounter + 2);
+        // Different salts produce different addresses
+        bytes32 salt2 = bytes32("different");
+        address tokenAddr2 =
+            factory.createToken("Token 2", "TK2", "USD", ITIP20(_PATH_USD), admin, salt2);
+        assertTrue(tokenAddr != tokenAddr2, "Different salts should produce different addresses");
+    }
+
+    function testGetTokenAddress() public {
+        bytes32 salt = bytes32("predict");
+
+        // Get predicted address before deployment
+        address predicted = factory.getTokenAddress(address(this), salt);
+
+        // Deploy the token
+        address actual =
+            factory.createToken("Predicted", "PRED", "USD", ITIP20(_PATH_USD), admin, salt);
+
+        assertEq(predicted, actual, "Predicted address should match actual deployed address");
+    }
+
+    function testGetTokenAddressDifferentSenders(bytes32 salt) public view {
+        address addr1 = factory.getTokenAddress(address(0x1), salt);
+        address addr2 = factory.getTokenAddress(address(0x2), salt);
+
+        assertTrue(addr1 != addr2, "Different senders should produce different addresses");
+    }
+
+    function testDoubleDeployment() public {
+        address tokenAddr = factory.createToken(
+            "Unique Token", "UNQ", "USD", ITIP20(_PATH_USD), admin, bytes32("unique_salt")
+        );
+
+        try factory.createToken(
+            "Unique Token", "UNQ", "USD", ITIP20(_PATH_USD), admin, bytes32("unique_salt")
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(
+                err, abi.encodeWithSelector(ITIP20Factory.TokenAlreadyExists.selector, tokenAddr)
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -119,23 +173,9 @@ contract TIP20FactoryTest is BaseTest {
     /// @notice Fuzz test: Addresses without TIP20 prefix should be invalid
     function testFuzz_isTIP20WithInvalidPrefix(uint160 randomAddr) public view {
         // Ensure address doesn't have the TIP20 prefix
-        vm.assume(bytes12(bytes20(address(randomAddr))) != 0x20c000000000000000000000);
+        vm.assume(bytes10(bytes20(address(randomAddr))) != 0x20c00000000000000000);
 
         assertFalse(factory.isTIP20(address(randomAddr)));
-    }
-
-    /// @notice Fuzz test: Future tokenIds beyond counter should be invalid
-    function testFuzz_isTIP20WithFutureTokenId(uint64 futureId) public view {
-        uint256 currentCounter = factory.tokenIdCounter();
-
-        // Create tokenId that's beyond current counter
-        futureId = uint64(bound(futureId, currentCounter + 1, type(uint64).max));
-
-        // Construct address with valid prefix but future tokenId
-        address addr = address(uint160(0x20c000000000000000000000) | uint160(futureId));
-
-        // Should be invalid because tokenId > counter
-        assertFalse(factory.isTIP20(addr));
     }
 
     /// @notice Fuzz test: Creating token with invalid quote token should fail
@@ -144,7 +184,9 @@ contract TIP20FactoryTest is BaseTest {
         vm.assume(!factory.isTIP20(invalidQuote));
 
         // Try-catch is better for precompiles than expectRevert
-        try factory.createToken("Token", "TK", "USD", ITIP20(invalidQuote), admin) returns (
+        try factory.createToken(
+            "Token", "TK", "USD", ITIP20(invalidQuote), admin, bytes32("fuzz")
+        ) returns (
             address
         ) {
             revert CallShouldHaveReverted();
@@ -174,22 +216,21 @@ contract TIP20FactoryTest is BaseTest {
 
     /// @notice Edge case: Token cannot use itself as quote token
     function test_EDGE_cannotCreateSelfReferencingToken() public {
-        uint256 nextTokenId = factory.tokenIdCounter();
+        bytes32 salt = bytes32("selfref");
 
-        // Calculate what the next token's address will be
-        // TIP20 addresses have format: 0x20C0 (prefix) + 00...00 (padding) + tokenId (last 8 bytes)
-        address nextTokenAddr =
-            address(uint160(0x20C0000000000000000000000000000000000000) | uint160(nextTokenId));
-
-        // isTIP20 correctly returns false because nextTokenId >= tokenIdCounter
-        // This is caught by isTIP20's check: uint64(uint160(token)) < tokenIdCounter
-        assertFalse(
-            factory.isTIP20(nextTokenAddr), "isTIP20 should reject token with id >= tokenIdCounter"
+        // Calculate what the token's address will be using the deterministic formula
+        address nextTokenAddr = address(
+            uint160(0x20C0000000000000000000000000000000000000)
+                | uint160(uint80(bytes10(keccak256(abi.encode(address(this), salt)))))
         );
 
-        // The explicit self-reference check provides defense in depth
+        // The address is not yet a valid TIP20 until it's deployed
+        assertFalse(
+            factory.isTIP20(nextTokenAddr), "isTIP20 should reject undeployed token address"
+        );
+
         // Try to create a token that references itself as the quote token
-        try factory.createToken("Self Ref", "SELF", "USD", ITIP20(nextTokenAddr), admin) {
+        try factory.createToken("Self Ref", "SELF", "USD", ITIP20(nextTokenAddr), admin, salt) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(ITIP20Factory.InvalidQuoteToken.selector));
