@@ -1,7 +1,7 @@
 //! RPC types for the consensus namespace.
 
 use alloy_primitives::B256;
-use async_trait::async_trait;
+use futures::Future;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -77,17 +77,22 @@ pub struct ConsensusState {
 }
 
 /// Trait for accessing consensus feed data.
-#[async_trait]
 pub trait ConsensusFeed: Send + Sync + 'static {
     /// Get a notarization by query (supports `Latest` or `View`).
-    async fn get_notarization(&self, query: Query) -> Result<Option<CertifiedBlock>, QueryError>;
+    fn get_notarization(
+        &self,
+        query: Query,
+    ) -> impl Future<Output = Result<Option<CertifiedBlock>, QueryError>> + Send;
 
     /// Get a finalization by query (supports `Latest` or `Height`).
-    async fn get_finalization(&self, query: Query) -> Result<Option<CertifiedBlock>, QueryError>;
+    fn get_finalization(
+        &self,
+        query: Query,
+    ) -> impl Future<Output = Result<Option<CertifiedBlock>, QueryError>> + Send;
 
     /// Get the current consensus state (latest finalized + all cached notarizations).
-    async fn get_latest(&self) -> ConsensusState;
+    fn get_latest(&self) -> impl Future<Output = ConsensusState> + Send;
 
     /// Subscribe to consensus events.
-    async fn subscribe(&self) -> Option<broadcast::Receiver<Event>>;
+    fn subscribe(&self) -> impl Future<Output = Option<broadcast::Receiver<Event>>> + Send;
 }

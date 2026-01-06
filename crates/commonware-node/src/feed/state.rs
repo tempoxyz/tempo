@@ -2,7 +2,6 @@
 
 use crate::alias::marshal;
 use alloy_primitives::{B256, hex};
-use async_trait::async_trait;
 use commonware_codec::Encode;
 use parking_lot::RwLock;
 use schnellru::{ByLength, LruMap};
@@ -90,7 +89,6 @@ impl std::fmt::Debug for FeedStateHandle {
     }
 }
 
-#[async_trait]
 impl ConsensusFeed for FeedStateHandle {
     async fn get_notarization(&self, query: Query) -> Result<Option<CertifiedBlock>, QueryError> {
         let state = self.state.read();

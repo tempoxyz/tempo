@@ -39,7 +39,6 @@ commonware-runtime = { workspace = true, features = ["external"] }
 commonware-storage.workspace = true
 commonware-utils.workspace = true
 
-async-trait.workspace = true
 eyre.workspace = true
 futures.workspace = true
 governor.workspace = true

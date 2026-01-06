@@ -11538,7 +11538,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
- "async-trait",
  "axum",
  "bytes",
  "clap",
