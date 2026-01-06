@@ -15,13 +15,15 @@ library TempoUtilities {
 
     function isTIP20(address token) internal view returns (bool) {
         bool isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length
-                + _PATH_USD.code.length + _STABLECOIN_DEX.code.length + _NONCE.code.length == 5;
+            + _PATH_USD.code.length + _STABLECOIN_DEX.code.length + _NONCE.code.length == 5;
 
         // If this is tempo mainnet, we use code == 0xEF check
         // Otherwise we just check that the address has code
         return bytes12(bytes20(token)) == bytes12(0x20c000000000000000000000)
-            && ((isTempo && token.code.length == 1 && token.code[0] == hex"EF")
-                || (!isTempo && token.code.length > 0));
+            && (
+                (isTempo && token.code.length == 1 && token.code[0] == hex"EF")
+                    || (!isTempo && token.code.length > 0)
+            );
     }
 
 }

@@ -60,7 +60,10 @@ interface IFeeAMM {
         external
         returns (uint256 amountUserToken, uint256 amountValidatorToken);
 
-    function getPool(address userToken, address validatorToken) external view returns (Pool memory);
+    function getPool(address userToken, address validatorToken)
+        external
+        view
+        returns (Pool memory);
 
     function getPoolId(address userToken, address validatorToken) external pure returns (bytes32);
 
