@@ -18,9 +18,9 @@ When the maker is the issuer of both the base and quote tokens, they can run a c
 
 An issuer order carries two boolean flags: `isBaseIssuer` and `isQuoteIssuer`. Each flag independently controls the mint/burn behavior for that token based on the order side.
 
-When `isBaseIssuer` is true on an ask order (selling base), no base token escrow is required at placement. When the order is filled, the DEX mints base tokens directly to the taker's internal balance rather than transferring from escrow. When `isBaseIssuer` is true on a bid order (buying base), the base tokens that would normally be credited to the maker are instead burned.
+When `isBaseIssuer` is true on an ask order (selling base), no base token escrow is required at placement. When the order is filled, the DEX mints base tokens on-demand and delivers them to the taker using the DEX's normal settlement mechanism (e.g. mint-to-DEX then transfer to the taker). When `isBaseIssuer` is true on a bid order (buying base), the base tokens that would normally be credited to the maker are instead burned.
 
-When `isQuoteIssuer` is true on a bid order (paying with quote), no quote token escrow is required at placement. When the order is filled, the DEX mints quote tokens to pay the taker. When `isQuoteIssuer` is true on an ask order (receiving quote), the quote tokens that would normally be credited to the maker are instead burned.
+When `isQuoteIssuer` is true on a bid order (paying with quote), no quote token escrow is required at placement. When the order is filled, the DEX mints quote tokens on-demand and uses them to pay the taker. When `isQuoteIssuer` is true on an ask order (receiving quote), the quote tokens that would normally be credited to the maker are instead burned.
 
 Both flags can be true simultaneously. When both are set, an ask order mints base tokens for the taker and burns the quote tokens received, while a bid order burns the base tokens received and mints quote tokens for the taker. This enables zero-capital market making where the issuer never holds inventory of either token.
 
@@ -32,11 +32,20 @@ The escrow requirement depends on the combination of flags and order side. For a
 
 Cancellation refunds any escrowed tokens. For orders with no escrow, cancellation simply removes the order from the book.
 
+### Settlement and accounting
+
+Issuer orders MUST integrate with the DEX's existing settlement model.
+
+- **Minting**: to deliver output tokens to the taker, implementations SHOULD mint to the DEX contract address and then use the DEX's normal payout mechanism to the taker.
+- **Burning**: when an issuer order burns tokens "received" by the issuer, the DEX MUST burn the tokens that would otherwise have been credited to the maker. Concretely, under a typical settlement model where the DEX contract custody holds trade proceeds, this means burning from the DEX contract's own balance rather than crediting the maker.
+
 ### Authorization
 
 The DEX verifies that the maker has the appropriate `ISSUER_ROLE` at placement time. If `isBaseIssuer` is true, the maker must have `ISSUER_ROLE` on the base token. If `isQuoteIssuer` is true, the maker must have `ISSUER_ROLE` on the quote token. If both flags are true, both roles are required.
 
-No role check is performed at fill time. Once placed, an issuer order will mint or burn as specified regardless of subsequent role changes. This ensures deterministic swap execution and accurate quote estimation.
+Issuer role status is also enforced at fill time (including at flip time). If a fill would require minting or burning as an issuer for a token, then at the time of the fill the maker MUST still hold `ISSUER_ROLE` for that token.
+
+If the required role check fails at fill time, the issuer order fill MUST revert (i.e. issuer orders can fail at fill time due to role revocation).
 
 To handle issuer role transitions, anyone may cancel an issuer order whose maker no longer holds the required `ISSUER_ROLE`(s). The `cancelStaleIssuerOrder` function checks the maker's current role status for each applicable token and, if any required role has been revoked, cancels the order and refunds any escrowed tokens.
 
@@ -66,9 +75,17 @@ struct Order {
 
 Issuer orders fully support the flip mechanism. When an issuer flip order is fully filled, the newly created order on the opposite side preserves both `isBaseIssuer` and `isQuoteIssuer` flags. This enables perpetual mint/burn cycles where the issuer order behavior is consistent across all flips.
 
+If flipping would create an invalid issuer order (e.g. the maker no longer holds the required `ISSUER_ROLE`(s) for the issuer flags), the flip MUST silently fail and no new order is created.
+
 ### Quoting
 
 Issuer orders appear as regular liquidity in the orderbook. The `quoteSwapExactAmountIn` and `quoteSwapExactAmountOut` functions do not distinguish between regular and issuer orders; they sum available liquidity at each tick regardless of order type.
+
+Because issuer orders depend on external token state (issuer roles, transfer policy checks, and supply caps), quotes MAY be inaccurate. In particular, quotes do not account for:
+
+- role revocations that cause issuer orders to revert at fill time,
+- transfer policy changes that block mint recipients, or
+- supply caps that limit mintable output.
 
 ### Interface
 
@@ -117,12 +134,35 @@ error NotIssuerOrder();
 
 ### Implementation notes
 
-When filling an order with `isBaseIssuer` true, the DEX either mints base tokens (for asks) or burns received base tokens (for bids), invoking the token's mint or burn function with the order maker as the authorized caller. The same logic applies symmetrically for `isQuoteIssuer` and quote tokens.
+Issuer order mint/burn MUST be authorized as the specific maker address (the issuer), not as the DEX itself.
 
-Minted tokens are subject to the token's transfer policy and supply cap. If the recipient is blocked by the transfer policy, the fill fails. If minting would exceed the supply cap, the order partially fills up to the remaining mintable amount.
+To support this safely without granting the DEX blanket issuer privileges, TIP-20 tokens used with issuer orders SHOULD expose DEX-only entrypoints that accept an explicit `issuer` argument:
+
+```solidity
+function mintByExchange(address issuer, address to, uint256 amount) external;
+function burnByExchange(address issuer, address from, uint256 amount) external;
+```
+
+These functions MUST:
+
+- only be callable by the Stablecoin DEX contract, and
+- enforce that `issuer` has `ISSUER_ROLE` for the token.
+
+When filling an order with `isBaseIssuer` true, the DEX either mints base tokens (for asks) or burns base tokens (for bids) using these DEX-only entrypoints with `issuer = order.maker`. The same logic applies symmetrically for `isQuoteIssuer` and quote tokens.
+
+Minted tokens are subject to the token's transfer policy and supply cap. If the recipient is blocked by the transfer policy, the fill fails. If minting would exceed the supply cap, the order partially fills up to the remaining mintable amount (i.e. the DEX clamps the fill to a mintable amount rather than attempting a mint that would revert).
+
+## Trade-offs and broken invariants
+
+Issuer orders intentionally break a prior invariant that **fills cannot fail at fill time**. Specifically, issuer order fills may revert due to:
+
+- the maker's issuer privileges being revoked between placement and fill time, and/or
+- external token state that affects mint/burn outcomes (e.g. supply cap exhaustion or transfer-policy checks).
+
+As a result, it may not be possible to compute a strict upper bound on gas usage for a DEX swap purely from the swap size and number of hops: walking the book may encounter issuer orders that revert at fill time, causing the swap to fail after consuming additional gas.
 
 ## Example
 
 An issuer controls both baseUSD and quoteUSD tokens. They want to run a capital-free spread. They call `placeIssuerFlip(baseUSD, 1_000_000, false, -10, 10, true, true)` to place an issuer ask at tick -10 with a flip tick of +10. No escrow is taken since both issuer flags are true.
 
-When a taker buys 1M baseUSD against this order, the DEX mints 1M baseUSD to the taker and burns the quoteUSD received as payment. The order flips to an issuer bid at tick +10. When a different taker sells baseUSD against this bid, the DEX burns the received baseUSD and mints quoteUSD to pay the seller. The order flips back to an ask at tick -10, and the cycle continues indefinitely with no capital requirements.
+When a taker buys 1M baseUSD against this order, the DEX mints 1M baseUSD (typically to the DEX itself and then settles it to the taker) and burns the quoteUSD received as payment (typically from the DEX's custody balance rather than crediting the maker). The order flips to an issuer bid at tick +10. When a different taker sells baseUSD against this bid, the DEX burns the received baseUSD and mints quoteUSD to pay the seller. The order flips back to an ask at tick -10, and the cycle continues indefinitely with no capital requirements.
