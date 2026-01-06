@@ -575,11 +575,11 @@ where
             .then_some(execution_result.requests);
 
         let sealed_block = Arc::new(block.sealed_block().clone());
-        let rlp_block_size_bytes = sealed_block.rlp_length();
+        let rlp_length = sealed_block.rlp_length();
 
-        if is_osaka && rlp_block_size_bytes > MAX_RLP_BLOCK_SIZE {
+        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length: rlp_block_size_bytes,
+                rlp_length,
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
@@ -589,12 +589,10 @@ where
         let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
-        self.metrics
-            .rlp_block_size_bytes
-            .record(rlp_block_size_bytes as f64);
+        self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(rlp_block_size_bytes as f64);
+            .set(rlp_length as f64);
 
         info!(
             parent_hash = ?sealed_block.parent_hash(),
