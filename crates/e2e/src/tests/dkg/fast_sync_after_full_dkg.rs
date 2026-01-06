@@ -29,8 +29,7 @@ fn validator_can_fast_sync_after_full_dkg() {
     let how_many_signers = 4;
     let epoch_length = 20;
     let full_dkg_epoch = 1;
-    // Epoch 1 (full DKG) runs blocks 20-39, so 65 is well past it
-    let blocks_before_late_join = 65;
+    let blocks_before_late_join = 3 * epoch_length + 1;
 
     let setup = Setup::new()
         .how_many_signers(how_many_signers)
