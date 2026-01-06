@@ -18,7 +18,10 @@ use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
 use futures::{
     StreamExt as _,
-    channel::{mpsc, oneshot},
+    channel::{
+        mpsc::{self, UnboundedReceiver},
+        oneshot,
+    },
     select_biased,
 };
 use reth_provider::{BlockHashReader, BlockNumReader as _};
@@ -27,72 +30,13 @@ use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
 };
 
-use crate::consensus::{Digest, block::Block};
-
-pub(super) struct Builder {
-    /// A handle to the execution node layer. Used to forward finalized blocks
-    /// and to update the canonical chain by sending forkchoice updates.
-    pub(super) execution_node: TempoFullNode,
-
-    /// The last finalized height according to the consensus layer.
-    /// If on startup there is a mismatch between the execution layer and the
-    /// consensus, then the node will fill the gap by backfilling blocks to
-    /// the execution layer until `last_finalized_height` is reached.
-    pub(super) last_finalized_height: u64,
-
-    /// The mailbox of the marshal actor. Used to backfill blocks.
-    pub(super) marshal: crate::alias::marshal::Mailbox,
-}
-
-impl Builder {
-    /// Constructs the [`Executor`].
-    pub(super) fn build<TContext>(self, context: TContext) -> eyre::Result<Executor<TContext>>
-    where
-        TContext: Spawner,
-    {
-        let Self {
-            execution_node,
-            last_finalized_height,
-            marshal,
-        } = self;
-
-        let (to_me, from_app) = mpsc::unbounded();
-
-        let my_mailbox = ExecutorMailbox { inner: to_me };
-
-        let last_execution_finalized_height = execution_node
-            .provider
-            .last_block_number()
-            .wrap_err("unable to read latest block number from execution layer")?;
-        let last_finalized_block_hash = execution_node
-            .provider
-            .block_hash(last_execution_finalized_height)
-            .map_or_else(
-                |e| Err(eyre::Report::new(e)),
-                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
-            )
-            .wrap_err("failed to read the last finalized block hash")?;
-
-        Ok(Executor {
-            context: ContextCell::new(context),
-            execution_node,
-            last_consensus_finalized_height: last_finalized_height,
-            last_execution_finalized_height,
-            mailbox: from_app,
-            marshal,
-            my_mailbox,
-            last_canonicalized: LastCanonicalized {
-                forkchoice: ForkchoiceState {
-                    head_block_hash: last_finalized_block_hash,
-                    safe_block_hash: last_finalized_block_hash,
-                    finalized_block_hash: last_finalized_block_hash,
-                },
-                head_height: 0,
-                finalized_height: 0,
-            },
-        })
-    }
-}
+use crate::{
+    consensus::{Digest, block::Block},
+    executor::{
+        Config,
+        ingress::{CanonicalizeHead, Command, Message},
+    },
+};
 
 /// Tracks the last forkchoice state that the executor sent to the execution layer.
 ///
@@ -149,7 +93,7 @@ impl LastCanonicalized {
     }
 }
 
-pub(super) struct Executor<TContext> {
+pub(crate) struct Actor<TContext> {
     context: ContextCell<TContext>,
 
     /// A handle to the execution node layer. Used to forward finalized blocks
@@ -166,22 +110,55 @@ pub(super) struct Executor<TContext> {
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: crate::alias::marshal::Mailbox,
 
-    /// The mailbox passed to other parts of the system to forward messages to
-    /// the agent.
-    my_mailbox: ExecutorMailbox,
-
     last_canonicalized: LastCanonicalized,
 }
 
-impl<TContext> Executor<TContext>
+impl<TContext> Actor<TContext>
 where
     TContext: Metrics + Pacer + Spawner,
 {
-    pub(super) fn mailbox(&self) -> &ExecutorMailbox {
-        &self.my_mailbox
+    pub(super) fn init(
+        context: TContext,
+        config: super::Config,
+        mailbox: UnboundedReceiver<super::ingress::Message>,
+    ) -> eyre::Result<Self> {
+        let Config {
+            execution_node,
+            last_finalized_height,
+            marshal,
+        } = config;
+        let last_execution_finalized_height = execution_node
+            .provider
+            .last_block_number()
+            .wrap_err("unable to read latest block number from execution layer")?;
+        let last_finalized_block_hash = execution_node
+            .provider
+            .block_hash(last_execution_finalized_height)
+            .map_or_else(
+                |e| Err(eyre::Report::new(e)),
+                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
+            )
+            .wrap_err("failed to read the last finalized block hash")?;
+        Ok(Self {
+            context: ContextCell::new(context),
+            execution_node,
+            last_consensus_finalized_height: last_finalized_height,
+            last_execution_finalized_height,
+            mailbox,
+            marshal,
+            last_canonicalized: LastCanonicalized {
+                forkchoice: ForkchoiceState {
+                    head_block_hash: last_finalized_block_hash,
+                    safe_block_hash: last_finalized_block_hash,
+                    finalized_block_hash: last_finalized_block_hash,
+                },
+                head_height: 0,
+                finalized_height: 0,
+            },
+        })
     }
 
-    pub(super) fn start(mut self) -> Handle<()> {
+    pub(crate) fn start(mut self) -> Handle<()> {
         spawn_cell!(self.context, self.run().await)
     }
 
@@ -262,11 +239,11 @@ where
     async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
         let cause = message.cause;
         match message.command {
-            Command::CanonicalizeHead {
+            Command::CanonicalizeHead(CanonicalizeHead {
                 height,
                 digest,
                 ack,
-            } => {
+            }) => {
                 // Errors are logged inside canonicalize; head canonicalization failures
                 // are non-fatal and will be retried on the next block.
                 let _ = self
@@ -352,12 +329,8 @@ where
 
     #[instrument(parent = &cause, skip_all)]
     /// Handles finalization events.
-    async fn finalize(
-        &mut self,
-        cause: Span,
-        finalized: super::ingress::Finalized,
-    ) -> eyre::Result<()> {
-        match finalized.inner {
+    async fn finalize(&mut self, cause: Span, finalized: Update<Block>) -> eyre::Result<()> {
+        match finalized {
             Update::Tip(height, digest) => {
                 self.canonicalize(
                     Span::current(),
@@ -536,63 +509,4 @@ impl std::fmt::Display for HeadOrFinalized {
         };
         f.write_str(msg)
     }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct ExecutorMailbox {
-    inner: mpsc::UnboundedSender<Message>,
-}
-
-impl ExecutorMailbox {
-    /// Requests the agent to update the head of the canonical chain to `digest`.
-    pub(super) fn canonicalize_head(
-        &self,
-        height: u64,
-        digest: Digest,
-    ) -> eyre::Result<oneshot::Receiver<()>> {
-        let (tx, rx) = oneshot::channel();
-        self.inner
-            .unbounded_send(Message {
-                cause: Span::current(),
-                command: Command::CanonicalizeHead {
-                    height,
-                    digest,
-                    ack: tx,
-                },
-            })
-            .wrap_err("failed sending canonicalize request to agent, this means it exited")?;
-
-        Ok(rx)
-    }
-
-    /// Requests the agent to forward a `finalized` block to the execution layer.
-    pub(super) fn forward_finalized(
-        &self,
-        finalized: super::ingress::Finalized,
-    ) -> eyre::Result<()> {
-        self.inner
-            .unbounded_send(Message {
-                cause: Span::current(),
-                command: Command::Finalize(finalized.into()),
-            })
-            .wrap_err("failed sending finalization request to agent, this means it exited")
-    }
-}
-
-#[derive(Debug)]
-struct Message {
-    cause: Span,
-    command: Command,
-}
-
-#[derive(Debug)]
-enum Command {
-    /// Requests the agent to set the head of the canonical chain to `digest`.
-    CanonicalizeHead {
-        height: u64,
-        digest: Digest,
-        ack: oneshot::Sender<()>,
-    },
-    /// Requests the agent to forward a finalization event to the execution layer.
-    Finalize(Box<super::ingress::Finalized>),
 }

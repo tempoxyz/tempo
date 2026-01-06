@@ -50,6 +50,7 @@ interface ITIP20Factory {
     function isTIP20(address token) external view returns (bool);
 
     /// @notice Predicts the address of a token deployment given sender and salt
+    /// @dev Reverts with AddressReserved if the computed address would be in the reserved range
     /// @param sender The address that will call createToken
     /// @param salt The salt to use for deterministic deployment
     /// @return The predicted token address

@@ -619,15 +619,6 @@ impl TIP20Token {
         self.symbol.write(symbol.to_string())?;
         self.currency.write(currency.to_string())?;
 
-        // If the currency is USD, the quote token must also be USD.
-        // Skip this check when quote_token is Address::ZERO (first token case).
-        if currency == USD_CURRENCY && !quote_token.is_zero() {
-            let quote_token_currency = Self::from_address(quote_token)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
-        }
-
         self.quote_token.write(quote_token)?;
         // Initialize nextQuoteToken to the same value as quoteToken
         self.next_quote_token.write(quote_token)?;

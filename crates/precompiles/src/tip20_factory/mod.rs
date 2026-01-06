@@ -7,7 +7,7 @@ use tempo_precompiles_macros::contract;
 use crate::{
     TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    tip20::{TIP20Error, TIP20Token, is_tip20_prefix},
+    tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
 use alloy::{
     primitives::{Address, B256, keccak256},
@@ -16,7 +16,7 @@ use alloy::{
 use tracing::trace;
 
 /// Number of reserved addresses (0 to RESERVED_SIZE-1) that cannot be deployed via factory
-const RESERVED_SIZE: u128 = 1024;
+const RESERVED_SIZE: u64 = 1024;
 
 /// TIP20 token address prefix (12 bytes): 0x20C000000000000000000000
 const TIP20_PREFIX_BYTES: [u8; 12] = [
@@ -28,13 +28,13 @@ pub struct TIP20Factory {}
 
 /// Computes the deterministic TIP20 address from sender and salt.
 /// Returns the address and the lower bytes used for derivation.
-fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u128) {
+fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u64) {
     let hash = keccak256((sender, salt).abi_encode());
 
-    // Take first 8 bytes of hash as lower bytes (padded to u128)
-    let mut padded = [0u8; 16];
-    padded[8..].copy_from_slice(&hash[..8]);
-    let lower_bytes = u128::from_be_bytes(padded);
+    // Take first 8 bytes of hash as lower bytes
+    let mut padded = [0u8; 8];
+    padded.copy_from_slice(&hash[..8]);
+    let lower_bytes = u64::from_be_bytes(padded);
 
     // Construct the address: TIP20_PREFIX (12 bytes) || hash[..8] (8 bytes)
     let mut address_bytes = [0u8; 20];
@@ -59,8 +59,17 @@ impl TIP20Factory {
     }
 
     /// Computes the deterministic address for a token given sender and salt.
+    /// Reverts if the computed address would be in the reserved range.
     pub fn get_token_address(&self, call: ITIP20Factory::getTokenAddressCall) -> Result<Address> {
-        let (address, _) = compute_tip20_address(call.sender, call.salt);
+        let (address, lower_bytes) = compute_tip20_address(call.sender, call.salt);
+
+        // Check if address would be in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::AddressReserved(ITIP20Factory::AddressReserved {}),
+            ));
+        }
+
         Ok(address)
     }
 
@@ -88,13 +97,6 @@ impl TIP20Factory {
         // Compute the deterministic address from sender and salt
         let (token_address, lower_bytes) = compute_tip20_address(sender, call.salt);
 
-        // Check if address is in reserved range
-        if lower_bytes < RESERVED_SIZE {
-            return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::AddressReserved(ITIP20Factory::AddressReserved {}),
-            ));
-        }
-
         if self.is_tip20(token_address)? {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
@@ -106,6 +108,20 @@ impl TIP20Factory {
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
         if !self.is_tip20(call.quoteToken)? {
             return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // If token is USD, its quote token must also be USD
+        if call.currency == USD_CURRENCY
+            && TIP20Token::from_address(call.quoteToken)?.currency()? != USD_CURRENCY
+        {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
+        // Check if address is in reserved range
+        if lower_bytes < RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::AddressReserved(ITIP20Factory::AddressReserved {}),
+            ));
         }
 
         TIP20Token::from_address(token_address)?.initialize(
@@ -156,14 +172,32 @@ impl TIP20Factory {
             ));
         }
 
-        // Ensure that the quote token is a valid TIP20 that is currently deployed or the quote
-        // quote_token must be a valid TIP20 or address(0)
-        if !(self.is_tip20(quote_token)? || quote_token.is_zero()) {
-            return Err(TIP20Error::invalid_quote_token().into());
+        // quote_token must be address(0) or a valid TIP20
+        if !quote_token.is_zero() {
+            if !self.is_tip20(quote_token)? {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+            // If token is USD, its quote token must also be USD
+            if currency == USD_CURRENCY
+                && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
+            {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        }
+
+        // Validate that the address is within the reserved range
+        // Reserved addresses have their last 8 bytes represent a value < RESERVED_SIZE
+        let mut padded = [0u8; 8];
+        padded.copy_from_slice(&address.as_slice()[12..]);
+        let lower_bytes = u64::from_be_bytes(padded);
+        if lower_bytes >= RESERVED_SIZE {
+            return Err(TempoPrecompileError::TIP20Factory(
+                TIP20FactoryError::AddressNotReserved(ITIP20Factory::AddressNotReserved {}),
+            ));
         }
 
         let mut token = TIP20Token::from_address(address)?;
-        token.initialize(name, symbol, currency, Address::ZERO, admin)?;
+        token.initialize(name, symbol, currency, quote_token, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {
@@ -171,7 +205,7 @@ impl TIP20Factory {
                 name: name.into(),
                 symbol: symbol.into(),
                 currency: currency.into(),
-                quoteToken: Address::ZERO,
+                quoteToken: quote_token,
                 admin,
                 salt: B256::ZERO,
             },
