@@ -131,11 +131,12 @@ impl<TContext: Spawner> Actor<TContext> {
                         .latest_finalized
                         .as_ref()
                         .is_none_or(|f| f.height < block.height)
+                        && state
+                            .latest_notarized
+                            .as_ref()
+                            .is_none_or(|n| n.view < view)
                     {
-                        state.notarizations.insert(view, block);
-                        if state.latest_notarized_view.is_none_or(|v| v < view) {
-                            state.latest_notarized_view = Some(view);
-                        }
+                        state.latest_notarized = Some(block);
                     }
                 }
             }
@@ -164,13 +165,12 @@ impl<TContext: Spawner> Actor<TContext> {
                         .as_ref()
                         .is_none_or(|f| f.height < block.height)
                     {
-                        let to_remove: Vec<_> = state
-                            .notarizations
-                            .iter()
-                            .filter_map(|(&k, _)| (k <= view).then_some(k))
-                            .collect();
-                        for k in to_remove {
-                            state.notarizations.remove(&k);
+                        if state
+                            .latest_notarized
+                            .as_ref()
+                            .is_some_and(|n| n.view <= view)
+                        {
+                            state.latest_notarized = None;
                         }
                         state.latest_finalized = Some(block);
                     }

@@ -47,7 +47,6 @@ jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
-schnellru.workspace = true
 
 reth-consensus-common.workspace = true
 rand_core.workspace = true

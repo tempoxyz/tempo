@@ -11569,7 +11569,6 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
- "schnellru",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-node",

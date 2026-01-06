@@ -49,21 +49,8 @@ pub enum Event {
 pub enum Query {
     /// Get the latest item.
     Latest,
-    /// Get by block height (for finalizations).
+    /// Get by block height.
     Height(u64),
-    /// Get by view number (for notarizations).
-    View(u64),
-}
-
-/// Error for unsupported query types.
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum QueryError {
-    /// Height query not supported, use Latest or View.
-    #[error("unsupported query: use `latest` or `view` for notarizations")]
-    HeightNotSupported,
-    /// View query not supported, use Latest or Height.
-    #[error("unsupported query: use `latest` or `height` for finalizations")]
-    ViewNotSupported,
 }
 
 /// Response for get_latest - current consensus state snapshot.
@@ -72,25 +59,17 @@ pub enum QueryError {
 pub struct ConsensusState {
     /// The latest finalized block (if any).
     pub finalized: Option<CertifiedBlock>,
-    /// All cached notarizations.
-    pub notarized: Vec<CertifiedBlock>,
+    /// The latest notarized block (if any, and not yet finalized).
+    pub notarized: Option<CertifiedBlock>,
 }
 
 /// Trait for accessing consensus feed data.
 pub trait ConsensusFeed: Send + Sync + 'static {
-    /// Get a notarization by query (supports `Latest` or `View`).
-    fn get_notarization(
-        &self,
-        query: Query,
-    ) -> impl Future<Output = Result<Option<CertifiedBlock>, QueryError>> + Send;
-
     /// Get a finalization by query (supports `Latest` or `Height`).
-    fn get_finalization(
-        &self,
-        query: Query,
-    ) -> impl Future<Output = Result<Option<CertifiedBlock>, QueryError>> + Send;
+    fn get_finalization(&self, query: Query)
+    -> impl Future<Output = Option<CertifiedBlock>> + Send;
 
-    /// Get the current consensus state (latest finalized + all cached notarizations).
+    /// Get the current consensus state (latest finalized + latest notarized).
     fn get_latest(&self) -> impl Future<Output = ConsensusState> + Send;
 
     /// Subscribe to consensus events.

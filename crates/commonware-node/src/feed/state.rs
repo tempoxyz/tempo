@@ -4,22 +4,16 @@ use crate::alias::marshal;
 use alloy_primitives::{B256, hex};
 use commonware_codec::Encode;
 use parking_lot::RwLock;
-use schnellru::{ByLength, LruMap};
 use std::sync::{Arc, OnceLock};
-use tempo_node::rpc::consensus::{
-    CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, QueryError,
-};
+use tempo_node::rpc::consensus::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 use tokio::sync::broadcast;
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
-const MAX_NOTARIZATIONS: u32 = 1024;
 
 /// Internal shared state for the feed.
 pub(super) struct FeedState {
-    /// In-memory notarization cache, keyed by view.
-    pub(super) notarizations: LruMap<u64, CertifiedBlock, ByLength>,
-    /// Latest notarized view.
-    pub(super) latest_notarized_view: Option<u64>,
+    /// Latest notarized block.
+    pub(super) latest_notarized: Option<CertifiedBlock>,
     /// Latest finalized block.
     pub(super) latest_finalized: Option<CertifiedBlock>,
 }
@@ -45,8 +39,7 @@ impl FeedStateHandle {
         let (events_tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
         Self {
             state: Arc::new(RwLock::new(FeedState {
-                notarizations: LruMap::new(ByLength::new(MAX_NOTARIZATIONS)),
-                latest_notarized_view: None,
+                latest_notarized: None,
                 latest_finalized: None,
             })),
             marshal: Arc::new(OnceLock::new()),
@@ -80,9 +73,8 @@ impl std::fmt::Debug for FeedStateHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.state.read();
         f.debug_struct("FeedStateHandle")
-            .field("latest_notarized_view", &state.latest_notarized_view)
+            .field("latest_notarized", &state.latest_notarized)
             .field("latest_finalized", &state.latest_finalized)
-            .field("notarizations_count", &state.notarizations.len())
             .field("marshal_set", &self.marshal.get().is_some())
             .field("subscriber_count", &self.events_tx.receiver_count())
             .finish()
@@ -90,43 +82,21 @@ impl std::fmt::Debug for FeedStateHandle {
 }
 
 impl ConsensusFeed for FeedStateHandle {
-    async fn get_notarization(&self, query: Query) -> Result<Option<CertifiedBlock>, QueryError> {
-        let state = self.state.read();
+    async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
         match query {
-            Query::Latest => Ok(state
-                .latest_notarized_view
-                .and_then(|view| state.notarizations.peek(&view).cloned())),
-            Query::View(view) => Ok(state.notarizations.peek(&view).cloned()),
-            Query::Height(_) => Err(QueryError::HeightNotSupported),
-        }
-    }
-
-    async fn get_finalization(&self, query: Query) -> Result<Option<CertifiedBlock>, QueryError> {
-        match query {
-            Query::Latest => Ok(self.state.read().latest_finalized.clone()),
+            Query::Latest => self.state.read().latest_finalized.clone(),
             Query::Height(height) => {
-                let Some(mut marshal) = self.marshal.get().cloned() else {
-                    return Ok(None);
-                };
+                let mut marshal = self.marshal.get().cloned()?;
+                let finalization = marshal.get_finalization(height).await?;
 
-                let Some(finalization) = marshal.get_finalization(height).await else {
-                    return Ok(None);
-                };
-
-                let view = finalization.proposal.round.view().get();
-                let epoch = finalization.proposal.round.epoch().get();
-                let digest = B256::from_slice(finalization.proposal.payload.as_ref());
-                let certificate = hex::encode(finalization.certificate.encode());
-
-                Ok(Some(CertifiedBlock {
-                    epoch,
-                    view,
+                Some(CertifiedBlock {
+                    epoch: finalization.proposal.round.epoch().get(),
+                    view: finalization.proposal.round.view().get(),
                     height,
-                    digest,
-                    certificate,
-                }))
+                    digest: B256::from_slice(finalization.proposal.payload.as_ref()),
+                    certificate: hex::encode(finalization.certificate.encode()),
+                })
             }
-            Query::View(_) => Err(QueryError::ViewNotSupported),
         }
     }
 
@@ -134,7 +104,7 @@ impl ConsensusFeed for FeedStateHandle {
         let state = self.state.read();
         ConsensusState {
             finalized: state.latest_finalized.clone(),
-            notarized: state.notarizations.iter().map(|(_, v)| v.clone()).collect(),
+            notarized: state.latest_notarized.clone(),
         }
     }
 

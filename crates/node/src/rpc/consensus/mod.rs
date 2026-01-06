@@ -1,7 +1,6 @@
 //! Consensus namespace RPC implementation.
 //!
 //! Provides query methods and subscriptions for consensus data:
-//! - `consensus_getNotarization(query)` - Get notarization by view from in-memory cache
 //! - `consensus_getFinalization(query)` - Get finalization by height from marshal archive
 //! - `consensus_getLatest()` - Get the current consensus state snapshot
 //! - `consensus_subscribe()` - Subscribe to consensus events stream
@@ -11,34 +10,23 @@ pub mod types;
 use jsonrpsee::{
     core::RpcResult,
     proc_macros::rpc,
-    types::{
-        ErrorObject,
-        error::{INTERNAL_ERROR_CODE, INVALID_PARAMS_CODE},
-    },
+    types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
-pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query, QueryError};
+pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 
 /// Consensus namespace RPC trait.
 #[rpc(server, namespace = "consensus")]
 pub trait TempoConsensusApi {
-    /// Get notarization by view query.
-    ///
-    /// Use `"latest"` to get the most recent notarization, or `{"view": N}` for a specific view.
-    /// Returns an error if `{"height": N}` is used (height queries only work for finalizations).
-    #[method(name = "getNotarization")]
-    async fn get_notarization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>>;
-
     /// Get finalization by height query.
     ///
     /// Use `"latest"` to get the most recent finalization, or `{"height": N}` for a specific height.
-    /// Returns an error if `{"view": N}` is used (view queries only work for notarizations).
     #[method(name = "getFinalization")]
     async fn get_finalization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>>;
 
     /// Get the current consensus state snapshot.
     ///
-    /// Returns the latest finalized block and all cached notarizations.
+    /// Returns the latest finalized block and the latest notarized block (if not yet finalized).
     #[method(name = "getLatest")]
     async fn get_latest(&self) -> RpcResult<ConsensusState>;
 
@@ -62,18 +50,8 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
 
 #[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
-    async fn get_notarization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>> {
-        self.consensus_feed
-            .get_notarization(query)
-            .await
-            .map_err(|e| ErrorObject::owned(INVALID_PARAMS_CODE, e.to_string(), None::<()>))
-    }
-
     async fn get_finalization(&self, query: Query) -> RpcResult<Option<CertifiedBlock>> {
-        self.consensus_feed
-            .get_finalization(query)
-            .await
-            .map_err(|e| ErrorObject::owned(INVALID_PARAMS_CODE, e.to_string(), None::<()>))
+        Ok(self.consensus_feed.get_finalization(query).await)
     }
 
     async fn get_latest(&self) -> RpcResult<ConsensusState> {
