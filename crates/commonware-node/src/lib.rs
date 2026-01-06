@@ -10,6 +10,7 @@ pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
+pub mod feed;
 pub mod metrics;
 pub(crate) mod utils;
 
@@ -38,6 +39,7 @@ pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: Args,
     execution_node: TempoFullNode,
+    feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -131,6 +133,8 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+
+        feed_state,
     }
     .try_init()
     .await

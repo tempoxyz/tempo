@@ -92,6 +92,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
+
+    pub feed_state: crate::feed::FeedStateHandle,
 }
 
 impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
@@ -284,6 +286,12 @@ where
             epoch_strategy: epoch_strategy.clone(),
         });
 
+        let (feed, feed_mailbox) = crate::feed::init(
+            self.context.with_label("feed"),
+            marshal_mailbox.clone(),
+            self.feed_state,
+        );
+
         let (executor, executor_mailbox) = crate::executor::init(
             self.context.with_label("executor"),
             crate::executor::Config {
@@ -320,6 +328,7 @@ where
                 mailbox_size: self.mailbox_size,
                 subblocks: subblocks.mailbox(),
                 marshal: marshal_mailbox.clone(),
+                feed: feed_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
@@ -367,6 +376,8 @@ where
 
             epoch_manager,
             epoch_manager_mailbox,
+
+            feed,
 
             subblocks,
         })
@@ -416,6 +427,8 @@ where
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
     epoch_manager_mailbox: epoch::manager::Mailbox,
+
+    feed: crate::feed::Actor<TContext>,
 
     subblocks: subblocks::Actor<TContext>,
 }
@@ -540,6 +553,8 @@ where
             self.epoch_manager
                 .start(pending_channel, recovered_channel, resolver_channel);
 
+        let feed = self.feed.start();
+
         let subblocks = self
             .context
             .spawn(|_| self.subblocks.run(subblocks_channel));
@@ -551,6 +566,7 @@ where
             broadcast,
             epoch_manager,
             executor,
+            feed,
             marshal,
             dkg_manager,
             subblocks,
