@@ -30,7 +30,6 @@ crate::sol! {
         function setValidatorToken(address token) external;
 
         // Fee functions
-        function getFeeTokenBalance(address sender, address validator) external view returns (address, uint256);
         function distributeFees(address validator, address token) external;
         function collectedFees(address validator, address token) external view returns (uint256);
         // NOTE: collectFeePreTx is a protocol-internal function called directly by the
