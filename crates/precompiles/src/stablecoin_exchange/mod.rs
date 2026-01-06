@@ -812,16 +812,12 @@ impl StablecoinExchange {
                         .ok_or(TempoPrecompileError::under_overflow())?
                         .saturating_add(1);
                     if base_needed > order.remaining() {
-                        amount_out = amount_out
-                            .checked_sub(amount_out_received)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
+                        amount_out = amount_out.saturating_sub(amount_out_received);
                     } else {
                         amount_out = 0;
                     }
                 } else if amount_out > order.remaining() {
-                    amount_out = amount_out
-                        .checked_sub(amount_out_received)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    amount_out = amount_out.saturating_sub(amount_out_received);
                 } else {
                     amount_out = 0;
                 }
@@ -4035,6 +4031,50 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
             ));
+
+            Ok(())
+        })
+    }
+    #[test]
+    fn test_swap_exact_amount_out_rounding() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinExchange::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            let tick = 10;
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            let order_amount = 100000000u128;
+
+            let tip20_quote_token = TIP20Token::from_address(quote_token)?;
+            let alice_initial_balance =
+                tip20_quote_token.balance_of(ITIP20::balanceOfCall { account: alice })?;
+
+            exchange
+                .place(alice, base_token, order_amount, true, tick)
+                .expect("Order should succeed");
+
+            let alice_balance_after_place =
+                tip20_quote_token.balance_of(ITIP20::balanceOfCall { account: alice })?;
+            let escrowed = alice_initial_balance - alice_balance_after_place;
+            assert_eq!(escrowed, U256::from(100010000u128));
+
+            exchange
+                .set_balance(bob, base_token, 200_000_000u128)
+                .expect("Could not set balance");
+
+            exchange
+                .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
+                .expect("Swap should succeed");
 
             Ok(())
         })
