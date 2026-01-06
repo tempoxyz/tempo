@@ -1,4 +1,4 @@
-use super::{IValidatorConfig, ValidatorConfig};
+use super::{IValidatorConfig, ValidatorConfig, ValidatorConfigError};
 use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
 use alloy::{primitives::Address, sol_types::SolCall};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -28,6 +28,28 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::getNextFullDkgCeremonyCall::SELECTOR => {
                 view::<IValidatorConfig::getNextFullDkgCeremonyCall>(calldata, |_call| {
                     self.get_next_full_dkg_ceremony()
+                })
+            }
+            IValidatorConfig::validatorCountCall::SELECTOR => {
+                view::<IValidatorConfig::validatorCountCall>(calldata, |_call| {
+                    self.validator_count()
+                })
+            }
+            IValidatorConfig::validatorsArrayCall::SELECTOR => {
+                view::<IValidatorConfig::validatorsArrayCall>(calldata, |call| {
+                    let index = u64::try_from(call.index)
+                        .map_err(|_| ValidatorConfigError::invalid_public_key())?;
+                    self.validators_array(index)
+                })
+            }
+            IValidatorConfig::validatorsCall::SELECTOR => {
+                view::<IValidatorConfig::validatorsCall>(calldata, |call| {
+                    self.validators(call.validator)
+                })
+            }
+            IValidatorConfig::nextDkgCeremonyCall::SELECTOR => {
+                view::<IValidatorConfig::nextDkgCeremonyCall>(calldata, |_call| {
+                    self.next_dkg_ceremony()
                 })
             }
 

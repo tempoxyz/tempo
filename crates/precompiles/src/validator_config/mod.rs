@@ -75,8 +75,26 @@ impl ValidatorConfig {
     }
 
     /// Get the current validator count
-    fn validator_count(&self) -> Result<u64> {
+    pub fn validator_count(&self) -> Result<u64> {
         self.validator_count.read()
+    }
+
+    /// Get validator address at a specific index in the validators array
+    pub fn validators_array(&self, index: u64) -> Result<Address> {
+        self.validators_array[index as usize].read()
+    }
+
+    /// Get validator information by address
+    pub fn validators(&self, validator: Address) -> Result<IValidatorConfig::Validator> {
+        let validator_info = self.validators[validator].read()?;
+        Ok(IValidatorConfig::Validator {
+            publicKey: validator_info.public_key,
+            active: validator_info.active,
+            index: validator_info.index,
+            validatorAddress: validator_info.validator_address,
+            inboundAddress: validator_info.inbound_address,
+            outboundAddress: validator_info.outbound_address,
+        })
     }
 
     /// Check if a validator exists by checking if their publicKey is non-zero
@@ -257,6 +275,11 @@ impl ValidatorConfig {
     ///
     /// The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
     pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
+        self.next_dkg_ceremony.read()
+    }
+
+    /// Get the epoch at which a fresh DKG ceremony will be triggered (public getter)
+    pub fn next_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
 
