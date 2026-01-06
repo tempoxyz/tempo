@@ -195,18 +195,22 @@ mod tests {
     use alloy_primitives::{Address, TxKind, U256, bytes};
     use reth_evm::EvmInternals;
     use revm::{
+        Context, InspectEvm, MainContext,
         bytecode::opcode,
         context::{ContextTr, TxEnv},
-        database::{BENCH_CALLER, BENCH_TARGET, BenchmarkDB, CacheDB, EmptyDB},
+        database::{CacheDB, EmptyDB},
         inspector::CountInspector,
         state::{AccountInfo, Bytecode},
     };
-    use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
+    use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        NONCE_PRECOMPILE_ADDRESS,
+        TIP20_FACTORY_ADDRESS,
         storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
+        tip20::ITIP20,
     };
+
+    use crate::TempoEvm;
 
     #[test]
     fn test_access_millis_timestamp() -> eyre::Result<()> {
@@ -251,136 +255,136 @@ mod tests {
     }
 
     #[test]
-    fn test_inspector_calls() {
-        // Create bytecode that:
-        // 1. Emits a LOG0 event
-        // 2. Prepares calldata for STATICCALL to NONCE precompile
-        // 3. Performs STATICCALL to NONCE_PRECOMPILE_ADDRESS
-        // 4. Stops execution
+    fn test_inspector_calls() -> eyre::Result<()> {
+        // This test calls TIP20 setSupplyCap which emits a SupplyCapUpdate log event
+        use alloy_sol_types::SolCall;
+        use tempo_precompiles::PATH_USD_ADDRESS;
 
-        let mut bytecode_bytes = vec![
-            // === Part 1: Emit empty LOG0 ===
-            // PUSH1 0x00 - log data size (0 bytes)
-            opcode::PUSH1,
-            0x00,
-            // PUSH1 0x00 - log data offset
-            opcode::PUSH1,
-            0x00,
-            // LOG0 - emit empty log
-            opcode::LOG0,
-            // === Part 2: Prepare calldata for getNonce(address,uint256) ===
-            // Function selector for getNonce(address,uint256) = 0x6a7012b5
-            // We'll call with account=0x00...00 and nonceKey=1
-            // Store selector at memory offset 0x00
-            opcode::PUSH4,
-            0x6a,
-            0x70,
-            0x12,
-            0xb5, // getNonce selector
-            // PUSH1 0x00 - offset to store (storing at 0, but shifted for selector)
-            opcode::PUSH1,
-            0x00,
-            // MSTORE - stores selector right-aligned at memory[0:32]
-            opcode::MSTORE,
-            // For ABI encoding, selector should be at bytes 0-3, so we need to shift
-            // Actually let's simplify: store selector at offset 0, address at 0x04, nonceKey at 0x24
-            // Store address (0x00...00) at offset 0x04 - it's already zero from MSTORE above
-            // Store nonceKey=1 at offset 0x24
-            opcode::PUSH1,
-            0x01, // nonceKey = 1
-            opcode::PUSH1,
-            0x24, // offset 0x24 (36 = 4 + 32)
-            opcode::MSTORE,
-            // === Part 3: STATICCALL to NONCE precompile ===
-            // STATICCALL(gas, addr, argsOffset, argsSize, retOffset, retSize)
-            // PUSH1 0x20 - retSize (32 bytes for uint64 return)
-            opcode::PUSH1,
-            0x20,
-            // PUSH1 0x44 - retOffset (store return at 0x44)
-            opcode::PUSH1,
-            0x44,
-            // PUSH1 0x44 - argsSize (4 + 32 + 32 = 68 = 0x44 bytes)
-            opcode::PUSH1,
-            0x44,
-            // PUSH1 0x1c - argsOffset (selector starts at 0x1c = 28 to be left-aligned after MSTORE)
-            opcode::PUSH1,
-            0x1c,
-        ];
+        let caller = Address::repeat_byte(0x01);
+        let contract = Address::repeat_byte(0x42);
 
-        // PUSH20 nonce_precompile_address
+        let input_bytes = ITIP20::setSupplyCapCall {
+            newSupplyCap: U256::from(100),
+        }
+        .abi_encode();
+
+        // Create bytecode that calls setSupplyCap(uint256 newSupplyCap) on PATH_USD
+        // it is 36 bytes long
+        let mut bytecode_bytes = vec![];
+
+        for (i, &byte) in input_bytes.iter().enumerate() {
+            bytecode_bytes.extend_from_slice(&[
+                opcode::PUSH1,
+                byte,
+                opcode::PUSH1,
+                i as u8,
+                opcode::MSTORE8,
+            ]);
+        }
+
+        // CALL to PATH_USD precompile
+        // CALL(gas, addr, value, argsOffset, argsSize, retOffset, retSize)
+        bytecode_bytes.extend_from_slice(&[
+            opcode::PUSH1,
+            0x00, // retSize
+            opcode::PUSH1,
+            0x00, // retOffset
+            opcode::PUSH1,
+            0x24, // argsSize (4 + 32 = 36 = 0x24)
+            opcode::PUSH1,
+            0x00, // argsOffset
+            opcode::PUSH1,
+            0x00, // value = 0
+        ]);
+
+        // PUSH20 PATH_USD_ADDRESS
         bytecode_bytes.push(opcode::PUSH20);
-        bytecode_bytes.extend_from_slice(NONCE_PRECOMPILE_ADDRESS.as_slice());
+        bytecode_bytes.extend_from_slice(PATH_USD_ADDRESS.as_slice());
 
         bytecode_bytes.extend_from_slice(&[
-            // PUSH2 0xFFFF - gas
             opcode::PUSH2,
             0xFF,
-            0xFF,
-            // STATICCALL
-            opcode::STATICCALL,
-            // POP the return value (success/failure)
-            opcode::POP,
-            // STOP
+            0xFF, // gas
+            opcode::CALL,
+            opcode::POP, // pop success/failure
             opcode::STOP,
         ]);
 
         let bytecode = Bytecode::new_raw(bytecode_bytes.into());
 
-        // Use BenchmarkDB which provides BENCH_CALLER with balance and BENCH_TARGET with bytecode
-        let db = BenchmarkDB::new_bytecode(bytecode);
+        // Set up EVM with TIP20 infrastructure
+        let db = CacheDB::new(EmptyDB::new());
 
-        let factory = TempoEvmFactory::default();
-        let count_inspector = CountInspector::new();
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(Default::default());
 
-        let evm_env = alloy_evm::EvmEnv {
-            block_env: TempoBlockEnv {
-                inner: revm::context::BlockEnv {
-                    basefee: 0, // Free transaction
-                    ..Default::default()
-                },
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, _> = TempoEvm::new(ctx, CountInspector::new());
+        // Set up TIP20 using the storage context pattern
+        {
+            let ctx = &mut evm.ctx;
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
+                &ctx.cfg,
+            );
+            StorageCtx::enter(&mut storage, || {
+                TIP20Setup::path_usd(caller)
+                    .with_issuer(caller)
+                    .with_admin(contract) // Grant admin role to contract so it can call setSupplyCap
+                    .apply()
+            })?;
+        }
+
+        // Deploy the contract bytecode
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(bytecode),
                 ..Default::default()
             },
-            ..Default::default()
-        };
+        );
 
-        // Create EVM with CountInspector
-        let mut evm = factory.create_evm_with_inspector(db, evm_env, count_inspector);
-
-        // Execute a call to the contract using benchmark addresses
+        // Execute a call to the contract
         let tx_env = TxEnv {
-            caller: BENCH_CALLER,
-            kind: TxKind::Call(BENCH_TARGET),
-            gas_price: 0, // Free transaction
-            gas_limit: 100_000,
+            caller,
+            kind: TxKind::Call(contract),
+            gas_price: 0,
+            gas_limit: 1_000_000,
             ..Default::default()
         };
         let result = evm
-            .transact_raw(tx_env.into())
+            .inspect_tx(tx_env.into())
             .expect("execution should succeed");
 
-        assert!(result.result.is_success(), "Transaction should succeed");
-
-        // Verify that a log was emitted
-        assert_eq!(result.result.logs().len(), 1, "Should have emitted 1 log");
-
-        // Get the inspector and verify opcode counts
-        let (_, inspector, _) = evm.components();
-
-        // Verify key opcode execution counts
-        assert_eq!(
-            inspector.get_count(opcode::LOG0),
-            1,
-            "Should have 1 LOG0 opcode"
+        assert!(
+            result.result.is_success(),
+            "Transaction should succeed: {:?}",
+            result.result
         );
+
+        // Verify that a SupplyCapUpdate log was emitted by the TIP20 precompile
         assert_eq!(
-            inspector.get_count(opcode::STATICCALL),
-            1,
-            "Should have 1 STATICCALL opcode"
-        );
-        assert_eq!(
-            inspector.get_count(opcode::MSTORE),
+            result.result.logs().len(),
             2,
-            "Should have 2 MSTORE opcodes"
+            "Should have emitted 1 log, result: {:?}",
+            result.result
+        );
+        assert_eq!(
+            result.result.logs()[0].address,
+            TIP20_FACTORY_ADDRESS,
+            "Log should be from TIP20_FACTORY"
+        );
+
+        // Get the inspector and verify counts
+        let inspector = &evm.inspector;
+
+        // Verify CALL opcode was executed (the call to PATH_USD)
+        assert_eq!(
+            inspector.get_count(opcode::CALL),
+            1,
+            "Should have 1 CALL opcode"
         );
         assert_eq!(
             inspector.get_count(opcode::STOP),
@@ -388,20 +392,18 @@ mod tests {
             "Should have 1 STOP opcode"
         );
 
-        // Verify the log was counted by the inspector
-        assert_eq!(
-            inspector.log_count(),
-            1,
-            "Inspector should have counted 1 log"
-        );
+        // Verify log count
+        assert_eq!(inspector.log_count(), 1, "Should have 1 log");
 
-        // Verify call count (STATICCALL counts as a call)
+        // Verify call count (initial tx + CALL to PATH_USD)
         assert_eq!(
             inspector.call_count(),
             2,
-            "Should have 2 calls (initial tx + STATICCALL)"
+            "Should have 2 calls (initial tx + CALL)"
         );
 
         assert_eq!(inspector.call_end_count(), 2, "Should have 2 call ends");
+
+        Ok(())
     }
 }
