@@ -17,7 +17,7 @@ use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempo_node::rpc::consensus::{CertifiedBlock, Event};
-use tracing::{debug, instrument};
+use tracing::{info, info_span, instrument};
 
 use super::state::FeedStateHandle;
 use crate::{alias::marshal, consensus::Digest};
@@ -70,7 +70,7 @@ impl<TContext: Spawner> Actor<TContext> {
             select!(
                 activity = self.receiver.next() => {
                     let Some(activity) = activity else {
-                        debug!("feed actor shutting down");
+                        info_span!("shutdown").in_scope(|| info!("actor shutting down"));
                         break;
                     };
                     self.handle_activity(activity).await;
