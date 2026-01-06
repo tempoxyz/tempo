@@ -1,6 +1,12 @@
-use super::{IValidatorConfig, ValidatorConfig, ValidatorConfigError};
-use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use super::{IValidatorConfig, ValidatorConfig};
+use crate::{
+    Precompile, error::TempoPrecompileError, fill_precompile_output, input_cost, mutate_void,
+    unknown_selector, view,
+};
+use alloy::{
+    primitives::Address,
+    sol_types::{PanicKind, SolCall},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
 
 impl Precompile for ValidatorConfig {
@@ -38,7 +44,7 @@ impl Precompile for ValidatorConfig {
             IValidatorConfig::validatorsArrayCall::SELECTOR => {
                 view::<IValidatorConfig::validatorsArrayCall>(calldata, |call| {
                     let index = u64::try_from(call.index)
-                        .map_err(|_| ValidatorConfigError::invalid_public_key())?;
+                        .map_err(|_| TempoPrecompileError::Panic(PanicKind::ArrayOutOfBounds))?;
                     self.validators_array(index)
                 })
             }
