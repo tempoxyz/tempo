@@ -44,7 +44,7 @@ fn consensus_subscribe_and_query_finalization() {
             .expect("ws rpc server should be running");
 
         // connect to WebSocket and subscribe to consensus events
-        let ws_url = format!("ws://{}", ws_addr);
+        let ws_url = format!("ws://{ws_addr}");
         let ws_client = WsClientBuilder::default()
             .build(&ws_url)
             .await
@@ -56,7 +56,7 @@ fn consensus_subscribe_and_query_finalization() {
             .expect("should subscribe to consensus events");
 
         // build HTTP client for queries
-        let http_url = format!("http://{}", http_addr);
+        let http_url = format!("http://{http_addr}");
         let http_client = jsonrpsee::http_client::HttpClientBuilder::default()
             .build(&http_url)
             .expect("should build http client");
