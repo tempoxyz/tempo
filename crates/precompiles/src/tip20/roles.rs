@@ -189,7 +189,22 @@ mod tests {
             assert!(has_custom);
 
             // Verify events were emitted
-            assert_eq!(token.emitted_events().len(), 1); // One grant event
+            token.assert_emitted_events(vec![
+                // Event from grant_default_admin during token initialization
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: DEFAULT_ADMIN_ROLE,
+                    account: admin,
+                    sender: admin,
+                    hasRole: true,
+                }),
+                // Event from grant_role call above
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: custom_role,
+                    account: user,
+                    sender: admin,
+                    hasRole: true,
+                }),
+            ]);
 
             Ok(())
         })
