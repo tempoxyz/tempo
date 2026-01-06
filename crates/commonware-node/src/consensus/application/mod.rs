@@ -1,4 +1,7 @@
-//! Drives the execution engine by forwarding consensus messages.
+//! The interface between the consensus layer and the execution layer.
+//!
+//! The application actor implements the [`commonware_consensus::Automaton`]
+//! trait to propose and verify blocks.
 
 use std::time::Duration;
 
@@ -8,8 +11,6 @@ use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 use eyre::WrapErr as _;
 use rand::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
-
-mod executor;
 
 mod actor;
 mod ingress;
@@ -39,15 +40,14 @@ pub(super) struct Config<TContext> {
     /// Used as PayloadAttributes.suggested_fee_recipient
     pub(super) fee_recipient: alloy_primitives::Address,
 
-    /// The last finalized height according to the consensus layer.
-    pub(super) last_finalized_height: u64,
-
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
     pub(super) mailbox_size: usize,
 
     /// For subscribing to blocks distributed via the consensus p2p network.
     pub(super) marshal: crate::alias::marshal::Mailbox,
+
+    pub(super) executor: crate::executor::Mailbox,
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,

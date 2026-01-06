@@ -115,8 +115,7 @@ fn subblocks_are_included() {
                 for fee_recipient in &fee_recipients {
                     let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
                         .unwrap()
-                        .balances
-                        .at(*fee_recipient)
+                        .balances[*fee_recipient]
                         .slot();
                     let slot = fee_token_storage.get(&balance_slot).unwrap();
 
@@ -256,7 +255,7 @@ fn subblocks_are_included_with_failing_txs() {
 
                 let sender = tx.signer();
                 let nonce_key = tx.as_aa().unwrap().tx().nonce_key;
-                let nonce_slot = NonceManager::new().nonces.at(sender).at(nonce_key).slot();
+                let nonce_slot = NonceManager::new().nonces[sender][nonce_key].slot();
 
                 let slot = block
                     .execution_outcome()
@@ -284,8 +283,7 @@ fn subblocks_are_included_with_failing_txs() {
                 // Assert that all validators were paid for their subblock transactions
                 let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
                     .unwrap()
-                    .balances
-                    .at(*fee_recipient)
+                    .balances[*fee_recipient]
                     .slot();
                 let slot = fee_token_storage.get(&balance_slot).unwrap();
 

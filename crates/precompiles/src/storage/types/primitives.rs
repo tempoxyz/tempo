@@ -26,7 +26,8 @@ impl StorableType for bool {
 }
 
 impl super::sealed::OnlyPrimitives for bool {}
-impl Packable for bool {
+impl Packable for bool {}
+impl FromWord for bool {
     #[inline]
     fn to_word(&self) -> U256 {
         if *self { U256::ONE } else { U256::ZERO }
@@ -55,7 +56,8 @@ impl StorableType for Address {
 }
 
 impl super::sealed::OnlyPrimitives for Address {}
-impl Packable for Address {
+impl Packable for Address {}
+impl FromWord for Address {
     #[inline]
     fn to_word(&self) -> U256 {
         self.into_u256()
@@ -125,7 +127,7 @@ mod tests {
 
                 // EVM word roundtrip
                 let word = addr.to_word();
-                let recovered = <Address as Packable>::from_word(word).unwrap();
+                let recovered = <Address as FromWord>::from_word(word).unwrap();
                 assert_eq!(addr, recovered, "Address EVM word roundtrip failed");
             });
         }
@@ -148,7 +150,7 @@ mod tests {
 
                 // EVM word roundtrip
                 let word = b.to_word();
-                let recovered = <bool as Packable>::from_word(word).unwrap();
+                let recovered = <bool as FromWord>::from_word(word).unwrap();
                 assert_eq!(b, recovered, "Bool EVM word roundtrip failed");
             });
         }

@@ -46,7 +46,7 @@ impl NonceManager {
         }
 
         // For user nonce keys, read from precompile storage
-        self.nonces.at(call.account).at(call.nonceKey).read()
+        self.nonces[call.account][call.nonceKey].read()
     }
 
     /// Internal: Increment nonce for a specific account and nonce key
@@ -55,13 +55,13 @@ impl NonceManager {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let current = self.nonces.at(account).at(nonce_key).read()?;
+        let current = self.nonces[account][nonce_key].read()?;
 
         let new_nonce = current
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.nonces.at(account).at(nonce_key).write(new_nonce)?;
+        self.nonces[account][nonce_key].write(new_nonce)?;
 
         self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
             account,

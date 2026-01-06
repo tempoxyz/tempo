@@ -61,7 +61,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 
     let tx = TempoTxEnvelope::decode_2718_exact(&raw[..])?.try_into_recovered()?;
     let signer = tx.signer();
-    let slot = TipFeeManager::new().user_tokens.at(signer).slot();
+    let slot = TipFeeManager::new().user_tokens[signer].slot();
     println!("Submitting tx from {signer} with fee manager token slot 0x{slot:x}");
 
     let res = node

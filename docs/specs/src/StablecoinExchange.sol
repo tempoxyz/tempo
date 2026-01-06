@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
 import { TIP403Registry } from "./TIP403Registry.sol";
+import { TempoUtilities } from "./TempoUtilities.sol";
 import { IStablecoinExchange } from "./interfaces/IStablecoinExchange.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 
@@ -24,17 +25,14 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Price scaling factor (5 decimal places for 0.1 bps precision)
     uint32 public constant PRICE_SCALE = 100_000;
 
-    /// @notice Minimum valid price (PRICE_SCALE + int16.min)
-    uint32 public constant MIN_PRICE = 67_232;
+    /// @notice Minimum valid price
+    uint32 public constant MIN_PRICE = 98_000;
 
-    /// @notice Maximum valid price (PRICE_SCALE + int16.max)
-    uint32 public constant MAX_PRICE = 132_767;
+    /// @notice Maximum valid price
+    uint32 public constant MAX_PRICE = 102_000;
 
     /// @notice Minimum order amount (100 units with 6 decimals)
     uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
-
-    /// @notice TIP20 token address prefix (12 bytes)
-    bytes12 public constant TIP20_PREFIX = 0x20C000000000000000000000;
 
     /// @notice Orderbook for token pair with price-time priority
     /// @dev Uses tick-based pricing with bitmaps for price discovery
@@ -142,7 +140,7 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @dev Automatically sets tick bounds to ±2% from the peg price of 1.0
     function createPair(address base) external returns (bytes32 key) {
         // Validate that base is a TIP20 token
-        if (!TIP20Factory(FACTORY).isTIP20(base)) {
+        if (!TempoUtilities.isTIP20(base)) {
             revert ITIP20.InvalidBaseToken();
         }
 
@@ -1148,17 +1146,6 @@ contract StablecoinExchange is IStablecoinExchange {
                         MULTI-HOP ROUTING
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Check if an address is a TIP20 token by verifying its prefix
-    /// @param token The address to check
-    /// @return True if the address has the TIP20 prefix
-    function isTIP20(address token) internal pure returns (bool) {
-        bytes12 tokenPrefix;
-        assembly {
-            tokenPrefix := shl(96, token)
-        }
-        return tokenPrefix == TIP20_PREFIX;
-    }
-
     /// @notice Find trade path between two tokens using LCA (Lowest Common Ancestor) algorithm
     /// @param tokenIn Input token address
     /// @param tokenOut Output token address
@@ -1171,8 +1158,12 @@ contract StablecoinExchange is IStablecoinExchange {
         if (tokenIn == tokenOut) revert IStablecoinExchange.IdenticalTokens();
 
         // Validate that both tokens are TIP20 tokens
-        if (!isTIP20(tokenIn)) revert IStablecoinExchange.InvalidToken();
-        if (!isTIP20(tokenOut)) revert IStablecoinExchange.InvalidToken();
+        if (!TempoUtilities.isTIP20(tokenIn)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
+        if (!TempoUtilities.isTIP20(tokenOut)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
 
         // Check if direct or reverse pair exists
         address inQuote = address(ITIP20(tokenIn).quoteToken());

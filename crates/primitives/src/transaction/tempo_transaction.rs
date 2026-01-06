@@ -223,6 +223,45 @@ pub struct TempoTransaction {
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
 }
 
+/// Validates the calls list structure for Tempo transactions.
+///
+/// This is a shared validation function used by both `TempoTransaction::validate()`
+/// and the revm handler's `validate_env()` to ensure consistent validation.
+///
+/// Rules:
+/// - Calls list must not be empty
+/// - CREATE calls are not allowed when authorization list is non-empty (EIP-7702 semantics)
+/// - Only the first call can be a CREATE; all subsequent calls must be CALL
+pub fn validate_calls(calls: &[Call], has_authorization_list: bool) -> Result<(), &'static str> {
+    // Calls must not be empty (similar to EIP-7702 rejecting empty auth lists)
+    if calls.is_empty() {
+        return Err("calls list cannot be empty");
+    }
+
+    let mut calls_iter = calls.iter();
+
+    // Only the first call in the batch can be a CREATE call.
+    if let Some(call) = calls_iter.next()
+        // Authorization list validation: Can NOT have CREATE when authorization list is non-empty
+        // This follows EIP-7702 semantics - when using delegation
+        && has_authorization_list
+        && call.to.is_create()
+    {
+        return Err("calls cannot contain CREATE when 'aa_authorization_list' is non-empty");
+    }
+
+    // All subsequent calls must be CALL.
+    for call in calls_iter {
+        if call.to.is_create() {
+            return Err(
+                "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
+            );
+        }
+    }
+
+    Ok(())
+}
+
 impl TempoTransaction {
     /// Get the transaction type
     #[doc(alias = "transaction_type")]
@@ -232,10 +271,8 @@ impl TempoTransaction {
 
     /// Validates the transaction according to the spec rules
     pub fn validate(&self) -> Result<(), &'static str> {
-        // calls must not be empty (similar to EIP-7702 rejecting empty auth lists)
-        if self.calls.is_empty() {
-            return Err("calls list cannot be empty");
-        }
+        // Validate calls list structure using the shared function
+        validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
 
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
@@ -243,27 +280,6 @@ impl TempoTransaction {
             && valid_before <= valid_after
         {
             return Err("valid_before must be greater than valid_after");
-        }
-
-        let mut calls = self.calls.iter();
-
-        // Only the first call in the batch can be a CREATE call.
-        if let Some(call) = calls.next()
-            // Authorization list validation: Can NOT have CREATE when `aa_authorization_list` is non-empty
-            // This follows EIP-7702 semantics - when using delegation
-            && !self.tempo_authorization_list.is_empty()
-            && call.to.is_create()
-        {
-            return Err("calls cannot contain CREATE when 'aa_authorization_list' is non-empty");
-        }
-
-        // All subsequent calls must be CALL.
-        for call in calls {
-            if call.to.is_create() {
-                return Err(
-                    "only one CREATE call is allowed per transaction, and it must be the first call of the batch",
-                );
-            }
         }
 
         Ok(())
