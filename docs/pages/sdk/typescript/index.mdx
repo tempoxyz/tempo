@@ -12,6 +12,13 @@ import * as Card from "../../../components/Card.tsx"
 [Migration Guide](https://github.com/tempoxyz/tempo-ts/releases/tag/tempo.ts%400.12.0)
 :::
 
+:::note
+**Note:** `tempo.ts/wagmi` has been upstreamed into [Wagmi](https://wagmi.sh/tempo) as of `wagmi@3.2.0`. If you are using either entrypoint, please update to use `wagmi/tempo` or `@wagmi/core/tempo` instead.
+
+[Migration Guide](#TODO)
+:::
+
+
 Tempo distributes TypeScript SDKs for:
 - [Viem](https://viem.sh): TypeScript interface for EVM blockchains
 - [Wagmi](https://wagmi.sh): React Hooks (and reactive primitives) for EVM blockchains
@@ -33,7 +40,7 @@ The Tempo extensions can be used to perform common operations with the chain, su
   />
   <Card.Link
     description="Set up a Wagmi configuration with Tempo"
-    href="/sdk/typescript/wagmi/setup"
+    href="https://wagmi.sh/tempo"
     icon={() => 
       <img className="size-4.5 not-dark:invert" src="https://wagmi.sh/favicon.svg" alt="Wagmi" />
     }
@@ -66,19 +73,19 @@ The Tempo extensions can be used to perform common operations with the chain, su
 <Card.Container>
   <Card.Link
     description="Wagmi React Hooks for building apps on Tempo"
-    href="/sdk/typescript/wagmi/hooks"
+    href="https://wagmi.sh/tempo/hooks"
     icon={LucideNetwork}
     title="Hooks"
   />
   <Card.Link
     description="Wagmi Connectors for connecting between wallets, apps, and Tempo"
-    href="/sdk/typescript/wagmi/connectors"
+    href="https://wagmi.sh/tempo/connectors"
     icon={LucideSquareStack}
     title="Connectors"
   />
   <Card.Link
     description="Wagmi Actions for querying data, sending transactions, managing tokens & AMM pools, and more"
-    href="/sdk/typescript/wagmi/actions"
+    href="https://wagmi.sh/tempo/actions"
     icon={LucideWorkflow}
     title="Actions"
   />
