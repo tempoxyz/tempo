@@ -1,5 +1,4 @@
 import { QueryClient } from '@tanstack/react-query'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import { tempoDevnet, tempoLocalnet, tempoTestnet } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
 import {
@@ -9,6 +8,7 @@ import {
   http,
   webSocket,
 } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 const feeToken = '0x20c0000000000000000000000000000000000001'
 
