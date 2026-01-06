@@ -37,7 +37,8 @@ TIP20 token = factory.createToken(
   "MCUSD",
   "USD",
   TIP20(0x20c0000000000000000000000000000000000000), // pathUSD
-  msg.sender
+  msg.sender,
+  bytes32("my-unique-salt") // salt for deterministic address
 );
 ```
 
