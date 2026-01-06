@@ -18,15 +18,21 @@ Tempo docs site built with [Vocs](https://vocs.dev). Key directories:
 |-----------|---------|----------|
 | `pages/quickstart/` | Network setup, faucet, EVM differences, connection details | New developers onboarding |
 | `pages/guide/` | How-to guides with interactive demos (accounts, payments, issuance, exchange) | Developers building apps |
-| `pages/sdk/` | SDK references (typescript/wagmi, server, prool; also go, rust, foundry) | Developers using SDKs |
+| `pages/sdk/` | SDK references | Developers using SDKs |
 | `pages/protocol/` | Protocol specs (TIP-20 tokens, fees, transactions, exchange, blockspace) | Protocol-level understanding |
 | `pages/learn/` | Conceptual content about Tempo and stablecoin use cases | Non-technical/evaluators |
 
 Sidebar is defined in `vocs.config.tsx`. New pages must be added there to appear in navigation.
 
 ## SDK References
-- TypeScript SDK docs: `pages/sdk/typescript/` (wagmi/, server/, prool/)
-- SDK source: [tempo.ts](https://github.com/tempoxyz/tempo-ts) package
+- TypeScript SDK docs: `pages/sdk/typescript/` (server/, prool/); Wagmi/Viem docs are external
+- SDK sources:
+  - [viem/tempo](https://viem.sh/tempo) - Viem actions
+  - [wagmi/tempo](https://wagmi.sh/tempo) - Wagmi hooks, connectors, actions
+  - [tempo.ts](https://github.com/tempoxyz/tempo-ts) - Server utilities, prool
+  - [tempo-go](https://github.com/tempoxyz/tempo-go) - Go SDK
+  - [tempo-alloy](https://github.com/tempoxyz/tempo/tree/main/crates/tempo-alloy) - Rust/Alloy crate (in monorepo)
+  - [tempo-std](https://github.com/tempoxyz/tempo-std) - Foundry standard library
 
 ## Interactive Demos
 Use `Demo.Container` + `Step.*` components for interactive guides:
@@ -44,8 +50,8 @@ Steps are in `components/guides/steps/`. Use `DemoContext` for cross-step state.
 ## Snippets
 Reusable MDX in `snippets/`. Import and use directly:
 ```tsx
-import WriteParameters from '../../../snippets/write-parameters.mdx'
-<WriteParameters wagmi />
+import TempoTxProperties from '../../../snippets/tempo-tx-properties.mdx'
+<TempoTxProperties />
 ```
 
 ## Code Style

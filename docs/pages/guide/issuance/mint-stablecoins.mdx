@@ -33,7 +33,7 @@ Assign the issuer role to the address that will mint tokens. Minting requires th
 
 ```tsx twoslash [GrantIssuerRole.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -75,7 +75,7 @@ export function GrantIssuerRole() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -106,7 +106,7 @@ Now that the issuer role is granted, you can mint tokens to any address.
 
 ```tsx twoslash [MintToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -178,7 +178,7 @@ export function MintToken() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -271,7 +271,7 @@ To decrease supply, you can burn tokens from your own balance. Burning requires 
 
 ```tsx twoslash [BurnToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -332,7 +332,7 @@ export function BurnToken() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],

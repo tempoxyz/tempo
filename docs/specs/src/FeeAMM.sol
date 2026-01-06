@@ -68,8 +68,6 @@ contract FeeAMM is IFeeAMM {
 
         pool.reserveUserToken += uint128(amountIn);
         pool.reserveValidatorToken -= uint128(amountOut);
-
-        emit FeeSwap(userToken, validatorToken, amountIn, amountOut);
     }
 
     function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
@@ -152,7 +150,9 @@ contract FeeAMM is IFeeAMM {
 
         Pool storage pool = pools[poolId];
 
-        if (liquidityBalances[poolId][msg.sender] < liquidity) revert InsufficientLiquidity();
+        if (liquidityBalances[poolId][msg.sender] < liquidity) {
+            revert InsufficientLiquidity();
+        }
 
         // Calculate amounts
         (amountUserToken, amountValidatorToken) = _calculateBurnAmounts(pool, poolId, liquidity);
