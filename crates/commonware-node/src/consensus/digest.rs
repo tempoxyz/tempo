@@ -9,7 +9,7 @@ use commonware_utils::{Array, Span};
 /// Wrapper around [`B256`] to use it in places requiring [`commonware_cryptography::Digest`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
-pub struct Digest(pub(crate) B256);
+pub struct Digest(pub B256);
 
 impl Array for Digest {}
 

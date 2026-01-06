@@ -1,7 +1,7 @@
 //! Shared state for the feed module.
 
 use crate::alias::marshal;
-use alloy_primitives::{B256, hex};
+use alloy_primitives::hex;
 use commonware_codec::Encode;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
@@ -93,7 +93,7 @@ impl ConsensusFeed for FeedStateHandle {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
                     height,
-                    digest: B256::from_slice(finalization.proposal.payload.as_ref()),
+                    digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.certificate.encode()),
                 })
             }

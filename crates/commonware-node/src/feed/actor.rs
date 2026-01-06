@@ -5,7 +5,7 @@
 //! - Updates shared state (accessible by RPC handlers)
 //! - Broadcasts events to subscribers
 
-use alloy_primitives::{B256, hex};
+use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     Block as _,
@@ -99,7 +99,7 @@ impl<TContext: Spawner> Actor<TContext> {
             epoch,
             view,
             height,
-            digest: B256::from_slice(digest.as_ref()),
+            digest: digest.0,
             certificate,
         }
     }
