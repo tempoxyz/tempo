@@ -708,14 +708,29 @@ async fn build_subblock(
         Ok(mut evm) => {
             let mut selected_transactions = Vec::new();
             let mut senders = Vec::new();
-            let mut gas_left =
+            let gas_budget =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
+            let mut gas_left = gas_budget;
 
             let txs = transactions.lock().clone();
             for (tx_hash, tx) in txs {
+                // Remove transactions over subblock gas budget
+                if tx.gas_limit() > gas_budget {
+                    warn!(
+                        %tx_hash,
+                        tx_gas_limit = tx.gas_limit(),
+                        gas_budget,
+                        "removing transaction with gas limit exceeding maximum subblock gas budget"
+                    );
+                    transactions.lock().swap_remove(&tx_hash);
+                    continue;
+                }
+
+                // Skip transactions that don't fit in remaining budget (may fit in future rounds)
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
+
                 if let Err(err) = evm.transact_commit(&*tx) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
                     // Remove invalid transactions from the set.
