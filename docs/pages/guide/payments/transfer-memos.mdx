@@ -1,0 +1,102 @@
+import { Callout } from 'vocs/components'
+
+# Transfer Memos [Attach payment references to transactions for easy reconciliation.]
+
+Transfer memos let you attach a 32-byte reference to any TIP-20 transfer, mint, or burn operation. Use them to link onchain transactions to your internal records—customer IDs, invoice numbers, payment references, or any identifier that helps you reconcile payments.
+
+## Why use transfer memos?
+
+**Simplify deposit reconciliation**: Instead of generating a unique hot wallet address for each customer, use a single deposit address and differentiate payments by memo.
+
+**Track multi-step payments**: When a payment requires multiple transfers (e.g., a stablecoin swap sandwich), use the same memo across all transactions to correlate them.
+
+**Reduce operational overhead**: Fewer addresses to manage means simpler key management and easier balance monitoring.
+
+## Single address deposits
+
+Traditional deposit flows require generating a unique address per user, monitoring each address, and sweeping funds. With transfer memos, you can use one address:
+
+```ts
+// Customer deposits to your single deposit address with their customer ID as memo
+await token.write.transferWithMemo([
+  depositAddress,           // Your single deposit address
+  parseUnits('100', 6),     // Amount
+  toHex('CUST-12345', { size: 32 })  // Customer ID as memo
+])
+```
+
+When you receive the `TransferWithMemo` event, extract the memo to credit the right customer:
+
+```ts
+const unwatch = watchContractEvent(client, {
+  address: tokenAddress,
+  abi: tip20Abi,
+  eventName: 'TransferWithMemo',
+  onLogs: (logs) => {
+    for (const log of logs) {
+      if (log.args.to === depositAddress) {
+        const customerId = fromHex(log.args.memo, 'string').replace(/\0/g, '')
+        creditCustomerAccount(customerId, log.args.value)
+      }
+    }
+  },
+})
+```
+
+This pattern works well for CEX integrations, fiat on-ramps, and any system where users deposit to your platform.
+
+## Correlating multi-transfer payments
+
+When a payment involves multiple transactions, use the same memo to link them:
+
+```ts
+const paymentId = toHex('PAY-98765', { size: 32 })
+
+// Transaction 1: User sends EURC
+await eurcToken.write.transferWithMemo([
+  exchangeAddress,
+  parseUnits('100', 6),
+  paymentId
+])
+
+// Transaction 2: Exchange sends USDC to recipient
+await usdcToken.write.transferWithMemo([
+  recipientAddress,
+  parseUnits('108', 6),
+  paymentId
+])
+```
+
+Query both transactions later using the indexed memo:
+
+```ts
+const logs = await client.getLogs({
+  address: [eurcAddress, usdcAddress],
+  event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
+  args: { memo: paymentId },
+  fromBlock: startBlock,
+})
+```
+
+## Memo methods
+
+All TIP-20 tokens support memo variants for core operations:
+
+| Method | Description |
+|--------|-------------|
+| `transferWithMemo(to, amount, memo)` | Transfer with memo |
+| `transferFromWithMemo(from, to, amount, memo)` | Approved transfer with memo |
+| `mintWithMemo(to, amount, memo)` | Mint with memo (issuer only) |
+| `burnWithMemo(amount, memo)` | Burn with memo (issuer only) |
+
+Each emits a corresponding event (`TransferWithMemo`, `MintWithMemo`, `BurnWithMemo`) with the memo as an indexed parameter for efficient filtering.
+
+<Callout type="info">
+Memos are `bytes32` values. Use `toHex(string, { size: 32 })` to convert strings, or pass raw bytes for binary identifiers.
+</Callout>
+
+## Next steps
+
+- [Send a payment](/guide/payments/send-a-payment) — Complete payment integration guide
+- [Accept a payment](/guide/payments/accept-a-payment) — Watch for incoming payments and reconcile with memos
+- [TIP-20 specification](/protocol/tip20/spec) — Full API reference for memo methods

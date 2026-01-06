@@ -209,6 +209,10 @@ export default defineConfig({
                 link: '/guide/payments/accept-a-payment',
               },
               {
+                text: 'Attach a transfer memo',
+                link: '/guide/payments/transfer-memos',
+              },
+              {
                 text: 'Pay fees in any stablecoin',
                 link: '/guide/payments/pay-fees-in-any-stablecoin',
               },
