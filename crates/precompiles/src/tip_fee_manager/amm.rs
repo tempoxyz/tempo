@@ -303,10 +303,6 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
 
-        // Validate both tokens are USD currency
-        validate_usd_currency(user_token)?;
-        validate_usd_currency(validator_token)?;
-
         let pool_id = self.pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
         let balance = self.get_liquidity_balances(pool_id, msg_sender)?;
