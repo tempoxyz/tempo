@@ -46,11 +46,13 @@ use secp256k1::SecretKey;
 use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
+use tempo_commonware_node::feed::FeedStateHandle;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{
     TempoFullNode,
     evm::{TempoEvmFactory, evm::TempoEvm},
     node::TempoNode,
+    rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
@@ -194,6 +196,8 @@ pub struct ExecutionNodeConfig {
     pub port: u16,
     /// Validator public key for filtering subblock transactions.
     pub validator_key: Option<B256>,
+    /// Feed state handle for consensus RPC (if validator).
+    pub feed_state: Option<FeedStateHandle>,
 }
 
 impl ExecutionNodeConfig {
@@ -233,6 +237,7 @@ impl ExecutionNodeConfigGenerator {
                     trusted_peers: vec![],
                     port: 0,
                     validator_key: None,
+                    feed_state: None,
                 })
                 .collect();
         }
@@ -258,6 +263,7 @@ impl ExecutionNodeConfigGenerator {
                 trusted_peers: vec![],
                 port,
                 validator_key: None,
+                feed_state: None,
             })
             .collect();
 
@@ -680,7 +686,9 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             RpcServerArgs::default()
                 .with_unused_ports()
                 .with_http()
-                .with_http_api(RpcModuleSelection::All),
+                .with_http_api(RpcModuleSelection::All)
+                .with_ws()
+                .with_ws_api(RpcModuleSelection::All),
         )
         .with_datadir_args(DatadirArgs {
             datadir: datadir.as_ref().to_path_buf().into(),
@@ -706,10 +714,18 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         });
 
     let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
+    let feed_state = config.feed_state;
     let node_handle = NodeBuilder::new(node_config)
         .with_database(database)
         .with_launch_context(task_manager.executor())
         .node(tempo_node)
+        .extend_rpc_modules(move |ctx| {
+            if let Some(feed_state) = feed_state {
+                ctx.modules
+                    .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+            }
+            Ok(())
+        })
         .launch()
         .await
         .wrap_err_with(|| {

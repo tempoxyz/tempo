@@ -16,7 +16,7 @@ use jsonrpsee::{
 pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 
 /// Consensus namespace RPC trait.
-#[rpc(server, namespace = "consensus")]
+#[rpc(server, client, namespace = "consensus")]
 pub trait TempoConsensusApi {
     /// Get finalization by height query.
     ///
@@ -32,7 +32,7 @@ pub trait TempoConsensusApi {
 
     /// Subscribe to all consensus events (Notarized, Finalized, Nullified).
     #[subscription(name = "subscribe" => "event", unsubscribe = "unsubscribe", item = Event)]
-    async fn subscribe(&self) -> jsonrpsee::core::SubscriptionResult;
+    async fn subscribe_events(&self) -> jsonrpsee::core::SubscriptionResult;
 }
 
 /// Tempo consensus RPC implementation.
@@ -58,7 +58,7 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
         Ok(self.consensus_feed.get_latest().await)
     }
 
-    async fn subscribe(
+    async fn subscribe_events(
         &self,
         pending: jsonrpsee::PendingSubscriptionSink,
     ) -> jsonrpsee::core::SubscriptionResult {

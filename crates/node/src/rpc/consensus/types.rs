@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
     pub epoch: u64,
