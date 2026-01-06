@@ -116,10 +116,6 @@ impl TipFeeManager {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
-        // Validate both tokens are USD currency
-        validate_usd_currency(user_token)?;
-        validate_usd_currency(validator_token)?;
-
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
 
