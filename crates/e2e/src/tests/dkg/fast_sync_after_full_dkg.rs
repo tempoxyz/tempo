@@ -41,8 +41,7 @@ fn validator_can_fast_sync_after_full_dkg() {
     let executor = Runner::from(cfg);
 
     executor.start(|context| async move {
-        let (mut validators, execution_runtime) =
-            setup_validators(context.clone(), setup).await;
+        let (mut validators, execution_runtime) = setup_validators(context.clone(), setup).await;
 
         let mut late_validator = validators.pop().unwrap();
         join_all(validators.iter_mut().map(|v| v.start())).await;
