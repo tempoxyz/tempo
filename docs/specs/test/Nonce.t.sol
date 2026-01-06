@@ -114,8 +114,9 @@ contract NonceTest is BaseTest {
         // We use a direct require in the helper, so we test with try-catch
         bool reverted = false;
         try this.externalIncrementNonceViaStorage(testAlice, 0) {
-            // Should not reach here
-        } catch {
+        // Should not reach here
+        }
+        catch {
             reverted = true;
         }
         assertTrue(reverted, "Should revert when trying to increment protocol key 0");

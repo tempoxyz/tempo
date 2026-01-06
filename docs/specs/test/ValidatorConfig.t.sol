@@ -106,8 +106,9 @@ contract ValidatorConfigTest is BaseTest {
 
     function test_AddValidator_Unauthorized() public {
         vm.prank(nonOwner);
-        try validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1)
-        {
+        try validatorConfig.addValidator(
+            validator1, publicKey1, true, inboundAddr1, outboundAddr1
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -117,8 +118,9 @@ contract ValidatorConfigTest is BaseTest {
     function test_AddValidator_DuplicateValidator() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
 
-        try validatorConfig.addValidator(validator1, publicKey2, true, inboundAddr2, outboundAddr2)
-        {
+        try validatorConfig.addValidator(
+            validator1, publicKey2, true, inboundAddr2, outboundAddr2
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.ValidatorAlreadyExists.selector));
@@ -239,8 +241,9 @@ contract ValidatorConfigTest is BaseTest {
         // Validator tries to update with zero public key
         bytes32 zeroPublicKey = bytes32(0);
         vm.prank(validator1);
-        try validatorConfig.updateValidator(validator1, zeroPublicKey, inboundAddr2, outboundAddr2)
-        {
+        try validatorConfig.updateValidator(
+            validator1, zeroPublicKey, inboundAddr2, outboundAddr2
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.InvalidPublicKey.selector));
@@ -349,8 +352,9 @@ contract ValidatorConfigTest is BaseTest {
         vm.assume(caller != admin);
 
         vm.prank(caller);
-        try validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1)
-        {
+        try validatorConfig.addValidator(
+            validator1, publicKey1, true, inboundAddr1, outboundAddr1
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -474,8 +478,9 @@ contract ValidatorConfigTest is BaseTest {
         validatorConfig.addValidator(validator2, publicKey2, true, inboundAddr2, outboundAddr2);
 
         // Original owner cannot add validators
-        try validatorConfig.addValidator(validator3, publicKey3, true, inboundAddr3, outboundAddr3)
-        {
+        try validatorConfig.addValidator(
+            validator3, publicKey3, true, inboundAddr3, outboundAddr3
+        ) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));

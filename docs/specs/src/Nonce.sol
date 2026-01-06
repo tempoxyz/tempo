@@ -43,10 +43,7 @@ contract Nonce is INonce {
     /// @param account The account whose nonce to increment
     /// @param nonceKey The nonce key to increment (must be > 0)
     /// @return newNonce The new nonce value after incrementing
-    function _incrementNonce(address account, uint256 nonceKey)
-        internal
-        returns (uint64 newNonce)
-    {
+    function _incrementNonce(address account, uint256 nonceKey) internal returns (uint64 newNonce) {
         if (nonceKey == 0) {
             revert InvalidNonceKey();
         }
