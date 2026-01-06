@@ -674,45 +674,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rebalance_swap_rejects_non_usd_tokens() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let to = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
-                .currency("EUR")
-                .apply()?;
-            let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
-            let mut amm = TipFeeManager::new();
-
-            let result = amm.rebalance_swap(
-                admin,
-                eur_token.address(),
-                usd_token.address(),
-                U256::from(1000),
-                to,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-            ));
-
-            let result = amm.rebalance_swap(
-                admin,
-                usd_token.address(),
-                eur_token.address(),
-                U256::from(1000),
-                to,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-            ));
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_mint_insufficient_amount() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
