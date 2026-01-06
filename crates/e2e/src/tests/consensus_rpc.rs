@@ -69,7 +69,9 @@ fn consensus_subscribe_and_query_finalization() {
         while !saw_notarized || !saw_finalized {
             let event = tokio::time::timeout(Duration::from_secs(2), subscription.next())
                 .await
-                .unwrap().unwrap().unwrap();
+                .unwrap()
+                .unwrap()
+                .unwrap();
 
             match event {
                 Event::Notarized { .. } => {
@@ -79,7 +81,8 @@ fn consensus_subscribe_and_query_finalization() {
                     let queried_block = http_client
                         .get_finalization(Query::Height(block.height))
                         .await
-                        .unwrap().unwrap();
+                        .unwrap()
+                        .unwrap();
 
                     assert_eq!(queried_block, block);
 
@@ -92,7 +95,8 @@ fn consensus_subscribe_and_query_finalization() {
         let _latest_block = http_client
             .get_finalization(Query::Latest)
             .await
-                        .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
 
         let state = http_client
             .get_latest()
