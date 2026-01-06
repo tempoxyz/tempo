@@ -604,6 +604,7 @@ impl TIP20Token {
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -629,7 +630,7 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
@@ -1763,7 +1764,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             // PathUSD is at a reserved address, so we initialize it directly (not via factory)
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+            path_usd.initialize(admin, "PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
 
             assert_eq!(path_usd.currency()?, "USD");
             // PathUSD uses itself as quote token
