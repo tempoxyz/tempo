@@ -1,4 +1,8 @@
-use commonware_consensus::{Reporter, marshal::Update, types::Epoch};
+use commonware_consensus::{
+    Reporter,
+    marshal::Update,
+    types::{Epoch, Height},
+};
 use commonware_cryptography::{
     bls12381::{dkg::SignedDealerLog, primitives::variant::MinSig},
     ed25519::{PrivateKey, PublicKey},
@@ -44,7 +48,7 @@ impl Mailbox {
     pub(crate) async fn get_dkg_outcome(
         &self,
         digest: Digest,
-        height: u64,
+        height: Height,
     ) -> eyre::Result<OnchainDkgOutcome> {
         let (response, rx) = oneshot::channel();
         self.inner
@@ -136,7 +140,7 @@ pub(super) struct GetDealerLog {
 
 pub(super) struct GetDkgOutcome {
     pub(super) digest: Digest,
-    pub(super) height: u64,
+    pub(super) height: Height,
     pub(super) response: oneshot::Sender<OnchainDkgOutcome>,
 }
 

@@ -52,7 +52,7 @@ use commonware_consensus::{
     Reporters,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::Scheme},
-    types::{Epoch, Epocher as _},
+    types::{Epoch, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -311,11 +311,11 @@ where
         // Register the new signing scheme with the scheme provider.
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::signer(participants, public, share)
+            Scheme::signer(crate::config::NAMESPACE, participants, public, share)
                 .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(participants, public)
+            Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
 
         self.config.scheme_provider.register(epoch, scheme.clone());
@@ -340,7 +340,6 @@ where
                 ),
                 mailbox_size: self.config.mailbox_size,
                 epoch,
-                namespace: crate::config::NAMESPACE.to_vec(),
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
@@ -405,10 +404,10 @@ where
 
     #[instrument(
         skip_all,
-        fields(height, epoch = tracing::field::Empty),
+        fields(%height, epoch = tracing::field::Empty),
         err,
     )]
-    async fn handle_finalized_tip(&mut self, height: u64, digest: Digest) -> eyre::Result<()> {
+    async fn handle_finalized_tip(&mut self, height: Height, digest: Digest) -> eyre::Result<()> {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -453,6 +452,7 @@ where
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::verifier(
+                    crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
                 ),
@@ -513,7 +513,7 @@ where
 
         tracing::debug!(
             %reference_epoch,
-            boundary_height,
+            %boundary_height,
             "hinting to sync system that a finalization certificate might be \
             available for our reference epoch",
         );

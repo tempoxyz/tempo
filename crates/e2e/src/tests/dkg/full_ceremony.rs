@@ -129,9 +129,10 @@ impl FullDkgTest {
     ) -> OnchainDkgOutcome {
         let block_num = FixedEpocher::new(NZU64!(self.epoch_length))
             .last(Epoch::new(epoch))
-            .expect("valid epoch");
+            .expect("valid epoch")
+            .get();
 
-        tracing::info!(epoch, block_num, "Waiting for DKG outcome");
+        tracing::info!(epoch, %block_num, "Waiting for DKG outcome");
 
         loop {
             context.sleep(Duration::from_secs(1)).await;

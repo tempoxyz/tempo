@@ -5,8 +5,11 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
-use commonware_consensus::{Block as _, types::Epoch};
+use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_consensus::{
+    Block as _, Heightable as _,
+    types::{Epoch, Height},
+};
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -439,7 +442,7 @@ where
     pub(super) fn get_latest_finalized_block_for_epoch(
         &self,
         epoch: &Epoch,
-    ) -> Option<(&u64, &FinalizedBlockInfo)> {
+    ) -> Option<(&Height, &FinalizedBlockInfo)> {
         self.cache
             .get(epoch)
             .and_then(|cache| cache.finalized.last_key_value())
@@ -677,7 +680,7 @@ impl Read for State {
 )]
 #[derive(Clone, Debug)]
 pub(super) struct FinalizedBlockInfo {
-    pub(super) height: u64,
+    pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) parent: Digest,
 }
@@ -688,7 +691,7 @@ struct Events {
     acks: BTreeMap<PublicKey, PlayerAck<PublicKey>>,
     dealings: BTreeMap<PublicKey, (DealerPubMsg<MinSig>, DealerPrivMsg)>,
     logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
-    finalized: BTreeMap<u64, FinalizedBlockInfo>,
+    finalized: BTreeMap<Height, FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, Option<Share>)>,
@@ -752,7 +755,7 @@ enum Event {
     Finalized {
         digest: Digest,
         parent: Digest,
-        height: u64,
+        height: Height,
     },
 }
 
@@ -773,7 +776,7 @@ impl EncodeSize for Event {
                 digest,
                 parent,
                 height,
-            } => digest.encode_size() + parent.encode_size() + UInt(*height).encode_size(),
+            } => digest.encode_size() + parent.encode_size() + height.encode_size(),
         }
     }
 }
@@ -812,7 +815,7 @@ impl Write for Event {
                 3u8.write(buf);
                 digest.write(buf);
                 parent.write(buf);
-                UInt(*height).write(buf);
+                height.write(buf);
             }
         }
     }
@@ -843,7 +846,7 @@ impl Read for Event {
             3 => Ok(Self::Finalized {
                 digest: ReadExt::read(buf)?,
                 parent: ReadExt::read(buf)?,
-                height: UInt::read(buf)?.into(),
+                height: ReadExt::read(buf)?,
             }),
             other => Err(commonware_codec::Error::InvalidEnum(other)),
         }
@@ -1093,7 +1096,7 @@ impl Player {
 #[derive(Clone, Debug)]
 pub(super) struct ReducedBlock {
     // The block height.
-    pub(super) height: u64,
+    pub(super) height: Height,
 
     // The block parent.
     pub(super) parent: Digest,
@@ -1116,7 +1119,7 @@ impl ReducedBlock {
             )
             .inspect(|_| {
                 info!(
-                    height = block.height(),
+                    height = %block.height(),
                     digest = %block.digest(),
                     "found dealer log in block"
                 )
