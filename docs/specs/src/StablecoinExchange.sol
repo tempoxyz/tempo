@@ -25,11 +25,11 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Price scaling factor (5 decimal places for 0.1 bps precision)
     uint32 public constant PRICE_SCALE = 100_000;
 
-    /// @notice Minimum valid price (PRICE_SCALE + int16.min)
-    uint32 public constant MIN_PRICE = 67_232;
+    /// @notice Minimum valid price
+    uint32 public constant MIN_PRICE = 98_000;
 
-    /// @notice Maximum valid price (PRICE_SCALE + int16.max)
-    uint32 public constant MAX_PRICE = 132_767;
+    /// @notice Maximum valid price
+    uint32 public constant MAX_PRICE = 102_000;
 
     /// @notice Minimum order amount (100 units with 6 decimals)
     uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
@@ -1158,8 +1158,12 @@ contract StablecoinExchange is IStablecoinExchange {
         if (tokenIn == tokenOut) revert IStablecoinExchange.IdenticalTokens();
 
         // Validate that both tokens are TIP20 tokens
-        if (!TempoUtilities.isTIP20(tokenIn)) revert IStablecoinExchange.InvalidToken();
-        if (!TempoUtilities.isTIP20(tokenOut)) revert IStablecoinExchange.InvalidToken();
+        if (!TempoUtilities.isTIP20(tokenIn)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
+        if (!TempoUtilities.isTIP20(tokenOut)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
 
         // Check if direct or reverse pair exists
         address inQuote = address(ITIP20(tokenIn).quoteToken());
