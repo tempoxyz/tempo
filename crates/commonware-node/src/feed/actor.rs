@@ -127,8 +127,16 @@ impl<TContext: Spawner> Actor<TContext> {
 
                 {
                     let mut state = self.state.write();
-                    state.notarizations.insert(view, block);
-                    state.latest_notarized_view = Some(view);
+                    if state
+                        .latest_finalized
+                        .as_ref()
+                        .is_none_or(|f| f.height < block.height)
+                    {
+                        state.notarizations.insert(view, block);
+                        if state.latest_notarized_view.is_none_or(|v| v < view) {
+                            state.latest_notarized_view = Some(view);
+                        }
+                    }
                 }
             }
             Activity::Finalization(finalization) => {
@@ -151,15 +159,21 @@ impl<TContext: Spawner> Actor<TContext> {
 
                 {
                     let mut state = self.state.write();
-                    let to_remove: Vec<_> = state
-                        .notarizations
-                        .iter()
-                        .filter_map(|(&k, _)| (k <= view).then_some(k))
-                        .collect();
-                    for k in to_remove {
-                        state.notarizations.remove(&k);
+                    if state
+                        .latest_finalized
+                        .as_ref()
+                        .is_none_or(|f| f.height < block.height)
+                    {
+                        let to_remove: Vec<_> = state
+                            .notarizations
+                            .iter()
+                            .filter_map(|(&k, _)| (k <= view).then_some(k))
+                            .collect();
+                        for k in to_remove {
+                            state.notarizations.remove(&k);
+                        }
+                        state.latest_finalized = Some(block);
                     }
-                    state.latest_finalized = Some(block);
                 }
             }
             Activity::Nullification(nullification) => {
