@@ -1,14 +1,13 @@
-import { Callout } from 'vocs/components'
+import * as Card from '../../../components/Card.tsx'
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
+import LucideSend from '~icons/lucide/send'
+import LucideHandshake from '~icons/lucide/handshake'
+import LucideFileText from '~icons/lucide/file-text'
 
-# Transfer Memos [Attach payment references to transactions for easy reconciliation.]
+# Transfer Memos
 
-Transfer memos let you attach a 32-byte reference to any TIP-20 transfer, mint, or burn operation. Use them to link onchain transactions to your internal records—customer IDs, invoice numbers, payment references, or any identifier that helps you reconcile payments.
-
-## Try it
-
-Send a payment with a memo attached. After sending, check the transaction on the block explorer to see the memo in the `TransferWithMemo` event.
+Attach 32-byte references to TIP-20 transfers for payment reconciliation. Use memos to link onchain transactions to your internal records—customer IDs, invoice numbers, or any identifier that helps you match payments to your database.
 
 <Demo.Container name="Transfer with Memo" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/payments">
   <Step.Connect stepNumber={1} />
@@ -16,43 +15,141 @@ Send a payment with a memo attached. After sending, check the transaction on the
   <Step.SendPaymentWithMemo stepNumber={3} last />
 </Demo.Container>
 
-## Use cases
+## Steps
 
-### Exchange deposit reconciliation
+::::steps
 
-**As an exchange**, you want customers to deposit to a single master hot wallet instead of generating unique addresses per user. Customers call `transferWithMemo` with their customer ID as the memo, and you reconcile deposits in your database.
+### Set up your project
 
-```ts
-// Customer deposits with their customer ID
-await token.write.transferWithMemo([
-  exchangeHotWallet,        // Single master deposit address
-  parseUnits('500', 6),
-  toHex('CUST-12345', { size: 32 })  // Customer ID
-])
+Ensure you have Wagmi configured with Tempo. Follow either guide to get started:
+
+- [Embed Passkey accounts](/guide/use-accounts/embed-passkeys)
+- [Connect to wallets](/guide/use-accounts/connect-to-wallets)
+
+### Send a transfer with memo
+
+Use `transferWithMemo` to attach a reference to your payment. The memo is a 32-byte value that gets emitted in the `TransferWithMemo` event.
+
+:::code-group
+
+```tsx twoslash [SendWithMemo.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { parseUnits, toHex } from 'viem'
+import { useConnection } from 'wagmi'
+
+export function SendWithMemo() {
+  const { address } = useConnection()
+  const transfer = Hooks.token.useTransferSync()
+
+  const handleSend = () => {
+    transfer.mutate({
+      token: '0x20c0000000000000000000000000000000000001',
+      to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
+      amount: parseUnits('100', 6),
+      memo: toHex('INV-12345', { size: 32 }),
+    })
+  }
+
+  return (
+    <button onClick={handleSend} disabled={transfer.isPending}>
+      {transfer.isPending ? 'Sending...' : 'Send Payment'}
+    </button>
+  )
+}
 ```
 
-Watch for deposits and credit the right account:
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
-```ts
-watchContractEvent(client, {
-  address: tokenAddress,
-  abi: tip20Abi,
-  eventName: 'TransferWithMemo',
-  onLogs: (logs) => {
-    for (const log of logs) {
-      const customerId = fromHex(log.args.memo, 'string').replace(/\0/g, '')
-      creditCustomerAccount(customerId, log.args.value)
-    }
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
   },
 })
 ```
 
-### Payroll batch payments
+:::
 
-**As a payroll provider**, you want to batch multiple payments in a single Tempo transaction while maintaining clear records of which employee received each payment.
+### Watch for transfers with memos
+
+Listen for `TransferWithMemo` events to reconcile incoming payments. The memo is indexed, so you can filter by specific values.
+
+:::code-group
+
+```tsx twoslash [WatchMemos.tsx]
+// @noErrors
+import { useWatchContractEvent } from 'wagmi'
+import { fromHex } from 'viem'
+import { Abis } from 'viem/tempo'
+
+export function WatchMemos({ depositAddress }: { depositAddress: `0x${string}` }) {
+  useWatchContractEvent({
+    address: '0x20c0000000000000000000000000000000000001',
+    abi: Abis.TIP20,
+    eventName: 'TransferWithMemo',
+    onLogs: (logs) => {
+      for (const log of logs) {
+        if (log.args.to === depositAddress) {
+          const memo = fromHex(log.args.memo, 'string').replace(/\0/g, '')
+          console.log(`Received ${log.args.value} with memo: ${memo}`)
+        }
+      }
+    },
+  })
+
+  return <div>Watching for deposits...</div>
+}
+```
+
+```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
+  },
+})
+```
+
+:::
+
+::::
+
+## Recipes
+
+### Exchange deposit reconciliation
+
+As an exchange, use a single master hot wallet for all customer deposits. Customers include their customer ID as the memo, and you credit their account by parsing the event.
 
 ```ts
-// Batch payroll with employee IDs in memos
+// Customer deposits with their customer ID
+await token.write.transferWithMemo([
+  exchangeHotWallet,
+  parseUnits('500', 6),
+  toHex('CUST-12345', { size: 32 })
+])
+```
+
+### Payroll batch payments
+
+Batch multiple payments in a single Tempo transaction with employee IDs in each memo for clear accounting records.
+
+```ts
 const calls = employees.map(emp => ({
   to: tokenAddress,
   data: encodeFunctionData({
@@ -63,43 +160,63 @@ const calls = employees.map(emp => ({
 }))
 
 await walletClient.sendCalls({ calls })
-// One transaction, five transfers, each with clear employee ID for accounting
 ```
 
 ### Refund address in memo
 
-**As a payee**, you want to send a payment but indicate a refund address in case it fails or needs to be reversed.
+Include a refund address in the memo so the recipient knows where to send funds if a reversal is needed.
 
 ```ts
-// Include refund address in the memo
 const refundMemo = toHex('REFUND 0x742d35Cc6634C0532925a3b8', { size: 32 })
 
 await token.write.transferWithMemo([
   merchantAddress,
   parseUnits('100', 6),
-  refundMemo  // Merchant knows where to send refund if needed
+  refundMemo
 ])
 ```
 
-## Memo methods
+## Best Practices
 
-All TIP-20 tokens support memo variants for core operations:
+### Use consistent memo formats
 
-| Method | Description |
-|--------|-------------|
-| `transferWithMemo(to, amount, memo)` | Transfer with memo |
-| `transferFromWithMemo(from, to, amount, memo)` | Approved transfer with memo |
-| `mintWithMemo(to, amount, memo)` | Mint with memo (issuer only) |
-| `burnWithMemo(amount, memo)` | Burn with memo (issuer only) |
+Establish a naming convention for your memos (e.g., `CUST-{id}`, `INV-{number}`, `REFUND-{id}`) to make parsing and filtering reliable across your system.
 
-Each emits a corresponding event (`TransferWithMemo`, `MintWithMemo`, `BurnWithMemo`) with the memo as an indexed parameter for efficient filtering.
+### Keep memos under 32 bytes
 
-<Callout type="info">
-Memos are `bytes32` values. Use `toHex(string, { size: 32 })` to convert strings, or pass raw bytes for binary identifiers.
-</Callout>
+Memos are `bytes32` values. Use `toHex(string, { size: 32 })` to convert strings—if your string exceeds 32 bytes, it will be truncated. For longer references, store the full data offchain and use a hash or short ID as the memo.
 
-## Next steps
+### Index memos for efficient queries
 
-- [Send a payment](/guide/payments/send-a-payment) — Complete payment integration guide
-- [Accept a payment](/guide/payments/accept-a-payment) — Watch for incoming payments and reconcile with memos
-- [TIP-20 specification](/protocol/tip20/spec) — Full API reference for memo methods
+The `TransferWithMemo` event has `memo` as an indexed parameter. Use `getLogs` with the `args` filter to query transactions by memo without scanning all events.
+
+```ts
+const logs = await client.getLogs({
+  address: tokenAddress,
+  event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
+  args: { memo: toHex('INV-12345', { size: 32 }) },
+})
+```
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Complete guide to sending stablecoin payments with optional memos"
+    href="/guide/payments/send-a-payment"
+    icon={LucideSend}
+    title="Send a Payment"
+  />
+  <Card.Link
+    description="Watch for incoming payments and integrate reconciliation flows"
+    href="/guide/payments/accept-a-payment"
+    icon={LucideHandshake}
+    title="Accept a Payment"
+  />
+  <Card.Link
+    description="Full API reference for memo methods and events"
+    href="/protocol/tip20/spec"
+    icon={LucideFileText}
+    title="TIP-20 Specification"
+  />
+</Card.Container>
