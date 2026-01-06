@@ -444,3 +444,49 @@ where
         self.inner.evm()
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_build_receipt() {}
+
+    #[test]
+    fn test_validate_system_tx() {}
+
+    #[test]
+    fn test_validate_system_tx_duplicate_subblocks_system_tx() {}
+
+    #[test]
+    fn test_validate_system_tx_invalid_sublocks_metadata() {}
+
+    #[test]
+    fn test_validate_system_tx_invalid_system_tx() {}
+
+    #[test]
+    fn test_validate_shared_gas() {}
+
+    #[test]
+    fn test_validate_shared_gas_set_does_not_contain_valdiator() {}
+
+    #[test]
+    fn test_validate_shared_gas_more_than_one_subblock_per_validator() {}
+
+    #[test]
+    fn test_validate_shared_gas_invalid_signature_encoding() {}
+
+    #[test]
+    fn test_validate_shared_gas_invalid_signature() {}
+
+    #[test]
+    fn test_validate_shared_gas_gas_used_exceeds_gas_per_subblock() {}
+
+    #[test]
+    fn test_validate_shared_gas_unexpected_subblock_len() {}
+
+    #[test]
+    fn test_validate_shared_gas_limit_exceeded() {}
+
+    #[test]
+    fn test_validate_tx() {}
+}
