@@ -47,7 +47,7 @@ Next, we will need to configure the `webAuthn` connector in our Wagmi config.
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -133,7 +133,7 @@ export function Example() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -211,7 +211,7 @@ export function Example() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],

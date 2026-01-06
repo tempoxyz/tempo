@@ -37,7 +37,7 @@ Assign roles to specific addresses to delegate token management capabilities.
 
 ```tsx twoslash [GrantRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -72,7 +72,7 @@ export function GrantRoles() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -95,7 +95,7 @@ Use `hasRole` to verify whether an address has been granted a specific role.
 
 ```tsx twoslash [GrantRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -151,7 +151,7 @@ export function GrantRoles() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -182,7 +182,7 @@ Revoke roles from addresses when you need to remove their permissions.
 
 ```tsx twoslash [RevokeRoles.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -264,7 +264,7 @@ export function RevokeRoles() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -298,7 +298,7 @@ Limit the maximum total supply of your token. Setting supply caps requires the *
 
 ```tsx twoslash [SetSupplyCap.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 // @noErrors
@@ -335,7 +335,7 @@ export function SetSupplyCap() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -374,7 +374,7 @@ Learn more about configuring transfer policies in the [TIP-403 specification](/p
 
 ```tsx twoslash [CreateTokenPolicy.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function CreateTokenPolicy() {
@@ -412,7 +412,7 @@ export function CreateTokenPolicy() {
 
 ```tsx twoslash [LinkTokenPolicy.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function LinkTokenPolicy() {
@@ -444,7 +444,7 @@ export function LinkTokenPolicy() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -475,7 +475,7 @@ Temporarily halt all token transfers during emergency situations or maintenance 
 
 ```tsx twoslash [PauseUnpauseTransfers.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 // @noErrors
 export function PauseUnpauseTransfers() {
@@ -524,7 +524,7 @@ export function PauseUnpauseTransfers() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -558,7 +558,7 @@ The Burn Blocked role allows your team to burn tokens from blocked or frozen add
 
 ```tsx twoslash [BurnBlocked.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 // @noErrors
@@ -598,7 +598,7 @@ export function BurnBlocked() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],

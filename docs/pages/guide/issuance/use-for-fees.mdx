@@ -39,7 +39,7 @@ Add liquidity to your token's fee pool:
 
 ```tsx twoslash [TypeScript]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -81,7 +81,7 @@ You can also check your token's fee pool liquidity at any time:
 
 ```tsx twoslash [TypeScript]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 const { data: pool } = Hooks.amm.usePool({
   userToken: yourToken,
@@ -115,7 +115,7 @@ Your users can send payments using your issued stablecoin as the fee token:
 
 ```tsx twoslash [PayWithIssuedToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex, isAddress } from 'viem'
 
@@ -198,7 +198,7 @@ export function PayWithIssuedToken() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],

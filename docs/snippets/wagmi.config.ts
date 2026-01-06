@@ -4,8 +4,8 @@
 
 // [!region setup]
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import { createConfig, http } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   connectors: [
@@ -25,8 +25,8 @@ export const config = createConfig({
 // [!region withFeePayer]
 import { tempoTestnet } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import { createConfig, http } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   connectors: [
