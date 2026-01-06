@@ -14,7 +14,6 @@ use tempo_precompiles_macros::Storable;
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
 pub const N: U256 = uint!(9985_U256);
 pub const SCALE: U256 = uint!(10000_U256);
-pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
 /// Compute amount out for a fee swap
@@ -471,20 +470,6 @@ impl TipFeeManager {
     }
 }
 
-/// Calculate integer square rootu
-pub fn sqrt(x: U256) -> U256 {
-    if x == U256::ZERO {
-        return U256::ZERO;
-    }
-    let mut z = (x + U256::ONE) / uint!(2_U256);
-    let mut y = x;
-    while z < y {
-        y = z;
-        z = (x / z + z) / uint!(2_U256);
-    }
-    y
-}
-
 #[cfg(test)]
 mod tests {
     use tempo_contracts::precompiles::TIP20Error;
@@ -497,6 +482,20 @@ mod tests {
         tip_fee_manager::TIPFeeAMMError,
     };
     use alloy::primitives::Address;
+
+    /// Integer square root using the Babylonian method
+    fn sqrt(x: U256) -> U256 {
+        if x == U256::ZERO {
+            return U256::ZERO;
+        }
+        let mut z = (x + U256::ONE) / uint!(2_U256);
+        let mut y = x;
+        while z < y {
+            y = z;
+            z = (x / z + z) / uint!(2_U256);
+        }
+        y
+    }
 
     /// Sets up a pool with initial liquidity for testing
     fn setup_pool_with_liquidity(
