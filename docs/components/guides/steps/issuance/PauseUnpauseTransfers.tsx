@@ -1,4 +1,4 @@
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
