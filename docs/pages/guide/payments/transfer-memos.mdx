@@ -16,20 +16,16 @@ Send a payment with a memo attached. After sending, check the transaction on the
   <Step.SendPaymentWithMemo stepNumber={3} last />
 </Demo.Container>
 
-## Why use transfer memos?
+## Use cases
 
-**Simplify deposit reconciliation**: Instead of generating a unique hot wallet address for each customer, use a single deposit address and differentiate payments by memo.
+### Exchange and on-ramp deposit reconciliation
 
-**Track multi-step payments**: When a payment requires multiple transfers (e.g., a stablecoin swap sandwich), use the same memo across all transactions to correlate them.
+Exchanges and fiat on-ramps traditionally generate a unique deposit address for each customer. This requires managing thousands of addresses, monitoring each for incoming funds, and sweeping balances—all adding operational complexity and cost.
 
-**Reduce operational overhead**: Fewer addresses to manage means simpler key management and easier balance monitoring.
-
-## Single address deposits
-
-Traditional deposit flows require generating a unique address per user, monitoring each address, and sweeping funds. With transfer memos, you can use one address:
+With transfer memos, you can use a **single deposit address** for all customers. Each customer includes their customer ID as a memo when depositing, and you reconcile by filtering `TransferWithMemo` events:
 
 ```ts
-// Customer deposits to your single deposit address with their customer ID as memo
+// Customer deposits to your single deposit address with their customer ID
 await token.write.transferWithMemo([
   depositAddress,           // Your single deposit address
   parseUnits('100', 6),     // Amount
@@ -37,7 +33,7 @@ await token.write.transferWithMemo([
 ])
 ```
 
-When you receive the `TransferWithMemo` event, extract the memo to credit the right customer:
+Watch for deposits and credit the right customer:
 
 ```ts
 const unwatch = watchContractEvent(client, {
@@ -55,39 +51,61 @@ const unwatch = watchContractEvent(client, {
 })
 ```
 
-This pattern works well for CEX integrations, fiat on-ramps, and any system where users deposit to your platform.
+This pattern eliminates per-user address generation, simplifies key management, and reduces monitoring overhead.
 
-## Correlating multi-transfer payments
+### Linking related transactions
 
-When a payment involves multiple transactions, use the same memo to link them:
+When multiple transactions belong to the same business operation, use the same memo to correlate them. This is useful for:
+
+- **Refunds**: Link the original payment and refund transaction with a shared refund ID
+- **Multi-leg payments**: Track a stablecoin swap where funds move through an intermediary
+- **Batch operations**: Group related transfers under a single reference
+
+**Example: Processing a refund**
+
+```ts
+const refundId = toHex('REFUND-7890', { size: 32 })
+
+// Original payment (already on chain with this memo)
+// Customer paid: transferWithMemo(merchant, 50 USDC, REFUND-7890)
+
+// Process refund with the same memo
+await token.write.transferWithMemo([
+  customerAddress,
+  parseUnits('50', 6),
+  refundId  // Same memo links refund to original payment
+])
+```
+
+Query all transactions for this refund:
+
+```ts
+const logs = await client.getLogs({
+  event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
+  args: { memo: refundId },
+  fromBlock: startBlock,
+})
+// Returns both the original payment and the refund transaction
+```
+
+**Example: Multi-leg currency exchange**
 
 ```ts
 const paymentId = toHex('PAY-98765', { size: 32 })
 
-// Transaction 1: User sends EURC
+// Leg 1: User sends EURC to exchange
 await eurcToken.write.transferWithMemo([
   exchangeAddress,
   parseUnits('100', 6),
   paymentId
 ])
 
-// Transaction 2: Exchange sends USDC to recipient
+// Leg 2: Exchange sends USDC to recipient
 await usdcToken.write.transferWithMemo([
   recipientAddress,
   parseUnits('108', 6),
-  paymentId
+  paymentId  // Same memo correlates both legs
 ])
-```
-
-Query both transactions later using the indexed memo:
-
-```ts
-const logs = await client.getLogs({
-  address: [eurcAddress, usdcAddress],
-  event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
-  args: { memo: paymentId },
-  fromBlock: startBlock,
-})
 ```
 
 ## Memo methods
