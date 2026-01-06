@@ -192,15 +192,18 @@ where
 #[cfg(test)]
 mod tests {
     use alloy_evm::{Evm, EvmFactory};
-    use alloy_primitives::{Address, U256, bytes};
+    use alloy_primitives::{Address, TxKind, U256, bytes};
     use reth_evm::EvmInternals;
     use revm::{
+        bytecode::opcode,
         context::{ContextTr, TxEnv},
-        database::{CacheDB, EmptyDB},
+        database::{BENCH_CALLER, BENCH_TARGET, BenchmarkDB, CacheDB, EmptyDB},
+        inspector::CountInspector,
         state::{AccountInfo, Bytecode},
     };
-    use tempo_evm::TempoEvmFactory;
+    use tempo_evm::{TempoBlockEnv, TempoEvmFactory};
     use tempo_precompiles::{
+        NONCE_PRECOMPILE_ADDRESS,
         storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
     };
@@ -245,5 +248,160 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_inspector_calls() {
+        // Create bytecode that:
+        // 1. Emits a LOG0 event
+        // 2. Prepares calldata for STATICCALL to NONCE precompile
+        // 3. Performs STATICCALL to NONCE_PRECOMPILE_ADDRESS
+        // 4. Stops execution
+
+        let mut bytecode_bytes = vec![
+            // === Part 1: Emit empty LOG0 ===
+            // PUSH1 0x00 - log data size (0 bytes)
+            opcode::PUSH1,
+            0x00,
+            // PUSH1 0x00 - log data offset
+            opcode::PUSH1,
+            0x00,
+            // LOG0 - emit empty log
+            opcode::LOG0,
+            // === Part 2: Prepare calldata for getNonce(address,uint256) ===
+            // Function selector for getNonce(address,uint256) = 0x6a7012b5
+            // We'll call with account=0x00...00 and nonceKey=1
+            // Store selector at memory offset 0x00
+            opcode::PUSH4,
+            0x6a,
+            0x70,
+            0x12,
+            0xb5, // getNonce selector
+            // PUSH1 0x00 - offset to store (storing at 0, but shifted for selector)
+            opcode::PUSH1,
+            0x00,
+            // MSTORE - stores selector right-aligned at memory[0:32]
+            opcode::MSTORE,
+            // For ABI encoding, selector should be at bytes 0-3, so we need to shift
+            // Actually let's simplify: store selector at offset 0, address at 0x04, nonceKey at 0x24
+            // Store address (0x00...00) at offset 0x04 - it's already zero from MSTORE above
+            // Store nonceKey=1 at offset 0x24
+            opcode::PUSH1,
+            0x01, // nonceKey = 1
+            opcode::PUSH1,
+            0x24, // offset 0x24 (36 = 4 + 32)
+            opcode::MSTORE,
+            // === Part 3: STATICCALL to NONCE precompile ===
+            // STATICCALL(gas, addr, argsOffset, argsSize, retOffset, retSize)
+            // PUSH1 0x20 - retSize (32 bytes for uint64 return)
+            opcode::PUSH1,
+            0x20,
+            // PUSH1 0x44 - retOffset (store return at 0x44)
+            opcode::PUSH1,
+            0x44,
+            // PUSH1 0x44 - argsSize (4 + 32 + 32 = 68 = 0x44 bytes)
+            opcode::PUSH1,
+            0x44,
+            // PUSH1 0x1c - argsOffset (selector starts at 0x1c = 28 to be left-aligned after MSTORE)
+            opcode::PUSH1,
+            0x1c,
+        ];
+
+        // PUSH20 nonce_precompile_address
+        bytecode_bytes.push(opcode::PUSH20);
+        bytecode_bytes.extend_from_slice(NONCE_PRECOMPILE_ADDRESS.as_slice());
+
+        bytecode_bytes.extend_from_slice(&[
+            // PUSH2 0xFFFF - gas
+            opcode::PUSH2,
+            0xFF,
+            0xFF,
+            // STATICCALL
+            opcode::STATICCALL,
+            // POP the return value (success/failure)
+            opcode::POP,
+            // STOP
+            opcode::STOP,
+        ]);
+
+        let bytecode = Bytecode::new_raw(bytecode_bytes.into());
+
+        // Use BenchmarkDB which provides BENCH_CALLER with balance and BENCH_TARGET with bytecode
+        let db = BenchmarkDB::new_bytecode(bytecode);
+
+        let factory = TempoEvmFactory::default();
+        let count_inspector = CountInspector::new();
+
+        let evm_env = alloy_evm::EvmEnv {
+            block_env: TempoBlockEnv {
+                inner: revm::context::BlockEnv {
+                    basefee: 0, // Free transaction
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        // Create EVM with CountInspector
+        let mut evm = factory.create_evm_with_inspector(db, evm_env, count_inspector);
+
+        // Execute a call to the contract using benchmark addresses
+        let tx_env = TxEnv {
+            caller: BENCH_CALLER,
+            kind: TxKind::Call(BENCH_TARGET),
+            gas_price: 0, // Free transaction
+            gas_limit: 100_000,
+            ..Default::default()
+        };
+        let result = evm
+            .transact_raw(tx_env.into())
+            .expect("execution should succeed");
+
+        assert!(result.result.is_success(), "Transaction should succeed");
+
+        // Verify that a log was emitted
+        assert_eq!(result.result.logs().len(), 1, "Should have emitted 1 log");
+
+        // Get the inspector and verify opcode counts
+        let (_, inspector, _) = evm.components();
+
+        // Verify key opcode execution counts
+        assert_eq!(
+            inspector.get_count(opcode::LOG0),
+            1,
+            "Should have 1 LOG0 opcode"
+        );
+        assert_eq!(
+            inspector.get_count(opcode::STATICCALL),
+            1,
+            "Should have 1 STATICCALL opcode"
+        );
+        assert_eq!(
+            inspector.get_count(opcode::MSTORE),
+            2,
+            "Should have 2 MSTORE opcodes"
+        );
+        assert_eq!(
+            inspector.get_count(opcode::STOP),
+            1,
+            "Should have 1 STOP opcode"
+        );
+
+        // Verify the log was counted by the inspector
+        assert_eq!(
+            inspector.log_count(),
+            1,
+            "Inspector should have counted 1 log"
+        );
+
+        // Verify call count (STATICCALL counts as a call)
+        assert_eq!(
+            inspector.call_count(),
+            2,
+            "Should have 2 calls (initial tx + STATICCALL)"
+        );
+
+        assert_eq!(inspector.call_end_count(), 2, "Should have 2 call ends");
     }
 }

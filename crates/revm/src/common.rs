@@ -37,7 +37,7 @@ fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
 }
 
 /// Helper trait to abstract over different representations of Tempo transactions.
-#[auto_impl::auto_impl(&)]
+#[auto_impl::auto_impl(&, Arc)]
 pub trait TempoTx {
     /// Returns the transaction's `feeToken` field, if configured.
     fn fee_token(&self) -> Option<Address>;
