@@ -18,93 +18,66 @@ Send a payment with a memo attached. After sending, check the transaction on the
 
 ## Use cases
 
-### Exchange and on-ramp deposit reconciliation
+### Exchange deposit reconciliation
 
-Exchanges and fiat on-ramps traditionally generate a unique deposit address for each customer. This requires managing thousands of addresses, monitoring each for incoming funds, and sweeping balances—all adding operational complexity and cost.
-
-With transfer memos, you can use a **single deposit address** for all customers. Each customer includes their customer ID as a memo when depositing, and you reconcile by filtering `TransferWithMemo` events:
+**As an exchange**, you want customers to deposit to a single master hot wallet instead of generating unique addresses per user. Customers call `transferWithMemo` with their customer ID as the memo, and you reconcile deposits in your database.
 
 ```ts
-// Customer deposits to your single deposit address with their customer ID
+// Customer deposits with their customer ID
 await token.write.transferWithMemo([
-  depositAddress,           // Your single deposit address
-  parseUnits('100', 6),     // Amount
-  toHex('CUST-12345', { size: 32 })  // Customer ID as memo
+  exchangeHotWallet,        // Single master deposit address
+  parseUnits('500', 6),
+  toHex('CUST-12345', { size: 32 })  // Customer ID
 ])
 ```
 
-Watch for deposits and credit the right customer:
+Watch for deposits and credit the right account:
 
 ```ts
-const unwatch = watchContractEvent(client, {
+watchContractEvent(client, {
   address: tokenAddress,
   abi: tip20Abi,
   eventName: 'TransferWithMemo',
   onLogs: (logs) => {
     for (const log of logs) {
-      if (log.args.to === depositAddress) {
-        const customerId = fromHex(log.args.memo, 'string').replace(/\0/g, '')
-        creditCustomerAccount(customerId, log.args.value)
-      }
+      const customerId = fromHex(log.args.memo, 'string').replace(/\0/g, '')
+      creditCustomerAccount(customerId, log.args.value)
     }
   },
 })
 ```
 
-This pattern eliminates per-user address generation, simplifies key management, and reduces monitoring overhead.
+### Payroll batch payments
 
-### Linking related transactions
-
-When multiple transactions belong to the same business operation, use the same memo to correlate them. This is useful for:
-
-- **Refunds**: Link the original payment and refund transaction with a shared refund ID
-- **Multi-leg payments**: Track a stablecoin swap where funds move through an intermediary
-- **Batch operations**: Group related transfers under a single reference
-
-**Example: Processing a refund**
+**As a payroll provider**, you want to batch multiple payments in a single Tempo transaction while maintaining clear records of which employee received each payment.
 
 ```ts
-const refundId = toHex('REFUND-7890', { size: 32 })
+// Batch payroll with employee IDs in memos
+const calls = employees.map(emp => ({
+  to: tokenAddress,
+  data: encodeFunctionData({
+    abi: tip20Abi,
+    functionName: 'transferWithMemo',
+    args: [emp.wallet, parseUnits(emp.salary, 6), toHex(emp.id, { size: 32 })]
+  })
+}))
 
-// Original payment (already on chain with this memo)
-// Customer paid: transferWithMemo(merchant, 50 USDC, REFUND-7890)
+await walletClient.sendCalls({ calls })
+// One transaction, five transfers, each with clear employee ID for accounting
+```
 
-// Process refund with the same memo
+### Refund address in memo
+
+**As a payee**, you want to send a payment but indicate a refund address in case it fails or needs to be reversed.
+
+```ts
+// Include refund address in the memo
+const refundMemo = toHex('REFUND 0x742d35Cc6634C0532925a3b8', { size: 32 })
+
 await token.write.transferWithMemo([
-  customerAddress,
-  parseUnits('50', 6),
-  refundId  // Same memo links refund to original payment
-])
-```
-
-Query all transactions for this refund:
-
-```ts
-const logs = await client.getLogs({
-  event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
-  args: { memo: refundId },
-  fromBlock: startBlock,
-})
-// Returns both the original payment and the refund transaction
-```
-
-**Example: Multi-leg currency exchange**
-
-```ts
-const paymentId = toHex('PAY-98765', { size: 32 })
-
-// Leg 1: User sends EURC to exchange
-await eurcToken.write.transferWithMemo([
-  exchangeAddress,
+  merchantAddress,
   parseUnits('100', 6),
-  paymentId
-])
-
-// Leg 2: Exchange sends USDC to recipient
-await usdcToken.write.transferWithMemo([
-  recipientAddress,
-  parseUnits('108', 6),
-  paymentId  // Same memo correlates both legs
+  refundMemo  // Merchant knows where to send refund if needed
 ])
 ```
 
