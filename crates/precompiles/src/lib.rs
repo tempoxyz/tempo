@@ -9,7 +9,7 @@ pub mod storage;
 
 pub mod account_keychain;
 pub mod nonce;
-pub mod stablecoin_exchange;
+pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_factory;
 pub mod tip403_registry;
@@ -22,7 +22,7 @@ pub mod test_util;
 use crate::{
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    stablecoin_exchange::StablecoinExchange,
+    stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, is_tip20_prefix},
@@ -47,7 +47,7 @@ use revm::{
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    STABLECOIN_EXCHANGE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
 };
 
@@ -80,8 +80,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(TIP403RegistryPrecompile::create(chain_id, spec))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
             Some(TipFeeManagerPrecompile::create(chain_id, spec))
-        } else if *address == STABLECOIN_EXCHANGE_ADDRESS {
-            Some(StablecoinExchangePrecompile::create(chain_id, spec))
+        } else if *address == STABLECOIN_DEX_ADDRESS {
+            Some(StablecoinDEXPrecompile::create(chain_id, spec))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
             Some(NoncePrecompile::create(chain_id, spec))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
@@ -158,11 +158,11 @@ impl TIP20Precompile {
     }
 }
 
-pub struct StablecoinExchangePrecompile;
-impl StablecoinExchangePrecompile {
+pub struct StablecoinDEXPrecompile;
+impl StablecoinDEXPrecompile {
     pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("StablecoinExchange", chain_id, spec, |input| {
-            StablecoinExchange::new()
+        tempo_precompile!("StablecoinDEX", chain_id, spec, |input| {
+            StablecoinDEX::new()
         })
     }
 }

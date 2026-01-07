@@ -13,8 +13,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         TIP403Registry(0x403c000000000000000000000000000000000000);
 
     address internal constant TIP_FEE_MANAGER_ADDRESS = 0xfeEC000000000000000000000000000000000000;
-    address internal constant STABLECOIN_EXCHANGE_ADDRESS =
-        0xDEc0000000000000000000000000000000000000;
+    address internal constant STABLECOIN_DEX_ADDRESS = 0xDEc0000000000000000000000000000000000000;
 
     address internal constant FACTORY = 0x20Fc000000000000000000000000000000000000;
 
@@ -171,7 +170,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
 
     function burnBlocked(address from, uint256 amount) external onlyRole(BURN_BLOCKED_ROLE) {
         // Prevent burning from protected precompile addresses
-        if (from == TIP_FEE_MANAGER_ADDRESS || from == STABLECOIN_EXCHANGE_ADDRESS) {
+        if (from == TIP_FEE_MANAGER_ADDRESS || from == STABLECOIN_DEX_ADDRESS) {
             revert ProtectedAddress();
         }
 

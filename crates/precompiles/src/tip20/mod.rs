@@ -2,7 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
+use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -402,11 +402,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
-        if matches!(
-            call.from,
-            TIP_FEE_MANAGER_ADDRESS | STABLECOIN_EXCHANGE_ADDRESS
-        ) {
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -1687,8 +1684,8 @@ pub(crate) mod tests {
                 .with_role(burner, *BURN_BLOCKED_ROLE)
                 // Simulate collected fees
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                // Mint tokens to StablecoinExchange
-                .with_mint(STABLECOIN_EXCHANGE_ADDRESS, amount)
+                // Mint tokens to StablecoinDEX
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .apply()?;
 
             // Attempt to burn from FeeManager
@@ -1711,11 +1708,11 @@ pub(crate) mod tests {
             })?;
             assert_eq!(balance, amount);
 
-            // Attempt to burn from StablecoinExchange
+            // Attempt to burn from StablecoinDEX
             let result = token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: STABLECOIN_EXCHANGE_ADDRESS,
+                    from: STABLECOIN_DEX_ADDRESS,
                     amount: amount / U256::from(2),
                 },
             );
@@ -1725,9 +1722,9 @@ pub(crate) mod tests {
                 Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
             ));
 
-            // Verify StablecoinExchange balance is unchanged
+            // Verify StablecoinDEX balance is unchanged
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_EXCHANGE_ADDRESS,
+                account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
 
