@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Tick } from 'viem/tempo'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, Step } from '../../Demo'

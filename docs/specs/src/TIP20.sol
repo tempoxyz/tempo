@@ -49,7 +49,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         string memory _symbol,
         string memory _currency,
         ITIP20 _quoteToken,
-        address admin
+        address admin,
+        address sender
     ) {
         name = _name;
         symbol = _symbol;
@@ -59,6 +60,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // No currency registry; all tokens use 6 decimals by default
 
         hasRole[admin][DEFAULT_ADMIN_ROLE] = true; // Grant admin role to first admin.
+        emit RoleMembershipUpdated(DEFAULT_ADMIN_ROLE, admin, sender, true);
     }
 
     /*//////////////////////////////////////////////////////////////

@@ -25,11 +25,11 @@ contract StablecoinExchange is IStablecoinExchange {
     /// @notice Price scaling factor (5 decimal places for 0.1 bps precision)
     uint32 public constant PRICE_SCALE = 100_000;
 
-    /// @notice Minimum valid price (PRICE_SCALE + int16.min)
-    uint32 public constant MIN_PRICE = 67_232;
+    /// @notice Minimum valid price
+    uint32 public constant MIN_PRICE = 98_000;
 
-    /// @notice Maximum valid price (PRICE_SCALE + int16.max)
-    uint32 public constant MAX_PRICE = 132_767;
+    /// @notice Maximum valid price
+    uint32 public constant MAX_PRICE = 102_000;
 
     /// @notice Minimum order amount (100 units with 6 decimals)
     uint128 public constant MIN_ORDER_AMOUNT = 100_000_000;
@@ -732,10 +732,9 @@ contract StablecoinExchange is IStablecoinExchange {
                 uint32 price = tickToPrice(currentTick);
                 IStablecoinExchange.Order memory currentOrder = orders[orderId];
 
-                // For bids: round UP baseNeeded and add 1 to ensure full order consumption.
-                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                // For bids: round UP baseNeeded to ensure we collect enough base to cover exact output
                 uint128 baseNeeded =
-                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price);
                 uint128 fillAmount;
 
                 // Calculate how much quote to receive for fillAmount of base
@@ -961,10 +960,12 @@ contract StablecoinExchange is IStablecoinExchange {
 
                 uint32 price = tickToPrice(currentTick);
 
-                // Round UP + 1 to match execution. Note: if multiple orders are crossed
-                // within this tick, execution may charge slightly more (+1 per order boundary).
+                // Round UP baseNeeded to ensure we collect enough base to cover exact output.
+                // Note: this quote iterates per-tick, but execution iterates per-order.
+                // If multiple orders exist at a tick, execution may charge slightly more
+                // due to ceiling accumulation across order boundaries.
                 uint128 baseNeeded =
-                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price) + 1;
+                    uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price);
                 uint128 fillAmount;
 
                 if (baseNeeded > level.totalLiquidity) {
@@ -1158,8 +1159,12 @@ contract StablecoinExchange is IStablecoinExchange {
         if (tokenIn == tokenOut) revert IStablecoinExchange.IdenticalTokens();
 
         // Validate that both tokens are TIP20 tokens
-        if (!TempoUtilities.isTIP20(tokenIn)) revert IStablecoinExchange.InvalidToken();
-        if (!TempoUtilities.isTIP20(tokenOut)) revert IStablecoinExchange.InvalidToken();
+        if (!TempoUtilities.isTIP20(tokenIn)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
+        if (!TempoUtilities.isTIP20(tokenOut)) {
+            revert IStablecoinExchange.InvalidToken();
+        }
 
         // Check if direct or reverse pair exists
         address inQuote = address(ITIP20(tokenIn).quoteToken());
@@ -1287,9 +1292,9 @@ contract StablecoinExchange is IStablecoinExchange {
         return (bookKeys, baseForQuote);
     }
 
-    /// @notice Find the path from a token to the root (PathUSD)
+    /// @notice Find the path from a token to the root (pathUSD)
     /// @param token Starting token address
-    /// @return path Array of addresses starting with the token and ending with PathUSD
+    /// @return path Array of addresses starting with the token and ending with pathUSD
     function findPathToRoot(address token) internal view returns (address[] memory path) {
         // First, count the path length
         uint256 length = 1;

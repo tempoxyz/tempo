@@ -1,0 +1,512 @@
+//! Drives the actual execution forwarding blocks and setting forkchoice state.
+//!
+//! This agent forwards finalized blocks from the consensus layer to the
+//! execution layer and tracks the digest of the latest finalized block.
+//! It also advances the canonical chain by sending forkchoice-updates.
+//!
+//! If the agent detects that the execution layer is missing blocks it attempts
+//! to backfill them from the consensus layer.
+
+use std::{pin::pin, sync::Arc, time::Duration};
+
+use alloy_primitives::B256;
+use alloy_rpc_types_engine::ForkchoiceState;
+use commonware_consensus::{Block as _, marshal::Update};
+
+use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
+use commonware_utils::{Acknowledgement, acknowledgement::Exact};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
+use futures::{
+    StreamExt as _,
+    channel::{
+        mpsc::{self, UnboundedReceiver},
+        oneshot,
+    },
+    select_biased,
+};
+use reth_provider::{BlockHashReader, BlockNumReader as _};
+use tempo_node::{TempoExecutionData, TempoFullNode};
+use tracing::{
+    Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
+};
+
+use crate::{
+    consensus::{Digest, block::Block},
+    executor::{
+        Config,
+        ingress::{CanonicalizeHead, Command, Message},
+    },
+};
+
+/// Tracks the last forkchoice state that the executor sent to the execution layer.
+///
+/// Also tracks the corresponding heights corresponding to
+/// `forkchoice_state.head_block_hash` and
+/// `forkchoice_state.finalized_block_hash`, respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastCanonicalized {
+    forkchoice: ForkchoiceState,
+    head_height: u64,
+    finalized_height: u64,
+}
+
+impl LastCanonicalized {
+    /// Updates the finalized height and finalized block hash to `height` and `hash`.
+    ///
+    /// `height` must be ahead of the latest canonicalized finalized height. If
+    /// it is not, then this is a no-op.
+    ///
+    /// Similarly, if `height` is ahead or the same as the latest canonicalized
+    /// head height, it also updates the head height.
+    ///
+    /// This is to ensure that the finalized block hash is never ahead of the
+    /// head hash.
+    fn update_finalized(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height > this.finalized_height {
+            this.finalized_height = height;
+            this.forkchoice.safe_block_hash = hash;
+            this.forkchoice.finalized_block_hash = hash;
+        }
+        if height >= this.head_height {
+            this.head_height = height;
+            this.forkchoice.head_block_hash = hash;
+        }
+        this
+    }
+
+    /// Updates the head height and head block hash to `height` and `hash`.
+    ///
+    /// If `height > self.finalized_height`, this method will return a new
+    /// canonical state with `self.head_height = height` and
+    /// `self.forkchoice.head = hash`.
+    ///
+    /// If `height <= self.finalized_height`, then this method will return
+    /// `self` unchanged.
+    fn update_head(self, height: u64, hash: B256) -> Self {
+        let mut this = self;
+        if height > this.finalized_height {
+            this.head_height = height;
+            this.forkchoice.head_block_hash = hash;
+        }
+        this
+    }
+}
+
+pub(crate) struct Actor<TContext> {
+    context: ContextCell<TContext>,
+
+    /// A handle to the execution node layer. Used to forward finalized blocks
+    /// and to update the canonical chain by sending forkchoice updates.
+    execution_node: TempoFullNode,
+
+    last_consensus_finalized_height: u64,
+    last_execution_finalized_height: u64,
+
+    /// The channel over which the agent will receive new commands from the
+    /// application actor.
+    mailbox: mpsc::UnboundedReceiver<Message>,
+
+    /// The mailbox of the marshal actor. Used to backfill blocks.
+    marshal: crate::alias::marshal::Mailbox,
+
+    last_canonicalized: LastCanonicalized,
+}
+
+impl<TContext> Actor<TContext>
+where
+    TContext: Metrics + Pacer + Spawner,
+{
+    pub(super) fn init(
+        context: TContext,
+        config: super::Config,
+        mailbox: UnboundedReceiver<super::ingress::Message>,
+    ) -> eyre::Result<Self> {
+        let Config {
+            execution_node,
+            last_finalized_height,
+            marshal,
+        } = config;
+        let last_execution_finalized_height = execution_node
+            .provider
+            .last_block_number()
+            .wrap_err("unable to read latest block number from execution layer")?;
+        let last_finalized_block_hash = execution_node
+            .provider
+            .block_hash(last_execution_finalized_height)
+            .map_or_else(
+                |e| Err(eyre::Report::new(e)),
+                |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
+            )
+            .wrap_err("failed to read the last finalized block hash")?;
+        Ok(Self {
+            context: ContextCell::new(context),
+            execution_node,
+            last_consensus_finalized_height: last_finalized_height,
+            last_execution_finalized_height,
+            mailbox,
+            marshal,
+            last_canonicalized: LastCanonicalized {
+                forkchoice: ForkchoiceState {
+                    head_block_hash: last_finalized_block_hash,
+                    safe_block_hash: last_finalized_block_hash,
+                    finalized_block_hash: last_finalized_block_hash,
+                },
+                head_height: 0,
+                finalized_height: 0,
+            },
+        })
+    }
+
+    pub(crate) fn start(mut self) -> Handle<()> {
+        spawn_cell!(self.context, self.run().await)
+    }
+
+    async fn run(mut self) {
+        let mut backfill_on_start = {
+            if self.last_consensus_finalized_height > self.last_execution_finalized_height {
+                info!(
+                    last_finalized_consensus_height = self.last_consensus_finalized_height,
+                    last_finalized_execution_height = self.last_execution_finalized_height,
+                    "the last finalized height according to the consensus layer \
+                    is ahead of the execution layer, will backfill blocks",
+                );
+            }
+
+            let marshal = self.marshal.clone();
+            pin!(
+                futures::stream::iter(
+                    self.last_execution_finalized_height + 1..=self.last_consensus_finalized_height,
+                )
+                .then(move |height| {
+                    let mut marshal = marshal.clone();
+                    async move { (height, marshal.get_block(height).await) }
+                })
+                .fuse()
+            )
+        };
+        loop {
+            select_biased! {
+                backfill = backfill_on_start.next() => {
+                    match backfill {
+                        Some((height, Some(block))) => {
+                            let (ack, _wait) = Exact::handle();
+                            let span = info_span!("backfill_on_start", height);
+                            let _ = self.forward_finalized(
+                                span,
+                                block,
+                                ack,
+                            ).await;
+                        }
+                        Some((height, None)) => {
+                            warn_span!("backfill_on_start", height)
+                            .in_scope(|| warn!(
+                                "marshal actor did not have block even though \
+                                it must have finalized it previously",
+                            ));
+                        }
+                        None => {
+                            info_span!("backfill_on_start")
+                            .in_scope(|| info!(
+                                "no more blocks to backfill from consensus to \
+                                execution layer")
+                            );
+                        }
+                    }
+                },
+
+                msg = self.mailbox.next() => {
+                    let Some(msg) = msg else { break; };
+                    // XXX: updating forkchoice and finalizing blocks must
+                    // happen sequentially, so blocking the event loop on await
+                    // is desired.
+                    //
+                    // Backfills will be spawned as tasks and will also send
+                    // resolved the blocks to this queue.
+                    if let Err(error) = self.handle_message(msg).await {
+                        error_span!("shutdown").in_scope(|| error!(
+                            %error,
+                            "executor encountered fatal fork choice update error; \
+                            shutting down to prevent consensus-execution divergence"
+                        ));
+                        break;
+                    }
+                },
+            }
+        }
+    }
+
+    async fn handle_message(&mut self, message: Message) -> eyre::Result<()> {
+        let cause = message.cause;
+        match message.command {
+            Command::CanonicalizeHead(CanonicalizeHead {
+                height,
+                digest,
+                ack,
+            }) => {
+                // Errors are logged inside canonicalize; head canonicalization failures
+                // are non-fatal and will be retried on the next block.
+                let _ = self
+                    .canonicalize(cause, HeadOrFinalized::Head, height, digest, ack)
+                    .await;
+            }
+            Command::Finalize(finalized) => {
+                self.finalize(cause, *finalized)
+                    .await
+                    .wrap_err("failed handling finalization")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
+    #[instrument(
+        skip_all,
+        parent = &cause,
+        fields(
+            head.height = height,
+            head.digest = %digest,
+            %head_or_finalized,
+        ),
+        err,
+    )]
+    async fn canonicalize(
+        &mut self,
+        cause: Span,
+        head_or_finalized: HeadOrFinalized,
+        height: u64,
+        digest: Digest,
+        ack: oneshot::Sender<()>,
+    ) -> eyre::Result<()> {
+        let new_canonicalized = match head_or_finalized {
+            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
+            HeadOrFinalized::Finalized => {
+                self.last_canonicalized.update_finalized(height, digest.0)
+            }
+        };
+
+        if new_canonicalized == self.last_canonicalized {
+            info!("would not change forkchoice state; not sending it to the execution layer");
+            let _ = ack.send(());
+            return Ok(());
+        }
+
+        info!(
+            head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
+            head_block_height = new_canonicalized.head_height,
+            finalized_block_hash = %new_canonicalized.forkchoice.finalized_block_hash,
+            finalized_block_height = new_canonicalized.finalized_height,
+            "sending forkchoice-update",
+        );
+        let fcu_response = self
+            .execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .fork_choice_updated(
+                new_canonicalized.forkchoice,
+                None,
+                reth_node_builder::EngineApiMessageVersion::V3,
+            )
+            .pace(&self.context, Duration::from_millis(20))
+            .await
+            .wrap_err("failed requesting execution layer to update forkchoice state")?;
+
+        debug!(
+            payload_status = %fcu_response.payload_status,
+            "execution layer reported FCU status",
+        );
+
+        if fcu_response.is_invalid() {
+            return Err(Report::msg(fcu_response.payload_status)
+                .wrap_err("execution layer responded with error for forkchoice-update"));
+        }
+
+        let _ = ack.send(());
+        self.last_canonicalized = new_canonicalized;
+
+        Ok(())
+    }
+
+    #[instrument(parent = &cause, skip_all)]
+    /// Handles finalization events.
+    async fn finalize(&mut self, cause: Span, finalized: Update<Block>) -> eyre::Result<()> {
+        match finalized {
+            Update::Tip(height, digest) => {
+                self.canonicalize(
+                    Span::current(),
+                    HeadOrFinalized::Finalized,
+                    height,
+                    digest,
+                    oneshot::channel().0,
+                )
+                .await
+                .wrap_err("failed canonicalizing finalization tip")?;
+            }
+            Update::Block(block, acknowledgment) => {
+                self.forward_finalized(Span::current(), block, acknowledgment)
+                    .await
+                    .wrap_err("failed forwarding finalized block to execution layer")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Finalizes `block` by sending it to the execution layer.
+    ///
+    /// If `response` is set, `block` is considered to at the tip of the
+    /// finalized chain. The agent will also confirm the finalization  by
+    /// responding on that channel and set the digest as the latest finalized
+    /// head.
+    ///
+    /// The agent will also cache `digest` as the latest finalized digest.
+    /// The agent does not update the forkchoice state of the execution layer
+    /// here but upon serving a `Command::Canonicalize` request.
+    ///
+    /// If `response` is not set the agent assumes that `block` is an older
+    /// block backfilled from the consensus layer.
+    ///
+    /// # Invariants
+    ///
+    /// It is critical that a newer finalized block is always send after an
+    /// older finalized block. This is standard behavior of the commonmware
+    /// marshal agent.
+    #[instrument(
+        skip_all,
+        parent = &cause,
+        fields(
+            block.digest = %block.digest(),
+            block.height = block.height(),
+        ),
+        err(level = Level::WARN),
+        ret,
+    )]
+    async fn forward_finalized(
+        &mut self,
+        cause: Span,
+        block: Block,
+        acknowledgment: Exact,
+    ) -> eyre::Result<()> {
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            block.height(),
+            block.digest(),
+            oneshot::channel().0,
+        )
+        .await
+        .wrap_err("failed canonicalizing finalized block")?;
+
+        if let Ok(execution_height) = self
+            .execution_node
+            .provider
+            .best_block_number()
+            .map_err(Report::new)
+            .inspect_err(|error| {
+                warn!(
+                    %error,
+                    "failed getting last finalized block from execution layer, will \
+                    finalize forward block to execution layer without extra checks, \
+                    but it might fail"
+                )
+            })
+            && execution_height + 1 < block.height()
+        {
+            info!(
+                execution.finalized_height = execution_height,
+                "hole detected; consensus attempts to finalize block with gaps \
+                on the execution layer; filling them in first",
+            );
+            let _ = self.fill_holes(execution_height + 1, block.height()).await;
+        }
+
+        let block = block.into_inner();
+        let payload_status = self
+            .execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .new_payload(TempoExecutionData {
+                block: Arc::new(block),
+                // can be omitted for finalized blocks
+                validator_set: None,
+            })
+            .pace(&self.context, Duration::from_millis(20))
+            .await
+            .wrap_err(
+                "failed sending new-payload request to execution engine to \
+                query payload status of finalized block",
+            )?;
+
+        ensure!(
+            payload_status.is_valid() || payload_status.is_syncing(),
+            "this is a problem: payload status of block-to-be-finalized was \
+            neither valid nor syncing: `{payload_status}`"
+        );
+
+        acknowledgment.acknowledge();
+
+        Ok(())
+    }
+
+    /// Reads all blocks heights `from..to` and forwards them to the execution layer.
+    #[instrument(
+        skip_all,
+        fields(from, to),
+        err(level = Level::WARN),
+    )]
+    async fn fill_holes(&mut self, from: u64, to: u64) -> eyre::Result<()> {
+        ensure!(from <= to, "backfill range is negative");
+
+        for height in from..to {
+            let block = self.marshal.get_block(height).await.ok_or_else(|| {
+                eyre!(
+                    "marshal actor does not know about block `{height}`, but \
+                    this function expects that it has all blocks in the provided \
+                    range",
+                )
+            })?;
+
+            let digest = block.digest();
+
+            let payload_status = self
+                .execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .new_payload(TempoExecutionData {
+                    block: Arc::new(block.into_inner()),
+                    // can be omitted for finalized blocks
+                    validator_set: None,
+                })
+                .pace(&self.context, Duration::from_millis(20))
+                .await
+                .wrap_err(
+                    "failed sending new-payload request to execution engine to \
+                    query payload status of finalized block",
+                )?;
+
+            ensure!(
+                payload_status.is_valid() || payload_status.is_syncing(),
+                "this is a problem: payload status of block `{digest}` we are \
+                trying to backfill is neither valid nor syncing: \
+                `{payload_status}`"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Marker to indicate whether the head hash or finalized hash should be updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeadOrFinalized {
+    Head,
+    Finalized,
+}
+
+impl std::fmt::Display for HeadOrFinalized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let msg = match self {
+            Self::Head => "head",
+            Self::Finalized => "finalized",
+        };
+        f.write_str(msg)
+    }
+}

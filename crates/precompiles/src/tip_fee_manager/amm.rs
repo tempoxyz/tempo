@@ -14,7 +14,6 @@ use tempo_precompiles_macros::Storable;
 pub const M: U256 = uint!(9970_U256); // m = 0.9970 (scaled by 10000)
 pub const N: U256 = uint!(9985_U256);
 pub const SCALE: U256 = uint!(10000_U256);
-pub const SQRT_SCALE: U256 = uint!(100000_U256);
 pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 
 /// Compute amount out for a fee swap
@@ -116,10 +115,6 @@ impl TipFeeManager {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
-        // Validate both tokens are USD currency
-        validate_usd_currency(user_token)?;
-        validate_usd_currency(validator_token)?;
-
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
 
@@ -471,20 +466,6 @@ impl TipFeeManager {
     }
 }
 
-/// Calculate integer square rootu
-pub fn sqrt(x: U256) -> U256 {
-    if x == U256::ZERO {
-        return U256::ZERO;
-    }
-    let mut z = (x + U256::ONE) / uint!(2_U256);
-    let mut y = x;
-    while z < y {
-        y = z;
-        z = (x / z + z) / uint!(2_U256);
-    }
-    y
-}
-
 #[cfg(test)]
 mod tests {
     use tempo_contracts::precompiles::TIP20Error;
@@ -497,6 +478,20 @@ mod tests {
         tip_fee_manager::TIPFeeAMMError,
     };
     use alloy::primitives::Address;
+
+    /// Integer square root using the Babylonian method
+    fn sqrt(x: U256) -> U256 {
+        if x == U256::ZERO {
+            return U256::ZERO;
+        }
+        let mut z = (x + U256::ONE) / uint!(2_U256);
+        let mut y = x;
+        while z < y {
+            y = z;
+            z = (x / z + z) / uint!(2_U256);
+        }
+        y
+    }
 
     /// Sets up a pool with initial liquidity for testing
     fn setup_pool_with_liquidity(
@@ -668,45 +663,6 @@ mod tests {
                 eur_token.address(),
                 U256::from(1000),
                 admin,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-            ));
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_rebalance_swap_rejects_non_usd_tokens() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-        let to = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
-                .currency("EUR")
-                .apply()?;
-            let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
-            let mut amm = TipFeeManager::new();
-
-            let result = amm.rebalance_swap(
-                admin,
-                eur_token.address(),
-                usd_token.address(),
-                U256::from(1000),
-                to,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
-            ));
-
-            let result = amm.rebalance_swap(
-                admin,
-                usd_token.address(),
-                eur_token.address(),
-                U256::from(1000),
-                to,
             );
             assert!(matches!(
                 result,

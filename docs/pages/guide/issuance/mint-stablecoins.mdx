@@ -33,7 +33,7 @@ Assign the issuer role to the address that will mint tokens. Minting requires th
 
 ```tsx twoslash [GrantIssuerRole.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useQueryClient } from '@tanstack/react-query'
 
 // @noErrors
@@ -75,7 +75,7 @@ export function GrantIssuerRole() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -106,7 +106,7 @@ Now that the issuer role is granted, you can mint tokens to any address.
 
 ```tsx twoslash [MintToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -178,7 +178,7 @@ export function MintToken() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -208,7 +208,7 @@ token.mintWithMemo(
 
 ```rust [Rust]
 use alloy::{
-    primitives::{U256, address, keccak256},
+    primitives::{address, keccak256, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
@@ -219,10 +219,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
         .await?;
 
-    let token = ITIP20::new(
-        // [!code focus]
+    let token = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000004"), // [!code focus]
-        provider,                                               // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     let treasury_address = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // [!code focus]
@@ -231,17 +230,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     token // [!code focus]
         .mint(treasury_address, U256::from(1_000_000_000)) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
 
     // Mint with a memo for tracking
     token // [!code focus]
         .mintWithMemo( // [!code focus]
-            treasury_address,                         // [!code focus]
-            U256::from(1_000_000_000),                // [!code focus]
+            treasury_address, // [!code focus]
+            U256::from(1_000_000_000), // [!code focus]
             keccak256("Q1_2024_TREASURY_ALLOCATION"), // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Tokens minted successfully"); // [!code focus]
 
     Ok(())
 }
@@ -271,7 +276,7 @@ To decrease supply, you can burn tokens from your own balance. Burning requires 
 
 ```tsx twoslash [BurnToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex } from 'viem'
 import { useQueryClient } from '@tanstack/react-query'
@@ -332,7 +337,7 @@ export function BurnToken() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -357,7 +362,7 @@ token.burnWithMemo(100_000_000, keccak256("REDEMPTION_Q1_2024"));
 
 ```rust [Rust]
 use alloy::{
-    primitives::{U256, address, keccak256},
+    primitives::{address, keccak256, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
@@ -368,27 +373,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
         .await?;
 
-    let token = ITIP20::new(
-        // [!code focus]
+    let token = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000004"), // [!code focus]
-        provider,                                               // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     // Burn 100 tokens from your own balance
     token // [!code focus]
-        .burn(treasury_address, U256::from(100_000_000)) // [!code focus]
+        .burn(U256::from(100_000_000)) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
 
     // Burn with a memo for tracking
     token // [!code focus]
         .burnWithMemo( // [!code focus]
-            treasury_address,                         // [!code focus]
-            U256::from(100_000_000),                  // [!code focus]
+            U256::from(100_000_000), // [!code focus]
             keccak256("REDEMPTION_Q1_2024"), // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Tokens burned successfully"); // [!code focus]
 
     Ok(())
 }
