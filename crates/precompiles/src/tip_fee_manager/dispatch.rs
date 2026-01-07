@@ -1,5 +1,5 @@
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
+    Precompile, dispatch_call, input_cost, metadata, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
@@ -35,13 +35,18 @@ impl Precompile for TipFeeManager {
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         dispatch_call(calldata, TipFeeManagerCall::decode, |call| match call {
-            // IFeeManager functions
+            // IFeeManager view functions
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
                 view(call, |c| self.user_tokens(c))
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::validatorTokens(call)) => {
                 view(call, |c| self.validator_tokens(c))
             }
+            TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
+                view(call, |c| self.collected_fees[c.validator][c.token].read())
+            }
+
+            // IFeeManager mutate functions
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
                 mutate_void(call, msg_sender, |s, c| {
                     let beneficiary = self.storage.beneficiary();
@@ -56,11 +61,22 @@ impl Precompile for TipFeeManager {
                     self.distribute_fees(c.validator, c.token)
                 })
             }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::collectedFees(call)) => {
-                view(call, |c| self.collected_fees[c.validator][c.token].read())
+
+            // ITIPFeeAMM metadata functions
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(_)) => {
+                metadata::<ITIPFeeAMM::MCall>(|| Ok(M))
+            }
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(_)) => {
+                metadata::<ITIPFeeAMM::NCall>(|| Ok(N))
+            }
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(_)) => {
+                metadata::<ITIPFeeAMM::SCALECall>(|| Ok(SCALE))
+            }
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(_)) => {
+                metadata::<ITIPFeeAMM::MIN_LIQUIDITYCall>(|| Ok(MIN_LIQUIDITY))
             }
 
-            // ITIPFeeAMM functions
+            // ITIPFeeAMM view functions
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::getPoolId(call)) => {
                 view(call, |c| Ok(self.pool_id(c.userToken, c.validatorToken)))
             }
@@ -84,12 +100,8 @@ impl Precompile for TipFeeManager {
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::liquidityBalances(call)) => {
                 view(call, |c| self.liquidity_balances[c.poolId][c.user].read())
             }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(call)) => view(call, |_| Ok(M)),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(call)) => view(call, |_| Ok(N)),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(call)) => view(call, |_| Ok(SCALE)),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(call)) => {
-                view(call, |_| Ok(MIN_LIQUIDITY))
-            }
+
+            // ITIPFeeAMM mutate functions
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::mint(call)) => {
                 mutate(call, msg_sender, |s, c| {
                     self.mint(
