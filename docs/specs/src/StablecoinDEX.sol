@@ -228,10 +228,12 @@ contract StablecoinDEX is IStablecoinDEX {
             uint128 escrowAmount;
             address escrowToken;
             if (isBid) {
-                // For bids, escrow quote tokens based on price
+                // For bids, escrow quote tokens based on price - round UP to favor protocol
                 escrowToken = quote;
                 uint32 price = tickToPrice(tick);
-                escrowAmount = uint128((uint256(amount) * uint256(price)) / uint256(PRICE_SCALE));
+                escrowAmount = uint128(
+                    (uint256(amount) * uint256(price) + PRICE_SCALE - 1) / uint256(PRICE_SCALE)
+                );
             } else {
                 // For asks, escrow base tokens
                 escrowToken = base;
@@ -417,13 +419,14 @@ contract StablecoinDEX is IStablecoinDEX {
             _clearTickBit(order.bookKey, order.tick, isBid);
         }
 
-        // Credit escrow amount to user's withdrawable balance
+        // Credit escrow amount to user's withdrawable balance - must match the escrow calculation
         uint128 escrowAmount;
         if (order.isBid) {
-            // For bids, escrow quote tokens based on price
+            // For bids, escrow quote tokens based on price - round UP to match escrow
             uint32 price = tickToPrice(order.tick);
-            escrowAmount =
-                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
+            escrowAmount = uint128(
+                (uint256(order.remaining) * uint256(price) + PRICE_SCALE - 1) / uint256(PRICE_SCALE)
+            );
         } else {
             // For asks, escrow base tokens
             escrowAmount = order.remaining;
