@@ -66,6 +66,7 @@ pub async fn run_consensus_stack(
         config.mailbox_size,
         config.max_message_size_bytes,
         config.bypass_ip_check,
+        config.allow_private_ips,
     )
     .await
     .wrap_err("failed to start network")?;
@@ -175,6 +176,7 @@ async fn instantiate_network(
     mailbox_size: usize,
     max_message_size: u32,
     bypass_ip_check: bool,
+    allow_private_ips: bool,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -186,6 +188,7 @@ async fn instantiate_network(
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
         bypass_ip_check,
+        allow_private_ips,
         ..lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 

@@ -117,6 +117,11 @@ pub struct Args {
     #[arg(long = "consensus.bypass-ip-check", default_value_t = false)]
     pub bypass_ip_check: bool,
 
+    /// Reduces security by enabling connections from private IPs.
+    /// Only enable in trusted network environments.
+    #[arg(long = "consensus.allow-private-ips", default_value_t = false)]
+    pub allow_private_ips: bool,
+
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
     /// We broadcast subblock every `subblock-broadcast-interval` to ensure the next
