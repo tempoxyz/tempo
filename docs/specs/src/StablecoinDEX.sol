@@ -480,11 +480,7 @@ contract StablecoinDEX is IStablecoinDEX {
     /// @notice Get order information by order ID
     /// @param orderId The order ID to query
     /// @return order The order data
-    function getOrder(uint128 orderId)
-        external
-        view
-        returns (IStablecoinDEX.Order memory order)
-    {
+    function getOrder(uint128 orderId) external view returns (IStablecoinDEX.Order memory order) {
         IStablecoinDEX.Order storage o = orders[orderId];
         if (o.maker == address(0)) {
             revert IStablecoinDEX.OrderDoesNotExist();

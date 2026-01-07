@@ -589,8 +589,7 @@ contract StablecoinDEXTest is BaseTest {
         // Note: Validation order - tick bounds, tick spacing, then amount
         if (tick < exchange.MIN_TICK() || tick > exchange.MAX_TICK()) {
             shouldRevert = true;
-            expectedError =
-                abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, tick);
+            expectedError = abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, tick);
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
             expectedError = abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector);
@@ -796,9 +795,7 @@ contract StablecoinDEXTest is BaseTest {
         try exchange.swapExactAmountIn(address(token1), address(pathUSD), 100, 0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IStablecoinDEX.InsufficientLiquidity.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InsufficientLiquidity.selector));
         }
     }
 
@@ -829,9 +826,7 @@ contract StablecoinDEXTest is BaseTest {
             } catch (bytes memory err) {
                 assertEq(
                     err,
-                    abi.encodeWithSelector(
-                        IStablecoinDEX.TickOutOfBounds.selector, expectedTick
-                    )
+                    abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, expectedTick)
                 );
             }
         } else {
