@@ -115,17 +115,18 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
 }
 
 impl Consensus<Block> for TempoConsensus {
-    type Error = ConsensusError;
-
     fn validate_body_against_header(
         &self,
         body: &BlockBody,
         header: &SealedHeader<TempoHeader>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), ConsensusError> {
         Consensus::<Block>::validate_body_against_header(&self.inner, body, header)
     }
 
-    fn validate_block_pre_execution(&self, block: &SealedBlock<Block>) -> Result<(), Self::Error> {
+    fn validate_block_pre_execution(
+        &self,
+        block: &SealedBlock<Block>,
+    ) -> Result<(), ConsensusError> {
         let transactions = &block.body().transactions;
 
         if let Some(tx) = transactions.iter().find(|&tx| {
