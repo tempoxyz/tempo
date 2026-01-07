@@ -294,10 +294,12 @@ impl Deref for RecoveredTempoAuthorization {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use crate::TempoSignature;
-    use alloy_primitives::{U256, address};
+    use alloy_primitives::{Signature, U256, address};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
 
     #[test]
     fn test_aa_signed_auth_encode_decode_roundtrip() {
@@ -338,5 +340,48 @@ mod tests {
         };
 
         assert_eq!(signed.signature_hash(), expected_hash);
+    }
+
+    pub fn generate_secp256k1_keypair() -> (PrivateKeySigner, Address) {
+        let signer = PrivateKeySigner::random();
+        let address = signer.address();
+        (signer, address)
+    }
+
+    pub fn sign_hash(signer: &PrivateKeySigner, hash: &B256) -> TempoSignature {
+        let signature = signer.sign_hash_sync(hash).expect("signing failed");
+        TempoSignature::from(Signature::from(signature))
+    }
+
+    #[test]
+    fn test_recover_authority() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let auth = Authorization {
+            chain_id: U256::ONE,
+            address: Address::random(),
+            nonce: 1,
+        };
+
+        // Create and sign auth
+        let placeholder_sig = TempoSignature::default();
+        let temp_signed = TempoSignedAuthorization::new_unchecked(auth.clone(), placeholder_sig);
+        let signature = sign_hash(&signing_key, &temp_signed.signature_hash());
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
+
+        // Recovery should succeed
+        let recovered = signed.recover_authority();
+        assert!(recovered.is_ok());
+        assert_eq!(recovered.unwrap(), expected_address);
+
+        // Sign a different hash
+        let wrong_hash = B256::random();
+        let signature = sign_hash(&signing_key, &wrong_hash);
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
+
+        // Recovery succeeds but yields wrong address
+        let recovered = signed.recover_authority();
+        assert!(recovered.is_ok());
+        assert_ne!(recovered.unwrap(), expected_address);
     }
 }

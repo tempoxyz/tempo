@@ -919,9 +919,10 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::tt_signature::{
+    use alloy_eips::eip7702::Authorization;
+    use crate::transaction::{TempoSignedAuthorization, tt_signature::{
         PrimitiveSignature, TempoSignature, derive_p256_address,
-    };
+    }};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -1941,6 +1942,35 @@ mod tests {
                 .contains("only one CREATE")
         );
     }
+
+        #[test]
+        fn test_create_forbidden_with_auth_list() {
+            let create_call = Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Bytes::new(),
+            };
+
+            let signed_auth = TempoSignedAuthorization::new_unchecked(
+                Authorization {
+                    chain_id: U256::from(1),
+                    address: address!("0000000000000000000000000000000000000001"),
+                    nonce: 1,
+                },
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            );
+
+            // Invalid: CREATE call with auth list
+            let tx = TempoTransaction {
+                calls: vec![create_call],
+                tempo_authorization_list: vec![signed_auth],
+                ..Default::default()
+            };
+
+            let result = tx.validate();
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("aa_authorization_list"));
+        }
 
     #[test]
     fn test_create_validation_allows_call_only_batch() {

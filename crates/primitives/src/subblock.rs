@@ -283,3 +283,24 @@ pub struct SubBlockMetadata {
     /// Signature of the subblock.
     pub signature: Bytes,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_sub_block_nonce_key_prefix() {
+        // Valid prefix in MSB (byte 31)
+        let with_prefix = U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX) << 248;
+        assert!(has_sub_block_nonce_key_prefix(&with_prefix));
+
+        // Zero has no prefix
+        assert!(!has_sub_block_nonce_key_prefix(&U256::ZERO));
+
+        // Max value has 0xff in MSB, not 0x5b
+        assert!(!has_sub_block_nonce_key_prefix(&U256::MAX));
+
+        // Prefix in LSB (byte 0), not MSB
+        assert!(!has_sub_block_nonce_key_prefix(&U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX)));
+    }
+}
