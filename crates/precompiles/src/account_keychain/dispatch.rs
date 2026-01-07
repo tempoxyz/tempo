@@ -10,7 +10,10 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(calldata, IAccountKeychainCalls::abi_decode, |call| match call {
+        dispatch_call(
+            calldata,
+            IAccountKeychainCalls::abi_decode,
+            |call| match call {
                 IAccountKeychainCalls::authorizeKey(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
                 }

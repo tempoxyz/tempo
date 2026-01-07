@@ -12,7 +12,10 @@ impl Precompile for TIP403Registry {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(calldata, ITIP403RegistryCalls::abi_decode, |call| match call {
+        dispatch_call(
+            calldata,
+            ITIP403RegistryCalls::abi_decode,
+            |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(call) => {
                     view(call, |_| self.policy_id_counter())
                 }

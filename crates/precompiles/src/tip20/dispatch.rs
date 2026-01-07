@@ -1,6 +1,7 @@
 use crate::{
-    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, metadata, mutate,
-    mutate_void,
+    Precompile, dispatch_call,
+    error::TempoPrecompileError,
+    input_cost, metadata, mutate, mutate_void,
     tip20::{ITIP20, TIP20Token},
     view,
 };
@@ -66,9 +67,7 @@ impl Precompile for TIP20Token {
             // View functions
             TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => view(call, |c| self.balance_of(c)),
             TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
-            TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => {
-                view(call, |_| self.quote_token())
-            }
+            TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => view(call, |_| self.quote_token()),
             TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(call)) => {
                 view(call, |_| self.next_quote_token())
             }

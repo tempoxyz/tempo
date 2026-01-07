@@ -17,7 +17,10 @@ impl Precompile for StablecoinExchange {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(calldata, IStablecoinExchangeCalls::abi_decode, |call| match call {
+        dispatch_call(
+            calldata,
+            IStablecoinExchangeCalls::abi_decode,
+            |call| match call {
                 IStablecoinExchangeCalls::place(call) => mutate(call, msg_sender, |s, c| {
                     self.place(s, c.token, c.amount, c.isBid, c.tick)
                 }),
@@ -40,9 +43,7 @@ impl Precompile for StablecoinExchange {
                 IStablecoinExchangeCalls::books(call) => {
                     view(call, |c| self.books(c.pairKey).map(Into::into))
                 }
-                IStablecoinExchangeCalls::nextOrderId(call) => {
-                    view(call, |_| self.next_order_id())
-                }
+                IStablecoinExchangeCalls::nextOrderId(call) => view(call, |_| self.next_order_id()),
                 IStablecoinExchangeCalls::createPair(call) => {
                     mutate(call, msg_sender, |_, c| self.create_pair(c.base))
                 }
