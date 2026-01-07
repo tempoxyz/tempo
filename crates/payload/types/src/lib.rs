@@ -66,6 +66,10 @@ impl ExecutionPayload for TempoExecutionData {
     fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
         None
     }
+
+    fn transaction_count(&self) -> usize {
+        self.block.body().transactions.len()
+    }
 }
 
 impl PayloadTypes for TempoPayloadTypes {
