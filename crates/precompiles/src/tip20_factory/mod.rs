@@ -23,15 +23,6 @@ const TIP20_PREFIX_BYTES: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// Returns the root TIP20 token address for a given currency.
-/// Returns an error if the currency does not have a root token defined.
-fn root_token_address(currency: &str) -> Result<Address> {
-    match currency {
-        USD_CURRENCY => Ok(PATH_USD_ADDRESS),
-        _ => Err(TIP20Error::invalid_currency().into()),
-    }
-}
-
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {}
 
@@ -185,8 +176,15 @@ impl TIP20Factory {
 
         if quote_token.is_zero() {
             // If the `quote_token` is address(0), ensure the currency matches the root token currency.
-            if address != root_token_address(currency)? {
-                return Err(TIP20Error::invalid_quote_token().into());
+            match currency {
+                USD_CURRENCY => {
+                    if address != PATH_USD_ADDRESS {
+                        return Err(TIP20Error::invalid_quote_token().into());
+                    }
+                }
+                _ => {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
             }
         } else {
             // If `quote_token` is not zero, ensure it's a valid TIP20 token.
