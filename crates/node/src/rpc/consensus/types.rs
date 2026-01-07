@@ -138,8 +138,6 @@ pub trait ConsensusFeed: Send + Sync + 'static {
     ///
     /// - `from_epoch`: Optional epoch to start searching from (defaults to latest finalized)
     /// - `full`: If true, return all transitions back to genesis; if false, return only the most recent
-    ///
-    /// Returns an error if the node is not ready (marshal or epocher not initialized).
     fn get_identity_transition_proof(
         &self,
         from_epoch: Option<u64>,
