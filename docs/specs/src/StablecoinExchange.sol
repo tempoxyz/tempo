@@ -279,7 +279,7 @@ contract StablecoinExchange is IStablecoinExchange {
         // Immediately link order into the active orderbook
         _commitOrderToBook(orderId, key, tick, isBid, amount);
 
-        emit OrderPlaced(orderId, maker, base, amount, isBid, tick);
+        emit OrderPlaced(orderId, maker, base, amount, isBid, tick, isFlip, flipTick);
         return orderId;
     }
 
@@ -352,7 +352,6 @@ contract StablecoinExchange is IStablecoinExchange {
     {
         address quote = address(ITIP20(token).quoteToken());
         orderId = _placeOrder(token, quote, amount, msg.sender, isBid, tick, true, flipTick, true);
-        emit FlipOrderPlaced(orderId, msg.sender, token, amount, isBid, tick, flipTick);
     }
 
     function cancel(uint128 orderId) external {

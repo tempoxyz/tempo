@@ -18,16 +18,8 @@ contract StablecoinExchangeTest is BaseTest {
         address indexed base,
         uint128 amount,
         bool isBid,
-        int16 tick
-    );
-
-    event FlipOrderPlaced(
-        uint128 indexed orderId,
-        address indexed maker,
-        address indexed base,
-        uint128 amount,
-        bool isBid,
         int16 tick,
+        bool isFlipOrder,
         int16 flipTick
     );
 
@@ -218,7 +210,7 @@ contract StablecoinExchangeTest is BaseTest {
     function test_PlaceFlipBidOrder() public {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit FlipOrderPlaced(1, alice, address(token1), 1e18, true, 100, 200);
+            emit OrderPlaced(1, alice, address(token1), 1e18, true, 100, true, 200);
         }
 
         vm.prank(alice);
@@ -243,7 +235,7 @@ contract StablecoinExchangeTest is BaseTest {
     function test_PlaceFlipAskOrder() public {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit FlipOrderPlaced(1, alice, address(token1), 1e18, false, 100, -200);
+            emit OrderPlaced(1, alice, address(token1), 1e18, false, 100, true, -200);
         }
 
         vm.prank(alice);
@@ -274,7 +266,7 @@ contract StablecoinExchangeTest is BaseTest {
             emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
 
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(2, alice, address(token1), 1e18, false, 200);
+            emit OrderPlaced(2, alice, address(token1), 1e18, false, 200, true, 100);
         }
 
         vm.prank(bob);
@@ -1691,7 +1683,7 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, true, tick);
+            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, true, tick, false, 0);
         }
 
         vm.prank(user);
@@ -1704,7 +1696,7 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, false, tick);
+            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, false, tick, false, 0);
         }
 
         vm.prank(user);
