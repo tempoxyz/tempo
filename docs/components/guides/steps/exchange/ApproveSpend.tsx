@@ -38,7 +38,7 @@ export function ApproveSpend(props: DemoStepProps) {
           onClick={() => {
             approve.mutate({
               amount,
-              spender: Addresses.stablecoinDex,
+              spender: Addresses.stablecoinExchange,
               token: pathUsd,
               feeToken: alphaUsd,
             })

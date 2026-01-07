@@ -50,7 +50,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
 
   const calls = [
     Actions.token.approve.call({
-      spender: Addresses.stablecoinDex,
+      spender: Addresses.stablecoinExchange,
       amount,
       token: alphaUsd,
     }),
