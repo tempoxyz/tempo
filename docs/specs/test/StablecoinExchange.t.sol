@@ -208,7 +208,6 @@ contract StablecoinExchangeTest is BaseTest {
     function test_PlaceFlipBidOrder() public {
         vm.expectEmit(true, true, true, true);
         emit OrderPlaced(1, alice, address(token1), 1e18, true, 100, true, 200);
-
         vm.prank(alice);
         uint128 orderId = exchange.placeFlip(address(token1), 1e18, true, 100, 200);
 

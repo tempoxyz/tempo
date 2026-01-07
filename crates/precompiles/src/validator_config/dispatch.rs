@@ -1,10 +1,10 @@
-use super::{IValidatorConfig, ValidatorConfig};
+use super::ValidatorConfig;
 use crate::{
-    Precompile, error::TempoPrecompileError, fill_precompile_output, input_cost, mutate_void,
-    unknown_selector, view,
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
 
 impl Precompile for ValidatorConfig {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -12,84 +12,48 @@ impl Precompile for ValidatorConfig {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
-
-        let result = match selector {
-            // View functions
-            IValidatorConfig::ownerCall::SELECTOR => {
-                view::<IValidatorConfig::ownerCall>(calldata, |_call| self.owner())
-            }
-            IValidatorConfig::getValidatorsCall::SELECTOR => {
-                view::<IValidatorConfig::getValidatorsCall>(calldata, |_call| self.get_validators())
-            }
-            IValidatorConfig::getNextFullDkgCeremonyCall::SELECTOR => {
-                view::<IValidatorConfig::getNextFullDkgCeremonyCall>(calldata, |_call| {
-                    self.get_next_full_dkg_ceremony()
-                })
-            }
-            IValidatorConfig::validatorCountCall::SELECTOR => {
-                view::<IValidatorConfig::validatorCountCall>(calldata, |_call| {
-                    self.validator_count()
-                })
-            }
-            IValidatorConfig::validatorsArrayCall::SELECTOR => {
-                view::<IValidatorConfig::validatorsArrayCall>(calldata, |call| {
+        dispatch_call(
+            calldata,
+            IValidatorConfigCalls::abi_decode,
+            |call| match call {
+                // View functions
+                IValidatorConfigCalls::owner(call) => view(call, |_| self.owner()),
+                IValidatorConfigCalls::getValidators(call) => view(call, |_| self.get_validators()),
+                IValidatorConfigCalls::getNextFullDkgCeremony(call) => {
+                    view(call, |_| self.get_next_full_dkg_ceremony())
+                }
+                IValidatorConfigCalls::validatorsArray(call) => view(call, |c| {
                     let index =
-                        u64::try_from(call.index).map_err(|_| TempoPrecompileError::array_oob())?;
+                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
                     self.validators_array(index)
-                })
-            }
-            IValidatorConfig::validatorsCall::SELECTOR => {
-                view::<IValidatorConfig::validatorsCall>(calldata, |call| {
-                    self.validators(call.validator)
-                })
-            }
+                }),
+                IValidatorConfigCalls::validators(call) => {
+                    view(call, |c| self.validators(c.validator))
+                }
+                IValidatorConfigCalls::validatorCount(call) => {
+                    view(call, |_| self.validator_count())
+                }
 
-            // Mutate functions
-            IValidatorConfig::addValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::addValidatorCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.add_validator(s, call),
-                )
-            }
-            IValidatorConfig::updateValidatorCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::updateValidatorCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.update_validator(s, call),
-                )
-            }
-            IValidatorConfig::changeValidatorStatusCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeValidatorStatusCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.change_validator_status(s, call),
-                )
-            }
-            IValidatorConfig::changeOwnerCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::changeOwnerCall>(calldata, msg_sender, |s, call| {
-                    self.change_owner(s, call)
-                })
-            }
-            IValidatorConfig::setNextFullDkgCeremonyCall::SELECTOR => {
-                mutate_void::<IValidatorConfig::setNextFullDkgCeremonyCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.set_next_full_dkg_ceremony(s, call),
-                )
-            }
-
-            _ => unknown_selector(selector, self.storage.gas_used()),
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+                // Mutate functions
+                IValidatorConfigCalls::addValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
+                }
+                IValidatorConfigCalls::updateValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
+                }
+                IValidatorConfigCalls::changeValidatorStatus(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
+                }
+                IValidatorConfigCalls::changeOwner(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
+                }
+                IValidatorConfigCalls::setNextFullDkgCeremony(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.set_next_full_dkg_ceremony(s, c)
+                    })
+                }
+            },
+        )
     }
 }
 
@@ -103,10 +67,10 @@ mod tests {
     };
     use alloy::{
         primitives::{Address, FixedBytes},
-        sol_types::SolValue,
+        sol_types::{SolCall, SolValue},
     };
     use tempo_contracts::precompiles::{
-        IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
+        IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
