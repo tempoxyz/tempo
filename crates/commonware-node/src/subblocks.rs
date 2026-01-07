@@ -843,7 +843,7 @@ async fn validate_subblock(
         }
     }
 
-    // Ensure all transactions can be commited
+    // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));
