@@ -1,12 +1,23 @@
 //! Shared state for the feed module.
 
 use crate::{alias::marshal, consensus::Digest};
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
-use commonware_codec::Encode;
-use commonware_consensus::Block as _;
+use commonware_codec::{Encode, ReadExt as _};
+use commonware_consensus::{
+    Block as _,
+    marshal::ingress::mailbox::Identifier,
+    types::{Epoch, Epocher as _, FixedEpocher},
+};
 use parking_lot::RwLock;
+use reth_rpc_convert::transaction::FromConsensusHeader;
 use std::sync::{Arc, OnceLock};
-use tempo_node::rpc::consensus::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
+use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_node::rpc::consensus::{
+    CertifiedBlock, ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransition,
+    IdentityTransitionResponse, Query, TransitionProofData,
+};
 use tokio::sync::broadcast;
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
@@ -28,6 +39,7 @@ pub(super) struct FeedState {
 pub struct FeedStateHandle {
     state: Arc<RwLock<FeedState>>,
     marshal: Arc<OnceLock<marshal::Mailbox>>,
+    epocher: Arc<OnceLock<FixedEpocher>>,
     events_tx: broadcast::Sender<Event>,
 }
 
@@ -44,6 +56,7 @@ impl FeedStateHandle {
                 latest_finalized: None,
             })),
             marshal: Arc::new(OnceLock::new()),
+            epocher: Arc::new(OnceLock::new()),
             events_tx,
         }
     }
@@ -51,6 +64,11 @@ impl FeedStateHandle {
     /// Set the marshal mailbox for historical finalization lookups. Should only be called once.
     pub(crate) fn set_marshal(&self, marshal: marshal::Mailbox) {
         let _ = self.marshal.set(marshal);
+    }
+
+    /// Set the epocher for epoch boundary calculations. Should only be called once.
+    pub(crate) fn set_epocher(&self, epocher: FixedEpocher) {
+        let _ = self.epocher.set(epocher);
     }
 
     /// Get the broadcast sender for events.
@@ -70,6 +88,15 @@ impl FeedStateHandle {
             tracing::debug!("marshal not yet set");
         }
         marshal
+    }
+
+    /// Get the epocher, logging if not yet set.
+    fn epocher(&self) -> Option<FixedEpocher> {
+        let epocher = self.epocher.get().cloned();
+        if epocher.is_none() {
+            tracing::debug!("epocher not yet set");
+        }
+        epocher
     }
 
     /// Fill in the height for a block if it's missing by querying the marshal.
@@ -148,4 +175,101 @@ impl ConsensusFeed for FeedStateHandle {
     async fn subscribe(&self) -> Option<broadcast::Receiver<Event>> {
         Some(self.events_tx.subscribe())
     }
+
+    async fn get_identity_transition_proof(
+        &self,
+        from_epoch: Option<u64>,
+        full: bool,
+    ) -> Result<IdentityTransitionResponse, IdentityProofError> {
+        let Some((mut marshal, epocher)) = self.marshal().zip(self.epocher()) else {
+            return Err(IdentityProofError::NotReady);
+        };
+
+        // Determine starting epoch (from param, or latest finalized)
+        let start_epoch = if let Some(epoch) = from_epoch {
+            epoch
+        } else {
+            marshal
+                .get_info(Identifier::Latest)
+                .await
+                .and_then(|(h, _)| epocher.containing(h))
+                .ok_or(IdentityProofError::NotReady)?
+                .epoch()
+                .get()
+        };
+
+        // Identity active at epoch N is set by the last block of epoch N-1
+        // (epoch 0 uses its own last block - genesis identity)
+        let identity_outcome =
+            get_outcome(&mut marshal, &epocher, start_epoch.saturating_sub(1)).await?;
+        let mut curr_pubkey = *identity_outcome.sharing().public();
+        let identity = hex::encode(curr_pubkey.encode());
+
+        let mut transitions = Vec::new();
+
+        // Walk backwards comparing public keys to detect full DKG transitions.
+        let mut search_epoch = start_epoch.saturating_sub(1);
+        while search_epoch > 0 {
+            let prev_outcome = get_outcome(&mut marshal, &epocher, search_epoch - 1).await?;
+            let prev_pubkey = *prev_outcome.sharing().public();
+
+            // If keys differ, there was a full DKG at search_epoch
+            if curr_pubkey != prev_pubkey {
+                // Fetch the block and certificate that committed the new identity
+                let proof_height = epocher
+                    .last(Epoch::new(search_epoch))
+                    .expect("fixed epocher is valid for all epochs");
+                let proof_block = marshal
+                    .get_block(proof_height)
+                    .await
+                    .ok_or(IdentityProofError::PrunedData(proof_height))?;
+                let finalization = marshal
+                    .get_finalization(proof_height)
+                    .await
+                    .ok_or(IdentityProofError::PrunedData(proof_height))?;
+
+                transitions.push(IdentityTransition {
+                    transition_epoch: search_epoch,
+                    old_public_key: hex::encode(prev_pubkey.encode()),
+                    new_public_key: hex::encode(curr_pubkey.encode()),
+                    proof: TransitionProofData {
+                        header: TempoHeaderResponse::from_consensus_header(
+                            proof_block.clone_sealed_header(),
+                            0,
+                        ),
+                        finalization: hex::encode(finalization.encode()),
+                    },
+                });
+
+                if !full {
+                    break;
+                }
+            }
+
+            curr_pubkey = prev_pubkey;
+            search_epoch -= 1;
+        }
+
+        Ok(IdentityTransitionResponse {
+            identity,
+            transitions,
+        })
+    }
+}
+
+/// Fetch last block of epoch and decode DKG outcome.
+async fn get_outcome(
+    marshal: &mut marshal::Mailbox,
+    epocher: &FixedEpocher,
+    epoch: u64,
+) -> Result<OnchainDkgOutcome, IdentityProofError> {
+    let height = epocher
+        .last(Epoch::new(epoch))
+        .expect("fixed epocher is valid for all epochs");
+    let block = marshal
+        .get_block(height)
+        .await
+        .ok_or(IdentityProofError::PrunedData(height))?;
+    OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
+        .map_err(|_| IdentityProofError::MalformedData(height))
 }

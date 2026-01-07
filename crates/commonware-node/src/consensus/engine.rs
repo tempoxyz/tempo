@@ -289,6 +289,7 @@ where
         let (feed, feed_mailbox) = crate::feed::init(
             self.context.with_label("feed"),
             marshal_mailbox.clone(),
+            epoch_strategy.clone(),
             self.feed_state,
         );
 
