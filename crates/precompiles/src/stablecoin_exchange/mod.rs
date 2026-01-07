@@ -2652,13 +2652,11 @@ mod tests {
             let amount_in =
                 exchange.quote_swap_exact_amount_out(usdc.address(), eurc.address(), amount_out)?;
 
-            // With 1:1 rates at each hop:
-            // - First hop (USDC->pathUSD): against bid, has +1 rounding adjustment
-            // - Second hop (pathUSD->EURC): against ask, no +1 adjustment
+            // With 1:1 rates at each hop and no fractional remainders,
+            // ceiling division produces exact amounts
             assert_eq!(
-                amount_in,
-                amount_out + 1,
-                "With 1:1 rates, input should equal output plus rounding adjustment for bid hop"
+                amount_in, amount_out,
+                "With 1:1 rates and no rounding, input should equal output"
             );
 
             Ok(())

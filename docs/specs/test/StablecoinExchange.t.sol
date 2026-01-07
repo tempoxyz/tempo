@@ -1711,9 +1711,9 @@ contract StablecoinExchangeTest is BaseTest {
         orderId = exchange.place(address(token1), amount, false, tick);
     }
 
-    /// @notice Verifies that swapExactAmountOut uses ceiling division (not +1) for baseNeeded.
+    /// @notice Verifies that swapExactAmountOut uses ceiling division for baseNeeded.
     ///         When requesting exactly the quote an order produces, the taker pays ceil(release * SCALE / price),
-    ///         which may leave dust in the order (this is correct - the +1 was over-consuming).
+    ///         which may leave dust in the order.
     function test_BidExactOutRounding_CeilingOnly() public {
         // Values that trigger the rounding difference between floor and ceil
         uint128 baseAmount = 100_000_051;
@@ -1741,7 +1741,7 @@ contract StablecoinExchangeTest is BaseTest {
             type(uint128).max // maxAmountIn
         );
 
-        // With ceiling-only (no +1), baseIn equals the ceiling, not the full order amount
+        // baseIn equals the ceiling, which may be less than the full order amount
         assertEq(baseIn, expectedBaseIn, "baseIn should be ceil(release * SCALE / price)");
 
         // The order may have dust remaining (this is correct behavior)
@@ -1819,7 +1819,7 @@ contract StablecoinExchangeTest is BaseTest {
             type(uint128).max
         );
 
-        // fillAmount is min(baseNeeded, order.remaining) = min(amount+1, amount) = amount
+        // fillAmount is min(baseNeeded, order.remaining) = min(amount, amount) = amount
         assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
     }
 
