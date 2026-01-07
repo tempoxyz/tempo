@@ -119,7 +119,7 @@ pub struct Args {
 
     /// Use P2P defaults optimized for local network environments.
     /// Only enable in non-production network nodes.
-    #[arg(long = "consensus.use-local-defaults", default_value_t = false)]
+    #[arg(long = "consensus.use-local-p2p-defaults", default_value_t = false)]
     pub use_local_defaults: bool,
 
     /// The interval at which to broadcast subblocks to the next proposer.
