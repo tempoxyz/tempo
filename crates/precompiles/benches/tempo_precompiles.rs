@@ -471,7 +471,7 @@ fn tip20_factory_mutate(c: &mut Criterion) {
         let sender = Address::from([1u8; 20]);
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            // Setup PathUSD first
+            // Setup pathUSD first
             TIP20Setup::path_usd(sender).apply().unwrap();
             let mut counter = 0u64;
 

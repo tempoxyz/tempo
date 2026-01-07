@@ -261,7 +261,7 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_defaultValidatorTokenIsPathUSD() public {
+    function test_defaultValidatorTokenIsPathUsd() public {
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();
