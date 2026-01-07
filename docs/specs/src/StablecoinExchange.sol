@@ -960,7 +960,10 @@ contract StablecoinExchange is IStablecoinExchange {
 
                 uint32 price = tickToPrice(currentTick);
 
-                // Round UP baseNeeded to ensure we collect enough base to cover exact output
+                // Round UP baseNeeded to ensure we collect enough base to cover exact output.
+                // Note: this quote iterates per-tick, but execution iterates per-order.
+                // If multiple orders exist at a tick, execution may charge slightly more
+                // due to ceiling accumulation across order boundaries.
                 uint128 baseNeeded =
                     uint128((uint256(remainingOut) * PRICE_SCALE + price - 1) / price);
                 uint128 fillAmount;

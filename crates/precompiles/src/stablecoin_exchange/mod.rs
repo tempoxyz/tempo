@@ -1122,7 +1122,10 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in_tick) = if is_bid {
                 // For bids: remaining_out is in quote, amount_in is in base
-                // Round UP to ensure we collect enough base to cover exact output
+                // Round UP to ensure we collect enough base to cover exact output.
+                // Note: this quote iterates per-tick, but execution iterates per-order.
+                // If multiple orders exist at a tick, execution may charge slightly more
+                // due to ceiling accumulation across order boundaries.
                 let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = if base_needed > level.total_liquidity {
