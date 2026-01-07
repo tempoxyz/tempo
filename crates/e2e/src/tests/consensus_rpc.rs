@@ -272,7 +272,7 @@ async fn get_identity_transition_proof_after_full_dkg() {
     let message = finalization.proposal.encode();
     verify_message::<MinSig>(
         &old_pubkey,
-        Some(namespace),
+        namespace,
         &message,
         &finalization.certificate.vote_signature,
     )
