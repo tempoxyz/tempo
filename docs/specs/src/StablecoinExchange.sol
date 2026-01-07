@@ -1291,9 +1291,9 @@ contract StablecoinExchange is IStablecoinExchange {
         return (bookKeys, baseForQuote);
     }
 
-    /// @notice Find the path from a token to the root (PathUSD)
+    /// @notice Find the path from a token to the root (pathUSD)
     /// @param token Starting token address
-    /// @return path Array of addresses starting with the token and ending with PathUSD
+    /// @return path Array of addresses starting with the token and ending with pathUSD
     function findPathToRoot(address token) internal view returns (address[] memory path) {
         // First, count the path length
         uint256 length = 1;

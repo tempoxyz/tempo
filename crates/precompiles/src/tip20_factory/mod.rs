@@ -386,7 +386,7 @@ mod tests {
         let sender = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // Initialize PathUSD
+            // Initialize pathUSD
             let _path_usd = TIP20Setup::path_usd(sender).apply()?;
 
             let factory = TIP20Factory::new();
