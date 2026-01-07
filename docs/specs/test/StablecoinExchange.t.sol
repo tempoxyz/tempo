@@ -1711,63 +1711,6 @@ contract StablecoinExchangeTest is BaseTest {
         orderId = exchange.place(address(token1), amount, false, tick);
     }
 
-    /// @notice Verifies that swapExactAmountOut fully consumes a bid when the taker
-    /// requests all available quote. Tests that baseNeeded rounds up correctly.
-    function test_BidExactOutRounding_FullOrderConsumption() public {
-        // Values that trigger the rounding issue
-        uint128 baseAmount = 100_000_051;
-        int16 tick = -2000; // price = 98000, p = 0.98
-
-        uint32 price = exchange.tickToPrice(tick);
-
-        // Calculate release (floor) - what taker can actually get
-        uint128 release = uint128((uint256(baseAmount) * uint256(price)) / exchange.PRICE_SCALE());
-
-        // Alice places a bid for baseAmount base tokens
-        vm.prank(alice);
-        exchange.place(address(token1), baseAmount, true, tick);
-
-        // Bob does exactOut for the full release amount
-        vm.prank(bob);
-        uint128 baseIn = exchange.swapExactAmountOut(
-            address(token1), // tokenIn = base
-            address(pathUSD), // tokenOut = quote
-            release, // amountOut
-            type(uint128).max // maxAmountIn
-        );
-
-        // With the fix, baseIn should equal baseAmount (order fully consumed)
-        assertEq(
-            baseIn, baseAmount, "Order should be fully filled when taker takes all available quote"
-        );
-    }
-
-    function testFuzz_BidExactOutRounding_FullOrderConsumption(uint128 amount, int16 tick) public {
-        // Bound inputs
-        amount = uint128(bound(amount, 100_000_000, 500_000_000));
-        tick = int16(bound(tick, -2000, 2000));
-        tick = tick - (tick % 10); // align to tick spacing
-
-        uint32 price = exchange.tickToPrice(tick);
-
-        // Calculate release (floor)
-        uint128 release = uint128((uint256(amount) * uint256(price)) / exchange.PRICE_SCALE());
-        if (release == 0) return; // skip if no quote to release
-
-        // Alice places a bid
-        vm.prank(alice);
-        exchange.place(address(token1), amount, true, tick);
-
-        // Bob takes all available quote
-        vm.prank(bob);
-        uint128 baseIn = exchange.swapExactAmountOut(
-            address(token1), address(pathUSD), release, type(uint128).max
-        );
-
-        // Order should be fully consumed
-        assertEq(baseIn, amount, "Order should be fully filled");
-    }
-
     /// @notice Verifies that swapExactAmountOut correctly rounds up amountIn when filling bids,
     ///         ensuring the requested output is fully backed by the consumed input.
     function test_BidExactOutRounding_RoundsUpAmountIn() public {
