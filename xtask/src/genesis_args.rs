@@ -504,8 +504,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 }
 
 /// Creates pathUSD as a TIP20 token at its reserved address through the TIP20Factory.
-/// This is the only token allowed to use quote_token = Address::ZERO in the TIP20Factory forming
-/// the basis of other USD stablecoins.
+/// NOTE: for USD currency only PathUSD can use address(0) as quote token.
 /// NOTE: factory must already be initialized.
 fn create_path_usd_token(
     admin: Address,
@@ -532,7 +531,6 @@ fn create_path_usd_token(
             )
             .expect("Could not create token");
 
-        // Initialize pathUSD token and grant issuer role to admin
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create pathUSD token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
