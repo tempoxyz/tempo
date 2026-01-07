@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { VariantProps } from 'cva'
 import * as React from 'react'
+import { Hooks } from 'tempo.ts/wagmi'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
 import { tempoTestnet } from 'viem/chains'
@@ -11,7 +12,6 @@ import {
   useConnectors,
   useDisconnect,
 } from 'wagmi'
-import { Hooks } from 'wagmi/tempo'
 import LucideCheck from '~icons/lucide/check'
 import LucideCopy from '~icons/lucide/copy'
 import LucideExternalLink from '~icons/lucide/external-link'
