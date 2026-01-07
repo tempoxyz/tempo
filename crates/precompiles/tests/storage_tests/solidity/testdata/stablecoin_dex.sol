@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-/// Test contract for StablecoinExchange storage layout.
+/// Test contract for StablecoinDEX storage layout.
 /// Orderbook-based DEX for stablecoin trading.
-contract StablecoinExchange {
+contract StablecoinDEX {
     // ========== Structs ==========
 
     struct TickLevel {

@@ -49,7 +49,7 @@ export function PlaceOrder(props: DemoStepProps) {
 
   const calls = [
     Actions.token.approve.call({
-      spender: Addresses.stablecoinExchange,
+      spender: Addresses.stablecoinDex,
       amount,
       token: pathUsd,
     }),

@@ -2,11 +2,11 @@
 
 use crate::{
     error::Result,
-    stablecoin_exchange::IStablecoinExchange,
+    stablecoin_dex::IStablecoinDEX,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
-use tempo_contracts::precompiles::StablecoinExchangeError;
+use tempo_contracts::precompiles::StablecoinDEXError;
 use tempo_precompiles_macros::Storable;
 
 /// Constants from Solidity implementation
@@ -130,7 +130,7 @@ impl TickLevel {
     }
 }
 
-impl From<TickLevel> for IStablecoinExchange::PriceLevel {
+impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     fn from(value: TickLevel) -> Self {
         Self {
             head: value.head,
@@ -226,7 +226,7 @@ impl OrderbookHandler {
 
     fn calc_tick_word_idx(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(StablecoinExchangeError::invalid_tick().into());
+            return Err(StablecoinDEXError::invalid_tick().into());
         }
 
         Ok(tick >> 8)
@@ -403,7 +403,7 @@ impl OrderbookHandler {
     }
 }
 
-impl From<Orderbook> for IStablecoinExchange::Orderbook {
+impl From<Orderbook> for IStablecoinDEX::Orderbook {
     fn from(value: Orderbook) -> Self {
         Self {
             base: value.base,
@@ -432,7 +432,7 @@ pub fn tick_to_price(tick: i16) -> u32 {
 pub fn price_to_tick(price: u32) -> Result<i16> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
-        return Err(StablecoinExchangeError::tick_out_of_bounds(invalid_tick).into());
+        return Err(StablecoinDEXError::tick_out_of_bounds(invalid_tick).into());
     }
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
 }
@@ -491,7 +491,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
         ));
     }
 
@@ -502,7 +502,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::TickOutOfBounds(_))
+            TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
         ));
     }
 
@@ -553,7 +553,7 @@ mod tests {
     mod bitmap_tests {
         use super::*;
         use crate::{
-            stablecoin_exchange::StablecoinExchange,
+            stablecoin_dex::StablecoinDEX,
             storage::{StorageCtx, hashmap::HashMapStorageProvider},
         };
         const BOOK_KEY: B256 = B256::ZERO;
@@ -562,7 +562,7 @@ mod tests {
         fn test_tick_lifecycle() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -605,7 +605,7 @@ mod tests {
         fn test_boundary_ticks() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -640,7 +640,7 @@ mod tests {
         fn test_bid_and_ask_separate() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -677,7 +677,7 @@ mod tests {
         fn test_ticks_across_word_boundary() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -695,7 +695,7 @@ mod tests {
         fn test_ticks_different_words() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -742,7 +742,7 @@ mod tests {
         fn test_set_tick_bit_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -751,7 +751,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -761,7 +761,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -773,7 +773,7 @@ mod tests {
         fn test_clear_tick_bit_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -782,7 +782,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -792,7 +792,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -804,7 +804,7 @@ mod tests {
         fn test_is_tick_initialized_out_of_bounds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let exchange = StablecoinExchange::new();
+                let exchange = StablecoinDEX::new();
                 let book_handler = &exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
@@ -812,7 +812,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -822,7 +822,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinExchange(StablecoinExchangeError::InvalidTick(
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
                         _
                     ))
                 ));
@@ -834,7 +834,7 @@ mod tests {
         fn test_next_initialized_ask_tick_same_word() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -865,7 +865,7 @@ mod tests {
         fn test_next_initialized_ask_tick_cross_word() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -897,7 +897,7 @@ mod tests {
         fn test_next_initialized_bid_tick_same_word() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -928,7 +928,7 @@ mod tests {
         fn test_next_initialized_bid_tick_cross_word() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -960,7 +960,7 @@ mod tests {
         fn test_next_initialized_tick_negative_ticks() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 
@@ -1006,7 +1006,7 @@ mod tests {
         fn test_next_initialized_tick_at_word_boundary() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
-                let mut exchange = StablecoinExchange::new();
+                let mut exchange = StablecoinDEX::new();
                 exchange.initialize()?;
                 let book_handler = &mut exchange.books[BOOK_KEY];
 

@@ -243,23 +243,23 @@ export default defineConfig({
             items: [
               {
                 text: "Overview",
-                link: "/guide/stablecoin-exchange",
+                link: "/guide/stablecoin-dex",
               },
               {
                 text: "Managing fee liquidity",
-                link: "/guide/stablecoin-exchange/managing-fee-liquidity",
+                link: "/guide/stablecoin-dex/managing-fee-liquidity",
               },
               {
                 text: "Executing swaps",
-                link: "/guide/stablecoin-exchange/executing-swaps",
+                link: "/guide/stablecoin-dex/executing-swaps",
               },
               {
                 text: "View the orderbook",
-                link: "/guide/stablecoin-exchange/view-the-orderbook",
+                link: "/guide/stablecoin-dex/view-the-orderbook",
               },
               {
                 text: "Providing liquidity",
-                link: "/guide/stablecoin-exchange/providing-liquidity",
+                link: "/guide/stablecoin-dex/providing-liquidity",
               },
             ],
           },
@@ -436,11 +436,11 @@ export default defineConfig({
               },
               {
                 text: "Reference Implementation",
-                link: "https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol",
+                link: "https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinDEX.sol",
               },
               {
                 text: "Rust Implementation",
-                link: "https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange",
+                link: "https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_dex",
               },
             ],
           },

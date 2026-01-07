@@ -57,7 +57,7 @@ export function getAllSignatures(): SignatureInfo[] {
 
   const abiMap: Record<string, Abi> = {
     tip20: Abis.tip20,
-    stablecoinExchange: Abis.stablecoinExchange,
+    stablecoinDex: Abis.stablecoinDex,
     tip20Factory: Abis.tip20Factory,
     tip20RewardsRegistry: Abis.tip20RewardsRegistry,
     tip403Registry: Abis.tip403Registry,
