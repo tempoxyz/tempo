@@ -706,13 +706,13 @@ async fn build_subblock(
 
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
-            let mut selected_transactions = Vec::new();
-            let mut senders = Vec::new();
+            let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
             let gas_budget =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
-            let mut gas_left = gas_budget;
 
+            let mut gas_left = gas_budget;
             let txs = transactions.lock().clone();
+
             for (tx_hash, tx) in txs {
                 // Remove transactions over subblock gas budget
                 if tx.gas_limit() > gas_budget {
@@ -722,7 +722,7 @@ async fn build_subblock(
                         gas_budget,
                         "removing transaction with gas limit exceeding maximum subblock gas budget"
                     );
-                    transactions.lock().swap_remove(&tx_hash);
+                    to_remove.push(tx_hash);
                     continue;
                 }
 
@@ -733,13 +733,12 @@ async fn build_subblock(
 
                 if let Err(err) = evm.transact_commit(&*tx) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
-                    // Remove invalid transactions from the set.
-                    transactions.lock().swap_remove(&tx_hash);
+                    to_remove.push(tx_hash);
                     continue;
                 }
 
                 gas_left -= tx.gas_limit();
-                selected_transactions.push(tx.inner().clone());
+                selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
                 if start.elapsed() > timeout {
@@ -747,7 +746,15 @@ async fn build_subblock(
                 }
             }
 
-            (selected_transactions, senders)
+            // If necessary, acquire lock and drop all outpriced txs
+            if !to_remove.is_empty() {
+                let mut txs = transactions.lock();
+                for hash in to_remove {
+                    txs.swap_remove(&hash);
+                }
+            }
+
+            (selected, senders)
         }
         Err(err) => {
             warn!(%err, "failed to build an evm at block, building an empty subblock");
