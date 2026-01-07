@@ -776,11 +776,9 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in) = if bid {
                 // For bids: amount_out is quote, amount_in is base
-                // Round UP baseNeeded and add 1 to ensure full order consumption.
-                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                // Round UP baseNeeded to ensure we collect enough base to cover exact output
                 let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?
-                    .saturating_add(1);
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
@@ -805,19 +803,22 @@ impl StablecoinExchange {
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                // Set to 0 to avoid rounding errors
+                // Update remaining amount_out
                 if bid {
-                    // Round UP baseNeeded + 1 to match the initial calculation
+                    // Round UP baseNeeded to match the initial calculation
                     let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?
-                        .saturating_add(1);
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                     if base_needed > order.remaining() {
-                        amount_out = amount_out.saturating_sub(amount_out_received);
+                        amount_out = amount_out
+                            .checked_sub(amount_out_received)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
                     } else {
                         amount_out = 0;
                     }
                 } else if amount_out > order.remaining() {
-                    amount_out = amount_out.saturating_sub(amount_out_received);
+                    amount_out = amount_out
+                        .checked_sub(amount_out_received)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
                     amount_out = 0;
                 }
@@ -1121,11 +1122,12 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in_tick) = if is_bid {
                 // For bids: remaining_out is in quote, amount_in is in base
-                // Round UP + 1 to match execution. Note: if multiple orders are crossed
-                // within this tick, execution may charge slightly more (+1 per order boundary).
+                // Round UP to ensure we collect enough base to cover exact output.
+                // Note: this quote iterates per-tick, but execution iterates per-order.
+                // If multiple orders exist at a tick, execution may charge slightly more
+                // due to ceiling accumulation across order boundaries.
                 let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?
-                    .saturating_add(1);
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1147,15 +1149,15 @@ impl StablecoinExchange {
 
             let amount_out_tick = if is_bid {
                 // Round down amount_out_tick (user receives less quote)
-                // Cap at remaining_out since fill_amount includes +1 bias
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
-                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out.saturating_sub(amount_out_tick);
+            remaining_out = remaining_out
+                .checked_sub(amount_out_tick)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -2166,9 +2168,9 @@ mod tests {
                 .expect("Quote should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            // Expected: ceil(amount_out * PRICE_SCALE / price) + 1 for bid exactOut rounding
+            // Expected: ceil(amount_out * PRICE_SCALE / price)
             let expected_amount_in =
-                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128) + 1;
+                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2650,13 +2652,11 @@ mod tests {
             let amount_in =
                 exchange.quote_swap_exact_amount_out(usdc.address(), eurc.address(), amount_out)?;
 
-            // With 1:1 rates at each hop:
-            // - First hop (USDC->pathUSD): against bid, has +1 rounding adjustment
-            // - Second hop (pathUSD->EURC): against ask, no +1 adjustment
+            // With 1:1 rates at each hop and no fractional remainders,
+            // ceiling division produces exact amounts
             assert_eq!(
-                amount_in,
-                amount_out + 1,
-                "With 1:1 rates, input should equal output plus rounding adjustment for bid hop"
+                amount_in, amount_out,
+                "With 1:1 rates and no rounding, input should equal output"
             );
 
             Ok(())

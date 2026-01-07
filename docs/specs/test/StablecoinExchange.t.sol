@@ -1711,21 +1711,26 @@ contract StablecoinExchangeTest is BaseTest {
         orderId = exchange.place(address(token1), amount, false, tick);
     }
 
-    /// @notice Verifies that swapExactAmountOut fully consumes a bid when the taker
-    /// requests all available quote. Tests that baseNeeded rounds up correctly.
-    function test_BidExactOutRounding_FullOrderConsumption() public {
-        // Values that trigger the rounding issue
+    /// @notice Verifies that swapExactAmountOut uses ceiling division for baseNeeded.
+    ///         When requesting exactly the quote an order produces, the taker pays ceil(release * SCALE / price),
+    ///         which may leave dust in the order.
+    function test_BidExactOutRounding_CeilingOnly() public {
+        // Values that trigger the rounding difference between floor and ceil
         uint128 baseAmount = 100_000_051;
         int16 tick = -2000; // price = 98000, p = 0.98
 
         uint32 price = exchange.tickToPrice(tick);
 
-        // Calculate release (floor) - what taker can actually get
+        // Calculate release (floor) - what taker can actually get from this order
         uint128 release = uint128((uint256(baseAmount) * uint256(price)) / exchange.PRICE_SCALE());
+
+        // Calculate expected baseIn: ceil(release * SCALE / price)
+        uint128 expectedBaseIn =
+            uint128((uint256(release) * exchange.PRICE_SCALE() + price - 1) / price);
 
         // Alice places a bid for baseAmount base tokens
         vm.prank(alice);
-        exchange.place(address(token1), baseAmount, true, tick);
+        uint128 orderId = exchange.place(address(token1), baseAmount, true, tick);
 
         // Bob does exactOut for the full release amount
         vm.prank(bob);
@@ -1736,13 +1741,19 @@ contract StablecoinExchangeTest is BaseTest {
             type(uint128).max // maxAmountIn
         );
 
-        // With the fix, baseIn should equal baseAmount (order fully consumed)
-        assertEq(
-            baseIn, baseAmount, "Order should be fully filled when taker takes all available quote"
-        );
+        // baseIn equals the ceiling, which may be less than the full order amount
+        assertEq(baseIn, expectedBaseIn, "baseIn should be ceil(release * SCALE / price)");
+
+        // The order may have dust remaining (this is correct behavior)
+        uint128 dustRemaining = baseAmount - expectedBaseIn;
+        assertGt(dustRemaining, 0, "There should be dust remaining in the order");
+
+        // Verify order still exists with dust
+        IStablecoinExchange.Order memory order = exchange.getOrder(orderId);
+        assertEq(order.remaining, dustRemaining, "Order should have dust remaining");
     }
 
-    function testFuzz_BidExactOutRounding_FullOrderConsumption(uint128 amount, int16 tick) public {
+    function testFuzz_BidExactOutRounding_CeilingOnly(uint128 amount, int16 tick) public {
         // Bound inputs
         amount = uint128(bound(amount, 100_000_000, 500_000_000));
         tick = int16(bound(tick, -2000, 2000));
@@ -1754,6 +1765,10 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 release = uint128((uint256(amount) * uint256(price)) / exchange.PRICE_SCALE());
         if (release == 0) return; // skip if no quote to release
 
+        // Calculate expected baseIn: ceil(release * SCALE / price)
+        uint128 expectedBaseIn =
+            uint128((uint256(release) * exchange.PRICE_SCALE() + price - 1) / price);
+
         // Alice places a bid
         vm.prank(alice);
         exchange.place(address(token1), amount, true, tick);
@@ -1764,8 +1779,9 @@ contract StablecoinExchangeTest is BaseTest {
             address(token1), address(pathUSD), release, type(uint128).max
         );
 
-        // Order should be fully consumed
-        assertEq(baseIn, amount, "Order should be fully filled");
+        // baseIn should be the ceiling (may be less than or equal to amount)
+        assertEq(baseIn, expectedBaseIn, "baseIn should be ceil(release * SCALE / price)");
+        assertLe(baseIn, amount, "baseIn should not exceed order amount");
     }
 
     /// @notice Verifies that swapExactAmountOut correctly rounds up amountIn when filling bids,
@@ -1803,7 +1819,7 @@ contract StablecoinExchangeTest is BaseTest {
             type(uint128).max
         );
 
-        // fillAmount is min(baseNeeded, order.remaining) = min(amount+1, amount) = amount
+        // fillAmount is min(baseNeeded, order.remaining) = min(amount, amount) = amount
         assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
     }
 
