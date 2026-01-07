@@ -81,7 +81,10 @@ impl ValidatorConfig {
 
     /// Get validator address at a specific index in the validators array
     pub fn validators_array(&self, index: u64) -> Result<Address> {
-        self.validators_array[index as usize].read()
+        match self.validators_array.at(index as usize)? {
+            Some(elem) => elem.read(),
+            None => Err(TempoPrecompileError::array_oob()),
+        }
     }
 
     /// Get validator information by address
