@@ -34,11 +34,6 @@ impl Precompile for TipFeeManager {
                     self.validator_tokens(call)
                 })
             }
-            IFeeManager::getFeeTokenBalanceCall::SELECTOR => {
-                view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| {
-                    self.get_fee_token_balance(call)
-                })
-            }
             ITIPFeeAMM::getPoolIdCall::SELECTOR => {
                 view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| {
                     Ok(self.pool_id(call.userToken, call.validatorToken))
