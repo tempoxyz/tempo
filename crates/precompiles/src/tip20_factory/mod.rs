@@ -1,12 +1,11 @@
 // Module for tip20_factory precompile
 pub mod dispatch;
 
-use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
@@ -23,6 +22,15 @@ const RESERVED_SIZE: u64 = 1024;
 const TIP20_PREFIX_BYTES: [u8; 12] = [
     0x20, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
+
+/// Returns the root TIP20 token address for a given currency.
+/// Returns an error if the currency does not have a root token defined.
+pub fn root_token_address(currency: &str) -> Result<Address> {
+    match currency {
+        USD_CURRENCY => Ok(PATH_USD_ADDRESS),
+        _ => Err(TIP20Error::invalid_currency().into()),
+    }
+}
 
 #[contract(addr = TIP20_FACTORY_ADDRESS)]
 pub struct TIP20Factory {}
@@ -161,12 +169,12 @@ impl TIP20Factory {
         quote_token: Address,
         admin: Address,
     ) -> Result<Address> {
-        // Validate that the address has a TIP20 prefix
+        // Validate that the address has a TIP20 prefix.
         if !is_tip20_prefix(address) {
             return Err(TIP20Error::invalid_token().into());
         }
 
-        // Validate that the address is not already deployed
+        // Validate that the address is not already deployed.
         if self.is_tip20(address)? {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
@@ -176,22 +184,20 @@ impl TIP20Factory {
         }
 
         if quote_token.is_zero() {
-            // If `quote_token` is address(0) and currency is USD, address must be PATH_USD_ADDRESS.
-            if currency == USD_CURRENCY && address != PATH_USD_ADDRESS {
+            // If the `quote_token` is address(0), ensure the currency matches the root token currency.
+            if address != root_token_address(currency)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
         } else {
-            // Quote token must be a valid TIP20.
+            // If `quote_token` is not zero, ensure it's a valid TIP20 token.
             if !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
 
-            // If token is USD, its quote token must also be USD.
-            if currency == USD_CURRENCY {
-                let q_currency = TIP20Token::from_address(quote_token)?.currency()?;
-                if q_currency != USD_CURRENCY {
-                    return Err(TIP20Error::invalid_quote_token().into());
-                }
+            // Ensure currency of quote token matches defined currency.
+            let quote_currency = TIP20Token::from_address(quote_token)?.currency()?;
+            if quote_currency != currency {
+                return Err(TIP20Error::invalid_quote_token().into());
             }
         }
 

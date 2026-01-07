@@ -53,6 +53,14 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
+/// Returns the root TIP20 token address for a given currency.
+pub fn root_token_address(currency: &str) -> Result<Address> {
+    match currency {
+        USD_CURRENCY => Ok(PATH_USD_ADDRESS),
+        _ => Err(TIP20Error::invalid_currency().into()),
+    }
+}
+
 #[contract]
 pub struct TIP20Token {
     // RolesAuth
