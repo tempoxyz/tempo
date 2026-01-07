@@ -4,13 +4,13 @@
 //! Orders support price-time priority matching, partial fills, and flip orders that
 //! automatically place opposite-side orders when filled.
 
-use crate::stablecoin_exchange::{IStablecoinExchange, error::OrderError};
+use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
 use alloy::primitives::{Address, B256};
 use tempo_precompiles_macros::Storable;
 
 /// Represents an order in the stablecoin DEX orderbook.
 ///
-/// This struct matches the Solidity reference implementation in StablecoinExchange.sol.
+/// This struct matches the Solidity reference implementation in StablecoinDEX.sol.
 ///
 /// # Order Types
 /// - **Regular orders**: Orders with `is_flip = false`
@@ -280,7 +280,7 @@ impl Order {
     }
 }
 
-impl From<Order> for IStablecoinExchange::Order {
+impl From<Order> for IStablecoinDEX::Order {
     fn from(value: Order) -> Self {
         Self {
             orderId: value.order_id,
@@ -301,7 +301,7 @@ impl From<Order> for IStablecoinExchange::Order {
 #[cfg(test)]
 mod tests {
     use crate::{
-        stablecoin_exchange::StablecoinExchange,
+        stablecoin_dex::StablecoinDEX,
         storage::{Handler, StorageCtx, hashmap::HashMapStorageProvider},
     };
 
@@ -563,7 +563,7 @@ mod tests {
     fn test_store_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
+            let mut exchange = StablecoinDEX::new();
 
             let id = 42;
             let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
@@ -590,7 +590,7 @@ mod tests {
     fn test_delete_order() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut exchange = StablecoinExchange::new();
+            let mut exchange = StablecoinDEX::new();
 
             let id = 42;
             let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();

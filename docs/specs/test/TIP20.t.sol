@@ -2073,7 +2073,7 @@ contract TIP20Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
         }
 
-        // Test burning from STABLECOIN_EXCHANGE_ADDRESS
+        // Test burning from STABLECOIN_DEX_ADDRESS
         try token.burnBlocked(0xDEc0000000000000000000000000000000000000, 100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {

@@ -49,7 +49,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    stablecoin_exchange::StablecoinExchange,
+    stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
@@ -300,7 +300,7 @@ impl GenesisArgs {
         );
 
         println!("Initializing stablecoin exchange");
-        initialize_stablecoin_exchange(&mut evm)?;
+        initialize_stablecoin_dex(&mut evm)?;
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
@@ -424,7 +424,6 @@ impl GenesisArgs {
                 extra_data = consensus_config
                     .to_genesis_dkg_outcome()
                     .encode()
-                    .freeze()
                     .to_vec()
                     .into();
             }
@@ -657,10 +656,10 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
     Ok(())
 }
 
-fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        StablecoinExchange::new().initialize()
+        StablecoinDEX::new().initialize()
     })?;
 
     Ok(())
@@ -732,7 +731,7 @@ fn initialize_validator_config(
                         admin,
                         IValidatorConfig::addValidatorCall {
                             newValidatorAddress,
-                            publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
+                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
                             active: true,
                             inboundAddress: addr.to_string(),
                             outboundAddress: addr.to_string(),
