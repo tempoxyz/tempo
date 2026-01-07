@@ -459,3 +459,128 @@ mod serde_impl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::{
+        tempo_transaction::Call,
+        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+        tt_signature::PrimitiveSignature,
+    };
+    use alloy_consensus::transaction::SignerRecoverable;
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+
+    fn make_tx() -> TempoTransaction {
+        TempoTransaction {
+            chain_id: 1,
+            gas_limit: 21000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::repeat_byte(0x42)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_hash_computation() {
+        let tx = make_tx();
+        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+
+        // new_unhashed: hash not computed yet
+        let signed = AASigned::new_unhashed(tx.clone(), sig.clone());
+
+        // First call computes hash
+        let hash1 = *signed.hash();
+        // Second call returns cached hash (same reference)
+        let hash2 = *signed.hash();
+        assert_eq!(hash1, hash2, "hash should be deterministic");
+        assert_ne!(hash1, B256::ZERO);
+
+        // new_unchecked: hash provided directly
+        let known_hash = B256::random();
+        let signed_unchecked = AASigned::new_unchecked(tx.clone(), sig.clone(), known_hash);
+        assert_eq!(*signed_unchecked.hash(), known_hash, "new_unchecked should use provided hash");
+
+        // into_parts returns the hash
+        let (returned_tx, returned_sig, returned_hash) = signed.into_parts();
+        assert_eq!(returned_tx, tx);
+        assert_eq!(returned_sig, sig);
+        assert_eq!(returned_hash, hash1);
+    }
+
+    #[test]
+    fn test_rlp_encode_decode_roundtrip() {
+        let tx = make_tx();
+        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        // Encode
+        let mut buf = Vec::new();
+        signed.rlp_encode(&mut buf);
+
+        // Decode
+        let decoded = AASigned::rlp_decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded.tx(), signed.tx());
+        assert_eq!(decoded.signature(), signed.signature());
+
+        // EIP-2718 encode/decode
+        let mut eip_buf = Vec::new();
+        signed.eip2718_encode(&mut eip_buf);
+        assert_eq!(eip_buf[0], TEMPO_TX_TYPE_ID);
+
+        let decoded_2718 = AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
+        assert_eq!(decoded_2718.tx(), signed.tx());
+    }
+
+    #[test]
+    fn test_rlp_decode_error_paths() {
+        // Empty buffer
+        let result = AASigned::rlp_decode(&mut [].as_ref());
+        assert!(result.is_err());
+
+        // Not a list (string header)
+        let result = AASigned::rlp_decode(&mut [0x80].as_ref());
+        assert!(result.is_err());
+
+        // Payload length exceeds buffer
+        let result = AASigned::rlp_decode(&mut [0xc1, 0x00].as_ref()); // list of 1 byte but only 0 available
+        assert!(result.is_err());
+
+        // Wrong type for typed_decode
+        let result = AASigned::typed_decode(0x00, &mut [].as_ref());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recover_signer() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let tx = make_tx();
+
+        // Create signed transaction with placeholder sig to get sig_hash
+        let placeholder = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
+        let sig_hash = temp_signed.signature_hash();
+
+        // Sign the correct hash
+        let signature = sign_hash(&signing_key, &sig_hash);
+        let signed = AASigned::new_unhashed(tx.clone(), signature);
+
+        // Recovery should succeed with correct address
+        let recovered = signed.recover_signer().unwrap();
+        assert_eq!(recovered, expected_address);
+
+        // recover_signer_unchecked should give same result
+        let recovered_unchecked = signed.recover_signer_unchecked().unwrap();
+        assert_eq!(recovered_unchecked, expected_address);
+
+        // Wrong signature yields wrong address
+        let wrong_sig = sign_hash(&signing_key, &B256::random());
+        let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
+        let bad_recovered = bad_signed.recover_signer().unwrap();
+        assert_ne!(bad_recovered, expected_address);
+    }
+}
