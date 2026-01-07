@@ -31,7 +31,7 @@ Before adding liquidity, check the current pool reserves to understand the pool 
 
 ```tsx twoslash [ManageFeeLiquidity.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
@@ -55,7 +55,7 @@ function ManageFeeLiquidity() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({
@@ -82,7 +82,7 @@ Add validator token to the pool to receive LP tokens representing your share. Th
 
 ```tsx twoslash [ManageFeeLiquidity.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -123,7 +123,7 @@ function ManageFeeLiquidity() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({
@@ -150,7 +150,7 @@ View your LP token balance to see your share of the pool.
 
 ```tsx twoslash [ManageFeeLiquidity.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -198,7 +198,7 @@ function ManageFeeLiquidity() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({
@@ -225,7 +225,7 @@ Burn LP tokens to withdraw your share of pool reserves plus accumulated fees.
 
 ```tsx twoslash [ManageFeeLiquidity.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -285,7 +285,7 @@ function ManageFeeLiquidity() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({
@@ -317,7 +317,7 @@ Track fee swap activity to understand pool utilization and revenue.
 ```tsx twoslash [MonitorSwaps.tsx]
 // @noErrors
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
@@ -355,7 +355,7 @@ function MonitorSwaps() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({
@@ -382,7 +382,7 @@ You can rebalance pools by swapping validator tokens for accumulated user tokens
 
 ```tsx twoslash [RebalancePool.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -423,7 +423,7 @@ function RebalancePool() {
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
 export const config = createConfig({

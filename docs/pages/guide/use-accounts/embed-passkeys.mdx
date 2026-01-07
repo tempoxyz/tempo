@@ -47,7 +47,7 @@ Next, we will need to configure the `webAuthn` connector in our Wagmi config.
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -65,7 +65,7 @@ export const config = createConfig({
 
 The `KeyManager.localStorage()` implementation is not recommended for production use as it stores public keys on the client device, meaning it cannot be re-extracted when the user's storage is cleared or if the user is on another device. 
 
-For production, you should opt for a remote key manager such as [`KeyManager.http`](/sdk/typescript/wagmi/keyManagers/http).
+For production, you should opt for a remote key manager such as [`KeyManager.http`](https://wagmi.sh/tempo/keyManagers/http).
 
 :::
 
@@ -133,7 +133,7 @@ export function Example() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -211,7 +211,7 @@ export function Example() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
   chains: [tempoTestnet],

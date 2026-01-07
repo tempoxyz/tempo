@@ -65,7 +65,7 @@ contract TIP20FactoryTest is BaseTest {
     }
 
     function testCreateTokenWithValidQuoteToken() public {
-        // Create token with PathUSD as the quote token
+        // Create token with pathUSD as the quote token
         address tokenAddr = factory.createToken(
             "Test Token", "TEST", "USD", ITIP20(_PATH_USD), admin, bytes32("valid")
         );
@@ -209,7 +209,7 @@ contract TIP20FactoryTest is BaseTest {
         assertFalse(factory.isTIP20(_TIP20FACTORY));
     }
 
-    /// @notice Edge case: PathUSD address should always be valid
+    /// @notice Edge case: pathUSD address should always be valid
     function test_EDGE_pathUSDAlwaysValid() public view {
         assertTrue(factory.isTIP20(_PATH_USD));
     }
