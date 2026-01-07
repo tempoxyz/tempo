@@ -125,6 +125,7 @@ impl TIP20Factory {
         }
 
         TIP20Token::from_address(token_address)?.initialize(
+            sender,
             &call.name,
             &call.symbol,
             &call.currency,
@@ -197,7 +198,7 @@ impl TIP20Factory {
         }
 
         let mut token = TIP20Token::from_address(address)?;
-        token.initialize(name, symbol, currency, quote_token, admin)?;
+        token.initialize(admin, name, symbol, currency, quote_token, admin)?;
 
         self.emit_event(TIP20FactoryEvent::TokenCreated(
             ITIP20Factory::TokenCreated {

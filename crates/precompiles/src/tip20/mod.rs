@@ -604,6 +604,7 @@ impl TIP20Token {
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -629,7 +630,7 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
@@ -857,6 +858,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
@@ -940,6 +942,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
