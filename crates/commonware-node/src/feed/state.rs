@@ -5,7 +5,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
 use commonware_consensus::{
-    Block as _, Heightable as _,
+    Heightable as _,
     marshal::ingress::mailbox::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
@@ -222,11 +222,11 @@ impl ConsensusFeed for FeedStateHandle {
                 let proof_block = marshal
                     .get_block(proof_height)
                     .await
-                    .ok_or(IdentityProofError::PrunedData(proof_height))?;
+                    .ok_or(IdentityProofError::PrunedData(proof_height.get()))?;
                 let finalization = marshal
                     .get_finalization(proof_height)
                     .await
-                    .ok_or(IdentityProofError::PrunedData(proof_height))?;
+                    .ok_or(IdentityProofError::PrunedData(proof_height.get()))?;
 
                 transitions.push(IdentityTransition {
                     transition_epoch: search_epoch,
@@ -269,7 +269,7 @@ async fn get_outcome(
     let block = marshal
         .get_block(height)
         .await
-        .ok_or(IdentityProofError::PrunedData(height))?;
+        .ok_or(IdentityProofError::PrunedData(height.get()))?;
     OnchainDkgOutcome::read(&mut block.header().extra_data().as_ref())
-        .map_err(|_| IdentityProofError::MalformedData(height))
+        .map_err(|_| IdentityProofError::MalformedData(height.get()))
 }
