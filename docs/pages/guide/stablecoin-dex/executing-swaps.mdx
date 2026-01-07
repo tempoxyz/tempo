@@ -194,7 +194,7 @@ function Buy() {
         const calls = [ // [!code ++]
           Actions.token.approve.call({ // [!code ++]
             amount: maxAmountIn, // Approve the max amount with slippage // [!code ++]
-            spender: Addresses.stablecoinExchange, // [!code ++]
+            spender: Addresses.stablecoinDex, // [!code ++]
             token: alphaUsd, // [!code ++]
           }), // [!code ++]
         ] // [!code ++]
@@ -243,7 +243,7 @@ function Sell() {
         const calls = [ // [!code ++]
           Actions.token.approve.call({ // [!code ++]
             amount, // Approve the exact amount being sold // [!code ++]
-            spender: Addresses.stablecoinExchange, // [!code ++]
+            spender: Addresses.stablecoinDex, // [!code ++]
             token: alphaUsd, // [!code ++]
           }), // [!code ++]
         ] // [!code ++]
@@ -300,7 +300,7 @@ function Buy() {
         const calls = [
           Actions.token.approve.call({
             amount: maxAmountIn, // Approve the max amount with slippage
-            spender: Addresses.stablecoinExchange,
+            spender: Addresses.stablecoinDex,
             token: alphaUsd,
           }),
           Actions.dex.buy.call({ // [!code ++]
@@ -355,7 +355,7 @@ function Sell() {
         const calls = [
           Actions.token.approve.call({
             amount, // Approve the exact amount being sold
-            spender: Addresses.stablecoinExchange,
+            spender: Addresses.stablecoinDex,
             token: alphaUsd,
           }),
           Actions.dex.sell.call({ // [!code ++]

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import { IStablecoinExchange } from "../src/interfaces/IStablecoinExchange.sol";
+import { IStablecoinDEX } from "../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "./BaseTest.t.sol";
 import { MockTIP20 } from "./mocks/MockTIP20.sol";
 
-contract StablecoinExchangeTest is BaseTest {
+contract StablecoinDEXTest is BaseTest {
 
     bytes32 pairKey;
     uint128 constant INITIAL_BALANCE = 10_000e18;
@@ -18,16 +18,8 @@ contract StablecoinExchangeTest is BaseTest {
         address indexed base,
         uint128 amount,
         bool isBid,
-        int16 tick
-    );
-
-    event FlipOrderPlaced(
-        uint128 indexed orderId,
-        address indexed maker,
-        address indexed base,
-        uint128 amount,
-        bool isBid,
         int16 tick,
+        bool isFlipOrder,
         int16 flipTick
     );
 
@@ -104,10 +96,8 @@ contract StablecoinExchangeTest is BaseTest {
         );
         bytes32 expectedKey = exchange.pairKey(address(newBase), address(newQuote));
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit PairCreated(expectedKey, address(newBase), address(newQuote));
-        }
+        vm.expectEmit(true, true, true, true);
+        emit PairCreated(expectedKey, address(newBase), address(newQuote));
 
         bytes32 key = exchange.createPair(address(newBase));
         assertEq(key, expectedKey);
@@ -216,11 +206,8 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PlaceFlipBidOrder() public {
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit FlipOrderPlaced(1, alice, address(token1), 1e18, true, 100, 200);
-        }
-
+        vm.expectEmit(true, true, true, true);
+        emit OrderPlaced(1, alice, address(token1), 1e18, true, 100, true, 200);
         vm.prank(alice);
         uint128 orderId = exchange.placeFlip(address(token1), 1e18, true, 100, 200);
 
@@ -241,10 +228,8 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_PlaceFlipAskOrder() public {
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit FlipOrderPlaced(1, alice, address(token1), 1e18, false, 100, -200);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderPlaced(1, alice, address(token1), 1e18, false, 100, true, -200);
 
         vm.prank(alice);
         uint128 orderId = exchange.placeFlip(address(token1), 1e18, false, 100, -200);
@@ -268,14 +253,13 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 flipOrderId = exchange.placeFlip(address(token1), 1e18, true, 100, 200);
 
         // Orders are immediately active, no executeBlock needed
+        // Event order: Transfer (in), OrderFilled, FlipOrderPlaced, Transfer (out)
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
 
-            vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(2, alice, address(token1), 1e18, false, 200);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderPlaced(2, alice, address(token1), 1e18, false, 200, true, 100);
 
         vm.prank(bob);
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
@@ -311,10 +295,8 @@ contract StablecoinExchangeTest is BaseTest {
     function test_CancelOrder() public {
         uint128 orderId = _placeBidOrder(alice, 1e18, 100);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderCancelled(orderId);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderCancelled(orderId);
 
         vm.prank(alice);
         exchange.cancel(orderId);
@@ -373,10 +355,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint256 initialBaseBalance = token1.balanceOf(alice);
 
         // Execute swap to partially fill order
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(askOrderId, bob, alice, amountOut, true);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(askOrderId, bob, alice, amountOut, true);
 
         vm.prank(alice);
         uint128 amountIn =
@@ -389,10 +369,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 remainingAmount = 500e18;
         uint128 expectedAmountIn2 = (remainingAmount * price) / exchange.PRICE_SCALE();
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(askOrderId, bob, alice, remainingAmount, false);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(askOrderId, bob, alice, remainingAmount, false);
 
         vm.prank(alice);
         uint128 amountIn2 = exchange.swapExactAmountOut(
@@ -423,16 +401,14 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 maxIn = totalCost * 2;
         uint256 initBalance = token1.balanceOf(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order1, bob, alice, 1e18, false);
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order1, bob, alice, 1e18, false);
 
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order2, bob, alice, 1e18, false);
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order2, bob, alice, 1e18, false);
 
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order3, bob, alice, 5e17, true);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order3, bob, alice, 5e17, true);
 
         vm.prank(alice);
         uint128 amountIn =
@@ -468,10 +444,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint256 initialQuoteBalance = pathUSD.balanceOf(alice);
 
         // Execute swap to partially fill order
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(bidOrderId, bob, alice, amountIn, true);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(bidOrderId, bob, alice, amountIn, true);
 
         vm.prank(alice);
         uint128 amountOut =
@@ -485,10 +459,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 expectedAmountOut2 = (remainingAmount * price) / exchange.PRICE_SCALE();
         uint128 minAmountOut2 = expectedAmountOut2 - 1000;
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(bidOrderId, bob, alice, remainingAmount, false);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(bidOrderId, bob, alice, remainingAmount, false);
 
         vm.prank(alice);
         uint128 amountOut2 = exchange.swapExactAmountIn(
@@ -519,16 +491,14 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 minOut = totalOut / 2;
         uint256 initBalance = pathUSD.balanceOf(alice);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order1, bob, alice, 1e18, false);
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order1, bob, alice, 1e18, false);
 
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order2, bob, alice, 1e18, false);
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order2, bob, alice, 1e18, false);
 
-            vm.expectEmit(true, true, true, true);
-            emit OrderFilled(order3, bob, alice, 5e17, true);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderFilled(order3, bob, alice, 5e17, true);
 
         vm.prank(alice);
         uint128 amountOut =
@@ -610,15 +580,14 @@ contract StablecoinExchangeTest is BaseTest {
         // Note: Validation order - tick bounds, tick spacing, then amount
         if (tick < exchange.MIN_TICK() || tick > exchange.MAX_TICK()) {
             shouldRevert = true;
-            expectedError =
-                abi.encodeWithSelector(IStablecoinExchange.TickOutOfBounds.selector, tick);
+            expectedError = abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, tick);
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
+            expectedError = abi.encodeWithSelector(IStablecoinDEX.InvalidTick.selector);
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
             expectedError =
-                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
+                abi.encodeWithSelector(IStablecoinDEX.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -656,25 +625,25 @@ contract StablecoinExchangeTest is BaseTest {
         // Check all validation rules - tick bounds, tick spacing, amount, flip tick bounds, flip tick spacing, direction
         if (tick < exchange.MIN_TICK() || tick > exchange.MAX_TICK()) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.TickOutOfBounds.selector;
+            expectedSelector = IStablecoinDEX.TickOutOfBounds.selector;
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.InvalidTick.selector;
+            expectedSelector = IStablecoinDEX.InvalidTick.selector;
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.BelowMinimumOrderSize.selector;
+            expectedSelector = IStablecoinDEX.BelowMinimumOrderSize.selector;
         } else if (flipTick < exchange.MIN_TICK() || flipTick > exchange.MAX_TICK()) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.InvalidFlipTick.selector;
+            expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
         } else if (flipTick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.InvalidFlipTick.selector;
+            expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
         } else if (isBid && flipTick <= tick) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.InvalidFlipTick.selector;
+            expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
         } else if (!isBid && flipTick >= tick) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.InvalidFlipTick.selector;
+            expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
         }
 
         vm.prank(alice);
@@ -715,7 +684,7 @@ contract StablecoinExchangeTest is BaseTest {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             // Both Rust and Solidity throw PairAlreadyExists()
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.PairAlreadyExists.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.PairAlreadyExists.selector));
         }
     }
 
@@ -733,10 +702,10 @@ contract StablecoinExchangeTest is BaseTest {
 
         if (orderId == 0 || orderId != validOrderId) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.OrderDoesNotExist.selector;
+            expectedSelector = IStablecoinDEX.OrderDoesNotExist.selector;
         } else if (caller != alice) {
             shouldRevert = true;
-            expectedSelector = IStablecoinExchange.Unauthorized.selector;
+            expectedSelector = IStablecoinDEX.Unauthorized.selector;
         }
 
         vm.prank(caller);
@@ -799,7 +768,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.swapExactAmountIn(invalidToken, address(pathUSD), 100, 0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.InvalidToken.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidToken.selector));
         }
 
         // Also test with invalid tokenOut
@@ -807,7 +776,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.swapExactAmountIn(address(pathUSD), invalidToken, 100, 0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.InvalidToken.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InvalidToken.selector));
         }
     }
 
@@ -817,9 +786,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.swapExactAmountIn(address(token1), address(pathUSD), 100, 0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(
-                err, abi.encodeWithSelector(IStablecoinExchange.InsufficientLiquidity.selector)
-            );
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.InsufficientLiquidity.selector));
         }
     }
 
@@ -850,9 +817,7 @@ contract StablecoinExchangeTest is BaseTest {
             } catch (bytes memory err) {
                 assertEq(
                     err,
-                    abi.encodeWithSelector(
-                        IStablecoinExchange.TickOutOfBounds.selector, expectedTick
-                    )
+                    abi.encodeWithSelector(IStablecoinDEX.TickOutOfBounds.selector, expectedTick)
                 );
             }
         } else {
@@ -1102,7 +1067,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.quoteSwapExactAmountIn(token, token, exchange.MIN_ORDER_AMOUNT()) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.IdenticalTokens.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.IdenticalTokens.selector));
         }
     }
 
@@ -1324,7 +1289,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.getOrder(flipOrderId) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.OrderDoesNotExist.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderDoesNotExist.selector));
         }
 
         // No new flip order should have been created
@@ -1451,7 +1416,7 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 orderId = _placeAskOrder(alice, orderAmount, 100);
 
         // Verify order exists
-        IStablecoinExchange.Order memory order = exchange.getOrder(orderId);
+        IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
         assertEq(order.maker, alice);
         assertEq(order.remaining, orderAmount);
 
@@ -1463,10 +1428,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertFalse(registry.isAuthorized(policyId, alice), "Alice should be blacklisted");
 
         // Anyone (bob) can cancel the stale order
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderCancelled(orderId);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderCancelled(orderId);
 
         vm.prank(bob);
         exchange.cancelStaleOrder(orderId);
@@ -1509,10 +1472,8 @@ contract StablecoinExchangeTest is BaseTest {
         registry.modifyPolicyBlacklist(policyId, alice, true);
 
         // Anyone can cancel the stale order
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit OrderCancelled(orderId);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit OrderCancelled(orderId);
 
         vm.prank(bob);
         exchange.cancelStaleOrder(orderId);
@@ -1552,7 +1513,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.cancelStaleOrder(orderId) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.OrderNotStale.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderNotStale.selector));
         }
     }
 
@@ -1564,7 +1525,7 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.cancelStaleOrder(nonExistentOrderId) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.OrderDoesNotExist.selector));
+            assertEq(err, abi.encodeWithSelector(IStablecoinDEX.OrderDoesNotExist.selector));
         }
     }
 
@@ -1691,7 +1652,9 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, true, tick);
+            emit OrderPlaced(
+                exchange.nextOrderId(), user, address(token1), amount, true, tick, false, 0
+            );
         }
 
         vm.prank(user);
@@ -1704,7 +1667,9 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, false, tick);
+            emit OrderPlaced(
+                exchange.nextOrderId(), user, address(token1), amount, false, tick, false, 0
+            );
         }
 
         vm.prank(user);
@@ -1749,7 +1714,7 @@ contract StablecoinExchangeTest is BaseTest {
         assertGt(dustRemaining, 0, "There should be dust remaining in the order");
 
         // Verify order still exists with dust
-        IStablecoinExchange.Order memory order = exchange.getOrder(orderId);
+        IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
         assertEq(order.remaining, dustRemaining, "Order should have dust remaining");
     }
 

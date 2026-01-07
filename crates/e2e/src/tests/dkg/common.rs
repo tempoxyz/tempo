@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use commonware_codec::ReadExt as _;
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
+use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
 use commonware_runtime::{Clock as _, Metrics as _, deterministic::Context};
 use commonware_utils::NZU64;
 use reth_ethereum::provider::BlockReader as _;
@@ -14,10 +14,10 @@ use crate::{CONSENSUS_NODE_PREFIX, TestingNode};
 /// Reads the DKG outcome from a block, returns None if block doesn't exist or has no outcome.
 pub(super) fn read_outcome_from_validator(
     validator: &TestingNode<Context>,
-    block_num: u64,
+    block_num: Height,
 ) -> Option<OnchainDkgOutcome> {
     let provider = validator.execution_provider();
-    let block = provider.block_by_number(block_num).ok()??;
+    let block = provider.block_by_number(block_num.get()).ok()??;
     let extra_data = &block.header.inner.extra_data;
 
     if extra_data.is_empty() {
@@ -47,19 +47,19 @@ pub(super) async fn wait_for_outcome(
     epoch: u64,
     epoch_length: u64,
 ) -> OnchainDkgOutcome {
-    let block_num = FixedEpocher::new(NZU64!(epoch_length))
+    let height = FixedEpocher::new(NZU64!(epoch_length))
         .last(Epoch::new(epoch))
         .expect("valid epoch");
 
-    tracing::info!(epoch, block_num, "Waiting for DKG outcome");
+    tracing::info!(epoch, %height, "Waiting for DKG outcome");
 
     loop {
         context.sleep(Duration::from_secs(1)).await;
 
-        if let Some(outcome) = read_outcome_from_validator(&validators[0], block_num) {
+        if let Some(outcome) = read_outcome_from_validator(&validators[0], height) {
             tracing::info!(
                 epoch,
-                block_num,
+                %height,
                 outcome_epoch = %outcome.epoch,
                 is_next_full_dkg = outcome.is_next_full_dkg,
                 "Read DKG outcome"

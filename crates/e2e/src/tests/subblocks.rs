@@ -29,6 +29,8 @@ use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::TIP20Token,
 };
 
+use tempo_node::consensus::TEMPO_SHARED_GAS_DIVISOR;
+
 use crate::{Setup, TestingNode, setup_validators};
 
 #[test_traced]
@@ -138,7 +140,6 @@ fn subblocks_are_included() {
     });
 }
 
-#[ignore = "double check: assertion consistently fails on 23 actual vs 28 expected messages"]
 #[test_traced]
 fn subblocks_are_included_with_failing_txs() {
     let _ = tempo_eyre::install();
@@ -300,7 +301,9 @@ fn subblocks_are_included_with_failing_txs() {
                 for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
                     if rand::random::<bool>() {
-                        let tx = submit_subblock_tx_from(node, &PrivateKeySigner::random()).await;
+                        let tx =
+                            submit_subblock_tx_from(node, &PrivateKeySigner::random(), 100_000)
+                                .await;
                         failing_transactions.push(tx);
                         expected_transactions.push(tx);
                         tx
@@ -315,6 +318,74 @@ fn subblocks_are_included_with_failing_txs() {
     });
 }
 
+#[test_traced]
+fn oversized_subblock_txs_are_removed() {
+    let _ = tempo_eyre::install();
+
+    Runner::from(deterministic::Config::default().with_seed(42)).start(|context| async move {
+        let how_many_signers = 4;
+
+        let setup = Setup::new()
+            .how_many_signers(how_many_signers)
+            .epoch_length(10);
+
+        let (mut nodes, _execution_runtime) =
+            setup_validators(context.clone(), setup.clone()).await;
+
+        for node in &mut nodes {
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+        }
+
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
+
+        let mut stream = nodes[0]
+            .execution()
+            .add_ons_handle
+            .engine_events
+            .new_listener();
+
+        let (mut oversized_tx_hash, mut submitted) = (None, false);
+
+        while let Some(update) = stream.next().await {
+            let block = match update {
+                ConsensusEngineEvent::CanonicalBlockAdded(block, _) => block,
+                _ => continue,
+            };
+
+            // After first block, submit an oversized transaction
+            if !submitted && block.block_number() >= 1 {
+                let block_gas_limit = block.sealed_block().header().inner.gas_limit;
+                let gas_budget =
+                    block_gas_limit / TEMPO_SHARED_GAS_DIVISOR / how_many_signers as u64;
+
+                oversized_tx_hash = Some(
+                    submit_subblock_tx_from(&nodes[0], &PrivateKeySigner::random(), gas_budget + 1)
+                        .await,
+                );
+
+                submitted = true;
+            }
+
+            // Check results after submission - verify oversized tx is never included
+            if submitted && block.block_number() >= 3 {
+                let txs = &block.sealed_block().body().transactions;
+
+                // Oversized tx should NOT be included in any block
+                if let Some(hash) = oversized_tx_hash {
+                    assert!(
+                        !txs.iter().any(|t| t.tx_hash() == *hash),
+                        "oversized transaction should not be included in block"
+                    );
+                }
+            }
+
+            if block.block_number() >= 10 {
+                break;
+            }
+        }
+    });
+}
+
 async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
     node: &TestingNode<TClock>,
 ) -> TxHash {
@@ -324,12 +395,13 @@ async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
     ))
     .unwrap();
 
-    submit_subblock_tx_from(node, &wallet).await
+    submit_subblock_tx_from(node, &wallet, 100_000).await
 }
 
 async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
     node: &TestingNode<TClock>,
     wallet: &PrivateKeySigner,
+    gas_limit: u64,
 ) -> TxHash {
     let mut nonce_bytes = rand::random::<[u8; 32]>();
     nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
@@ -346,7 +418,7 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
             input: Default::default(),
             value: Default::default(),
         }],
-        gas_limit: 100000,
+        gas_limit,
         nonce_key: U256::from_be_bytes(nonce_bytes),
         max_fee_per_gas: gas_price,
         max_priority_fee_per_gas: gas_price,

@@ -7,7 +7,7 @@ mod eth_transactions;
 mod liquidity;
 mod payment_lane;
 mod pool;
-mod stablecoin_exchange;
+mod stablecoin_dex;
 mod tempo_transaction;
 mod tip20;
 mod tip20_factory;

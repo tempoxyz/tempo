@@ -1,12 +1,11 @@
-pub use IStablecoinExchange::{
-    IStablecoinExchangeErrors as StablecoinExchangeError,
-    IStablecoinExchangeEvents as StablecoinExchangeEvents,
+pub use IStablecoinDEX::{
+    IStablecoinDEXErrors as StablecoinDEXError, IStablecoinDEXEvents as StablecoinDEXEvents,
 };
 
 crate::sol! {
-    /// StablecoinExchange interface for managing orderbook based trading of stablecoins.
+    /// StablecoinDEX interface for managing orderbook based trading of stablecoins.
     ///
-    /// The StablecoinExchange provides a limit orderbook system where users can:
+    /// The StablecoinDEX provides a limit orderbook system where users can:
     /// - Place limit orders (buy/sell) with specific price ticks
     /// - Place flip orders that automatically create opposite-side orders when filled
     /// - Execute swaps against existing liquidity
@@ -16,7 +15,7 @@ crate::sol! {
     /// using a tick-based pricing system for precise order matching.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface IStablecoinExchange {
+    interface IStablecoinDEX {
         // Structs
         struct Order {
             uint128 orderId;
@@ -85,8 +84,7 @@ crate::sol! {
 
         // Events
         event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
-        event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
-        event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
+        event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, bool isFlipOrder, int16 flipTick);
         event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
         event OrderCancelled(uint128 indexed orderId);
 
@@ -110,84 +108,84 @@ crate::sol! {
     }
 }
 
-impl StablecoinExchangeError {
+impl StablecoinDEXError {
     /// Creates an unauthorized access error.
     pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IStablecoinExchange::Unauthorized {})
+        Self::Unauthorized(IStablecoinDEX::Unauthorized {})
     }
 
     /// Creates an error when pair does not exist.
     pub const fn pair_does_not_exist() -> Self {
-        Self::PairDoesNotExist(IStablecoinExchange::PairDoesNotExist {})
+        Self::PairDoesNotExist(IStablecoinDEX::PairDoesNotExist {})
     }
 
     /// Creates an error when pair already exists.
     pub const fn pair_already_exists() -> Self {
-        Self::PairAlreadyExists(IStablecoinExchange::PairAlreadyExists {})
+        Self::PairAlreadyExists(IStablecoinDEX::PairAlreadyExists {})
     }
 
     /// Creates an error when order does not exist.
     pub const fn order_does_not_exist() -> Self {
-        Self::OrderDoesNotExist(IStablecoinExchange::OrderDoesNotExist {})
+        Self::OrderDoesNotExist(IStablecoinDEX::OrderDoesNotExist {})
     }
 
     /// Creates an error when trying to swap identical tokens.
     pub const fn identical_tokens() -> Self {
-        Self::IdenticalTokens(IStablecoinExchange::IdenticalTokens {})
+        Self::IdenticalTokens(IStablecoinDEX::IdenticalTokens {})
     }
 
     /// Creates an error when a token address is not a valid TIP20 token.
     pub const fn invalid_token() -> Self {
-        Self::InvalidToken(IStablecoinExchange::InvalidToken {})
+        Self::InvalidToken(IStablecoinDEX::InvalidToken {})
     }
 
     /// Creates an error for tick out of bounds.
     pub const fn tick_out_of_bounds(tick: i16) -> Self {
-        Self::TickOutOfBounds(IStablecoinExchange::TickOutOfBounds { tick })
+        Self::TickOutOfBounds(IStablecoinDEX::TickOutOfBounds { tick })
     }
 
     /// Creates an error for invalid flip tick.
     pub const fn invalid_flip_tick() -> Self {
-        Self::InvalidFlipTick(IStablecoinExchange::InvalidFlipTick {})
+        Self::InvalidFlipTick(IStablecoinDEX::InvalidFlipTick {})
     }
 
     /// Creates an error for invalid tick.
     pub const fn invalid_tick() -> Self {
-        Self::InvalidTick(IStablecoinExchange::InvalidTick {})
+        Self::InvalidTick(IStablecoinDEX::InvalidTick {})
     }
 
     /// Creates an error for insufficient balance.
     pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(IStablecoinExchange::InsufficientBalance {})
+        Self::InsufficientBalance(IStablecoinDEX::InsufficientBalance {})
     }
 
     /// Creates an error for insufficient liquidity.
     pub const fn insufficient_liquidity() -> Self {
-        Self::InsufficientLiquidity(IStablecoinExchange::InsufficientLiquidity {})
+        Self::InsufficientLiquidity(IStablecoinDEX::InsufficientLiquidity {})
     }
 
     /// Creates an error for insufficient output.
     pub const fn insufficient_output() -> Self {
-        Self::InsufficientOutput(IStablecoinExchange::InsufficientOutput {})
+        Self::InsufficientOutput(IStablecoinDEX::InsufficientOutput {})
     }
 
     /// Creates an error for max input exceeded.
     pub const fn max_input_exceeded() -> Self {
-        Self::MaxInputExceeded(IStablecoinExchange::MaxInputExceeded {})
+        Self::MaxInputExceeded(IStablecoinDEX::MaxInputExceeded {})
     }
 
     /// Creates an error for order amount below minimum.
     pub const fn below_minimum_order_size(amount: u128) -> Self {
-        Self::BelowMinimumOrderSize(IStablecoinExchange::BelowMinimumOrderSize { amount })
+        Self::BelowMinimumOrderSize(IStablecoinDEX::BelowMinimumOrderSize { amount })
     }
 
     /// Creates an error for invalid base token.
     pub const fn invalid_base_token() -> Self {
-        Self::InvalidBaseToken(IStablecoinExchange::InvalidBaseToken {})
+        Self::InvalidBaseToken(IStablecoinDEX::InvalidBaseToken {})
     }
 
     /// Creates an error when order is not stale
     pub const fn order_not_stale() -> Self {
-        Self::OrderNotStale(IStablecoinExchange::OrderNotStale {})
+        Self::OrderNotStale(IStablecoinDEX::OrderNotStale {})
     }
 }

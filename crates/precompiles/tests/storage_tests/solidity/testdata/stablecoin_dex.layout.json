@@ -1,11 +1,11 @@
 {
   "contracts": {
-    "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange": {
+    "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX": {
       "storage-layout": {
         "storage": [
           {
             "astId": 65,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+            "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
             "label": "books",
             "offset": 0,
             "slot": "0",
@@ -13,7 +13,7 @@
           },
           {
             "astId": 71,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+            "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
             "label": "orders",
             "offset": 0,
             "slot": "1",
@@ -21,7 +21,7 @@
           },
           {
             "astId": 78,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+            "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
             "label": "balances",
             "offset": 0,
             "slot": "2",
@@ -29,7 +29,7 @@
           },
           {
             "astId": 81,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+            "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
             "label": "nextOrderId",
             "offset": 0,
             "slot": "3",
@@ -37,7 +37,7 @@
           },
           {
             "astId": 85,
-            "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+            "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
             "label": "bookKeys",
             "offset": 0,
             "slot": "4",
@@ -88,14 +88,14 @@
           "t_mapping(t_bytes32,t_struct(Orderbook)36_storage)": {
             "encoding": "mapping",
             "key": "t_bytes32",
-            "label": "mapping(bytes32 => struct StablecoinExchange.Orderbook)",
+            "label": "mapping(bytes32 => struct StablecoinDEX.Orderbook)",
             "numberOfBytes": "32",
             "value": "t_struct(Orderbook)36_storage"
           },
           "t_mapping(t_int16,t_struct(TickLevel)9_storage)": {
             "encoding": "mapping",
             "key": "t_int16",
-            "label": "mapping(int16 => struct StablecoinExchange.TickLevel)",
+            "label": "mapping(int16 => struct StablecoinDEX.TickLevel)",
             "numberOfBytes": "32",
             "value": "t_struct(TickLevel)9_storage"
           },
@@ -109,17 +109,17 @@
           "t_mapping(t_uint128,t_struct(Order)59_storage)": {
             "encoding": "mapping",
             "key": "t_uint128",
-            "label": "mapping(uint128 => struct StablecoinExchange.Order)",
+            "label": "mapping(uint128 => struct StablecoinDEX.Order)",
             "numberOfBytes": "32",
             "value": "t_struct(Order)59_storage"
           },
           "t_struct(Order)59_storage": {
             "encoding": "inplace",
-            "label": "struct StablecoinExchange.Order",
+            "label": "struct StablecoinDEX.Order",
             "members": [
               {
                 "astId": 38,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "orderId",
                 "offset": 0,
                 "slot": "0",
@@ -127,7 +127,7 @@
               },
               {
                 "astId": 40,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "maker",
                 "offset": 0,
                 "slot": "1",
@@ -135,7 +135,7 @@
               },
               {
                 "astId": 42,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "bookKey",
                 "offset": 0,
                 "slot": "2",
@@ -143,7 +143,7 @@
               },
               {
                 "astId": 44,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "isBid",
                 "offset": 0,
                 "slot": "3",
@@ -151,7 +151,7 @@
               },
               {
                 "astId": 46,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "tick",
                 "offset": 1,
                 "slot": "3",
@@ -159,7 +159,7 @@
               },
               {
                 "astId": 48,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "amount",
                 "offset": 3,
                 "slot": "3",
@@ -167,7 +167,7 @@
               },
               {
                 "astId": 50,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "remaining",
                 "offset": 0,
                 "slot": "4",
@@ -175,7 +175,7 @@
               },
               {
                 "astId": 52,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "prev",
                 "offset": 16,
                 "slot": "4",
@@ -183,7 +183,7 @@
               },
               {
                 "astId": 54,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "next",
                 "offset": 0,
                 "slot": "5",
@@ -191,7 +191,7 @@
               },
               {
                 "astId": 56,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "isFlip",
                 "offset": 16,
                 "slot": "5",
@@ -199,7 +199,7 @@
               },
               {
                 "astId": 58,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "flipTick",
                 "offset": 17,
                 "slot": "5",
@@ -210,11 +210,11 @@
           },
           "t_struct(Orderbook)36_storage": {
             "encoding": "inplace",
-            "label": "struct StablecoinExchange.Orderbook",
+            "label": "struct StablecoinDEX.Orderbook",
             "members": [
               {
                 "astId": 11,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "base",
                 "offset": 0,
                 "slot": "0",
@@ -222,7 +222,7 @@
               },
               {
                 "astId": 13,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "quote",
                 "offset": 0,
                 "slot": "1",
@@ -230,7 +230,7 @@
               },
               {
                 "astId": 18,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "bids",
                 "offset": 0,
                 "slot": "2",
@@ -238,7 +238,7 @@
               },
               {
                 "astId": 23,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "asks",
                 "offset": 0,
                 "slot": "3",
@@ -246,7 +246,7 @@
               },
               {
                 "astId": 25,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "bestBidTick",
                 "offset": 0,
                 "slot": "4",
@@ -254,7 +254,7 @@
               },
               {
                 "astId": 27,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "bestAskTick",
                 "offset": 2,
                 "slot": "4",
@@ -262,7 +262,7 @@
               },
               {
                 "astId": 31,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "bidBitmap",
                 "offset": 0,
                 "slot": "5",
@@ -270,7 +270,7 @@
               },
               {
                 "astId": 35,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "askBitmap",
                 "offset": 0,
                 "slot": "6",
@@ -281,11 +281,11 @@
           },
           "t_struct(TickLevel)9_storage": {
             "encoding": "inplace",
-            "label": "struct StablecoinExchange.TickLevel",
+            "label": "struct StablecoinDEX.TickLevel",
             "members": [
               {
                 "astId": 4,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "head",
                 "offset": 0,
                 "slot": "0",
@@ -293,7 +293,7 @@
               },
               {
                 "astId": 6,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "tail",
                 "offset": 16,
                 "slot": "0",
@@ -301,7 +301,7 @@
               },
               {
                 "astId": 8,
-                "contract": "tests/storage_tests/solidity/testdata/stablecoin_exchange.sol:StablecoinExchange",
+                "contract": "tests/storage_tests/solidity/testdata/stablecoin_dex.sol:StablecoinDEX",
                 "label": "totalLiquidity",
                 "offset": 0,
                 "slot": "1",
