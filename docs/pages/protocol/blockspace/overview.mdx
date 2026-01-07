@@ -24,6 +24,14 @@ pub struct Header {
 - `general_gas_limit` and `shared_gas_limit` carve up the canonical `gas_limit` for payment and sub-block gas (see [payment lane specification](/protocol/blockspace/payment-lane-specification) and [sub-block specification](/protocol/blockspace/sub-block-specification)).
 - `timestamp_millis_part` stores the sub‑second component; the full timestamp is `inner.timestamp * 1000 + timestamp_millis_part` .
 
+### Mainnet Launch Parameters
+
+At mainnet launch, the following parameters are configured:
+
+- **Base fee**: `2 × 10^10` wei (targets 0.1 cent per 50,000 gas TIP-20 transfer)
+- **Payment lane gas limit**: 500,000,000 gas per block (supports ~20,000 TPS for payments)
+- **Main transaction gas limit** (`general_gas_limit`): 25,000,000 gas per block
+
 ### Block body
 The block body in Tempo retains the canonical Ethereum block body structure, with the addition of system transactions. Transactions are ordered in the following sections:
 

@@ -51,3 +51,7 @@ for all i such that !is_payment(tx[i]) and tx[i] is in the proposer's lane
 
 Where `gas_consumed` includes intrinsic gas and gas burned by reverts, as in the existing protocol.
 
+### 4. Payment Lane Capacity
+
+At mainnet launch, the payment lane gas limit is set to 500,000,000 gas per block, allowing approximately 10,000 TIP-20 transfers per block and supporting approximately 20,000 transactions per second throughput.
+

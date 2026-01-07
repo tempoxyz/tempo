@@ -1,0 +1,53 @@
+# State Creation Cost Specification
+
+## Abstract
+
+This specification defines increased gas costs for creating new state elements, accounts, and contract code to provide economic protection against state growth spam attacks.
+
+## Motivation
+
+Tempo's high throughput capability creates a vulnerability where an adversary could create excessive state to permanently slow the chain. By increasing state creation costs, we create a meaningful economic barrier against such attacks.
+
+## Specification
+
+### New State Element Creation
+
+Writing a new state element (SSTORE to a zero slot) costs **250,000 gas** (increased from 20,000 gas).
+
+This applies to all storage slot writes that transition from zero to non-zero, including:
+- Contract storage slots
+- TIP-20 token balances
+- Nonce key storage in the Nonce precompile (when a new nonce key is first used)
+- Rewards-related storage (userRewardInfo mappings, reward balances)
+- Active key count tracking in the Nonce precompile
+- Any other state elements stored in the EVM state trie
+
+### Account Creation
+
+Account creation incurs a **250,000 gas charge** when the account's nonce transitions from 0 to 1.
+
+- For EOA accounts: charged on the first transaction sent from that address
+- For contract accounts: charged when Nonce is increased
+- **Important:** Transferring tokens TO a new address does not charge account creation cost (recipient's nonce remains 0). The cost only applies when the account is first used.
+
+### Contract Creation
+
+Contract creation (CREATE/CREATE2) uses the following pricing model:
+
+- **Code storage**: 1,000 gas per byte of contract code (linear pricing)
+- **Keccak hash and codesize fields**: 500,000 gas (2 × 250,000)
+- **Total formula**: `(code_size × 1,000) + 500,000` gas
+
+The account creation cost (250,000 gas) is separate and applies when the contract account's nonce transitions from 0 to 1.
+
+## Gas Schedule Summary
+
+| Operation | Gas Cost |
+|-----------|----------|
+| New state element (SSTORE zero → non-zero) | 250,000 |
+| Account creation (first nonce write) | 250,000 |
+| Contract creation (per byte) | 1,000 |
+| Contract creation (keccak + codesize fields) | 500,000 |
+| Existing state element (SSTORE non-zero → non-zero) | 5,000 |
+| Existing state element (SSTORE non-zero → zero) | -15,000 (refund) |
+
