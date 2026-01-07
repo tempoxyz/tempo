@@ -556,6 +556,16 @@ fn create_and_mint_token(
     address: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
+    if quote_token == Address::ZERO {
+        return Err(eyre!(
+            "Quote token cannot be zero address, reserved for pathUSD"
+        ));
+    }
+
+    if currency != "USD" {
+        return Err(eyre!("Only USD currency is supported"));
+    }
+
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut factory = TIP20Factory::new();
