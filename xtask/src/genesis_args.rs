@@ -503,8 +503,9 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Creates pathUSD as the first TIP20 token at a reserved address.
-/// pathUSD is not created via factory since it's at a reserved address.
+/// Creates pathUSD as a TIP20 at its reserved address.
+/// This is the only token permitted by the TIP20Factory to use quote_token = Address::ZERO,
+/// forming the root of the USD quote-token tree.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
