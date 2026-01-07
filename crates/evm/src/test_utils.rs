@@ -13,15 +13,18 @@ use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
 use tempo_primitives::subblock::PartialValidatorKey;
 
-pub fn test_chainspec() -> Arc<TempoChainSpec> {
+pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()))
 }
 
-pub fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
+pub(crate) fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
     test_evm_with_basefee(db, 1)
 }
 
-pub fn test_evm_with_basefee<DB: Database>(db: DB, basefee: u64) -> TempoEvm<DB, NoOpInspector> {
+pub(crate) fn test_evm_with_basefee<DB: Database>(
+    db: DB,
+    basefee: u64,
+) -> TempoEvm<DB, NoOpInspector> {
     TempoEvm::new(
         db,
         EvmEnv {
@@ -38,14 +41,14 @@ pub fn test_evm_with_basefee<DB: Database>(db: DB, basefee: u64) -> TempoEvm<DB,
     )
 }
 
-pub struct TestExecutorBuilder {
-    pub block_number: u64,
-    pub parent_hash: B256,
-    pub general_gas_limit: u64,
-    pub shared_gas_limit: u64,
-    pub validator_set: Option<Vec<B256>>,
-    pub parent_beacon_block_root: Option<B256>,
-    pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+pub(crate) struct TestExecutorBuilder {
+    pub(crate) block_number: u64,
+    pub(crate) parent_hash: B256,
+    pub(crate) general_gas_limit: u64,
+    pub(crate) shared_gas_limit: u64,
+    pub(crate) validator_set: Option<Vec<B256>>,
+    pub(crate) parent_beacon_block_root: Option<B256>,
+    pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
 
 impl Default for TestExecutorBuilder {
@@ -63,27 +66,27 @@ impl Default for TestExecutorBuilder {
 }
 
 impl TestExecutorBuilder {
-    pub fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
+    pub(crate) fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
         self.validator_set = Some(validators);
         self
     }
 
-    pub fn with_shared_gas_limit(mut self, limit: u64) -> Self {
+    pub(crate) fn with_shared_gas_limit(mut self, limit: u64) -> Self {
         self.shared_gas_limit = limit;
         self
     }
 
-    pub fn with_general_gas_limit(mut self, limit: u64) -> Self {
+    pub(crate) fn with_general_gas_limit(mut self, limit: u64) -> Self {
         self.general_gas_limit = limit;
         self
     }
 
-    pub fn with_parent_beacon_block_root(mut self, root: B256) -> Self {
+    pub(crate) fn with_parent_beacon_block_root(mut self, root: B256) -> Self {
         self.parent_beacon_block_root = Some(root);
         self
     }
 
-    pub fn build<'a>(
+    pub(crate) fn build<'a>(
         self,
         db: &'a mut State<EmptyDB>,
         chainspec: &'a Arc<TempoChainSpec>,
