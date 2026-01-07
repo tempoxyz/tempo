@@ -71,9 +71,6 @@ pub enum IdentityProofError {
     /// Node is not ready - consensus state not yet initialized.
     #[error("node not ready")]
     NotReady,
-    /// Requested epoch data not available.
-    #[error("epoch {0} not available")]
-    EpochNotAvailable(u64),
     /// Block data has been pruned.
     #[error("block data pruned at height {0}")]
     PrunedData(u64),
