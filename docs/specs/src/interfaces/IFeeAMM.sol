@@ -3,9 +3,13 @@ pragma solidity ^0.8.13;
 
 interface IFeeAMM {
 
-    error InsufficientLiquidity();
     error IdenticalAddresses();
     error InvalidToken();
+    error InsufficientLiquidity();
+    error InsufficientReserves();
+    error InvalidAmount();
+    error DivisionByZero();
+    error InvalidSwapCalculation();
     error InvalidCurrency();
 
     event Burn(

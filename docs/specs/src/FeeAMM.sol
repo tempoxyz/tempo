@@ -21,6 +21,12 @@ contract FeeAMM is IFeeAMM {
     mapping(bytes32 => uint256) public totalSupply;
     mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
 
+    // Reverts if x does not fit in uint128
+    function _requireU128(uint256 x) internal pure {
+        if (x > type(uint128).max) revert InvalidAmount();
+    }
+
+    // Reverts if token is not a TIP20 with "USD" currency
     function _requireUSDTIP20(address token) internal view {
         // Check that the token is a deployed TIP20 (prefix + tokenIdCounter check)
         if (!TempoUtilities.isTIP20(token)) revert InvalidToken();
@@ -49,10 +55,7 @@ contract FeeAMM is IFeeAMM {
     {
         bytes32 poolId = getPoolId(userToken, validatorToken);
         uint256 amountOutNeeded = (maxAmount * M) / SCALE;
-        require(
-            pools[poolId].reserveValidatorToken >= amountOutNeeded,
-            "INSUFFICIENT_LIQUIDITY_FOR_FEE_SWAP"
-        );
+        if (pools[poolId].reserveValidatorToken < amountOutNeeded) revert InsufficientLiquidity();
     }
 
     function executeFeeSwap(address userToken, address validatorToken, uint256 amountIn)
@@ -64,7 +67,10 @@ contract FeeAMM is IFeeAMM {
 
         amountOut = (amountIn * M) / SCALE;
 
-        require(pool.reserveValidatorToken >= amountOut, "INSUFFICIENT_LIQUIDITY_FOR_FEE_SWAP");
+        _requireU128(amountIn);
+        _requireU128(amountOut);
+
+        if (pool.reserveValidatorToken < amountOut) revert InsufficientLiquidity();
 
         pool.reserveUserToken += uint128(amountIn);
         pool.reserveValidatorToken -= uint128(amountOut);
@@ -82,6 +88,16 @@ contract FeeAMM is IFeeAMM {
         amountIn = (amountOut * N) / SCALE + 1;
 
         Pool storage pool = pools[poolId];
+
+        // Ensure amounts fit in uint128
+        _requireU128(amountOut);
+        _requireU128(amountIn);
+
+        if (uint256(pool.reserveValidatorToken) + amountIn > type(uint128).max) {
+            revert InsufficientReserves();
+        }
+
+        if (pool.reserveUserToken < amountOut) revert InvalidAmount();
 
         pool.reserveValidatorToken += uint128(amountIn);
         pool.reserveUserToken -= uint128(amountOut);
@@ -104,6 +120,7 @@ contract FeeAMM is IFeeAMM {
 
         _requireUSDTIP20(userToken);
         _requireUSDTIP20(validatorToken);
+
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         Pool storage pool = pools[poolId];
@@ -120,14 +137,17 @@ contract FeeAMM is IFeeAMM {
             // Subsequent deposits: mint as if user called rebalanceSwap then minted with both
             // which works out to the formula:
             // liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
-            uint256 denom =
-                uint256(pool.reserveValidatorToken) + (N * uint256(pool.reserveUserToken)) / SCALE;
+            uint256 product = (N * uint256(pool.reserveUserToken)) / SCALE;
+            uint256 denom = uint256(pool.reserveValidatorToken) + product;
             liquidity = (amountValidatorToken * _totalSupply) / denom; // rounds down
         }
 
         if (liquidity == 0) {
             revert InsufficientLiquidity();
         }
+
+        // Ensure amounts fit in uint128
+        _requireU128(amountValidatorToken);
 
         // Transfer validator tokens from user
         ITIP20(validatorToken).systemTransferFrom(msg.sender, address(this), amountValidatorToken);
@@ -146,6 +166,8 @@ contract FeeAMM is IFeeAMM {
         external
         returns (uint256 amountUserToken, uint256 amountValidatorToken)
     {
+        if (userToken == validatorToken) revert IdenticalAddresses();
+
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         Pool storage pool = pools[poolId];
@@ -156,6 +178,10 @@ contract FeeAMM is IFeeAMM {
 
         // Calculate amounts
         (amountUserToken, amountValidatorToken) = _calculateBurnAmounts(pool, poolId, liquidity);
+
+        // Ensure amounts fit in uint128
+        _requireU128(amountUserToken);
+        _requireU128(amountValidatorToken);
 
         // Burn LP tokens
         liquidityBalances[poolId][msg.sender] -= liquidity;
