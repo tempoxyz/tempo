@@ -204,72 +204,80 @@ mod tests {
             .as_secs()
     }
 
-    fn create_valid_inner_header(gas_limit: u64, timestamp: u64) -> Header {
-        Header {
-            gas_limit,
-            timestamp,
-            base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
-            withdrawals_root: Some(EMPTY_ROOT_HASH),
-            blob_gas_used: Some(0),
-            excess_blob_gas: Some(0),
-            parent_beacon_block_root: Some(B256::ZERO),
-            requests_hash: Some(B256::ZERO),
-            ..Default::default()
-        }
-    }
-
-    fn create_child_inner_header(
-        gas_limit: u64,
-        timestamp: u64,
-        number: u64,
-        parent_hash: B256,
-    ) -> Header {
-        Header {
-            gas_limit,
-            timestamp,
-            number,
-            parent_hash,
-            base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
-            withdrawals_root: Some(EMPTY_ROOT_HASH),
-            blob_gas_used: Some(0),
-            excess_blob_gas: Some(0),
-            parent_beacon_block_root: Some(B256::ZERO),
-            requests_hash: Some(B256::ZERO),
-            ..Default::default()
-        }
-    }
-
-    fn create_valid_header(
-        gas_limit: u64,
-        timestamp: u64,
-        timestamp_millis_part: u64,
-    ) -> TempoHeader {
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
-
-        TempoHeader {
-            inner: create_valid_inner_header(gas_limit, timestamp),
-            shared_gas_limit,
-            general_gas_limit,
-            timestamp_millis_part,
-        }
-    }
-
-    fn create_child_header(
+    #[derive(Default)]
+    struct TestHeaderBuilder {
         gas_limit: u64,
         timestamp: u64,
         timestamp_millis_part: u64,
         number: u64,
         parent_hash: B256,
-    ) -> TempoHeader {
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+        shared_gas_limit: Option<u64>,
+        general_gas_limit: Option<u64>,
+    }
 
-        TempoHeader {
-            inner: create_child_inner_header(gas_limit, timestamp, number, parent_hash),
-            shared_gas_limit,
-            general_gas_limit,
-            timestamp_millis_part,
+    impl TestHeaderBuilder {
+        fn gas_limit(mut self, gas_limit: u64) -> Self {
+            self.gas_limit = gas_limit;
+            self
+        }
+
+        fn timestamp(mut self, timestamp: u64) -> Self {
+            self.timestamp = timestamp;
+            self
+        }
+
+        fn timestamp_millis_part(mut self, millis: u64) -> Self {
+            self.timestamp_millis_part = millis;
+            self
+        }
+
+        fn number(mut self, number: u64) -> Self {
+            self.number = number;
+            self
+        }
+
+        fn parent_hash(mut self, hash: B256) -> Self {
+            self.parent_hash = hash;
+            self
+        }
+
+        fn shared_gas_limit(mut self, limit: u64) -> Self {
+            self.shared_gas_limit = Some(limit);
+            self
+        }
+
+        fn general_gas_limit(mut self, limit: u64) -> Self {
+            self.general_gas_limit = Some(limit);
+            self
+        }
+
+        fn build(self) -> TempoHeader {
+            let shared_gas_limit = self
+                .shared_gas_limit
+                .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
+            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
+                (self.gas_limit - self.gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+                    / TEMPO_GENERAL_GAS_DIVISOR
+            });
+
+            TempoHeader {
+                inner: Header {
+                    gas_limit: self.gas_limit,
+                    timestamp: self.timestamp,
+                    number: self.number,
+                    parent_hash: self.parent_hash,
+                    base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                shared_gas_limit,
+                general_gas_limit,
+                timestamp_millis_part: self.timestamp_millis_part,
+            }
         }
     }
 
@@ -318,7 +326,11 @@ mod tests {
     #[test]
     fn test_validate_header() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let header = create_valid_header(30_000_000, current_timestamp(), 500);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(500)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
 
         assert!(consensus.validate_header(&sealed).is_ok());
@@ -328,7 +340,11 @@ mod tests {
     fn test_validate_header_timestamp_in_the_future() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let future_timestamp = current_timestamp() + ALLOWED_FUTURE_BLOCK_TIME_SECONDS + 10;
-        let header = create_valid_header(30_000_000, future_timestamp, 500);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(future_timestamp)
+            .timestamp_millis_part(500)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
 
         let result = consensus.validate_header(&sealed);
@@ -340,16 +356,11 @@ mod tests {
     #[test]
     fn test_validate_header_shared_gas_mismatch() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let gas_limit = 30_000_000u64;
-        let general_gas_limit =
-            (gas_limit - gas_limit / TEMPO_SHARED_GAS_DIVISOR) / TEMPO_GENERAL_GAS_DIVISOR;
-
-        let header = TempoHeader {
-            inner: create_valid_inner_header(gas_limit, current_timestamp()),
-            shared_gas_limit: 999,
-            general_gas_limit,
-            timestamp_millis_part: 0,
-        };
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .shared_gas_limit(999)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
 
         let result = consensus.validate_header(&sealed);
@@ -364,14 +375,11 @@ mod tests {
     #[test]
     fn test_validate_header_non_payment_gas_mismatch() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let gas_limit = 30_000_000u64;
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let header = TempoHeader {
-            inner: create_valid_inner_header(gas_limit, current_timestamp()),
-            shared_gas_limit,
-            general_gas_limit: 999,
-            timestamp_millis_part: 0,
-        };
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .general_gas_limit(999)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
 
         let result = consensus.validate_header(&sealed);
@@ -386,17 +394,12 @@ mod tests {
     #[test]
     fn test_validate_header_timestamp_milli_gte_1000() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let gas_limit = 30_000_000u64;
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
 
-        // Test timestamp of 1000
-        let header = TempoHeader {
-            inner: create_valid_inner_header(gas_limit, current_timestamp()),
-            shared_gas_limit,
-            general_gas_limit,
-            timestamp_millis_part: 1000,
-        };
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(1000)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
 
         let result = consensus.validate_header(&sealed);
@@ -407,13 +410,11 @@ mod tests {
             ))
         );
 
-        // Test timestamp greater than 1000
-        let header = TempoHeader {
-            inner: create_valid_inner_header(gas_limit, current_timestamp()),
-            shared_gas_limit,
-            general_gas_limit,
-            timestamp_millis_part: 1001,
-        };
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(1001)
+            .build();
         let sealed = SealedHeader::seal_slow(header);
         let result = consensus.validate_header(&sealed);
         assert_eq!(
@@ -428,10 +429,20 @@ mod tests {
     fn test_validate_header_against_parent() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let parent_ts = current_timestamp() - 1;
-        let parent = create_valid_header(30_000_000, parent_ts, 500);
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(500)
+            .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
-        let child = create_child_header(30_000_000, parent_ts + 1, 600, 1, parent_sealed.hash());
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(1)
+            .parent_hash(parent_sealed.hash())
+            .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
         let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
@@ -442,10 +453,20 @@ mod tests {
     fn test_validate_header_against_parent_timestamp_not_increasing() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let parent_ts = current_timestamp();
-        let parent = create_valid_header(30_000_000, parent_ts, 500);
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(500)
+            .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
-        let child = create_child_header(30_000_000, parent_ts, 400, 1, parent_sealed.hash());
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(400)
+            .number(1)
+            .parent_hash(parent_sealed.hash())
+            .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
         let parent_timestamp_millis = parent_ts * 1000 + 500;
@@ -463,7 +484,10 @@ mod tests {
     #[test]
     fn test_validate_body_against_header() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let header = create_valid_header(30_000_000, current_timestamp(), 0);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
         let sealed = SealedHeader::seal_slow(header);
         let body = BlockBody {
             withdrawals: Some(Default::default()),
@@ -484,7 +508,10 @@ mod tests {
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
 
-        let header = create_valid_header(30_000_000, current_timestamp(), 0);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
         let block = create_valid_block(header, vec![user_tx, system_tx]);
         let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
 
@@ -511,7 +538,10 @@ mod tests {
         let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
-        let header = create_valid_header(30_000_000, current_timestamp(), 0);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
         let block = create_valid_block(header, vec![invalid_system_tx]);
         let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
 
@@ -531,7 +561,10 @@ mod tests {
 
         let user_tx = create_tx(chain_id);
 
-        let header = create_valid_header(30_000_000, current_timestamp(), 0);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
         let block = create_valid_block(header, vec![user_tx]);
         let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
 
@@ -552,7 +585,10 @@ mod tests {
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
 
-        let header = create_valid_header(30_000_000, current_timestamp(), 0);
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
         let block = create_valid_block(header, vec![system_tx]);
         let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
 
