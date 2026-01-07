@@ -890,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_shared_gas_set_does_not_contain_valdiator() {
+    fn test_validate_shared_gas_set_does_not_contain_validator() {
         let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
             tempo_chainspec::spec::ANDANTINO.genesis().clone(),
         ));
