@@ -269,4 +269,19 @@ mod tests {
 
         assert!(result.result.is_success());
     }
+
+    #[test]
+    fn test_transact_raw() {}
+
+    #[test]
+    fn test_transact_raw_system_tx() {}
+
+    #[test]
+    fn test_transact_raw_system_tx_must_be_call() {}
+
+    #[test]
+    fn test_transact_raw_system_tx_failed() {}
+
+    #[test]
+    fn test_transact_system_call() {}
 }
