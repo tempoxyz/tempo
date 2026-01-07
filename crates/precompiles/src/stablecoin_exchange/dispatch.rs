@@ -214,7 +214,7 @@ mod tests {
         let user = Address::random();
         let amount = 200_000_000u128;
 
-        // Initialize quote token (PathUSD)
+        // Initialize quote token (pathUSD)
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
             .with_mint(user, U256::from(amount))

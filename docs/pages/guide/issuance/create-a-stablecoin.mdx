@@ -47,7 +47,7 @@ Luckily, the built-in Tempo testnet faucet supports funding accounts with `Alpha
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 
 export function AddFunds() {
@@ -66,7 +66,7 @@ export function AddFunds() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -127,7 +127,7 @@ export function CreateStablecoin() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -155,7 +155,7 @@ After this step, your users will be able to create a stablecoin by clicking the 
 :::code-group
 
 ```tsx twoslash [CreateStablecoin.tsx]
-import { Hooks } from 'tempo.ts/wagmi' // [!code ++]
+import { Hooks } from 'wagmi/tempo' // [!code ++]
 
 // @noErrors
 export function CreateStablecoin() {
@@ -191,7 +191,7 @@ export function CreateStablecoin() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],
@@ -214,7 +214,7 @@ the name of the stablecoin and a link to the transaction receipt.
 :::code-group
 
 ```tsx twoslash [CreateStablecoin.tsx]
-import { Hooks } from 'tempo.ts/wagmi' 
+import { Hooks } from 'wagmi/tempo' 
 
 // @noErrors
 export function CreateStablecoin() {
@@ -259,7 +259,7 @@ export function CreateStablecoin() {
 // @noErrors
 import { createConfig, http } from 'wagmi'
 import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   chains: [tempoTestnet],

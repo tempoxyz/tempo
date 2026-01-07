@@ -13,7 +13,7 @@ import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
 import { Test, console } from "forge-std/Test.sol";
 
 /// @notice Base test framework for all spec tests
-/// PathUSD is just a TIP20 at a special address (0x20C0...) with token_id=0
+/// pathUSD is just a TIP20 at a special address (0x20C0...) with token_id=0
 contract BaseTest is Test {
 
     // Registry precompiles
@@ -41,7 +41,7 @@ contract BaseTest is Test {
 
     // Common test contracts
     TIP20Factory public factory = TIP20Factory(_TIP20FACTORY);
-    TIP20 public pathUSD = TIP20(_PATH_USD); // PathUSD is just a TIP20 at token_id=0
+    TIP20 public pathUSD = TIP20(_PATH_USD); // pathUSD is just a TIP20 at token_id=0
     StablecoinExchange public exchange = StablecoinExchange(_STABLECOIN_DEX);
     FeeManager public amm = FeeManager(_FEE_AMM);
     TIP403Registry public registry = TIP403Registry(_TIP403REGISTRY);
@@ -67,7 +67,7 @@ contract BaseTest is Test {
             deployCodeTo("StablecoinExchange", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
-            // Deploy PathUSD as a TIP20 at the special address
+            // Deploy pathUSD as a TIP20 at the special address
             deployCodeTo(
                 "TIP20.sol",
                 abi.encode("pathUSD", "pathUSD", "USD", address(0), pathUSDAdmin),
@@ -86,7 +86,7 @@ contract BaseTest is Test {
                 revert MissingPrecompile("TIP20Factory", _TIP20FACTORY);
             }
             if (_PATH_USD.code.length == 0) {
-                revert MissingPrecompile("PathUSD", _PATH_USD);
+                revert MissingPrecompile("pathUSD", _PATH_USD);
             }
             if (_STABLECOIN_DEX.code.length == 0) {
                 revert MissingPrecompile("StablecoinDEX", _STABLECOIN_DEX);

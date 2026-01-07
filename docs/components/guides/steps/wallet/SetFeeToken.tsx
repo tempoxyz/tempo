@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { type Address, isAddress } from 'viem'
 import { useChainId, useConfig, useConnection } from 'wagmi'
 import { Button, ExplorerLink, Step, StringFormatter } from '../../Demo'
