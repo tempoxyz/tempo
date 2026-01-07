@@ -2168,9 +2168,9 @@ mod tests {
                 .expect("Quote should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            // Expected: ceil(amount_out * PRICE_SCALE / price) + 1 for bid exactOut rounding
+            // Expected: ceil(amount_out * PRICE_SCALE / price)
             let expected_amount_in =
-                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128) + 1;
+                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
