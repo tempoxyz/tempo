@@ -41,6 +41,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 revm.workspace = true
+reth-storage-api.workspace = true
 
 [features]
 default = ["rpc", "engine"]
