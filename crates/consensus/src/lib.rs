@@ -191,6 +191,7 @@ mod tests {
     use super::*;
     use alloy_consensus::{
         Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
+        transaction::TxHashRef,
     };
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
@@ -395,6 +396,7 @@ mod tests {
     fn test_validate_header_timestamp_milli_gte_1000() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
 
+        // Test timestamp equal to 1000
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -410,6 +412,7 @@ mod tests {
             ))
         );
 
+        // Test timestamp > 1000
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -432,6 +435,7 @@ mod tests {
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(parent_ts)
+            .number(1)
             .timestamp_millis_part(500)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
@@ -440,7 +444,7 @@ mod tests {
             .gas_limit(30_000_000)
             .timestamp(parent_ts + 1)
             .timestamp_millis_part(600)
-            .number(1)
+            .number(2)
             .parent_hash(parent_sealed.hash())
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -494,9 +498,10 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(
-            consensus.validate_body_against_header(&body, &sealed),
-            Ok(())
+        assert!(
+            consensus
+                .validate_body_against_header(&body, &sealed)
+                .is_ok()
         );
     }
 
@@ -515,13 +520,11 @@ mod tests {
         let block = create_valid_block(header, vec![user_tx, system_tx]);
         let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
 
-        assert_eq!(consensus.validate_block_pre_execution(&sealed), Ok(()));
+        assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
     }
 
     #[test]
     fn test_validate_block_pre_execution_invalid_system_tx() {
-        use alloy_consensus::transaction::TxHashRef;
-
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let chain_id = ANDANTINO.chain().id();
 
@@ -543,7 +546,7 @@ mod tests {
             .timestamp(current_timestamp())
             .build();
         let block = create_valid_block(header, vec![invalid_system_tx]);
-        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
+        let sealed = SealedBlock::seal_slow(block);
 
         let result = consensus.validate_block_pre_execution(&sealed);
         assert_eq!(
@@ -566,7 +569,7 @@ mod tests {
             .timestamp(current_timestamp())
             .build();
         let block = create_valid_block(header, vec![user_tx]);
-        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
+        let sealed = SealedBlock::seal_slow(block);
 
         let result = consensus.validate_block_pre_execution(&sealed);
         assert_eq!(
@@ -590,7 +593,7 @@ mod tests {
             .timestamp(current_timestamp())
             .build();
         let block = create_valid_block(header, vec![system_tx]);
-        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
+        let sealed = SealedBlock::seal_slow(block);
 
         let result = consensus.validate_block_pre_execution(&sealed);
         assert_eq!(
