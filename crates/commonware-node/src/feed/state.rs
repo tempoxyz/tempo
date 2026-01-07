@@ -3,7 +3,7 @@
 use crate::{alias::marshal, consensus::Digest};
 use alloy_primitives::hex;
 use commonware_codec::Encode;
-use commonware_consensus::Block as _;
+use commonware_consensus::{Heightable as _, types::Height};
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
@@ -80,7 +80,7 @@ impl FeedStateHandle {
             block.height = marshal
                 .get_block(&Digest(block.digest))
                 .await
-                .map(|b| b.height());
+                .map(|b| b.height().get());
         }
     }
 }
@@ -113,7 +113,7 @@ impl ConsensusFeed for FeedStateHandle {
             }
             Query::Height(height) => {
                 let mut marshal = self.marshal()?;
-                let finalization = marshal.get_finalization(height).await?;
+                let finalization = marshal.get_finalization(Height::new(height)).await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),

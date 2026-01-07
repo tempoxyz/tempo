@@ -52,7 +52,7 @@ use commonware_consensus::{
     Reporters,
     marshal::Update,
     simplex::{self, elector, scheme::bls12381_threshold::Scheme},
-    types::{Epoch, Epocher as _},
+    types::{Epoch, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
@@ -60,6 +60,7 @@ use commonware_p2p::{
     Blocker, Receiver, Sender,
     utils::mux::{Builder as _, MuxHandle, Muxer},
 };
+use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
@@ -309,18 +310,22 @@ where
 
         let n_participants = participants.len();
         // Register the new signing scheme with the scheme provider.
+        let is_signer = matches!(share, Some(..));
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::signer(participants, public, share)
-                .expect("our private share must match our slice of the public key")
+            Scheme::signer(
+                crate::config::NAMESPACE,
+                participants,
+                public,
+                share,
+                Sequential,
+            )
+            .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(participants, public)
+            Scheme::verifier(crate::config::NAMESPACE, participants, public, Sequential)
         };
-
         self.config.scheme_provider.register(epoch, scheme.clone());
-
-        let is_signer = matches!(scheme, Scheme::Signer { .. });
 
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
@@ -340,7 +345,6 @@ where
                 ),
                 mailbox_size: self.config.mailbox_size,
                 epoch,
-                namespace: crate::config::NAMESPACE.to_vec(),
 
                 replay_buffer: REPLAY_BUFFER,
                 write_buffer: WRITE_BUFFER,
@@ -405,10 +409,10 @@ where
 
     #[instrument(
         skip_all,
-        fields(height, epoch = tracing::field::Empty),
+        fields(%height, epoch = tracing::field::Empty),
         err,
     )]
-    async fn handle_finalized_tip(&mut self, height: u64, digest: Digest) -> eyre::Result<()> {
+    async fn handle_finalized_tip(&mut self, height: Height, digest: Digest) -> eyre::Result<()> {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -453,8 +457,10 @@ where
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::verifier(
+                    crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
+                    Sequential,
                 ),
             );
             self.confirmed_latest_network_epoch
@@ -513,7 +519,7 @@ where
 
         tracing::debug!(
             %reference_epoch,
-            boundary_height,
+            %boundary_height,
             "hinting to sync system that a finalization certificate might be \
             available for our reference epoch",
         );

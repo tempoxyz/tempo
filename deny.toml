@@ -58,6 +58,7 @@ allow = [
   # https://github.com/rustls/webpki/blob/main/LICENSE ISC Style
   "LicenseRef-rustls-webpki",
   "CDLA-Permissive-2.0",
+  "OpenSSL",
 ]
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
@@ -66,9 +67,6 @@ exceptions = [
   { allow = [
     "MPL-2.0",
   ], name = "option-ext" },
-  { allow = [
-    "MPL-2.0",
-  ], name = "webpki-root-certs" },
 ]
 
 [[licenses.clarify]]

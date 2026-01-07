@@ -424,7 +424,6 @@ impl GenesisArgs {
                 extra_data = consensus_config
                     .to_genesis_dkg_outcome()
                     .encode()
-                    .freeze()
                     .to_vec()
                     .into();
             }
@@ -732,7 +731,7 @@ fn initialize_validator_config(
                         admin,
                         IValidatorConfig::addValidatorCall {
                             newValidatorAddress,
-                            publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
+                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
                             active: true,
                             inboundAddress: addr.to_string(),
                             outboundAddress: addr.to_string(),

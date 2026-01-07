@@ -218,7 +218,6 @@ pub async fn setup_validators(
             private_key
                 .public_key()
                 .encode()
-                .freeze()
                 .as_ref()
                 .try_into()
                 .unwrap(),

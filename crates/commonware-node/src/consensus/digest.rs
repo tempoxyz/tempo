@@ -41,7 +41,9 @@ impl commonware_math::algebra::Random for Digest {
     }
 }
 
-impl commonware_cryptography::Digest for Digest {}
+impl commonware_cryptography::Digest for Digest {
+    const EMPTY: Self = Self(B256::ZERO);
+}
 
 impl FixedSize for Digest {
     const SIZE: usize = 32;
