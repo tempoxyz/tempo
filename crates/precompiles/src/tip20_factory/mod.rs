@@ -25,7 +25,7 @@ const TIP20_PREFIX_BYTES: [u8; 12] = [
 
 /// Returns the root TIP20 token address for a given currency.
 /// Returns an error if the currency does not have a root token defined.
-pub fn root_token_address(currency: &str) -> Result<Address> {
+fn root_token_address(currency: &str) -> Result<Address> {
     match currency {
         USD_CURRENCY => Ok(PATH_USD_ADDRESS),
         _ => Err(TIP20Error::invalid_currency().into()),
