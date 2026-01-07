@@ -11599,6 +11599,7 @@ version = "0.8.0"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
+ "alloy-primitives",
  "reth-chainspec",
  "reth-consensus",
  "reth-consensus-common",
