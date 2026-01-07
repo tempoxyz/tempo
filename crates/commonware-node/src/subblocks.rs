@@ -746,7 +746,7 @@ async fn build_subblock(
                 }
             }
 
-            // If necessary, acquire lock and drop all outpriced txs
+            // If necessary, acquire lock and drop all invalid txs
             if !to_remove.is_empty() {
                 let mut txs = transactions.lock();
                 for hash in to_remove {
