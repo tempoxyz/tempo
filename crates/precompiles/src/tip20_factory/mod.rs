@@ -1,6 +1,7 @@
 // Module for tip20_factory precompile
 pub mod dispatch;
 
+use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20FactoryEvent};
 use tempo_precompiles_macros::contract;
 
@@ -106,6 +107,7 @@ impl TIP20Factory {
         }
 
         // Ensure that the quote token is a valid TIP20 that is currently deployed.
+        // This also covers the case where `quoteToken` is address(0).
         if !self.is_tip20(call.quoteToken)? {
             return Err(TIP20Error::invalid_quote_token().into());
         }
@@ -173,16 +175,23 @@ impl TIP20Factory {
             ));
         }
 
-        // quote_token must be address(0) or a valid TIP20
-        if !quote_token.is_zero() {
+        if quote_token.is_zero() {
+            // If `quote_token` is address(0) and currency is USD, address must be PATH_USD_ADDRESS.
+            if currency == USD_CURRENCY && address != PATH_USD_ADDRESS {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+        } else {
+            // Quote token must be a valid TIP20.
             if !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
-            // If token is USD, its quote token must also be USD
-            if currency == USD_CURRENCY
-                && TIP20Token::from_address(quote_token)?.currency()? != USD_CURRENCY
-            {
-                return Err(TIP20Error::invalid_quote_token().into());
+
+            // If token is USD, its quote token must also be USD.
+            if currency == USD_CURRENCY {
+                let q_currency = TIP20Token::from_address(quote_token)?.currency()?;
+                if q_currency != USD_CURRENCY {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
             }
         }
 
