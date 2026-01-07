@@ -179,14 +179,14 @@ async fn instantiate_network(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
 )> {
-    // TODO: Find out why `union_unique` should be used at all. This is the only place
+    // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
     let p2p_cfg = lookup::Config {
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
         bypass_ip_check,
-        ..lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
+        ..lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 
     Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))

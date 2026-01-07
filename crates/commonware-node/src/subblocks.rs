@@ -706,25 +706,39 @@ async fn build_subblock(
 
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
-            let mut selected_transactions = Vec::new();
-            let mut senders = Vec::new();
-            let mut gas_left =
+            let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
+            let gas_budget =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
+            let mut gas_left = gas_budget;
             let txs = transactions.lock().clone();
+
             for (tx_hash, tx) in txs {
+                // Remove transactions over subblock gas budget
+                if tx.gas_limit() > gas_budget {
+                    warn!(
+                        %tx_hash,
+                        tx_gas_limit = tx.gas_limit(),
+                        gas_budget,
+                        "removing transaction with gas limit exceeding maximum subblock gas budget"
+                    );
+                    to_remove.push(tx_hash);
+                    continue;
+                }
+
+                // Skip transactions that don't fit in remaining budget (may fit in future rounds)
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
+
                 if let Err(err) = evm.transact_commit(&*tx) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
-                    // Remove invalid transactions from the set.
-                    transactions.lock().swap_remove(&tx_hash);
+                    to_remove.push(tx_hash);
                     continue;
                 }
 
                 gas_left -= tx.gas_limit();
-                selected_transactions.push(tx.inner().clone());
+                selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
                 if start.elapsed() > timeout {
@@ -732,7 +746,15 @@ async fn build_subblock(
                 }
             }
 
-            (selected_transactions, senders)
+            // If necessary, acquire lock and drop all invalid txs
+            if !to_remove.is_empty() {
+                let mut txs = transactions.lock();
+                for hash in to_remove {
+                    txs.swap_remove(&hash);
+                }
+            }
+
+            (selected, senders)
         }
         Err(err) => {
             warn!(%err, "failed to build an evm at block, building an empty subblock");
@@ -810,6 +832,7 @@ async fn validate_subblock(
     let scheme = scheme_provider
         .scoped(epoch)
         .ok_or_eyre("scheme not found")?;
+    let participants = scheme.participants().len() as usize;
 
     eyre::ensure!(
         scheme.participants().iter().any(|p| p == &sender),
@@ -819,9 +842,7 @@ async fn validate_subblock(
     // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE
-        / TEMPO_SHARED_GAS_DIVISOR as usize
-        / scheme.participants().len() as usize;
+    let max_size = MAX_RLP_BLOCK_SIZE / TEMPO_SHARED_GAS_DIVISOR as usize / participants;
     if subblock.total_tx_size() > max_size {
         warn!(
             size = subblock.total_tx_size(),
@@ -830,6 +851,21 @@ async fn validate_subblock(
         return Ok(());
     }
 
+    // Bound subblock gas at the per-validator allocation.
+    let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
+    let mut total_gas = 0u64;
+    for tx in subblock.transactions_recovered() {
+        total_gas = total_gas.saturating_add(tx.gas_limit());
+        if total_gas > gas_budget {
+            warn!(
+                total_gas,
+                gas_budget, "subblock exceeds gas budget, skipping"
+            );
+            return Ok(());
+        }
+    }
+
+    // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));

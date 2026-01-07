@@ -45,7 +45,7 @@ async fn test_create_token() -> eyre::Result<()> {
         .get_receipt()
         .await?;
 
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
     assert_eq!(event.address, TIP20_FACTORY_ADDRESS);
     assert_eq!(event.name, "Test");
     assert_eq!(event.symbol, "TEST");
