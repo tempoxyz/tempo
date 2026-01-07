@@ -234,7 +234,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use reth_revm::context::BlockEnv;
+    use crate::test_utils::{test_evm, test_evm_with_basefee};
     use revm::{
         context::TxEnv,
         database::{EmptyDB, in_memory_db::CacheDB},
@@ -244,19 +244,7 @@ mod tests {
 
     #[test]
     fn can_execute_system_tx() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
         let result = evm
             .transact(TempoTxEnv {
                 inner: TxEnv {
@@ -275,20 +263,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 0,
-                        gas_limit: 30_000_000,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm_with_basefee(EmptyDB::default(), 0);
 
         let tx = TempoTxEnv {
             inner: TxEnv {
@@ -313,19 +288,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw_system_tx() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
 
         // System transaction
         let tx = TempoTxEnv {
@@ -351,19 +314,7 @@ mod tests {
 
     #[test]
     fn test_transact_raw_system_tx_must_be_call() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
 
         // System transaction with Create kind
         let tx = TempoTxEnv {
@@ -404,19 +355,7 @@ mod tests {
             },
         );
 
-        let mut evm = TempoEvm::new(
-            cache_db,
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(cache_db);
 
         // System transaction that will fail with call to contract that reverts
         let tx = TempoTxEnv {
@@ -443,19 +382,7 @@ mod tests {
 
     #[test]
     fn test_transact_system_call() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
 
         let caller = Address::repeat_byte(0x01);
         let contract = Address::repeat_byte(0x02);
@@ -470,19 +397,7 @@ mod tests {
 
     #[test]
     fn test_take_revert_logs() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
 
         assert!(evm.take_revert_logs().is_empty());
 

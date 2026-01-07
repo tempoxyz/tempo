@@ -448,27 +448,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evm::TempoEvm;
+    use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
-    use alloy_evm::{
-        EvmEnv,
-        block::BlockExecutor,
-        eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder},
-    };
+    use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
-    use reth_revm::{State, context::BlockEnv};
-    use revm::{context::result::ExecutionResult, database::EmptyDB, inspector::NoOpInspector};
-    use std::sync::Arc;
-    use tempo_chainspec::spec::ANDANTINO;
+    use reth_revm::State;
+    use revm::{context::result::ExecutionResult, database::EmptyDB};
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
         transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
-    use tempo_revm::{TempoBlockEnv, TempoHaltReason};
+    use tempo_revm::TempoHaltReason;
 
     fn create_legacy_tx() -> TempoTxEnvelope {
         let tx = TxLegacy {
@@ -483,115 +477,11 @@ mod tests {
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
     }
 
-    fn create_test_evm() -> TempoEvm<EmptyDB, NoOpInspector> {
-        TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        )
-    }
-
-    fn test_chainspec() -> Arc<TempoChainSpec> {
-        Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()))
-    }
-
-    struct TestExecutorBuilder {
-        block_number: u64,
-        parent_hash: B256,
-        general_gas_limit: u64,
-        shared_gas_limit: u64,
-        validator_set: Option<Vec<B256>>,
-        parent_beacon_block_root: Option<B256>,
-        subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
-    }
-
-    impl Default for TestExecutorBuilder {
-        fn default() -> Self {
-            Self {
-                block_number: 1,
-                parent_hash: B256::ZERO,
-                general_gas_limit: 10_000_000,
-                shared_gas_limit: 10_000_000,
-                validator_set: None,
-                parent_beacon_block_root: None,
-                subblock_fee_recipients: HashMap::new(),
-            }
-        }
-    }
-
-    impl TestExecutorBuilder {
-        fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
-            self.validator_set = Some(validators);
-            self
-        }
-
-        fn with_shared_gas_limit(mut self, limit: u64) -> Self {
-            self.shared_gas_limit = limit;
-            self
-        }
-
-        fn with_general_gas_limit(mut self, limit: u64) -> Self {
-            self.general_gas_limit = limit;
-            self
-        }
-
-        fn with_parent_beacon_block_root(mut self, root: B256) -> Self {
-            self.parent_beacon_block_root = Some(root);
-            self
-        }
-
-        fn build<'a>(
-            self,
-            db: &'a mut State<EmptyDB>,
-            chainspec: &'a Arc<TempoChainSpec>,
-        ) -> TempoBlockExecutor<'a, EmptyDB, NoOpInspector> {
-            let evm = TempoEvm::new(
-                db,
-                EvmEnv {
-                    block_env: TempoBlockEnv {
-                        inner: BlockEnv {
-                            number: U256::from(self.block_number),
-                            basefee: 1,
-                            gas_limit: 30_000_000,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            );
-
-            let ctx = crate::TempoBlockExecutionCtx {
-                inner: EthBlockExecutionCtx {
-                    parent_hash: self.parent_hash,
-                    parent_beacon_block_root: self.parent_beacon_block_root,
-                    ommers: &[],
-                    withdrawals: None,
-                    extra_data: Bytes::new(),
-                },
-                general_gas_limit: self.general_gas_limit,
-                shared_gas_limit: self.shared_gas_limit,
-                validator_set: self.validator_set,
-                subblock_fee_recipients: self.subblock_fee_recipients,
-            };
-
-            TempoBlockExecutor::new(evm, ctx, chainspec)
-        }
-    }
-
     #[test]
     fn test_build_receipt() {
         let builder = TempoReceiptBuilder;
         let tx = create_legacy_tx();
-        let evm = create_test_evm();
+        let evm = test_evm(EmptyDB::default());
 
         let logs = vec![Log::new_unchecked(
             Address::ZERO,

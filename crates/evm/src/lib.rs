@@ -40,6 +40,9 @@ use tempo_revm::evm::TempoContext;
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
+#[cfg(test)]
+mod test_utils;
+
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
 pub struct TempoEvmConfig {
@@ -233,12 +236,13 @@ impl ConfigureEvm for TempoEvmConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
     use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
-    use tempo_chainspec::{hardfork::TempoHardfork, spec::ANDANTINO};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, subblock::SubBlockVersion,
         transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
@@ -246,8 +250,7 @@ mod tests {
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
         let activation = evm_config
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
@@ -256,8 +259,7 @@ mod tests {
 
     #[test]
     fn test_evm_env() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
 
         let header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -293,8 +295,7 @@ mod tests {
 
     #[test]
     fn test_next_evm_env() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
 
         let parent = TempoHeader {
             inner: alloy_consensus::Header {
@@ -346,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_context_for_block() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = test_chainspec();
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
 
         // Create subblock metadata
@@ -420,8 +421,7 @@ mod tests {
 
     #[test]
     fn test_context_for_block_no_subblock_metadata() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
 
         // Create a block without subblock metadata system tx
         let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -470,10 +470,7 @@ mod tests {
 
     #[test]
     fn test_context_for_next_block() {
-        let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
-            tempo_chainspec::spec::ANDANTINO.genesis().clone(),
-        ));
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {
