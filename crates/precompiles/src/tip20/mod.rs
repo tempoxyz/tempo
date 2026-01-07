@@ -1766,7 +1766,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             // pathUSD is at a reserved address, so we initialize it directly (not via factory)
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize("pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
+            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
 
             assert_eq!(path_usd.currency()?, "USD");
             // pathUSD uses itself as quote token
