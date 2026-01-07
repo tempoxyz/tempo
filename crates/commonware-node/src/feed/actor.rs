@@ -8,7 +8,7 @@
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
-    Block as _,
+    Heightable as _,
     simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
@@ -88,7 +88,11 @@ impl<TContext: Spawner> Actor<TContext> {
         certificate: &impl Encode,
     ) -> CertifiedBlock {
         let certificate = hex::encode(certificate.encode());
-        let height = self.marshal.get_block(&digest).await.map(|b| b.height());
+        let height = self
+            .marshal
+            .get_block(&digest)
+            .await
+            .map(|b| b.height().get());
 
         CertifiedBlock {
             epoch,
