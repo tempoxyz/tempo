@@ -185,3 +185,40 @@ pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
 
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_validate_header() {}
+
+    #[test]
+    fn test_validate_header_timestamp_in_the_future() {}
+
+    #[test]
+    fn test_validate_header_shared_gas_mismatch() {}
+
+    #[test]
+    fn test_validate_header_non_payment_gas_mismatch() {}
+
+    #[test]
+    fn test_validate_header_timestamp_milli_gt_1000() {}
+
+    #[test]
+    fn validate_header_against_parent() {}
+
+    #[test]
+    fn validate_body_against_header() {}
+
+    #[test]
+    fn test_validate_block_pre_execution() {}
+
+    #[test]
+    fn test_validate_block_pre_execution_invalid_system_tx() {}
+
+    #[test]
+    fn test_validate_block_pre_execution_no_system_tx() {}
+
+    #[test]
+    fn test_validate_block_pre_execution_system_tx_out_of_order() {}
+}
