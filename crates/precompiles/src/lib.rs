@@ -200,6 +200,11 @@ fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResu
 }
 
 #[inline]
+fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
+    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+#[inline]
 fn mutate<T: SolCall>(
     call: T,
     sender: Address,
@@ -214,12 +219,6 @@ fn mutate<T: SolCall>(
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
-#[inline]
-fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-/// Like [`mutate_void`] but takes a pre-decoded call (for enum-based dispatch).
 #[inline]
 fn mutate_void<T: SolCall>(
     call: T,
