@@ -1,4 +1,5 @@
 //! The executor is sending fork-choice-updates to the execution layer.
+use commonware_consensus::types::Height;
 use commonware_runtime::{Metrics, Pacer, Spawner};
 
 mod actor;
@@ -32,7 +33,7 @@ pub(crate) struct Config {
     /// If on startup there is a mismatch between the execution layer and the
     /// consensus, then the node will fill the gap by backfilling blocks to
     /// the execution layer until `last_finalized_height` is reached.
-    pub(crate) last_finalized_height: u64,
+    pub(crate) last_finalized_height: Height,
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: crate::alias::marshal::Mailbox,

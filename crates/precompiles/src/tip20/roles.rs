@@ -16,8 +16,17 @@ impl TIP20Token {
     }
 
     /// Grant the default admin role to an account
-    pub fn grant_default_admin(&mut self, admin: Address) -> Result<()> {
-        self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)
+    pub fn grant_default_admin(&mut self, msg_sender: Address, admin: Address) -> Result<()> {
+        self.grant_role_internal(admin, DEFAULT_ADMIN_ROLE)?;
+
+        self.emit_event(RolesAuthEvent::RoleMembershipUpdated(
+            IRolesAuth::RoleMembershipUpdated {
+                role: DEFAULT_ADMIN_ROLE,
+                account: admin,
+                sender: msg_sender,
+                hasRole: true,
+            },
+        ))
     }
 
     // Public functions that handle calldata and emit events
@@ -180,7 +189,22 @@ mod tests {
             assert!(has_custom);
 
             // Verify events were emitted
-            assert_eq!(token.emitted_events().len(), 1); // One grant event
+            token.assert_emitted_events(vec![
+                // Event from grant_default_admin during token initialization
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: DEFAULT_ADMIN_ROLE,
+                    account: admin,
+                    sender: admin,
+                    hasRole: true,
+                }),
+                // Event from grant_role call above
+                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                    role: custom_role,
+                    account: user,
+                    sender: admin,
+                    hasRole: true,
+                }),
+            ]);
 
             Ok(())
         })

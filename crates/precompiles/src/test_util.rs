@@ -94,7 +94,7 @@ pub fn setup_storage() -> (HashMapStorageProvider, Address) {
 #[cfg(any(test, feature = "test-utils"))]
 enum Action {
     #[default]
-    /// Ensure PathUSD (token 0) is deployed and configure it.
+    /// Ensure pathUSD (token 0) is deployed and configure it.
     PathUSD,
 
     /// Create and configure a new token using the TIP20Factory.
@@ -109,13 +109,13 @@ enum Action {
 
 /// Helper for TIP20 token setup in tests.
 ///
-/// Supports creating new tokens, configuring PathUSD, or modifying existing tokens.
+/// Supports creating new tokens, configuring pathUSD, or modifying existing tokens.
 /// Uses a chainable API for role grants, minting, approvals, and rewards.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// // Initialize and configure PathUSD
+/// // Initialize and configure pathUSD
 /// TIP20Setup::path_usd(admin)
 ///     .with_issuer(admin)
 ///     .apply()?;
@@ -147,7 +147,7 @@ pub struct TIP20Setup {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl TIP20Setup {
-    /// Configure PathUSD (token 0).
+    /// Configure pathUSD (token 0).
     pub fn path_usd(admin: Address) -> Self {
         Self {
             action: Action::PathUSD,
@@ -156,9 +156,9 @@ impl TIP20Setup {
         }
     }
 
-    /// Create a new token via factory. Ensures that `PathUSD` and `TIP20Factory` are initialized.
+    /// Create a new token via factory. Ensures that `pathUSD` and `TIP20Factory` are initialized.
     ///
-    /// Defaults to `currency: "USD"`, `quote_token: PathUSD`
+    /// Defaults to `currency: "USD"`, `quote_token: pathUSD`
     pub fn create(name: &'static str, symbol: &'static str, admin: Address) -> Self {
         Self {
             action: Action::CreateToken {
@@ -199,7 +199,7 @@ impl TIP20Setup {
         self
     }
 
-    /// Set a custom quote token (default: PathUSD).
+    /// Set a custom quote token (default: pathUSD).
     pub fn quote_token(mut self, token: Address) -> Self {
         self.quote_token = Some(token);
         self
@@ -254,7 +254,7 @@ impl TIP20Setup {
         self
     }
 
-    /// Initialize PathUSD if needed and return it.
+    /// Initialize pathUSD if needed and return it.
     fn path_usd_inner(&self) -> Result<TIP20Token> {
         if is_initialized(PATH_USD_ADDRESS) {
             return TIP20Token::from_address(PATH_USD_ADDRESS);
@@ -266,8 +266,8 @@ impl TIP20Setup {
 
         Self::factory()?.create_token_reserved_address(
             PATH_USD_ADDRESS,
-            "PathUSD",
-            "PUSD",
+            "pathUSD",
+            "pathUSD",
             "USD",
             Address::ZERO,
             admin,

@@ -1,0 +1,134 @@
+import * as Card from "../../components/Card.tsx"
+import * as Demo from '../../components/guides/Demo.tsx'
+import * as Step from '../../components/guides/steps'
+import LucideFile from '~icons/lucide/file'
+import LucideSignature from '~icons/lucide/signature'
+
+# !Replace Me!
+
+{/* Short description of the guide. What we are building, why we are building it, and what we will learn. */}
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam elementum odio ante, sit amet tincidunt leo scelerisque vitae.
+
+<Demo.Container name="!Replace Me!" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/replace-me">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} />
+  <Step.CreateToken stepNumber={3} last />
+</Demo.Container>
+
+## Steps
+
+{/* Steps to follow to get the demo working and fully functioning end-to-end */}
+
+### Lorem
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+:::code-group
+
+```tsx twoslash [Component.tsx]
+// @noErrors
+export function Component() {
+  return (
+    <div>
+      {/* Component code here */}
+    </div>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
+  },
+})
+```
+
+:::
+
+### Ipsum
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+:::code-group
+
+```tsx twoslash [Component.tsx]
+// @noErrors
+export function Component() {
+  // Component code here
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
+  },
+})
+```
+
+:::
+
+::::
+
+## Recipes
+
+{/* Any peripheral things you can do beyond the above steps */}
+
+### Foo
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+### Bar
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+## Best Practices
+
+{/* Any best practices or tips to follow when using this feature */}
+
+### Foo
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+### Bar
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+## Learning Resources
+
+{/* Outlink to any useful links to read in /documentation/* */}
+
+<Card.Container>
+  <Card.Link
+    description="Learn more about the Tempo transaction type that enables passkey signatures"
+    href="/guide/use-accounts/webauthn-p256-signatures"
+    icon={LucideFile}
+    title="Tempo Transaction type"
+  />
+  <Card.Link
+    description="Learn more about how (passkey) signatures are structured in the protocol"
+    href="/guide/use-accounts/webauthn-p256-signatures"
+    icon={LucideSignature}
+    title="Signatures"
+  />
+</Card.Container>

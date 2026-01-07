@@ -22,7 +22,7 @@ contract ValidatorConfig is IValidatorConfig {
     mapping(address => Validator) public validators;
 
     /// @notice The epoch at which a fresh DKG ceremony will be triggered
-    uint64 public nextDkgCeremony;
+    uint64 private nextDkgCeremony;
 
     /// @notice Check if caller is the owner
     modifier onlyOwner() {

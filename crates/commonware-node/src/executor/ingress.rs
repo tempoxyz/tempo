@@ -1,4 +1,4 @@
-use commonware_consensus::{Reporter, marshal::Update};
+use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::WrapErr as _;
 use futures::{
     SinkExt as _,
@@ -17,7 +17,7 @@ impl Mailbox {
     /// Requests the agent to update the head of the canonical chain to `digest`.
     pub(crate) fn canonicalize_head(
         &self,
-        height: u64,
+        height: Height,
         digest: Digest,
     ) -> eyre::Result<oneshot::Receiver<()>> {
         let (tx, rx) = oneshot::channel();
@@ -58,7 +58,7 @@ pub(super) enum Command {
 
 #[derive(Debug)]
 pub(super) struct CanonicalizeHead {
-    pub(super) height: u64,
+    pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) ack: oneshot::Sender<()>,
 }

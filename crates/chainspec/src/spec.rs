@@ -1,5 +1,5 @@
 use crate::{
-    bootnodes::andantino_nodes,
+    bootnodes::{andantino_nodes, moderato_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -50,7 +50,7 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &["moderato", "testnet"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -60,6 +60,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "testnet" => ANDANTINO.clone(),
+        "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
     })
@@ -79,6 +80,12 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
 pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
         .expect("`./genesis/andantino.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis).into()
+});
+
+pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
+        .expect("`./genesis/moderato.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis).into()
 });
 
@@ -212,6 +219,7 @@ impl EthChainSpec for TempoChainSpec {
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
         match self.inner.chain_id() {
             42429 => Some(andantino_nodes()),
+            42431 => Some(moderato_nodes()),
             _ => self.inner.bootnodes(),
         }
     }

@@ -26,16 +26,19 @@ To use the Tempo extension crate, you will need to create a [`Provider`] using t
 For more information about network types, see the Alloy [documentation](https://alloy.rs/guides/interacting-with-multiple-networks#interacting-with-multiple-networks).
 
 ```rs [main.rs]
-use alloy::ProviderBuilder;  // [!code focus]
-use tempo_alloy::TempoNetwork;  // [!code focus]
+use alloy::providers::ProviderBuilder; // [!code focus]
+use tempo_alloy::TempoNetwork; // [!code focus]
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let provider = ProviderBuilder::new_with_network::<TempoNetwork>() // [!code focus]
-      .connect(&std::env::var("RPC_URL").expect("No RPC URL set")) // [!code focus]
-      .await?; // [!code focus]
-    
-  Ok(())
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>() // [!code focus]
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set")) // [!code focus]
+        .await?; // [!code focus]
+
+    println!("Provider connected successfully"); // [!code focus]
+    println!("Chain ID: {provider:?}"); // [!code focus]
+
+    Ok(())
 }
 ```
 
@@ -44,19 +47,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Now we are ready to use the provider to interact with the network. We can use the provider to send transactions, read data, and more.
 
 ```rs [main.rs]
-use alloy::ProviderBuilder; 
+use alloy::providers::{Provider, ProviderBuilder};
 use tempo_alloy::TempoNetwork;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
-      .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
-      .await?;
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
+        .await?;
 
-  // [!code focus:2]
-  println!("{}", provider.get_block_number().await?);
-  // @log: 421045
-  Ok(())
+    // [!code focus:2]
+    println!("{}", provider.get_block_number().await?);
+    // @log: 421045
+    Ok(())
 }
 ```
 See the Alloy [documentation](https://alloy.rs) or the [`Provider`] docs for more examples.

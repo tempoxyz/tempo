@@ -2,6 +2,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use alloy_primitives::Address;
 use commonware_codec::DecodeExt as _;
+use commonware_consensus::types::Height;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
@@ -21,7 +22,7 @@ use tracing::{Level, info, instrument, warn};
 /// Reads state from the ValidatorConfig precompile at a given block height.
 fn read_validator_config_at_height<T>(
     node: &TempoFullNode,
-    height: u64,
+    height: Height,
     read_fn: impl FnOnce(&ValidatorConfig) -> eyre::Result<T>,
 ) -> eyre::Result<T> {
     // Try mapping the block height to a hash tracked by reth.
@@ -31,7 +32,7 @@ fn read_validator_config_at_height<T>(
     // Necessary because the DKG and application actors process finalized block concurrently.
     let block_hash = if let Some(hash) = node
         .provider
-        .block_hash(height)
+        .block_hash(height.get())
         .wrap_err_with(|| format!("failed reading block hash at height `{height}`"))?
     {
         hash
@@ -39,7 +40,7 @@ fn read_validator_config_at_height<T>(
         .provider
         .pending_block_num_hash()
         .wrap_err("failed reading pending block state")?
-        && pending.number == height
+        && pending.number == height.get()
     {
         pending.hash
     } else {
@@ -83,16 +84,16 @@ fn read_validator_config_at_height<T>(
     skip_all,
     fields(
         attempt = _attempt,
-        block.number = block_number,
+        %height,
     ),
     err
 )]
-pub(super) async fn read_from_contract_at_block(
+pub(super) async fn read_from_contract_at_height(
     _attempt: u32,
     node: &TempoFullNode,
-    block_number: u64,
+    height: Height,
 ) -> eyre::Result<ordered::Map<PublicKey, DecodedValidator>> {
-    let raw_validators = read_validator_config_at_height(node, block_number, |config| {
+    let raw_validators = read_validator_config_at_height(node, height, |config| {
         config
             .get_validators()
             .wrap_err("failed to query contract for validator config")
@@ -215,7 +216,7 @@ impl std::fmt::Display for DecodedValidator {
 )]
 pub(super) fn read_next_full_dkg_ceremony(
     node: &TempoFullNode,
-    at_height: u64,
+    at_height: Height,
 ) -> eyre::Result<u64> {
     read_validator_config_at_height(node, at_height, |config| {
         config

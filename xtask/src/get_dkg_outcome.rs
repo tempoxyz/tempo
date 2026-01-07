@@ -87,6 +87,7 @@ impl GetDkgOutcome {
                 epocher
                     .last(Epoch::new(epoch))
                     .expect("fixed epocher is valid for all epochs")
+                    .get()
             };
 
             provider

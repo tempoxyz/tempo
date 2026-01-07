@@ -573,7 +573,7 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::spec::MODERATO;
     use tempo_precompiles::tip403_registry::TIP403Registry;
     use tempo_primitives::TempoTxEnvelope;
 
@@ -667,7 +667,7 @@ mod tests {
         MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
     > {
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_account(
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
@@ -858,7 +858,7 @@ mod tests {
 
         // Setup provider with storage
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_block(B256::random(), Block::default());
 
         // Add sender account

@@ -17,8 +17,8 @@ use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
-    Block as _,
-    types::{Epoch, Epocher as _, FixedEpocher, Round, View},
+    Heightable as _,
+    types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
@@ -238,7 +238,7 @@ impl Inner<Init> {
         // epoch. Only epoch 0/height 0 is special cased because first height
         // of epoch 0 == genesis of epoch 0.
         let boundary = match genesis.epoch.previous() {
-            None => 0,
+            None => Height::zero(),
             Some(previous_epoch) => self
                 .epoch_strategy
                 .last(previous_epoch)
@@ -248,14 +248,14 @@ impl Inner<Init> {
         let mut attempts = 0;
         let epoch_genesis = loop {
             attempts += 1;
-            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary) {
+            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary.get()) {
                 break Digest(hash);
             } else if let Some((_, digest)) = self.marshal.get_info(boundary).await {
                 break digest;
             } else {
                 info_span!("fetch_genesis_digest").in_scope(|| {
                     info!(
-                        boundary,
+                        boundary.height = %boundary,
                         attempts,
                         "neither marshal actor nor execution layer had the \
                         boundary block of the previous epoch available; \
@@ -450,7 +450,7 @@ impl Inner<Init> {
             &mut self.marshal,
         )
         .await?;
-        debug!(height = parent.height(), "retrieved parent block",);
+        debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
@@ -496,7 +496,7 @@ impl Inner<Init> {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height() + 1
+        let extra_data = if parent_epoch_info.last() == parent.height().next()
             && parent_epoch_info.epoch() == round.epoch()
         {
             // At epoch boundary: include public ceremony outcome
@@ -517,7 +517,7 @@ impl Inner<Init> {
                 %outcome.epoch,
                 "received DKG outcome; will include in payload builder attributes",
             );
-            outcome.encode().freeze().into()
+            outcome.encode().into()
         } else {
             // Regular block: try to include DKG dealer log.
             match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
@@ -535,7 +535,7 @@ impl Inner<Init> {
                         "received signed dealer log; will include in payload \
                         builder attributes"
                     );
-                    log.encode().freeze().into()
+                    log.encode().into()
                 }
             }
         };
@@ -665,7 +665,7 @@ impl Inner<Init> {
         {
             tracing::warn!(
                 %error,
-                parent.height = parent.height(),
+                parent.height = %parent.height(),
                 parent.digest = %parent.digest(),
                 "failed updating canonical head to parent",
             );
@@ -747,11 +747,11 @@ struct Init {
 #[instrument(
     skip_all,
     fields(
-        epoch,
+        %epoch,
         epoch_length,
         block.parent_digest = %block.parent_digest(),
         block.digest = %block.digest(),
-        block.height = block.height(),
+        block.height = %block.height(),
         block.timestamp = block.timestamp(),
         parent.digest = %parent_digest,
     )
@@ -837,7 +837,7 @@ async fn verify_header_extra_data(
             contains the correct DKG outcome",
         );
         let our_outcome = dkg_manager
-            .get_dkg_outcome(parent.1, block.height() - 1)
+            .get_dkg_outcome(parent.1, block.height().saturating_sub(HeightDelta::new(1)))
             .await
             .wrap_err(
                 "failed getting public dkg ceremony outcome; cannot verify end \

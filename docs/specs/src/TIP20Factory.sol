@@ -53,7 +53,9 @@ contract TIP20Factory is ITIP20Factory {
         bytes memory creationCode = vm.getCode("TIP20.sol");
         vm.etch(
             tokenAddr,
-            abi.encodePacked(creationCode, abi.encode(name, symbol, currency, quoteToken, admin))
+            abi.encodePacked(
+                creationCode, abi.encode(name, symbol, currency, quoteToken, admin, msg.sender)
+            )
         );
         (bool success, bytes memory runtimeBytecode) = tokenAddr.call("");
         require(success, "TIP20Factory: Failed to deploy TIP20");

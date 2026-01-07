@@ -239,7 +239,7 @@ mod tests {
     fn test_evm_config_can_query_tempo_hardforks() {
         // Create a test chainspec
         let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
-            tempo_chainspec::spec::ANDANTINO.genesis().clone(),
+            tempo_chainspec::spec::MODERATO.genesis().clone(),
         ));
 
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);

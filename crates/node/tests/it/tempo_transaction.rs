@@ -3318,8 +3318,8 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         }],
         300_000, // Higher gas for key authorization verification
     );
-    // Use PathUSD (DEFAULT_FEE_TOKEN) as fee token
-    // and our spending limit is set for PathUSD
+    // Use pathUSD (DEFAULT_FEE_TOKEN) as fee token
+    // and our spending limit is set for pathUSD
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     tx.key_authorization = Some(key_authorization);
 
@@ -3581,11 +3581,11 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         "\nRoot key balance: {root_balance_initial} → {root_balance_after} (decreased by {balance_decrease})"
     );
 
-    // PathUSD balance should decrease by at least the transfer amount
-    // (gas fees are also paid in PathUSD since we set fee_token to PathUSD)
+    // pathUSD balance should decrease by at least the transfer amount
+    // (gas fees are also paid in pathUSD since we set fee_token to pathUSD)
     assert!(
         balance_decrease >= transfer_amount,
-        "Root key PathUSD should have decreased by at least the transfer amount"
+        "Root key pathUSD should have decreased by at least the transfer amount"
     );
     let gas_fee_paid = balance_decrease - transfer_amount;
     println!("✓ Root key paid for transfer ({transfer_amount}) + gas fees ({gas_fee_paid})");
@@ -4022,7 +4022,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4060,7 +4060,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4122,7 +4122,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4184,7 +4184,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4284,7 +4284,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_unlimited_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_unlimited_tx.key_authorization = Some(unlimited_key_auth);
 
@@ -4306,7 +4306,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, large_transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let unlimited_sig = sign_aa_tx_with_p256_access_key(
@@ -4369,7 +4369,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_no_spending_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_no_spending_tx.key_authorization = Some(no_spending_key_auth);
 
@@ -4391,7 +4391,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, small_transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     no_spending_transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let no_spending_sig = sign_aa_tx_with_p256_access_key(
@@ -4467,7 +4467,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4565,7 +4565,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_tx.key_authorization = Some(never_expires_key_auth);
 
@@ -4585,7 +4585,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let never_expires_sig = sign_aa_tx_with_p256_access_key(
@@ -4652,7 +4652,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_short_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_short_expiry_tx.key_authorization = Some(short_expiry_key_auth);
 
@@ -4673,7 +4673,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     before_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let short_expiry_sig = sign_aa_tx_with_p256_access_key(
@@ -4728,7 +4728,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient3, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     after_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let expired_key_sig = sign_aa_tx_with_p256_access_key(
@@ -4810,7 +4810,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     past_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     past_expiry_tx.key_authorization = Some(past_expiry_key_auth);
 

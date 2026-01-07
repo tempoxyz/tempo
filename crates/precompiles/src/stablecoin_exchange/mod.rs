@@ -430,6 +430,8 @@ impl StablecoinExchange {
                 amount,
                 isBid: is_bid,
                 tick,
+                isFlipOrder: false,
+                flipTick: 0,
             },
         ))?;
 
@@ -576,15 +578,16 @@ impl StablecoinExchange {
 
         self.commit_order_to_book(order)?;
 
-        // Emit FlipOrderPlaced event
-        self.emit_event(StablecoinExchangeEvents::FlipOrderPlaced(
-            IStablecoinExchange::FlipOrderPlaced {
+        // Emit OrderPlaced event for flip order
+        self.emit_event(StablecoinExchangeEvents::OrderPlaced(
+            IStablecoinExchange::OrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,
                 amount,
                 isBid: is_bid,
                 tick,
+                isFlipOrder: true,
                 flipTick: flip_tick,
             },
         ))?;
@@ -776,11 +779,9 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in) = if bid {
                 // For bids: amount_out is quote, amount_in is base
-                // Round UP baseNeeded and add 1 to ensure full order consumption.
-                // This guards against ceil(floor(x) * inverse) < x rounding edge cases.
+                // Round UP baseNeeded to ensure we collect enough base to cover exact output
                 let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?
-                    .saturating_add(1);
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
@@ -805,19 +806,22 @@ impl StablecoinExchange {
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
-                // Set to 0 to avoid rounding errors
+                // Update remaining amount_out
                 if bid {
-                    // Round UP baseNeeded + 1 to match the initial calculation
+                    // Round UP baseNeeded to match the initial calculation
                     let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?
-                        .saturating_add(1);
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                     if base_needed > order.remaining() {
-                        amount_out = amount_out.saturating_sub(amount_out_received);
+                        amount_out = amount_out
+                            .checked_sub(amount_out_received)
+                            .ok_or(TempoPrecompileError::under_overflow())?;
                     } else {
                         amount_out = 0;
                     }
                 } else if amount_out > order.remaining() {
-                    amount_out = amount_out.saturating_sub(amount_out_received);
+                    amount_out = amount_out
+                        .checked_sub(amount_out_received)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
                     amount_out = 0;
                 }
@@ -1121,11 +1125,12 @@ impl StablecoinExchange {
 
             let (fill_amount, amount_in_tick) = if is_bid {
                 // For bids: remaining_out is in quote, amount_in is in base
-                // Round UP + 1 to match execution. Note: if multiple orders are crossed
-                // within this tick, execution may charge slightly more (+1 per order boundary).
+                // Round UP to ensure we collect enough base to cover exact output.
+                // Note: this quote iterates per-tick, but execution iterates per-order.
+                // If multiple orders exist at a tick, execution may charge slightly more
+                // due to ceiling accumulation across order boundaries.
                 let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?
-                    .saturating_add(1);
+                    .ok_or(TempoPrecompileError::under_overflow())?;
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1147,15 +1152,15 @@ impl StablecoinExchange {
 
             let amount_out_tick = if is_bid {
                 // Round down amount_out_tick (user receives less quote)
-                // Cap at remaining_out since fill_amount includes +1 bias
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
-                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out.saturating_sub(amount_out_tick);
+            remaining_out = remaining_out
+                .checked_sub(amount_out_tick)
+                .ok_or(TempoPrecompileError::under_overflow())?;
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1276,8 +1281,8 @@ impl StablecoinExchange {
         Ok(route)
     }
 
-    /// Find the path from a token to the root (PathUSD)
-    /// Returns a vector of addresses starting with the token and ending with PathUSD
+    /// Find the path from a token to the root (pathUSD)
+    /// Returns a vector of addresses starting with the token and ending with pathUSD
     fn find_path_to_root(&self, mut token: Address) -> Result<Vec<Address>> {
         let mut path = vec![token];
 
@@ -1388,14 +1393,14 @@ mod tests {
         exchange_address: Address,
         amount: u128,
     ) -> Result<(Address, Address)> {
-        // Configure PathUSD
+        // Configure pathUSD
         let quote = TIP20Setup::path_usd(admin)
             .with_issuer(admin)
             .with_mint(user, U256::from(amount))
             .with_approval(user, exchange_address, U256::from(amount))
             .apply()?;
 
-        // Configure base token (uses PathUSD as quote by default)
+        // Configure base token (uses pathUSD as quote by default)
         let base = TIP20Setup::create("BASE", "BASE", admin)
             .with_issuer(admin)
             .with_mint(user, U256::from(amount))
@@ -2166,9 +2171,9 @@ mod tests {
                 .expect("Quote should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            // Expected: ceil(amount_out * PRICE_SCALE / price) + 1 for bid exactOut rounding
+            // Expected: ceil(amount_out * PRICE_SCALE / price)
             let expected_amount_in =
-                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128) + 1;
+                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2418,7 +2423,7 @@ mod tests {
 
             let admin = Address::random();
 
-            // Setup: PathUSD <- USDC <- TokenA
+            // Setup: pathUSD <- USDC <- TokenA
             let usdc = TIP20Setup::create("USDC", "USDC", admin).apply()?;
             let token_a = TIP20Setup::create("TokenA", "TKA", admin)
                 .quote_token(usdc.address())
@@ -2427,7 +2432,7 @@ mod tests {
             // Find path from TokenA to root
             let path = exchange.find_path_to_root(token_a.address())?;
 
-            // Expected: [TokenA, USDC, PathUSD]
+            // Expected: [TokenA, USDC, pathUSD]
             assert_eq!(path.len(), 3);
             assert_eq!(path[0], token_a.address());
             assert_eq!(path[1], usdc.address());
@@ -2473,7 +2478,7 @@ mod tests {
             let user = Address::random();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
-            // Setup: PathUSD <- Token (direct pair)
+            // Setup: pathUSD <- Token (direct pair)
             let (token, path_usd) =
                 setup_test_tokens(admin, user, exchange.address, min_order_amount)?;
 
@@ -2504,7 +2509,7 @@ mod tests {
             let user = Address::random();
 
             let min_order_amount = MIN_ORDER_AMOUNT;
-            // Setup: PathUSD <- Token
+            // Setup: pathUSD <- Token
             let (token, path_usd) =
                 setup_test_tokens(admin, user, exchange.address, min_order_amount)?;
 
@@ -2533,9 +2538,9 @@ mod tests {
 
             let admin = Address::random();
 
-            // Setup: PathUSD <- USDC
-            //        PathUSD <- EURC
-            // (USDC and EURC are siblings, both have PathUSD as quote)
+            // Setup: pathUSD <- USDC
+            //        pathUSD <- EURC
+            // (USDC and EURC are siblings, both have pathUSD as quote)
             let usdc = TIP20Setup::create("USDC", "USDC", admin).apply()?;
             let eurc = TIP20Setup::create("EURC", "EURC", admin).apply()?;
 
@@ -2543,10 +2548,10 @@ mod tests {
             exchange.create_pair(usdc.address())?;
             exchange.create_pair(eurc.address())?;
 
-            // Trade USDC -> EURC should go through PathUSD
+            // Trade USDC -> EURC should go through pathUSD
             let route = exchange.find_trade_path(usdc.address(), eurc.address())?;
 
-            // Expected: 2 hops (USDC -> PathUSD, PathUSD -> EURC)
+            // Expected: 2 hops (USDC -> pathUSD, pathUSD -> EURC)
             assert_eq!(route.len(), 2, "Should have 2 hops for sibling tokens");
             verify_hop(route[0], usdc.address())?;
             verify_hop(route[1], PATH_USD_ADDRESS)?;
@@ -2567,8 +2572,8 @@ mod tests {
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
-            // Setup: PathUSD <- USDC
-            //        PathUSD <- EURC
+            // Setup: pathUSD <- USDC
+            //        pathUSD <- EURC
             let _path_usd = TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
@@ -2586,17 +2591,17 @@ mod tests {
                 .apply()?;
 
             // Place orders to provide liquidity at 1:1 rate (tick 0)
-            // For trade USDC -> PathUSD -> EURC:
-            // - First hop needs: bid on USDC (someone buying USDC with PathUSD)
-            // - Second hop needs: ask on EURC (someone selling EURC for PathUSD)
+            // For trade USDC -> pathUSD -> EURC:
+            // - First hop needs: bid on USDC (someone buying USDC with pathUSD)
+            // - Second hop needs: ask on EURC (someone selling EURC for pathUSD)
 
-            // USDC bid: buy USDC with PathUSD
+            // USDC bid: buy USDC with pathUSD
             exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
 
-            // EURC ask: sell EURC for PathUSD
+            // EURC ask: sell EURC for pathUSD
             exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
 
-            // Quote multi-hop: USDC -> PathUSD -> EURC
+            // Quote multi-hop: USDC -> pathUSD -> EURC
             let amount_in = min_order_amount;
             let amount_out =
                 exchange.quote_swap_exact_amount_in(usdc.address(), eurc.address(), amount_in)?;
@@ -2623,8 +2628,8 @@ mod tests {
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
-            // Setup: PathUSD <- USDC
-            //        PathUSD <- EURC
+            // Setup: pathUSD <- USDC
+            //        pathUSD <- EURC
             let _path_usd = TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 .with_mint(alice, min_order_amount_x10)
@@ -2645,18 +2650,16 @@ mod tests {
             exchange.place(alice, usdc.address(), min_order_amount * 5, true, 0)?;
             exchange.place(alice, eurc.address(), min_order_amount * 5, false, 0)?;
 
-            // Quote multi-hop for exact output: USDC -> PathUSD -> EURC
+            // Quote multi-hop for exact output: USDC -> pathUSD -> EURC
             let amount_out = min_order_amount;
             let amount_in =
                 exchange.quote_swap_exact_amount_out(usdc.address(), eurc.address(), amount_out)?;
 
-            // With 1:1 rates at each hop:
-            // - First hop (USDC->PathUSD): against bid, has +1 rounding adjustment
-            // - Second hop (PathUSD->EURC): against ask, no +1 adjustment
+            // With 1:1 rates at each hop and no fractional remainders,
+            // ceiling division produces exact amounts
             assert_eq!(
-                amount_in,
-                amount_out + 1,
-                "With 1:1 rates, input should equal output plus rounding adjustment for bid hop"
+                amount_in, amount_out,
+                "With 1:1 rates and no rounding, input should equal output"
             );
 
             Ok(())
@@ -2677,7 +2680,7 @@ mod tests {
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
-            // Setup: PathUSD <- USDC <- EURC
+            // Setup: pathUSD <- USDC <- EURC
             let path_usd = TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 // Setup alice as a liquidity provider
@@ -2710,7 +2713,7 @@ mod tests {
             let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
             let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
 
-            // Execute multi-hop swap: USDC -> PathUSD -> EURC
+            // Execute multi-hop swap: USDC -> pathUSD -> EURC
             let amount_in = min_order_amount;
             let amount_out = exchange.swap_exact_amount_in(
                 bob,
@@ -2736,19 +2739,19 @@ mod tests {
                 "Bob should have received amount_out EURC"
             );
 
-            // Verify bob has ZERO PathUSD (intermediate token should be transitory)
+            // Verify bob has ZERO pathUSD (intermediate token should be transitory)
             let bob_path_usd_wallet =
                 path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?;
             assert_eq!(
                 bob_path_usd_wallet,
                 U256::ZERO,
-                "Bob should have ZERO PathUSD in wallet (transitory)"
+                "Bob should have ZERO pathUSD in wallet (transitory)"
             );
 
             let bob_path_usd_exchange = exchange.balance_of(bob, path_usd.address())?;
             assert_eq!(
                 bob_path_usd_exchange, 0,
-                "Bob should have ZERO PathUSD on exchange (transitory)"
+                "Bob should have ZERO pathUSD on exchange (transitory)"
             );
 
             Ok(())
@@ -2769,7 +2772,7 @@ mod tests {
             let min_order_amount = MIN_ORDER_AMOUNT;
             let min_order_amount_x10 = U256::from(MIN_ORDER_AMOUNT * 10);
 
-            // Setup: PathUSD <- USDC <- EURC
+            // Setup: pathUSD <- USDC <- EURC
             let path_usd = TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
                 // Setup alice as a liquidity provider
@@ -2802,7 +2805,7 @@ mod tests {
             let bob_usdc_before = usdc.balance_of(ITIP20::balanceOfCall { account: bob })?;
             let bob_eurc_before = eurc.balance_of(ITIP20::balanceOfCall { account: bob })?;
 
-            // Execute multi-hop swap: USDC -> PathUSD -> EURC (exact output)
+            // Execute multi-hop swap: USDC -> pathUSD -> EURC (exact output)
             let amount_out = 90u128;
             let amount_in = exchange.swap_exact_amount_out(
                 bob,
@@ -2828,21 +2831,21 @@ mod tests {
                 "Bob should have received exact amount_out EURC"
             );
 
-            // Verify bob has ZERO PathUSD (intermediate token should be transitory)
+            // Verify bob has ZERO pathUSD (intermediate token should be transitory)
             let bob_path_usd_wallet =
                 path_usd.balance_of(ITIP20::balanceOfCall { account: bob })?;
             assert_eq!(
                 bob_path_usd_wallet,
                 U256::ZERO,
-                "Bob should have ZERO PathUSD in wallet (transitory)"
+                "Bob should have ZERO pathUSD in wallet (transitory)"
             );
 
             let bob_path_usd_exchange = exchange
                 .balance_of(bob, path_usd.address())
-                .expect("Failed to get bob's PathUSD exchange balance");
+                .expect("Failed to get bob's pathUSD exchange balance");
             assert_eq!(
                 bob_path_usd_exchange, 0,
-                "Bob should have ZERO PathUSD on exchange (transitory)"
+                "Bob should have ZERO pathUSD on exchange (transitory)"
             );
 
             Ok(())
@@ -3739,7 +3742,7 @@ mod tests {
                 },
             )?;
 
-            // Setup quote token (PathUSD) with the blacklist policy
+            // Setup quote token (pathUSD) with the blacklist policy
             let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
 
             quote.change_transfer_policy_id(

@@ -4,10 +4,10 @@ use alloy_consensus::BlockHeader as _;
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
-    Block as _,
+    Heightable as _,
     marshal::{self, Update},
     simplex::scheme::bls12381_threshold::Scheme,
-    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher},
+    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -23,6 +23,7 @@ use commonware_p2p::{
     Address, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, NZU32, ordered};
 
@@ -552,11 +553,11 @@ where
         skip_all,
         fields(
             round.epoch = %round.epoch(),
-            finalized.tip = finalized_tip,
+            finalized.tip = %finalized_tip,
             finalized.epoch = tracing::field::Empty,
         ),
     )]
-    async fn should_skip_round(&mut self, round: &state::Round, finalized_tip: u64) -> bool {
+    async fn should_skip_round(&mut self, round: &state::Round, finalized_tip: Height) -> bool {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -577,7 +578,7 @@ where
                 .last(round.epoch())
                 .expect("epoch strategy is valid for all epochs");
             info!(
-                boundary_height,
+                %boundary_height,
                 "confirmed that the network is at least 2 epochs aheads of us; \
                 setting synchronization floor to boundary height of our DKG's \
                 epoch and reporting that the rest of the DKG round should be \
@@ -586,7 +587,9 @@ where
 
             // NOTE: `set_floor(height)` implies that the next block sent by
             // marshal will be height + 1.
-            self.config.marshal.set_floor(boundary_height - 1).await;
+            if let Some(one_before_boundary) = boundary_height.previous() {
+                self.config.marshal.set_floor(one_before_boundary).await;
+            }
         }
         should_skip_round
     }
@@ -619,7 +622,7 @@ where
         skip_all,
         fields(
             dkg.epoch = %round.epoch(),
-            block.height = block.height(),
+            block.height = %block.height(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -759,7 +762,7 @@ where
                 // that they are not revealed), that it must have the shares
                 // available. Upon restart, the shares must be replayed against
                 // the player state.
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         (new_output, Some(new_share))
@@ -773,7 +776,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, None)
@@ -841,7 +844,7 @@ where
         skip_all,
         fields(
             dkg.epoch = %round.epoch(),
-            block.height = block.height(),
+            block.height = %block.height(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -938,7 +941,7 @@ where
                 }
             } else {
                 // Send to remote player
-                let payload = Message::Dealer(pub_msg, priv_msg).encode().freeze();
+                let payload = Message::Dealer(pub_msg, priv_msg).encode();
                 match round_channel
                     .send(Recipients::One(player.clone()), payload, true)
                     .await
@@ -1003,7 +1006,7 @@ where
                     if let Err(error) = round_channel
                         .send(
                             Recipients::One(from.clone()),
-                            Message::Ack(ack).encode().freeze(),
+                            Message::Ack(ack).encode(),
                             true,
                         )
                         .await
@@ -1135,7 +1138,7 @@ where
             );
 
             let (output, share) = if let Some(player_state) = player_state {
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, share)) => {
                         info!("DKG ceremony was a success");
                         (new_output, Some(share))
@@ -1149,7 +1152,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("DKG ceremony was a success");
                         (output, None)
@@ -1227,6 +1230,7 @@ where
     let newest_height = node
         .provider
         .best_block_number()
+        .map(Height::new)
         .wrap_err("failed reading newest block number from database")?;
 
     let epoch_info = epoch_strategy
@@ -1236,22 +1240,25 @@ where
     let last_boundary = if epoch_info.last() == newest_height {
         newest_height
     } else {
-        epoch_info.epoch().previous().map_or(0, |previous| {
-            epoch_strategy
-                .last(previous)
-                .expect("epoch strategy is for all epochs")
-        })
+        epoch_info
+            .epoch()
+            .previous()
+            .map_or_else(Height::zero, |previous| {
+                epoch_strategy
+                    .last(previous)
+                    .expect("epoch strategy is for all epochs")
+            })
     };
     info!(
-        newest_height,
-        last_boundary,
+        %newest_height,
+        %last_boundary,
         "execution layer reported newest available block, reading on-chain \
         DKG outcome from last boundary height, and validator state from newest \
         block"
     );
     let header = node
         .provider
-        .header_by_number(last_boundary)
+        .header_by_number(last_boundary.get())
         .map_or_else(
             |e| Err(eyre::Report::new(e)),
             |header| header.ok_or_eyre("execution layer reported it had no header"),
@@ -1270,7 +1277,7 @@ where
         tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
 
-    let all_validators = validators::read_from_contract_at_block(0, node, newest_height)
+    let all_validators = validators::read_from_contract_at_height(0, node, newest_height)
         .await
         .wrap_err_with(|| {
             format!("failed reading validator config from block height `{newest_height}`")
@@ -1297,7 +1304,7 @@ where
         Some(share)
     };
 
-    info!(newest_height, "setting sync floor");
+    info!(%newest_height, "setting sync floor");
     marshal.set_floor(newest_height).await;
 
     Ok(State {
@@ -1504,7 +1511,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     loop {
         metric.inc();
         attempts += 1;
-        if let Ok(validators) = validators::read_from_contract_at_block(attempts, node, last).await
+        if let Ok(validators) = validators::read_from_contract_at_height(attempts, node, last).await
         {
             break validators;
         }
