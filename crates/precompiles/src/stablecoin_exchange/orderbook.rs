@@ -3,7 +3,7 @@
 use crate::{
     error::Result,
     stablecoin_exchange::IStablecoinExchange,
-    storage::{Handler, Mapping, Slot},
+    storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tempo_contracts::precompiles::StablecoinExchangeError;
@@ -27,18 +27,11 @@ pub enum RoundingDirection {
     Up,
 }
 
-/// Checked ceiling division for u128.
-/// Returns None if divisor is zero.
-fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
-    if divisor == 0 {
-        return None;
-    }
-    Some(numerator.div_ceil(divisor))
-}
-
 /// Convert base token amount to quote token amount at a given tick.
 ///
 /// Formula: quote_amount = (base_amount * price) / PRICE_SCALE
+///
+/// Uses U256 for intermediate multiplication to prevent overflow.
 ///
 /// # Arguments
 /// * `base_amount` - Amount of base tokens
@@ -46,20 +39,27 @@ fn checked_div_ceil(numerator: u128, divisor: u128) -> Option<u128> {
 /// * `rounding` - Rounding direction
 ///
 /// # Returns
-/// Quote token amount, or None on overflow
+/// Quote token amount, or None if result exceeds u128
 pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    let numerator = base_amount.checked_mul(price)?;
+    let price = U256::from(tick_to_price(tick));
+    let base = U256::from(base_amount);
+    let scale = U256::from(PRICE_SCALE);
 
-    match rounding {
-        RoundingDirection::Down => numerator.checked_div(PRICE_SCALE as u128),
-        RoundingDirection::Up => checked_div_ceil(numerator, PRICE_SCALE as u128),
-    }
+    let numerator = base * price;
+
+    let result = match rounding {
+        RoundingDirection::Down => numerator / scale,
+        RoundingDirection::Up => numerator.div_ceil(scale),
+    };
+
+    result.try_into().ok()
 }
 
 /// Convert quote token amount to base token amount at a given tick.
 ///
 /// Formula: base_amount = (quote_amount * PRICE_SCALE) / price
+///
+/// Uses U256 for intermediate multiplication to prevent overflow.
 ///
 /// # Arguments
 /// * `quote_amount` - Amount of quote tokens
@@ -67,15 +67,20 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
 /// * `rounding` - Rounding direction
 ///
 /// # Returns
-/// Base token amount, or None on overflow
+/// Base token amount, or None if result exceeds u128
 pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
-    let price = tick_to_price(tick) as u128;
-    let numerator = quote_amount.checked_mul(PRICE_SCALE as u128)?;
+    let price = U256::from(tick_to_price(tick));
+    let quote = U256::from(quote_amount);
+    let scale = U256::from(PRICE_SCALE);
 
-    match rounding {
-        RoundingDirection::Down => numerator.checked_div(price),
-        RoundingDirection::Up => checked_div_ceil(numerator, price),
-    }
+    let numerator = quote * scale;
+
+    let result = match rounding {
+        RoundingDirection::Down => numerator / price,
+        RoundingDirection::Up => numerator.div_ceil(price),
+    };
+
+    result.try_into().ok()
 }
 
 // PRICE_SCALE + MIN_TICK = 100_000 - 2000
@@ -203,31 +208,38 @@ impl Orderbook {
 }
 
 impl OrderbookHandler {
-    pub fn get_tick_level_handler(&self, tick: i16, is_bid: bool) -> TickLevelHandler {
+    pub fn tick_level_handler(&self, tick: i16, is_bid: bool) -> &TickLevelHandler {
         if is_bid {
-            self.bids.at(tick)
+            &self.bids[tick]
         } else {
-            self.asks.at(tick)
+            &self.asks[tick]
         }
     }
 
-    fn get_tick_bit_handler(&self, tick: i16, is_bid: bool) -> Result<Slot<U256>> {
+    pub fn tick_level_handler_mut(&mut self, tick: i16, is_bid: bool) -> &mut TickLevelHandler {
+        if is_bid {
+            &mut self.bids[tick]
+        } else {
+            &mut self.asks[tick]
+        }
+    }
+
+    fn calc_tick_word_idx(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
             return Err(StablecoinExchangeError::invalid_tick().into());
         }
 
-        let word_index = tick >> 8;
-
-        if is_bid {
-            Ok(self.bid_bitmap.at(word_index))
-        } else {
-            Ok(self.ask_bitmap.at(word_index))
-        }
+        Ok(tick >> 8)
     }
 
     /// Set bit in bitmap to mark tick as active
     pub fn set_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &mut self.bid_bitmap[word_index]
+        } else {
+            &mut self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -242,7 +254,12 @@ impl OrderbookHandler {
 
     /// Clear bit in bitmap to mark tick as inactive
     pub fn delete_tick_bit(&mut self, tick: i16, is_bid: bool) -> Result<()> {
-        let mut bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &mut self.bid_bitmap[word_index]
+        } else {
+            &mut self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let current_word = bitmap.read()?;
@@ -257,7 +274,12 @@ impl OrderbookHandler {
 
     /// Check if a tick is initialized (has orders)
     pub fn is_tick_initialized(&self, tick: i16, is_bid: bool) -> Result<bool> {
-        let bitmap = self.get_tick_bit_handler(tick, is_bid)?;
+        let word_index = self.calc_tick_word_idx(tick)?;
+        let bitmap = if is_bid {
+            &self.bid_bitmap[word_index]
+        } else {
+            &self.ask_bitmap[word_index]
+        };
 
         // Read current bitmap word
         let word = bitmap.read()?;
@@ -299,7 +321,7 @@ impl OrderbookHandler {
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = self.ask_bitmap.at(word_index).read()?;
+            let word = self.ask_bitmap[word_index].read()?;
 
             // Mask off bits below bit_index to only consider ticks >= next_tick
             let mask = if bit_index == 0 {
@@ -349,7 +371,7 @@ impl OrderbookHandler {
 
             let bit_index = (next_tick & 0xFF) as usize;
 
-            let word = self.bid_bitmap.at(word_index).read()?;
+            let word = self.bid_bitmap[word_index].read()?;
 
             // Mask off bits above bit_index to only consider ticks <= next_tick
             let mask = if bit_index == 255 {
@@ -542,7 +564,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test full lifecycle (set, check, clear, check) for positive and negative ticks
                 // Include boundary cases, word boundaries, and various representative values
@@ -585,7 +607,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test MIN_TICK
                 book_handler.set_tick_bit(MIN_TICK, true)?;
@@ -620,7 +642,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 let tick = 100;
 
@@ -657,7 +679,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Ticks that span word boundary at 256
                 book_handler.set_tick_bit(255, true)?; // word_index = 0, bit_index = 255
@@ -675,7 +697,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test ticks in different words (both positive and negative)
 
@@ -722,7 +744,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.set_tick_bit(MAX_TICK + 1, true);
@@ -753,7 +775,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.delete_tick_bit(MAX_TICK + 1, true);
@@ -783,7 +805,7 @@ mod tests {
             let mut storage = HashMapStorageProvider::new(1);
             StorageCtx::enter(&mut storage, || {
                 let exchange = StablecoinExchange::new();
-                let book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &exchange.books[BOOK_KEY];
 
                 // Test tick above MAX_TICK
                 let result = book_handler.is_tick_initialized(MAX_TICK + 1, true);
@@ -814,7 +836,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0)
                 book_handler.set_tick_bit(10, false)?;
@@ -845,7 +867,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words: 100 (word 0), 300 (word 1), 600 (word 2)
                 book_handler.set_tick_bit(100, false)?;
@@ -877,7 +899,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks 10 and 50 (both in word 0) for bids
                 book_handler.set_tick_bit(10, true)?;
@@ -908,7 +930,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set ticks in different words for bids: 600 (word 2), 300 (word 1), 100 (word 0)
                 book_handler.set_tick_bit(600, true)?;
@@ -940,7 +962,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Set negative ticks for asks
                 book_handler.set_tick_bit(-500, false)?;
@@ -986,7 +1008,7 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let mut exchange = StablecoinExchange::new();
                 exchange.initialize()?;
-                let mut book_handler = exchange.books.at(BOOK_KEY);
+                let book_handler = &mut exchange.books[BOOK_KEY];
 
                 // Test exact word boundaries (256, 512, -256, -512)
                 book_handler.set_tick_bit(255, false)?; // Last bit of word 0
@@ -1125,6 +1147,45 @@ mod tests {
             assert!(
                 payout_floor <= payout_ceil,
                 "Floor should never be more than ceiling"
+            );
+        }
+    }
+
+    mod u256_upcast_tests {
+        use super::*;
+
+        #[test]
+        fn test_base_to_quote_large_amount_no_overflow() {
+            let large_base_amount: u128 = u128::MAX / 100_000;
+            let result = base_to_quote(large_base_amount, MAX_TICK, RoundingDirection::Down);
+
+            assert!(
+                result.is_some(),
+                "base_to_quote should handle large amounts without overflow using U256"
+            );
+
+            let expected = large_base_amount
+                .checked_mul(102)
+                .and_then(|v| v.checked_div(100));
+            assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn test_quote_to_base_large_amount_no_overflow() {
+            let large_quote_amount: u128 = (u128::MAX / PRICE_SCALE as u128) + 1;
+
+            assert!(
+                large_quote_amount
+                    .checked_mul(PRICE_SCALE as u128)
+                    .is_none(),
+                "Test setup: this value should overflow u128 multiplication"
+            );
+
+            let result = quote_to_base(large_quote_amount, MAX_TICK, RoundingDirection::Down);
+
+            assert!(
+                result.is_some(),
+                "quote_to_base should handle large amounts without overflow using U256"
             );
         }
     }

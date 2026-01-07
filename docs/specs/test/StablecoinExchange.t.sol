@@ -95,9 +95,13 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_CreatePair() public {
-        ITIP20 newQuote = ITIP20(factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin));
+        ITIP20 newQuote = ITIP20(
+            factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin, bytes32("newquote"))
+        );
 
-        ITIP20 newBase = ITIP20(factory.createToken("New Base", "NBASE", "USD", newQuote, admin));
+        ITIP20 newBase = ITIP20(
+            factory.createToken("New Base", "NBASE", "USD", newQuote, admin, bytes32("newbase"))
+        );
         bytes32 expectedKey = exchange.pairKey(address(newBase), address(newQuote));
 
         if (!isTempo) {
@@ -113,14 +117,17 @@ contract StablecoinExchangeTest is BaseTest {
     function test_OrderbookPairs_AreOrderSensitive_AcrossQuoteUpdates() public {
         // Create a dedicated base token and two possible quote tokens, all USD-denominated.
         vm.startPrank(admin);
-        ITIP20 base = ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin));
-        ITIP20 quote1 = ITIP20(factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin));
+        ITIP20 base =
+            ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin, bytes32(0)));
+        ITIP20 quote1 = ITIP20(
+            factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin, bytes32(uint256(1)))
+        );
         vm.stopPrank();
 
-        // Initial state: base quotes PathUSD
+        // Initial state: base quotes pathUSD
         assertEq(address(base.quoteToken()), address(pathUSD));
 
-        // 1) First pair: (base, PathUSD)
+        // 1) First pair: (base, pathUSD)
         bytes32 key0 = exchange.createPair(address(base));
         (address b0, address q0,,) = exchange.books(key0);
         assertEq(b0, address(base), "first book base mismatch");
@@ -142,7 +149,7 @@ contract StablecoinExchangeTest is BaseTest {
         // Keys must differ when quoteToken changes
         assertTrue(key1 != key0, "orderbook key should change when quoteToken changes");
 
-        // 3) Reset base's quote token back to PathUSD so that setting quote1's
+        // 3) Reset base's quote token back to pathUSD so that setting quote1's
         // quote token to base does not create a quote-token loop.
         vm.startPrank(admin);
         base.setNextQuoteToken(pathUSD);
@@ -168,7 +175,7 @@ contract StablecoinExchangeTest is BaseTest {
 
         // The (base, quote1) and (quote1, base) books must have different keys
         assertTrue(key2 != key1, "reversed base/quote should have different key");
-        // And also be distinct from the initial (base, PathUSD) configuration
+        // And also be distinct from the initial (base, pathUSD) configuration
         assertTrue(key2 != key0, "third key should differ from first");
     }
 
@@ -372,9 +379,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(
-            address(pathUSD), address(token1), amountOut, maxAmountIn
-        );
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -611,9 +617,8 @@ contract StablecoinExchangeTest is BaseTest {
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(
-                IStablecoinExchange.BelowMinimumOrderSize.selector, amount
-            );
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -693,7 +698,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test pair creation validation
     function test_CreatePair_RevertIf_NonUsdToken() public {
         // Create a non-USD token
-        ITIP20 eurToken = ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin));
+        ITIP20 eurToken =
+            ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try exchange.createPair(address(eurToken)) {
             revert CallShouldHaveReverted();
@@ -774,7 +780,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test swap validation
     function test_Swap_RevertIf_PairNotExists() public {
         // Try to swap between two tokens that don't have a trading pair
-        ITIP20 token3 = ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin));
+        ITIP20 token3 =
+            ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin, bytes32("token3")));
 
         try exchange.swapExactAmountIn(address(token3), address(token2), 100, 0) {
             revert CallShouldHaveReverted();
@@ -978,9 +985,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find direct path
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(pathUSD), address(token1), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), minOrderAmount);
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
             // Sibling tokens through pathUSD
@@ -1014,9 +1020,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find path in reverse
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(
-                address(token1), address(pathUSD), minOrderAmount
-            );
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), minOrderAmount);
             assertGt(amountOut, 0);
         }
     }
@@ -1027,7 +1032,9 @@ contract StablecoinExchangeTest is BaseTest {
         // The path algorithm will find token1 -> pathUSD -> isolatedToken
         // But the swap will fail because the isolatedToken pair doesn't exist
 
-        ITIP20 isolatedToken = ITIP20(factory.createToken("Isolated", "ISO", "USD", pathUSD, admin));
+        ITIP20 isolatedToken = ITIP20(
+            factory.createToken("Isolated", "ISO", "USD", pathUSD, admin, bytes32("isolated"))
+        );
 
         // Don't create a pair for isolatedToken - this means the orderbook doesn't exist
 
@@ -1702,6 +1709,200 @@ contract StablecoinExchangeTest is BaseTest {
 
         vm.prank(user);
         orderId = exchange.place(address(token1), amount, false, tick);
+    }
+
+    /// @notice Verifies that swapExactAmountOut uses ceiling division for baseNeeded.
+    ///         When requesting exactly the quote an order produces, the taker pays ceil(release * SCALE / price),
+    ///         which may leave dust in the order.
+    function test_BidExactOutRounding_CeilingOnly() public {
+        // Values that trigger the rounding difference between floor and ceil
+        uint128 baseAmount = 100_000_051;
+        int16 tick = -2000; // price = 98000, p = 0.98
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor) - what taker can actually get from this order
+        uint128 release = uint128((uint256(baseAmount) * uint256(price)) / exchange.PRICE_SCALE());
+
+        // Calculate expected baseIn: ceil(release * SCALE / price)
+        uint128 expectedBaseIn =
+            uint128((uint256(release) * exchange.PRICE_SCALE() + price - 1) / price);
+
+        // Alice places a bid for baseAmount base tokens
+        vm.prank(alice);
+        uint128 orderId = exchange.place(address(token1), baseAmount, true, tick);
+
+        // Bob does exactOut for the full release amount
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            release, // amountOut
+            type(uint128).max // maxAmountIn
+        );
+
+        // baseIn equals the ceiling, which may be less than the full order amount
+        assertEq(baseIn, expectedBaseIn, "baseIn should be ceil(release * SCALE / price)");
+
+        // The order may have dust remaining (this is correct behavior)
+        uint128 dustRemaining = baseAmount - expectedBaseIn;
+        assertGt(dustRemaining, 0, "There should be dust remaining in the order");
+
+        // Verify order still exists with dust
+        IStablecoinExchange.Order memory order = exchange.getOrder(orderId);
+        assertEq(order.remaining, dustRemaining, "Order should have dust remaining");
+    }
+
+    function testFuzz_BidExactOutRounding_CeilingOnly(uint128 amount, int16 tick) public {
+        // Bound inputs
+        amount = uint128(bound(amount, 100_000_000, 500_000_000));
+        tick = int16(bound(tick, -2000, 2000));
+        tick = tick - (tick % 10); // align to tick spacing
+
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate release (floor)
+        uint128 release = uint128((uint256(amount) * uint256(price)) / exchange.PRICE_SCALE());
+        if (release == 0) return; // skip if no quote to release
+
+        // Calculate expected baseIn: ceil(release * SCALE / price)
+        uint128 expectedBaseIn =
+            uint128((uint256(release) * exchange.PRICE_SCALE() + price - 1) / price);
+
+        // Alice places a bid
+        vm.prank(alice);
+        exchange.place(address(token1), amount, true, tick);
+
+        // Bob takes all available quote
+        vm.prank(bob);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), address(pathUSD), release, type(uint128).max
+        );
+
+        // baseIn should be the ceiling (may be less than or equal to amount)
+        assertEq(baseIn, expectedBaseIn, "baseIn should be ceil(release * SCALE / price)");
+        assertLe(baseIn, amount, "baseIn should not exceed order amount");
+    }
+
+    /// @notice Verifies that swapExactAmountOut correctly rounds up amountIn when filling bids,
+    ///         ensuring the requested output is fully backed by the consumed input.
+    function test_BidExactOutRounding_RoundsUpAmountIn() public {
+        // Choose a tick where price > PRICE_SCALE to make the rounding behavior observable.
+        int16 tick = 2000; // price = 102_000
+        uint128 amount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000
+
+        uint32 price = exchange.tickToPrice(tick);
+        uint128 escrow =
+            uint128((uint256(amount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
+
+        // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
+        vm.startPrank(admin);
+        token1.mint(charlie, INITIAL_BALANCE);
+        vm.stopPrank();
+        vm.prank(charlie);
+        token1.approve(address(exchange), type(uint256).max);
+
+        // Place a single bid order
+        uint128 order1 = _placeBidOrder(alice, amount, tick);
+        assertEq(order1, 1);
+
+        // Sanity: contract holds quote from the order.
+        assertEq(pathUSD.balanceOf(address(exchange)), escrow);
+
+        // Execute exactOut swap for exactly the escrow amount.
+        // baseNeeded = ceil(escrow * PRICE_SCALE / price) + 1, but capped at order.remaining
+        vm.prank(charlie);
+        uint128 amountIn = exchange.swapExactAmountOut(
+            address(token1), // tokenIn = base
+            address(pathUSD), // tokenOut = quote
+            escrow,
+            type(uint128).max
+        );
+
+        // fillAmount is min(baseNeeded, order.remaining) = min(amount, amount) = amount
+        assertEq(amountIn, amount, "amountIn equals order amount when fully consumed");
+    }
+
+    /// @notice Fuzz test: splitting a trade into smaller pieces should never give the taker a better price.
+    /// With ceiling rounding on asks, the taker pays at least as much (usually more) when splitting.
+    function testFuzz_AskRounding_SplittingNeverCheaper(
+        uint128 totalBaseOut,
+        uint8 numSplits,
+        int16 tick
+    ) public {
+        // Bound inputs
+        totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
+        numSplits = uint8(bound(numSplits, 2, 10));
+        tick = int16(bound(tick, -2000, 2000));
+        tick = tick - (tick % 10); // align to tick spacing
+
+        // Alice places a large ask order (selling base for quote)
+        uint128 askAmount = totalBaseOut * 2; // ensure enough liquidity
+        vm.prank(alice);
+        exchange.place(address(token1), askAmount, false, tick);
+
+        // Calculate quote needed for single trade
+        uint128 singleTradeQuote = exchange.quoteSwapExactAmountOut(
+            address(pathUSD), // tokenIn = quote
+            address(token1), // tokenOut = base
+            totalBaseOut
+        );
+
+        // Calculate quote needed for split trades
+        uint128 splitSize = totalBaseOut / uint128(numSplits);
+        uint128 remainder = totalBaseOut - (splitSize * uint128(numSplits));
+        uint128 totalSplitQuote = 0;
+
+        for (uint8 i = 0; i < numSplits; i++) {
+            uint128 thisAmount = splitSize;
+            if (i == numSplits - 1) {
+                thisAmount += remainder; // last split gets the remainder
+            }
+            if (thisAmount > 0) {
+                totalSplitQuote += exchange.quoteSwapExactAmountOut(
+                    address(pathUSD), address(token1), thisAmount
+                );
+            }
+        }
+
+        // Splitting should never be cheaper (ceiling rounding means splits cost >= single)
+        assertGe(
+            totalSplitQuote,
+            singleTradeQuote,
+            "Splitting trades should never give taker a better price"
+        );
+    }
+
+    /// @notice PoC: Without the fix, at price < 1.0, trading 1 base at a time costs 0 quote each.
+    /// floor(1 * 98000 / 100000) = floor(0.98) = 0
+    /// With the fix (ceiling), each 1-base trade costs 1 quote.
+    function test_AskRounding_OneAtATimeNotFree() public {
+        // Alice places an ask at price 0.98 (tick -200)
+        int16 tick = -200; // price = 98000, i.e., 0.98 quote per base
+        uint128 askAmount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000 base
+
+        vm.prank(alice);
+        exchange.place(address(token1), askAmount, false, tick);
+
+        // Quote for single trade of 100 base
+        uint128 singleTradeQuote =
+            exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 100);
+
+        // Quote for 100 trades of 1 base each
+        uint128 totalOneAtATime = 0;
+        for (uint256 i = 0; i < 100; i++) {
+            uint128 quoteFor1 =
+                exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 1);
+            totalOneAtATime += quoteFor1;
+
+            // With ceiling rounding, each 1-base trade costs at least 1 quote
+            assertGt(quoteFor1, 0, "Each 1-base trade should cost > 0 quote");
+        }
+
+        // With the fix, 100 trades of 1 base costs MORE than single trade (ceiling rounds up)
+        assertGe(
+            totalOneAtATime, singleTradeQuote, "Splitting into 1-unit trades should not be cheaper"
+        );
     }
 
 }

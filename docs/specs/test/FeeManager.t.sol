@@ -19,9 +19,15 @@ contract FeeManagerTest is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        userToken = TIP20(factory.createToken("UserToken", "USR", "USD", pathUSD, admin));
-        validatorToken = TIP20(factory.createToken("ValidatorToken", "VAL", "USD", pathUSD, admin));
-        altToken = TIP20(factory.createToken("AltToken", "ALT", "USD", pathUSD, admin));
+        userToken =
+            TIP20(factory.createToken("UserToken", "USR", "USD", pathUSD, admin, bytes32("user")));
+        validatorToken = TIP20(
+            factory.createToken(
+                "ValidatorToken", "VAL", "USD", pathUSD, admin, bytes32("validator")
+            )
+        );
+        altToken =
+            TIP20(factory.createToken("AltToken", "ALT", "USD", pathUSD, admin, bytes32("alt")));
 
         vm.startPrank(admin);
         userToken.grantRole(_ISSUER_ROLE, admin);
@@ -104,7 +110,8 @@ contract FeeManagerTest is BaseTest {
         vm.prank(validator);
         vm.coinbase(validator);
 
-        TIP20 eurToken = TIP20(factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin));
+        TIP20 eurToken =
+            TIP20(factory.createToken("EuroToken", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         if (!isTempo) {
             vm.expectRevert("INVALID_TOKEN");
@@ -254,7 +261,7 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_defaultValidatorTokenIsPathUSD() public {
+    function test_defaultValidatorTokenIsPathUsd() public {
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();

@@ -37,10 +37,10 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{self, ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending,
+    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
 };
 
 use crate::{
@@ -332,6 +332,32 @@ where
             if !instruction_result.is_ok() {
                 // Revert checkpoint - rolls back ALL state changes from ALL calls
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+
+                // For AA transactions with CREATE as the first call, the nonce was bumped by
+                // make_create_frame during execution. Since checkpoint_revert rolled that back,
+                // we need to manually bump the nonce here to ensure it persists even on failure.
+                //
+                // However, this only applies when using the protocol nonce (nonce_key == 0).
+                // When using 2D nonces (nonce_key != 0), replay protection is handled by the
+                // NonceManager, and the protocol nonce is only used for CREATE address derivation.
+                // Since the CREATE reverted, no contract was deployed, so the address wasn't
+                // "claimed" and we don't need to burn the protocol nonce.
+                let uses_protocol_nonce = evm
+                    .ctx()
+                    .tx()
+                    .tempo_tx_env
+                    .as_ref()
+                    .map(|aa| aa.nonce_key.is_zero())
+                    .unwrap_or(true);
+
+                if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+                    let caller = evm.ctx().tx().caller();
+                    if let Ok(mut caller_acc) =
+                        evm.ctx().journal_mut().load_account_with_code_mut(caller)
+                    {
+                        caller_acc.data.bump_nonce();
+                    }
+                }
 
                 // Include gas from all previous successful calls + failed call
                 let gas_used_by_failed_call = frame_result.gas().used();
@@ -690,9 +716,9 @@ where
         } else {
             nonce_2d_gas = 0;
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
-            //
-            // Always bump nonce for AA transactions.
-            if tx.tempo_tx_env.is_some() || tx.kind().is_call() {
+            // This applies uniformly to both standard and AA transactions - we only bump here
+            // for CALLs, letting make_create_frame handle the nonce for CREATE operations.
+            if tx.kind().is_call() {
                 caller_account.bump_nonce();
             }
         }
@@ -1062,6 +1088,13 @@ where
         let tx = evm.ctx_ref().tx();
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+            // Validate AA transaction structure (calls list, CREATE rules)
+            validate_calls(
+                &aa_env.aa_calls,
+                !aa_env.tempo_authorization_list.is_empty(),
+            )
+            .map_err(TempoInvalidTransaction::from)?;
+
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
 
@@ -1317,11 +1350,12 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated
-    let token_id = tip20::address_to_token_id_unchecked(token);
-
+    // Address has already been validated as having TIP20 prefix
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::new(token_id).balances.at(sender).slot();
+    let balance_slot = TIP20Token::from_address(token)
+        .expect("TIP20 prefix already validated")
+        .balances[sender]
+        .slot();
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)
@@ -1427,7 +1461,7 @@ mod tests {
     use std::convert::Infallible;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
+    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -1437,13 +1471,13 @@ mod tests {
     #[test]
     fn test_get_token_balance() -> eyre::Result<()> {
         let mut journal = create_test_journal();
-        let token = Address::random();
+        // Use PATH_USD_ADDRESS which has the TIP20 prefix
+        let token = PATH_USD_ADDRESS;
         let account = Address::random();
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let token_id = tip20::address_to_token_id_unchecked(token);
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::from_address(token)?.balances[account].slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)
@@ -1473,7 +1507,7 @@ mod tests {
         let tx_fee_token = Address::random();
 
         // Set validator token
-        let validator_slot = TipFeeManager::new().validator_tokens.at(validator).slot();
+        let validator_slot = TipFeeManager::new().validator_tokens[validator].slot();
         ctx.journaled_state.load_account(TIP_FEE_MANAGER_ADDRESS)?;
         ctx.journaled_state
             .sstore(
@@ -1491,7 +1525,7 @@ mod tests {
         }
 
         // Set user token
-        let user_slot = TipFeeManager::new().user_tokens.at(user).slot();
+        let user_slot = TipFeeManager::new().user_tokens[user].slot();
         ctx.journaled_state
             .sstore(
                 TIP_FEE_MANAGER_ADDRESS,

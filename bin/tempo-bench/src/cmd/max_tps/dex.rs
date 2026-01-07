@@ -152,6 +152,7 @@ async fn setup_test_token(
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let salt = alloy::primitives::B256::random();
     let receipt = factory
         .createToken(
             "Test".to_owned(),
@@ -159,6 +160,7 @@ where
             "USD".to_owned(),
             quote_token,
             admin,
+            salt,
         )
         .send()
         .await?
@@ -171,7 +173,7 @@ where
         .await
         .context("Failed to create TIP-20 token")?;
 
-    let token_addr = token_id_to_address(event.tokenId.to());
+    let token_addr = event.token;
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
     let grant_role_receipt = roles

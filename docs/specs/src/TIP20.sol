@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import { TIP20Factory } from "./TIP20Factory.sol";
 import { TIP403Registry } from "./TIP403Registry.sol";
+import { TempoUtilities } from "./TempoUtilities.sol";
 import { TIP20RolesAuth } from "./abstracts/TIP20RolesAuth.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
 
@@ -48,7 +49,8 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         string memory _symbol,
         string memory _currency,
         ITIP20 _quoteToken,
-        address admin
+        address admin,
+        address sender
     ) {
         name = _name;
         symbol = _symbol;
@@ -58,6 +60,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
         // No currency registry; all tokens use 6 decimals by default
 
         hasRole[admin][DEFAULT_ADMIN_ROLE] = true; // Grant admin role to first admin.
+        emit RoleMembershipUpdated(DEFAULT_ADMIN_ROLE, admin, sender, true);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -111,7 +114,7 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     function setNextQuoteToken(ITIP20 newQuoteToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
         // sets next quote token, to put the DEX for that pair into place-only mode
         // does not check for loops; that is checked in completeQuoteTokenUpdate
-        if (!TIP20Factory(FACTORY).isTIP20(address(newQuoteToken))) {
+        if (!TempoUtilities.isTIP20(address(newQuoteToken))) {
             revert InvalidQuoteToken();
         }
 

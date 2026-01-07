@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet,
+    generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -15,11 +15,13 @@ mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
 mod genesis_args;
+mod get_dkg_outcome;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -44,11 +46,8 @@ struct Args {
 }
 
 #[derive(Debug, clap::Subcommand)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "the variant names map to actual cli inputs and are desired"
-)]
 enum Action {
+    GetDkgOutcome(GetDkgOutcome),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),

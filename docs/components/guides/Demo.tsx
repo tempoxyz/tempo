@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { VariantProps } from 'cva'
 import * as React from 'react'
 import { tempoTestnet } from 'viem/chains'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
 import {

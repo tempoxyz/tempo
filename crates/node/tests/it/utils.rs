@@ -31,10 +31,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_node::node::TempoNode;
 use tempo_payload_types::{TempoPayloadAttributes, TempoPayloadBuilderAttributes};
-use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip20::{ISSUER_ROLE, token_id_to_address},
-};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
 /// Creates a test TIP20 token with issuer role granted to the caller
 pub(crate) async fn setup_test_token<P>(
@@ -45,6 +42,7 @@ where
     P: Provider + Clone,
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let salt = B256::random();
     let receipt = factory
         .createToken(
             "Test".to_string(),
@@ -52,14 +50,15 @@ where
             "USD".to_string(),
             PATH_USD_ADDRESS,
             caller,
+            salt,
         )
         .send()
         .await?
         .get_receipt()
         .await?;
-    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[0].inner).unwrap();
+    let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
 
-    let token_addr = token_id_to_address(event.tokenId.to());
+    let token_addr = event.token;
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
 

@@ -284,13 +284,23 @@ where
             epoch_strategy: epoch_strategy.clone(),
         });
 
+        let (executor, executor_mailbox) = crate::executor::init(
+            self.context.with_label("executor"),
+            crate::executor::Config {
+                execution_node: execution_node.clone(),
+                last_finalized_height,
+                marshal: marshal_mailbox.clone(),
+            },
+        )
+        .wrap_err("failed initialization executor actor")?;
+
         let (application, application_mailbox) = application::init(super::application::Config {
             context: self.context.with_label("application"),
             fee_recipient: self.fee_recipient,
-            last_finalized_height,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
+            executor: executor_mailbox.clone(),
             new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             scheme_provider: scheme_provider.clone(),
@@ -323,7 +333,7 @@ where
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
             self.context.with_label("dkg_manager"),
             dkg::manager::Config {
-                epoch_manager: epoch_manager_mailbox,
+                epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
@@ -348,12 +358,15 @@ where
             dkg_manager_mailbox,
 
             application,
-            application_mailbox,
+
+            executor,
+            executor_mailbox,
 
             resolver_config,
             marshal,
 
             epoch_manager,
+            epoch_manager_mailbox,
 
             subblocks,
         })
@@ -384,9 +397,15 @@ where
     dkg_manager: dkg::manager::Actor<TContext, TPeerManager>,
     dkg_manager_mailbox: dkg::manager::Mailbox,
 
-    /// The core of the application, the glue between commonware-xyz consensus and reth-execution.
+    /// Acts as the glue between the consensus and execution layers implementing
+    /// the `[commonware_consensus::Automaton]` trait.
     application: application::Actor<TContext>,
-    application_mailbox: application::Mailbox,
+
+    /// Responsible for keeping the consensus layer state and execution layer
+    /// states in sync. Drives the chain state of the execution layer by sending
+    /// forkchoice-updates.
+    executor: crate::executor::Actor<TContext>,
+    executor_mailbox: crate::executor::Mailbox,
 
     /// Resolver config that will be passed to the marshal actor upon start.
     resolver_config: marshal::resolver::p2p::Config<PublicKey, TPeerManager, TBlocker>,
@@ -396,6 +415,7 @@ where
     marshal: crate::alias::marshal::Actor<TContext>,
 
     epoch_manager: epoch::manager::Actor<TBlocker, TContext>,
+    epoch_manager_mailbox: epoch::manager::Mailbox,
 
     subblocks: subblocks::Actor<TContext>,
 }
@@ -445,10 +465,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        boundary_certificates_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -463,7 +479,6 @@ where
                 broadcast_network,
                 marshal_network,
                 dkg_channel,
-                boundary_certificates_channel,
                 subblocks_channel,
             )
             .await
@@ -500,10 +515,6 @@ where
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
         ),
-        boundary_certificates_channel: (
-            impl Sender<PublicKey = PublicKey>,
-            impl Receiver<PublicKey = PublicKey>,
-        ),
         subblocks_channel: (
             impl Sender<PublicKey = PublicKey>,
             impl Receiver<PublicKey = PublicKey>,
@@ -514,19 +525,20 @@ where
             marshal::resolver::p2p::init(&self.context, self.resolver_config, marshal_channel);
 
         let application = self.application.start(self.dkg_manager_mailbox.clone());
+        let executor = self.executor.start();
 
         let marshal = self.marshal.start(
-            Reporters::from((self.application_mailbox, self.dkg_manager_mailbox.clone())),
+            Reporters::from((
+                self.epoch_manager_mailbox,
+                Reporters::from((self.executor_mailbox, self.dkg_manager_mailbox.clone())),
+            )),
             self.broadcast_mailbox,
             resolver,
         );
 
-        let epoch_manager = self.epoch_manager.start(
-            pending_channel,
-            recovered_channel,
-            resolver_channel,
-            boundary_certificates_channel,
-        );
+        let epoch_manager =
+            self.epoch_manager
+                .start(pending_channel, recovered_channel, resolver_channel);
 
         let subblocks = self
             .context
@@ -538,6 +550,7 @@ where
             application,
             broadcast,
             epoch_manager,
+            executor,
             marshal,
             dkg_manager,
             subblocks,

@@ -31,24 +31,23 @@ use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
     StreamExt as _, TryFutureExt as _,
     channel::{mpsc, oneshot},
-    future::{Either, always_ready, ready, try_join},
+    future::{ready, try_join},
 };
 use rand::{CryptoRng, Rng};
-use reth_node_builder::ConsensusEngineHandle;
-use reth_primitives_traits::SealedBlock;
+use reth_ethereum::chainspec::EthChainSpec as _;
+use reth_node_builder::{Block as _, ConsensusEngineHandle};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 
-use reth_provider::BlockReader as _;
+use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tokio::sync::RwLock;
-use tracing::{Level, debug, error, error_span, info, instrument, warn};
+use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn};
 
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 use super::{
-    Mailbox, executor,
-    executor::ExecutorMailbox,
-    ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
+    Mailbox,
+    ingress::{Broadcast, Genesis, Message, Propose, Verify},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -77,14 +76,6 @@ where
         let (tx, rx) = mpsc::channel(config.mailbox_size);
         let my_mailbox = Mailbox::from_sender(tx);
 
-        let block = config
-            .execution_node
-            .provider
-            .block_by_number(0)
-            .map_err(Into::<eyre::Report>::into)
-            .and_then(|maybe| maybe.ok_or_eyre("block reader returned empty genesis block"))
-            .wrap_err("failed reading genesis block from execution node")?;
-
         Ok(Self {
             context: ContextCell::new(config.context),
             mailbox: rx,
@@ -92,16 +83,15 @@ where
             inner: Inner {
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
-                last_finalized_height: config.last_finalized_height,
 
                 new_payload_wait_time: config.new_payload_wait_time,
 
                 my_mailbox,
                 marshal: config.marshal,
 
-                genesis_block: Arc::new(Block::from_execution_block(SealedBlock::seal_slow(block))),
-
                 execution_node: config.execution_node,
+                executor: config.executor,
+
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
@@ -120,8 +110,8 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
-            // XXX: relies on into_initialized generating an error event before exit.
+        let Ok(initialized) = inner.into_initialized(dkg_manager).await else {
+            // Drop the error because into_initialized generates an error event.
             return;
         };
 
@@ -168,17 +158,10 @@ where
                     move |_| inner.handle_broadcast(broadcast)
                 });
             }
-            Message::Finalized(finalized) => {
-                // XXX: being able to finalize is the only stop condition.
-                // There is no point continuing if this doesn't work.
-                self.inner
-                    .handle_finalized(*finalized)
-                    .wrap_err("failed finalizing block")?;
-            }
             Message::Genesis(genesis) => {
                 self.context.with_label("genesis").spawn({
                     let inner = self.inner.clone();
-                    move |_| inner.handle_genesis(genesis)
+                    move |context| inner.handle_genesis(genesis, context)
                 });
             }
             Message::Propose(propose) => {
@@ -202,15 +185,14 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
-    last_finalized_height: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: Mailbox,
 
     marshal: crate::alias::marshal::Mailbox,
 
-    genesis_block: Arc<Block>,
     execution_node: TempoFullNode,
+    executor: crate::executor::Mailbox,
     subblocks: subblocks::Mailbox,
     scheme_provider: SchemeProvider,
 
@@ -239,12 +221,6 @@ impl Inner<Init> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.state.executor_mailbox.forward_finalized(finalized)
-    }
-
     #[instrument(
         skip_all,
         fields(
@@ -253,41 +229,54 @@ impl Inner<Init> {
         ret(Display),
         err(level = Level::ERROR)
     )]
-    async fn handle_genesis(mut self, genesis: Genesis) -> eyre::Result<Digest> {
-        let source = match genesis.epoch.previous() {
-            // epoch 0 has no previous epoch
-            None => self.genesis_block.digest(),
-            Some(previous_epoch) => {
-                // The last block of the *previous* epoch provides the "genesis"
-                // of the *current* epoch. Only epoch 0 is special cased above.
-                let height = self
-                    .epoch_strategy
-                    .last(previous_epoch)
-                    .expect("epoch strategy is for all epochs");
+    async fn handle_genesis<TContext: commonware_runtime::Clock>(
+        mut self,
+        mut genesis: Genesis,
+        context: TContext,
+    ) -> eyre::Result<Digest> {
+        // The last block of the previous epoch is the genesis of the current
+        // epoch. Only epoch 0/height 0 is special cased because first height
+        // of epoch 0 == genesis of epoch 0.
+        let boundary = match genesis.epoch.previous() {
+            None => 0,
+            Some(previous_epoch) => self
+                .epoch_strategy
+                .last(previous_epoch)
+                .expect("epoch strategy is for all epochs"),
+        };
 
-                let Some((_, digest)) = self.marshal.get_info(height).await else {
-                    // XXX: the None case here should not be hit:
-                    // 1. an epoch transition is triggered by the application
-                    // finalizing the last block of the outgoing epoch.
-                    // 2. the finalized block is received from the marshal actor,
-                    // so we know it must be available and indexed
-                    // by the marshaller.
-                    // 3. this means this call should always succeed.
-                    //
-                    // TODO(janis): should we panic instead?
-                    bail!(
-                        "no information on the source block at height `{height}` \
-                    exists yet; this is a problem and will likely cause the \
-                    consensus engine to not start"
+        let mut attempts = 0;
+        let epoch_genesis = loop {
+            attempts += 1;
+            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary) {
+                break Digest(hash);
+            } else if let Some((_, digest)) = self.marshal.get_info(boundary).await {
+                break digest;
+            } else {
+                info_span!("fetch_genesis_digest").in_scope(|| {
+                    info!(
+                        boundary,
+                        attempts,
+                        "neither marshal actor nor execution layer had the \
+                        boundary block of the previous epoch available; \
+                        waiting 2s before trying again"
                     );
-                };
-                digest
+                });
+                select!(
+                    () = genesis.response.cancellation() => {
+                        return Err(eyre!("genesis request was cancelled"));
+                    },
+
+                    _ = context.sleep(Duration::from_secs(2)) => {
+                        continue;
+                    },
+                );
             }
         };
-        genesis.response.send(source).map_err(|_| {
+        genesis.response.send(epoch_genesis).map_err(|_| {
             eyre!("failed returning parent digest for epoch: return channel was already closed")
         })?;
-        Ok(source)
+        Ok(epoch_genesis)
     }
 
     /// Handles a [`Propose`] request.
@@ -434,7 +423,7 @@ impl Inner<Init> {
             if parent.1 != payload
                 && let Err(error) = self
                     .state
-                    .executor_mailbox
+                    .executor
                     .canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
@@ -453,22 +442,14 @@ impl Inner<Init> {
         parent_digest: Digest,
         round: Round,
     ) -> eyre::Result<Block> {
-        let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent_digest == genesis_block.digest() {
-            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
-        } else {
-            Either::Right(
-                self.marshal
-                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-                    .await,
-            )
-        };
-        let parent = parent_request
-            .await
-            .map_err(|_| eyre!(
-                "failed getting parent block from syncer; syncer dropped channel before request was fulfilled"
-            ))?;
-
+        let parent = get_parent(
+            &self.execution_node,
+            round,
+            parent_digest,
+            parent_view,
+            &mut self.marshal,
+        )
+        .await?;
         debug!(height = parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
@@ -506,7 +487,7 @@ impl Inner<Init> {
 
         ready(
             self.state
-                .executor_mailbox
+                .executor
                 .canonicalize_head(parent.height(), parent.digest()),
         )
         .and_then(|ack| ack.map_err(eyre::Report::new))
@@ -623,26 +604,24 @@ impl Inner<Init> {
         proposer: PublicKey,
         round: Round,
     ) -> eyre::Result<(Block, bool)> {
-        let genesis_block = self.genesis_block.clone();
-        let parent_request = if parent_digest == genesis_block.digest() {
-            Either::Left(always_ready(|| Ok((*genesis_block).clone())))
-        } else {
-            Either::Right(
-                self.marshal
-                    .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-                    .await
-                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent")),
-            )
-        };
         let block_request = self
             .marshal
             .subscribe(None, payload)
             .await
             .map_err(|_| eyre!("syncer dropped channel before the block-to-verified was sent"));
 
-        let (block, parent) = try_join(block_request, parent_request)
-            .await
-            .wrap_err("failed getting required blocks from syncer")?;
+        let (block, parent) = try_join(
+            block_request,
+            get_parent(
+                &self.execution_node,
+                round,
+                parent_digest,
+                parent_view,
+                &mut self.marshal,
+            ),
+        )
+        .await
+        .wrap_err("failed getting required blocks from syncer")?;
 
         // Can only repropose at the end of an epoch.
         //
@@ -681,7 +660,7 @@ impl Inner<Init> {
 
         if let Err(error) = self
             .state
-            .executor_mailbox
+            .executor
             .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
@@ -719,37 +698,22 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
+    async fn into_initialized(
         self,
-        context: TContext,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
-        let executor = executor::Builder {
-            execution_node: self.execution_node.clone(),
-            genesis_block: self.genesis_block.clone(),
-            last_finalized_height: self.last_finalized_height,
-            marshal: self.marshal.clone(),
-        }
-        .build(context.with_label("executor"))
-        .wrap_err("unable to instantiate executor actor")?;
-
-        let executor_mailbox = executor.mailbox().clone();
-        let executor_handle = executor.start();
-
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
-            last_finalized_height: self.last_finalized_height,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
-            genesis_block: self.genesis_block,
             execution_node: self.execution_node,
+            executor: self.executor.clone(),
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
-                executor_mailbox,
-                _executor_handle: AbortOnDrop(executor_handle).into(),
+                executor: self.executor.clone(),
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
@@ -768,13 +732,8 @@ pub(in crate::consensus) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<(Round, Block)>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
-    /// The communication channel to the [`executor::Executor`] task.
-    executor_mailbox: ExecutorMailbox,
-    /// The handle to the spawned executor task.
-    ///
-    /// If the last instance of this is dropped (the application task is aborted),
-    /// this ensures that the task is aborted as well.
-    _executor_handle: Arc<AbortOnDrop>,
+    /// The communication channel to the executor agent.
+    executor: crate::executor::Mailbox,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -851,7 +810,6 @@ async fn verify_block<TContext: Pacer>(
             Ok(false)
         }
         PayloadStatusEnum::Syncing => {
-            // FIXME: is this error message correct?
             bail!(
                 "failed validating block because payload is still syncing, \
                 this means the parent block was available to the consensus
@@ -897,10 +855,12 @@ async fn verify_header_extra_data(
                 our.players = ?our_outcome.players(),
                 our.next_players = ?our_outcome.next_players(),
                 our.sharing = ?our_outcome.sharing(),
+                our.is_next_full_dkg = ?our_outcome.is_next_full_dkg,
                 block.epoch = %block_outcome.epoch,
                 block.players = ?block_outcome.players(),
                 block.next_players = ?block_outcome.next_players(),
                 block.sharing = ?block_outcome.sharing(),
+                block.is_next_full_dkg = ?block_outcome.is_next_full_dkg,
                 "our public dkg outcome does not match what's stored \
                 in the block",
             );
@@ -966,17 +926,32 @@ fn report_verification_result(
     Ok(())
 }
 
-/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance is dropped.
-struct AbortOnDrop(Handle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl std::fmt::Debug for AbortOnDrop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AbortOnDrop").finish_non_exhaustive()
+async fn get_parent(
+    execution_node: &TempoFullNode,
+    round: Round,
+    parent_digest: Digest,
+    parent_view: View,
+    marshal: &mut crate::alias::marshal::Mailbox,
+) -> eyre::Result<Block> {
+    let genesis_digest = execution_node.chain_spec().genesis_hash();
+    if parent_digest == Digest(genesis_digest) {
+        let genesis_block = Block::from_execution_block(
+            execution_node
+                .provider
+                .block_by_number(0)
+                .map_or_else(
+                    |e| Err(eyre::Report::new(e)),
+                    |block| block.ok_or_eyre("execution layer did not have block"),
+                )
+                .wrap_err("execution layer did not have the genesis block")?
+                .seal(),
+        );
+        Ok(genesis_block)
+    } else {
+        marshal
+            .subscribe(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+            .await
+            .await
+            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
     }
 }

@@ -25,7 +25,7 @@ use crate::{
     stablecoin_exchange::StablecoinExchange,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{TIP20Token, address_to_token_id_unchecked, is_tip20_prefix},
+    tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
@@ -152,9 +152,8 @@ impl TIP20FactoryPrecompile {
 pub struct TIP20Precompile;
 impl TIP20Precompile {
     pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        let token_id = address_to_token_id_unchecked(address);
         tempo_precompile!("TIP20Token", chain_id, spec, |input| {
-            TIP20Token::new(token_id)
+            TIP20Token::from_address(address).expect("TIP20 prefix already verified")
         })
     }
 }
@@ -263,8 +262,7 @@ fn fill_precompile_output(
 /// Returns an ABI-encoded UnknownFunctionSelector error with the selector.
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
-    error::TempoPrecompileError::UnknownFunctionSelector(selector)
-        .into_precompile_result(gas, |_: ()| Bytes::new())
+    error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
 }
 
 #[cfg(test)]
@@ -288,7 +286,7 @@ where
 mod tests {
     use super::*;
     use crate::tip20::TIP20Token;
-    use alloy::primitives::{Address, Bytes, U256};
+    use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
@@ -296,14 +294,16 @@ mod tests {
     use revm::{
         context::ContextTr,
         database::{CacheDB, EmptyDB},
+        state::{AccountInfo, Bytecode},
     };
     use tempo_contracts::precompiles::ITIP20;
 
     #[test]
     fn test_precompile_delegatecall() {
         let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile =
-            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
@@ -338,13 +338,21 @@ mod tests {
     #[test]
     fn test_precompile_static_call() {
         let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile =
-            tempo_precompile!("TIP20Token", chain_id, spec, |input| { TIP20Token::new(1) });
+        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+        });
 
-        let target_address = Address::random();
+        let token_address = PATH_USD_ADDRESS;
 
         let call_static = |calldata: Bytes| {
-            let db = CacheDB::new(EmptyDB::new());
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                token_address,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
             let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
             let block = evm.block.clone();
             let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
@@ -356,8 +364,8 @@ mod tests {
                 gas: 100_000,
                 is_static: true,
                 value: U256::ZERO,
-                target_address,
-                bytecode_address: target_address,
+                target_address: token_address,
+                bytecode_address: token_address,
             };
 
             AlloyEvmPrecompile::call(&precompile, input)

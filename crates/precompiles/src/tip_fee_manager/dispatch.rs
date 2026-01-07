@@ -34,11 +34,6 @@ impl Precompile for TipFeeManager {
                     self.validator_tokens(call)
                 })
             }
-            IFeeManager::getFeeTokenBalanceCall::SELECTOR => {
-                view::<IFeeManager::getFeeTokenBalanceCall>(calldata, |call| {
-                    self.get_fee_token_balance(call)
-                })
-            }
             ITIPFeeAMM::getPoolIdCall::SELECTOR => {
                 view::<ITIPFeeAMM::getPoolIdCall>(calldata, |call| {
                     Ok(self.pool_id(call.userToken, call.validatorToken))
@@ -55,7 +50,7 @@ impl Precompile for TipFeeManager {
                 })
             }
             ITIPFeeAMM::poolsCall::SELECTOR => view::<ITIPFeeAMM::poolsCall>(calldata, |call| {
-                let pool = self.pools.at(call.poolId).read()?;
+                let pool = self.pools[call.poolId].read()?;
 
                 Ok(ITIPFeeAMM::Pool {
                     reserveUserToken: pool.reserve_user_token,
@@ -64,12 +59,12 @@ impl Precompile for TipFeeManager {
             }),
             ITIPFeeAMM::totalSupplyCall::SELECTOR => {
                 view::<ITIPFeeAMM::totalSupplyCall>(calldata, |call| {
-                    self.total_supply.at(call.poolId).read()
+                    self.total_supply[call.poolId].read()
                 })
             }
             ITIPFeeAMM::liquidityBalancesCall::SELECTOR => {
                 view::<ITIPFeeAMM::liquidityBalancesCall>(calldata, |call| {
-                    self.liquidity_balances.at(call.poolId).at(call.user).read()
+                    self.liquidity_balances[call.poolId][call.user].read()
                 })
             }
             ITIPFeeAMM::MCall::SELECTOR => view::<ITIPFeeAMM::MCall>(calldata, |_call| Ok(M)),
@@ -101,7 +96,7 @@ impl Precompile for TipFeeManager {
             }
             IFeeManager::collectedFeesCall::SELECTOR => {
                 view::<IFeeManager::collectedFeesCall>(calldata, |call| {
-                    self.collected_fees.at(call.validator).at(call.token).read()
+                    self.collected_fees[call.validator][call.token].read()
                 })
             }
             ITIPFeeAMM::mintCall::SELECTOR => {

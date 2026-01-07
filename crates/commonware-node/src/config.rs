@@ -21,8 +21,7 @@ pub const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
 pub const DKG_CHANNEL_IDENT: commonware_p2p::Channel = 5;
-pub const BOUNDARY_CERT_CHANNEL_IDENT: commonware_p2p::Channel = 6;
-pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 7;
+pub const SUBBLOCKS_CHANNEL_IDENT: commonware_p2p::Channel = 6;
 
 pub(crate) const NUMBER_CONCURRENT_FETCHES: usize = 4;
 
@@ -30,8 +29,6 @@ pub(crate) const BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES: u32 = 2u32.pow(21); //
 
 pub const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub const BOUNDARY_CERT_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(1).expect("value is not zero"));
 pub const DKG_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub const MARSHAL_LIMIT: Quota = Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub const PENDING_LIMIT: Quota =

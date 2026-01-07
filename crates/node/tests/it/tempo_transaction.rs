@@ -3318,8 +3318,8 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         }],
         300_000, // Higher gas for key authorization verification
     );
-    // Use PathUSD (DEFAULT_FEE_TOKEN) as fee token
-    // and our spending limit is set for PathUSD
+    // Use pathUSD (DEFAULT_FEE_TOKEN) as fee token
+    // and our spending limit is set for pathUSD
     tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     tx.key_authorization = Some(key_authorization);
 
@@ -3581,11 +3581,11 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         "\nRoot key balance: {root_balance_initial} → {root_balance_after} (decreased by {balance_decrease})"
     );
 
-    // PathUSD balance should decrease by at least the transfer amount
-    // (gas fees are also paid in PathUSD since we set fee_token to PathUSD)
+    // pathUSD balance should decrease by at least the transfer amount
+    // (gas fees are also paid in pathUSD since we set fee_token to pathUSD)
     assert!(
         balance_decrease >= transfer_amount,
-        "Root key PathUSD should have decreased by at least the transfer amount"
+        "Root key pathUSD should have decreased by at least the transfer amount"
     );
     let gas_fee_paid = balance_decrease - transfer_amount;
     println!("✓ Root key paid for transfer ({transfer_amount}) + gas fees ({gas_fee_paid})");
@@ -4022,7 +4022,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4060,7 +4060,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4122,7 +4122,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4184,7 +4184,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4284,7 +4284,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_unlimited_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_unlimited_tx.key_authorization = Some(unlimited_key_auth);
 
@@ -4306,7 +4306,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, large_transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let unlimited_sig = sign_aa_tx_with_p256_access_key(
@@ -4369,7 +4369,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_no_spending_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_no_spending_tx.key_authorization = Some(no_spending_key_auth);
 
@@ -4391,7 +4391,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, small_transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     no_spending_transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let no_spending_sig = sign_aa_tx_with_p256_access_key(
@@ -4467,7 +4467,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         }],
         nonce_key: U256::ZERO,
         nonce,
-        // Use PathUSD as fee token (matches the spending limit token)
+        // Use pathUSD as fee token (matches the spending limit token)
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(u64::MAX),
@@ -4565,7 +4565,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_tx.key_authorization = Some(never_expires_key_auth);
 
@@ -4585,7 +4585,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient1, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let never_expires_sig = sign_aa_tx_with_p256_access_key(
@@ -4652,7 +4652,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     auth_short_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_short_expiry_tx.key_authorization = Some(short_expiry_key_auth);
 
@@ -4673,7 +4673,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient2, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     before_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let short_expiry_sig = sign_aa_tx_with_p256_access_key(
@@ -4728,7 +4728,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_transfer_call(recipient3, transfer_amount)],
         300_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     after_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
 
     let expired_key_sig = sign_aa_tx_with_p256_access_key(
@@ -4810,7 +4810,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         vec![create_balance_of_call(root_addr)],
         400_000,
     );
-    // Use PathUSD as fee token (matches the spending limit token)
+    // Use pathUSD as fee token (matches the spending limit token)
     past_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     past_expiry_tx.key_authorization = Some(past_expiry_key_auth);
 
@@ -5449,6 +5449,98 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
     )
     .await?;
     println!("  ✓ Wildcard chain_id KeyAuthorization accepted (tx: {tx_hash})");
+
+    Ok(())
+}
+
+/// Test that contract CREATE in a Tempo transaction computes the correct contract address.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let (mut setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let nonce = provider.get_transaction_count(signer_addr).await?;
+
+    // Compute expected contract address BEFORE sending transaction
+    // CREATE address = keccak256(rlp([sender, nonce]))[12:]
+    let expected_contract_address = signer_addr.create(nonce);
+
+    println!("Test: CREATE contract address computation in Tempo transaction");
+    println!("  Sender: {signer_addr}");
+    println!("  Nonce: {nonce}");
+    println!("  Expected contract address: {expected_contract_address}");
+
+    // Simple contract initcode: PUSH1 0x2a PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
+    // This stores 42 at memory[0] and returns 32 bytes
+    let init_code =
+        Bytes::from_static(&[0x60, 0x2a, 0x60, 0x00, 0x52, 0x60, 0x20, 0x60, 0x00, 0xf3]);
+
+    // Create Tempo transaction with CREATE as first (and only) call
+    let tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: init_code,
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(u64::MAX),
+        ..Default::default()
+    };
+
+    // Sign and send
+    let signature = signer.sign_hash_sync(&tx.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let _payload = setup.node.advance_block().await?;
+
+    // Get receipt using raw RPC to handle Tempo-specific transaction type
+    let tx_hash = keccak256(&encoded);
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    let receipt = receipt.expect("Receipt not found");
+
+    let actual_contract_address: Address = receipt["contractAddress"]
+        .as_str()
+        .expect("Receipt should have contractAddress for CREATE transaction")
+        .parse()?;
+
+    println!("  Actual contract address from receipt: {actual_contract_address}");
+
+    assert_eq!(
+        actual_contract_address,
+        expected_contract_address,
+        "Contract address should be computed from nonce {nonce}, not nonce {}. \
+         This indicates the nonce was incorrectly incremented before CREATE address derivation.",
+        nonce + 1
+    );
+
+    // Verify contract was actually deployed at that address
+    let deployed_code = provider.get_code_at(actual_contract_address).await?;
+    assert!(
+        !deployed_code.is_empty(),
+        "Contract should be deployed at the expected address"
+    );
+
+    // Verify the contract returns 42 (the init code stores 0x2a at memory[0])
+    let mut expected_code = [0u8; 32];
+    expected_code[31] = 0x2a;
+    assert_eq!(
+        deployed_code.as_ref(),
+        &expected_code,
+        "Deployed contract should have expected runtime code"
+    );
 
     Ok(())
 }

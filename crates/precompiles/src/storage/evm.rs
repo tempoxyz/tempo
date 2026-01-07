@@ -44,6 +44,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         Self::new(internals, u64::MAX, cfg.chain_id, cfg.spec, false)
     }
 
+    /// Ensures that an account is loaded.
     pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
         self.internals.load_account(account)?;
         self.internals.touch_account(account);
@@ -80,14 +81,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
         let account = self.internals.load_account_code(address)?.map(|a| &a.info);
-        let is_cold = account.is_cold;
 
         // deduct gas
         self.gas_remaining = self
             .gas_remaining
-            .checked_sub(revm::interpreter::gas::warm_cold_cost(is_cold))
+            .checked_sub(revm::interpreter::gas::warm_cold_cost(account.is_cold))
             .ok_or(TempoPrecompileError::OutOfGas)?;
 
         f(account.data);

@@ -87,8 +87,8 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let direct_tys: Vec<_> = direct_fields.iter().map(|(_, ty)| *ty).collect();
 
     // Generate load/store/delete implementations for scalar fields only
-    let load_impl = gen_load_store_impl(&direct_fields, &mod_ident, true);
-    let store_impl = gen_load_store_impl(&direct_fields, &mod_ident, false);
+    let load_impl = gen_load_impl(&direct_fields, &mod_ident);
+    let store_impl = gen_store_impl(&direct_fields, &mod_ident);
     let delete_impl = gen_delete_impl(&direct_fields, &mod_ident);
 
     // Generate handler struct for field access
@@ -187,13 +187,16 @@ fn gen_packing_module_from_ir(fields: &[LayoutField<'_>], mod_ident: &Ident) -> 
     let last_field = &fields[fields.len() - 1];
     let last_slot_const = PackingConstants::new(last_field.name).slot();
     let packing_constants = packing::gen_constants_from_ir(fields, true);
+    let last_type = &last_field.ty;
 
     quote! {
         pub mod #mod_ident {
             use super::*;
 
             #packing_constants
-            pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(::alloy::primitives::U256::ONE)).as_limbs()[0] as usize;
+            pub const SLOT_COUNT: usize = (#last_slot_const.saturating_add(
+                ::alloy::primitives::U256::from_limbs([<#last_type as crate::storage::StorableType>::SLOTS as u64, 0, 0, 0])
+            )).as_limbs()[0] as usize;
         }
     }
 }
@@ -295,41 +298,157 @@ fn gen_handler_struct(
     }
 }
 
-/// Generate `fn load()` or `fn store()` implementation.
-fn gen_load_store_impl(fields: &[(&Ident, &Type)], packing: &Ident, is_load: bool) -> TokenStream {
-    let field_ops = fields.iter().enumerate().map(|(idx, (name, ty))| {
-        let (prev_slot_const_ref, next_slot_const_ref) =
-            packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _ty)| name);
+/// Generate `fn load()` implementation.
+///
+/// For consecutive packable fields sharing a slot, loads the slot once and extracts
+/// all fields via `PackedSlot`, avoiding redundant SLOADs.
+fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
+    if fields.is_empty() {
+        return quote! {};
+    }
 
-        // Generate `LayoutCtx` expression with compile-time packing detection
+    let field_loads = fields.iter().enumerate().map(|(idx, (name, ty))| {
         let loc_const = PackingConstants::new(name).location();
-        let layout_ctx = packing::gen_layout_ctx_expr(
-            ty,
-            false,
-            quote! { #packing::#loc_const.offset_slots },
-            quote! { #packing::#loc_const.offset_bytes },
-            prev_slot_const_ref,
-            next_slot_const_ref,
-        );
 
-        if is_load {
+        let (prev_slot_ref, _) =
+            packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
+
+        let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
+        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+
+        if let Some(prev_slot_ref) = prev_slot_ref {
             quote! {
-                let #name = <#ty as crate::storage::Storable>::load(
-                    storage,
-                    base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots),
-                    #layout_ctx
-                )?;
+                let #name = {
+                    let curr_offset = #packing::#loc_const.offset_slots;
+                    let prev_offset = #prev_slot_ref;
+
+                    if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
+                        // Same slot as previous packable field - reuse cached value
+                        let packed = crate::storage::packing::PackedSlot(cached_slot);
+                        <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                    } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                        // New slot, but packable - load and cache for potential reuse
+                        cached_slot = storage.load(#slot_addr)?;
+                        let packed = crate::storage::packing::PackedSlot(cached_slot);
+                        <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                    } else {
+                        // Non-packable - direct load
+                        <#ty as crate::storage::Storable>::load(storage, #slot_addr, crate::storage::LayoutCtx::FULL)?
+                    }
+                };
             }
         } else {
+            // First field
+            quote! {
+                let #name = if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                    cached_slot = storage.load(#slot_addr)?;
+                    let packed = crate::storage::packing::PackedSlot(cached_slot);
+                    <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
+                } else {
+                    <#ty as crate::storage::Storable>::load(storage, #slot_addr, crate::storage::LayoutCtx::FULL)?
+                };
+            }
+        }
+    });
+
+    quote! {
+        let mut cached_slot = ::alloy::primitives::U256::ZERO;
+        #(#field_loads)*
+    }
+}
+
+/// Generate `fn store()` implementation.
+///
+/// For consecutive packable fields sharing a slot, accumulates changes in memory
+/// and writes once, avoiding redundant SLOAD + SSTORE pairs.
+fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
+    if fields.is_empty() {
+        return quote! {};
+    }
+
+    let field_stores = fields.iter().enumerate().map(|(idx, (name, ty))| {
+        let loc_const = PackingConstants::new(name).location();
+        let next_ty = fields.get(idx + 1).map(|(_, ty)| *ty);
+
+        let (prev_slot_ref, next_slot_ref) =
+            packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
+
+        let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
+        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+
+        // Determine if we need to store after this field
+        let should_store = match (&next_slot_ref, next_ty) {
+            (Some(next_slot), Some(next_ty)) => {
+                // Store if next field is in different slot OR next field is not packable
+                quote! {
+                    #packing::#loc_const.offset_slots != #next_slot
+                        || !<#next_ty as crate::storage::StorableType>::IS_PACKABLE
+                }
+            }
+            _ => quote! { true }, // Always store last field
+        };
+
+        if let Some(prev_slot_ref) = prev_slot_ref {
             quote! {{
-                let target_slot = base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots);
-                <#ty as crate::storage::Storable>::store(&self.#name, storage, target_slot, #layout_ctx)?;
+                let curr_offset = #packing::#loc_const.offset_slots;
+                let prev_offset = #prev_slot_ref;
+
+                if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
+                    // Same slot as previous packable field - accumulate in pending slot
+                    let mut packed = crate::storage::packing::PackedSlot(pending_val);
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    pending_val = packed.0;
+                } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                    // New slot, but packable - commit previous and start new batch
+                    if let Some(offset) = pending_offset {
+                        storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                    }
+                    pending_val = storage.load(#slot_addr)?;
+                    pending_offset = Some(curr_offset);
+                    let mut packed = crate::storage::packing::PackedSlot(pending_val);
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    pending_val = packed.0;
+                } else {
+                    // Non-packable - commit pending and do direct store
+                    if let Some(offset) = pending_offset {
+                        storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                        pending_offset = None;
+                    }
+                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, crate::storage::LayoutCtx::FULL)?;
+                }
+
+                // Store if this is the last field in the current slot group
+                if let Some(offset) = pending_offset && (#should_store) {
+                    storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                    pending_offset = None;
+                }
+            }}
+        } else {
+            // First field
+            quote! {{
+                if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                    pending_val = storage.load(#slot_addr)?;
+                    pending_offset = Some(#packing::#loc_const.offset_slots);
+                    let mut packed = crate::storage::packing::PackedSlot(pending_val);
+                    <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
+                    pending_val = packed.0;
+
+                    // Store if this is the last field in the current slot group
+                    if #should_store {
+                        storage.store(#slot_addr, pending_val)?;
+                        pending_offset = None;
+                    }
+                } else {
+                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, crate::storage::LayoutCtx::FULL)?;
+                }
             }}
         }
     });
 
     quote! {
-        #(#field_ops)*
+        let mut pending_val = ::alloy::primitives::U256::ZERO;
+        let mut pending_offset: Option<usize> = None;
+        #(#field_stores)*
     }
 }
 

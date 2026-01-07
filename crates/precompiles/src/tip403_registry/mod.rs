@@ -36,10 +36,10 @@ impl PolicyData {
     }
 
     pub fn encode_to_slot(&self) -> U256 {
-        use crate::storage::packing::insert_packed_value;
+        use crate::storage::packing::insert_into_word;
         use __packing_policy_data::{ADMIN_LOC as A_LOC, POLICY_TYPE_LOC as PT_LOC};
 
-        let encoded = insert_packed_value(
+        let encoded = insert_into_word(
             U256::ZERO,
             &self.policy_type,
             PT_LOC.offset_bytes,
@@ -47,7 +47,7 @@ impl PolicyData {
         )
         .expect("unable to insert 'policy_type'");
 
-        insert_packed_value(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
+        insert_into_word(encoded, &self.admin, A_LOC.offset_bytes, A_LOC.size)
             .expect("unable to insert 'admin'")
     }
 }
@@ -116,7 +116,7 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.policy_data.at(new_policy_id).write(PolicyData {
+        self.policy_data[new_policy_id].write(PolicyData {
             policy_type: call.policyType as u8,
             admin: call.admin,
         })?;
@@ -306,15 +306,15 @@ impl TIP403Registry {
 
     // Internal helper functions
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        self.policy_data.at(policy_id).read()
+        self.policy_data[policy_id].read()
     }
 
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_data.at(policy_id).write(data)
+        self.policy_data[policy_id].write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
-        self.policy_set.at(policy_id).at(account).write(value)
+        self.policy_set[policy_id][account].write(value)
     }
 
     fn is_authorized_internal(&self, policy_id: u64, user: Address) -> Result<bool> {
@@ -326,7 +326,7 @@ impl TIP403Registry {
         }
 
         let data = self.get_policy_data(policy_id)?;
-        let is_in_set = self.policy_set.at(policy_id).at(user).read()?;
+        let is_in_set = self.policy_set[policy_id][user].read()?;
 
         let auth = match data
             .policy_type

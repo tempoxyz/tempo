@@ -129,6 +129,12 @@ pub enum TempoInvalidTransaction {
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),
+
+    /// Tempo transaction validation error from validate_calls().
+    ///
+    /// This wraps validation errors from the shared validate_calls function.
+    #[error("{0}")]
+    CallsValidation(&'static str),
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
@@ -150,6 +156,12 @@ impl InvalidTxError for TempoInvalidTransaction {
 impl<DBError> From<TempoInvalidTransaction> for EVMError<DBError, TempoInvalidTransaction> {
     fn from(err: TempoInvalidTransaction) -> Self {
         Self::Transaction(err)
+    }
+}
+
+impl From<&'static str> for TempoInvalidTransaction {
+    fn from(err: &'static str) -> Self {
+        Self::CallsValidation(err)
     }
 }
 

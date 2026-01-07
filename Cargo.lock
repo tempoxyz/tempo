@@ -12015,6 +12015,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
+ "tempo-revm",
  "tokio",
 ]
 

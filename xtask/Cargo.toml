@@ -17,9 +17,13 @@ tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
+tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
+  "providers",
+  "reqwest",
+  "reqwest-rustls-tls",
   "signers",
   "signer-local",
   "signer-mnemonic",

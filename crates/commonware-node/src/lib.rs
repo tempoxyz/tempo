@@ -9,6 +9,7 @@ pub(crate) mod config;
 pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
+pub(crate) mod executor;
 pub mod metrics;
 pub(crate) mod utils;
 
@@ -25,10 +26,10 @@ use tempo_node::TempoFullNode;
 
 use crate::config::PEERSETS_TO_TRACK;
 pub use crate::config::{
-    BOUNDARY_CERT_CHANNEL_IDENT, BOUNDARY_CERT_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT,
-    PENDING_LIMIT, RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
+    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
+    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
 };
 
 pub use args::Args;
@@ -78,11 +79,6 @@ pub async fn run_consensus_stack(
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
-    let boundary_certificates = network.register(
-        BOUNDARY_CERT_CHANNEL_IDENT,
-        BOUNDARY_CERT_LIMIT,
-        message_backlog,
-    );
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let fee_recipient = config
@@ -149,7 +145,6 @@ pub async fn run_consensus_stack(
             broadcaster,
             marshal,
             dkg,
-            boundary_certificates,
             subblocks,
         ),
     );
@@ -180,14 +175,14 @@ async fn instantiate_network(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
 )> {
-    // TODO: Find out why `union_unique` should be used at all. This is the only place
+    // TODO: Find out why `union_unique` should be used. This is the only place
     // where `NAMESPACE` is used at all. We follow alto's example for now.
     let p2p_namespace = commonware_utils::union_unique(crate::config::NAMESPACE, b"_P2P");
     let p2p_cfg = lookup::Config {
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
         bypass_ip_check,
-        ..lookup::Config::local(signing_key, &p2p_namespace, listen_addr, max_message_size)
+        ..lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 
     Ok(lookup::Network::new(context.with_label("network"), p2p_cfg))

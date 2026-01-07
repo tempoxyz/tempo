@@ -1,7 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { tempoDevnet, tempoLocalnet, tempoTestnet } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 import {
   type CreateConfigParameters,
   createConfig,
@@ -9,19 +8,9 @@ import {
   http,
   webSocket,
 } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 const feeToken = '0x20c0000000000000000000000000000000000001'
-
-const tempoDevnetChain = {
-  ...tempoDevnet.extend({ feeToken }),
-  id: 42429,
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.devnet.tempoxyz.dev'],
-      webSocket: ['wss://rpc.devnet.tempoxyz.dev'],
-    },
-  },
-}
 
 export function getConfig(options: getConfig.Options = {}) {
   const { multiInjectedProviderDiscovery } = options
@@ -33,7 +22,7 @@ export function getConfig(options: getConfig.Options = {}) {
       import.meta.env.VITE_ENVIRONMENT === 'local'
         ? tempoLocalnet.extend({ feeToken })
         : import.meta.env.VITE_ENVIRONMENT === 'devnet'
-          ? tempoDevnetChain
+          ? tempoDevnet.extend({ feeToken })
           : tempoTestnet.extend({ feeToken }),
     ],
     connectors: [
@@ -48,22 +37,20 @@ export function getConfig(options: getConfig.Options = {}) {
       key: 'tempo-docs',
     }),
     transports: {
-      [tempoTestnet.id]:
-        import.meta.env.VITE_ENVIRONMENT === 'devnet'
-          ? withFeePayer(
-              webSocket(tempoDevnetChain.rpcUrls.default.webSocket[0], {
-                keepAlive: { interval: 1_000 },
-              }),
-              http('https://sponsor.devnet.tempo.xyz'),
-              { policy: 'sign-only' },
-            )
-          : withFeePayer(
-              webSocket('wss://rpc.testnet.tempo.xyz', {
-                keepAlive: { interval: 1_000 },
-              }),
-              http('https://sponsor.testnet.tempo.xyz'),
-              { policy: 'sign-only' },
-            ),
+      [tempoTestnet.id]: withFeePayer(
+        webSocket('wss://rpc.testnet.tempo.xyz', {
+          keepAlive: { interval: 1_000 },
+        }),
+        http('https://sponsor.testnet.tempo.xyz'),
+        { policy: 'sign-only' },
+      ),
+      [tempoDevnet.id]: withFeePayer(
+        webSocket(tempoDevnet.rpcUrls.default.webSocket[0], {
+          keepAlive: { interval: 1_000 },
+        }),
+        http('https://sponsor.devnet.tempo.xyz'),
+        { policy: 'sign-only' },
+      ),
       [tempoLocalnet.id]: http(undefined, { batch: true }),
     },
   })
