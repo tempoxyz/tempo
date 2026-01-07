@@ -124,7 +124,7 @@ impl Builder {
             .insert_value("epochLength".to_string(), epoch_length)
             .wrap_err("failed to insert epoch length into genesis")?;
 
-        genesis.extra_data = initial_dkg_outcome.encode().freeze().to_vec().into();
+        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
 
         let mut evm = setup_tempo_evm();
 
@@ -144,7 +144,7 @@ impl Builder {
                             admin(),
                             IValidatorConfig::addValidatorCall {
                                 newValidatorAddress: validator(i as u32),
-                                publicKey: peer.encode().freeze().as_ref().try_into().unwrap(),
+                                publicKey: peer.encode().as_ref().try_into().unwrap(),
                                 active: true,
                                 inboundAddress: addr.to_string(),
                                 outboundAddress: addr.to_string(),

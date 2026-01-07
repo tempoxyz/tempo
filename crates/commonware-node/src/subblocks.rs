@@ -10,7 +10,7 @@ use commonware_consensus::{
         scheme::bls12381_threshold::{self, Scheme},
         types::Activity,
     },
-    types::{Epocher as _, FixedEpocher, Round, View},
+    types::{Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{
     Signer, Verifier,
@@ -298,7 +298,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
         let epoch_of_next_block = self
             .epoch_strategy
-            .containing(header.number() + 1)
+            .containing(Height::new(header.number() + 1))
             .expect("epoch strategy covers all epochs")
             .epoch();
 
@@ -826,7 +826,7 @@ async fn validate_subblock(
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
 
     let epoch = epoch_strategy
-        .containing(evm.block().number.to::<u64>() + 1)
+        .containing(Height::new(evm.block().number.to::<u64>() + 1))
         .expect("epoch strategy covers all epochs")
         .epoch();
     let scheme = scheme_provider

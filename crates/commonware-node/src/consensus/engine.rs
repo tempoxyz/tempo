@@ -262,7 +262,6 @@ where
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                namespace: crate::config::NAMESPACE.to_vec(),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
 
                 buffer_pool: buffer_pool.clone(),

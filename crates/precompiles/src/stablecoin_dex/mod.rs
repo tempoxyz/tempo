@@ -428,6 +428,8 @@ impl StablecoinDEX {
                 amount,
                 isBid: is_bid,
                 tick,
+                isFlipOrder: false,
+                flipTick: 0,
             },
         ))?;
 
@@ -574,15 +576,16 @@ impl StablecoinDEX {
 
         self.commit_order_to_book(order)?;
 
-        // Emit FlipOrderPlaced event
-        self.emit_event(StablecoinDEXEvents::FlipOrderPlaced(
-            IStablecoinDEX::FlipOrderPlaced {
+        // Emit OrderPlaced event for flip order
+        self.emit_event(StablecoinDEXEvents::OrderPlaced(
+            IStablecoinDEX::OrderPlaced {
                 orderId: order_id,
                 maker: sender,
                 token,
                 amount,
                 isBid: is_bid,
                 tick,
+                isFlipOrder: true,
                 flipTick: flip_tick,
             },
         ))?;

@@ -279,11 +279,7 @@ contract StablecoinDEX is IStablecoinDEX {
         // Immediately link order into the active orderbook
         _commitOrderToBook(orderId, key, tick, isBid, amount);
 
-        if (!isFlip) {
-            emit OrderPlaced(orderId, maker, base, amount, isBid, tick);
-        } else {
-            emit FlipOrderPlaced(orderId, maker, base, amount, isBid, tick, flipTick);
-        }
+        emit OrderPlaced(orderId, maker, base, amount, isBid, tick, isFlip, flipTick);
         return orderId;
     }
 
