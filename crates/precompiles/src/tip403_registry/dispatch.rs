@@ -4,7 +4,7 @@ use crate::{
     unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
 impl Precompile for TIP403Registry {
@@ -13,27 +13,24 @@ impl Precompile for TIP403Registry {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
-
-        if !ITIP403RegistryCalls::SELECTORS.contains(&selector) {
-            return unknown_selector(selector, self.storage.gas_used())
-                .map(|res| fill_precompile_output(res, &mut self.storage));
+        if calldata.len() < 4 {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
         }
 
-        let Ok(call) = ITIP403RegistryCalls::abi_decode(calldata) else {
-            return Ok(fill_precompile_output(
-                revm::precompile::PrecompileOutput::new_reverted(
-                    0,
-                    alloy::primitives::Bytes::new(),
-                ),
-                &mut self.storage,
-            ));
+        let call = match ITIP403RegistryCalls::abi_decode(calldata) {
+            Ok(call) => call,
+            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+                return unknown_selector(*selector, self.storage.gas_used())
+                    .map(|res| fill_precompile_output(res, &mut self.storage));
+            }
+            Err(_) => {
+                return Ok(fill_precompile_output(
+                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
+                    &mut self.storage,
+                ));
+            }
         };
 
         let result = match call {

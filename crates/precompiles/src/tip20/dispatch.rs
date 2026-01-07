@@ -4,7 +4,7 @@ use crate::{
     mutate_void, tip20::TIP20Token, unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
 /// Combined enum for dispatching to either ITIP20 or IRolesAuth
@@ -14,14 +14,13 @@ enum TIP20Call {
 }
 
 impl TIP20Call {
-    fn decode(calldata: &[u8]) -> Option<Self> {
-        if let Ok(call) = ITIP20Calls::abi_decode(calldata) {
-            return Some(Self::TIP20(call));
+    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+        match ITIP20Calls::abi_decode(calldata) {
+            Ok(call) => return Ok(Self::TIP20(call)),
+            Err(alloy::sol_types::Error::UnknownSelector { .. }) => {}
+            Err(e) => return Err(e),
         }
-        if let Ok(call) = IRolesAuthCalls::abi_decode(calldata) {
-            return Some(Self::RolesAuth(call));
-        }
-        None
+        IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
     }
 }
 
@@ -38,29 +37,24 @@ impl Precompile for TIP20Token {
                 .into_precompile_result(self.storage.gas_used());
         }
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
-
-        let is_known_selector = ITIP20Calls::SELECTORS.contains(&selector)
-            || IRolesAuthCalls::SELECTORS.contains(&selector);
-        if !is_known_selector {
-            return unknown_selector(selector, self.storage.gas_used())
-                .map(|res| fill_precompile_output(res, &mut self.storage));
+        if calldata.len() < 4 {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
         }
 
-        let Some(call) = TIP20Call::decode(calldata) else {
-            return Ok(fill_precompile_output(
-                revm::precompile::PrecompileOutput::new_reverted(
-                    0,
-                    alloy::primitives::Bytes::new(),
-                ),
-                &mut self.storage,
-            ));
+        let call = match TIP20Call::decode(calldata) {
+            Ok(call) => call,
+            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+                return unknown_selector(*selector, self.storage.gas_used())
+                    .map(|res| fill_precompile_output(res, &mut self.storage));
+            }
+            Err(_) => {
+                return Ok(fill_precompile_output(
+                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
+                    &mut self.storage,
+                ));
+            }
         };
 
         let result = match call {

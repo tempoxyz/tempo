@@ -8,7 +8,7 @@ use crate::{
     unknown_selector, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
 /// Combined enum for dispatching to either IFeeManager or ITIPFeeAMM
@@ -18,14 +18,13 @@ enum TipFeeManagerCall {
 }
 
 impl TipFeeManagerCall {
-    fn decode(calldata: &[u8]) -> Option<Self> {
-        if let Ok(call) = IFeeManagerCalls::abi_decode(calldata) {
-            return Some(Self::FeeManager(call));
+    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+        match IFeeManagerCalls::abi_decode(calldata) {
+            Ok(call) => return Ok(Self::FeeManager(call)),
+            Err(alloy::sol_types::Error::UnknownSelector { .. }) => {}
+            Err(e) => return Err(e),
         }
-        if let Ok(call) = ITIPFeeAMMCalls::abi_decode(calldata) {
-            return Some(Self::Amm(call));
-        }
-        None
+        ITIPFeeAMMCalls::abi_decode(calldata).map(Self::Amm)
     }
 }
 
@@ -35,29 +34,24 @@ impl Precompile for TipFeeManager {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
-
-        let is_known_selector = IFeeManagerCalls::SELECTORS.contains(&selector)
-            || ITIPFeeAMMCalls::SELECTORS.contains(&selector);
-        if !is_known_selector {
-            return unknown_selector(selector, self.storage.gas_used())
-                .map(|res| fill_precompile_output(res, &mut self.storage));
+        if calldata.len() < 4 {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
         }
 
-        let Some(call) = TipFeeManagerCall::decode(calldata) else {
-            return Ok(fill_precompile_output(
-                revm::precompile::PrecompileOutput::new_reverted(
-                    0,
-                    alloy::primitives::Bytes::new(),
-                ),
-                &mut self.storage,
-            ));
+        let call = match TipFeeManagerCall::decode(calldata) {
+            Ok(call) => call,
+            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+                return unknown_selector(*selector, self.storage.gas_used())
+                    .map(|res| fill_precompile_output(res, &mut self.storage));
+            }
+            Err(_) => {
+                return Ok(fill_precompile_output(
+                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
+                    &mut self.storage,
+                ));
+            }
         };
 
         let result = match call {

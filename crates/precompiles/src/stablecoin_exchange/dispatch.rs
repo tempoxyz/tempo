@@ -2,7 +2,7 @@
 //!
 //! This module provides the precompile interface for the Stablecoin DEX.
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
 use crate::{
@@ -17,27 +17,24 @@ impl Precompile for StablecoinExchange {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
-
-        if !IStablecoinExchangeCalls::SELECTORS.contains(&selector) {
-            return unknown_selector(selector, self.storage.gas_used())
-                .map(|res| fill_precompile_output(res, &mut self.storage));
+        if calldata.len() < 4 {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
         }
 
-        let Ok(call) = IStablecoinExchangeCalls::abi_decode(calldata) else {
-            return Ok(fill_precompile_output(
-                revm::precompile::PrecompileOutput::new_reverted(
-                    0,
-                    alloy::primitives::Bytes::new(),
-                ),
-                &mut self.storage,
-            ));
+        let call = match IStablecoinExchangeCalls::abi_decode(calldata) {
+            Ok(call) => call,
+            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+                return unknown_selector(*selector, self.storage.gas_used())
+                    .map(|res| fill_precompile_output(res, &mut self.storage));
+            }
+            Err(_) => {
+                return Ok(fill_precompile_output(
+                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
+                    &mut self.storage,
+                ));
+            }
         };
 
         use crate::stablecoin_exchange::IStablecoinExchange;
