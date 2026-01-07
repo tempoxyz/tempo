@@ -496,8 +496,8 @@ mod tests {
             vec![],
             Bytes::from_static(&[0x03, 0x04]),
         );
-        evm.inner.logs.push(log1.clone());
-        evm.inner.logs.push(log2.clone());
+        evm.inner.logs.push(log1);
+        evm.inner.logs.push(log2);
 
         let logs = evm.take_revert_logs();
         assert_eq!(logs.len(), 2);
