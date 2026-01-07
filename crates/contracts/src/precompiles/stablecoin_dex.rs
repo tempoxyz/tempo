@@ -1,6 +1,5 @@
 pub use IStablecoinDEX::{
-    IStablecoinDEXErrors as StablecoinDEXError,
-    IStablecoinDEXEvents as StablecoinDEXEvents,
+    IStablecoinDEXErrors as StablecoinDEXError, IStablecoinDEXEvents as StablecoinDEXEvents,
 };
 
 crate::sol! {

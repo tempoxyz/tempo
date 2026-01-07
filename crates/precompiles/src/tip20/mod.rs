@@ -403,10 +403,7 @@ impl TIP20Token {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
-        if matches!(
-            call.from,
-            TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS
-        ) {
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
             return Err(TIP20Error::protected_address().into());
         }
 

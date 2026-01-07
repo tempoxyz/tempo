@@ -751,9 +751,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -761,9 +759,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
                 Ok(())
             })
@@ -782,9 +778,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -792,9 +786,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
                 Ok(())
             })
@@ -812,9 +804,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -822,9 +812,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(
-                        _
-                    ))
+                    TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidTick(_))
                 ));
                 Ok(())
             })

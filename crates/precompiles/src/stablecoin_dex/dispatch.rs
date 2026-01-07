@@ -17,8 +17,11 @@ impl Precompile for StablecoinDEX {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        dispatch_call(calldata, IStablecoinDEXCalls::abi_decode, |call| match call {
-            IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
+        dispatch_call(
+            calldata,
+            IStablecoinDEXCalls::abi_decode,
+            |call| match call {
+                IStablecoinDEXCalls::place(call) => mutate(call, msg_sender, |s, c| {
                     self.place(s, c.token, c.amount, c.isBid, c.tick)
                 }),
                 IStablecoinDEXCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
@@ -53,17 +56,9 @@ impl Precompile for StablecoinDEX {
                 IStablecoinDEXCalls::cancelStaleOrder(call) => {
                     mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
                 }
-                IStablecoinDEXCalls::swapExactAmountIn(call) => {
-                    mutate(call, msg_sender, |s, c| {
-                        self.swap_exact_amount_in(
-                            s,
-                            c.tokenIn,
-                            c.tokenOut,
-                            c.amountIn,
-                            c.minAmountOut,
-                        )
-                    })
-                }
+                IStablecoinDEXCalls::swapExactAmountIn(call) => mutate(call, msg_sender, |s, c| {
+                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
+                }),
                 IStablecoinDEXCalls::swapExactAmountOut(call) => {
                     mutate(call, msg_sender, |s, c| {
                         self.swap_exact_amount_out(
@@ -98,9 +93,9 @@ impl Precompile for StablecoinDEX {
                 }
                 IStablecoinDEXCalls::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
                 IStablecoinDEXCalls::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
-                IStablecoinDEXCalls::tickToPrice(call) => view(call, |c| {
-                    Ok(crate::stablecoin_dex::tick_to_price(c.tick))
-                }),
+                IStablecoinDEXCalls::tickToPrice(call) => {
+                    view(call, |c| Ok(crate::stablecoin_dex::tick_to_price(c.tick)))
+                }
                 IStablecoinDEXCalls::priceToTick(call) => {
                     view(call, |c| self.price_to_tick(c.price))
                 }
@@ -125,8 +120,7 @@ mod tests {
     use tempo_contracts::precompiles::IStablecoinDEX::IStablecoinDEXCalls;
 
     /// Setup a basic exchange with tokens and liquidity for swap tests
-    fn setup_exchange_with_liquidity()
-    -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
+    fn setup_exchange_with_liquidity() -> eyre::Result<(StablecoinDEX, Address, Address, Address)> {
         let mut exchange = StablecoinDEX::new();
         exchange.initialize()?;
 

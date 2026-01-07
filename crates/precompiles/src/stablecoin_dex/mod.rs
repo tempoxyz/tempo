@@ -10,9 +10,7 @@ pub use orderbook::{
     quote_to_base, tick_to_price,
 };
 use tempo_contracts::precompiles::PATH_USD_ADDRESS;
-pub use tempo_contracts::precompiles::{
-    IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents,
-};
+pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,
@@ -1433,18 +1431,14 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(
-                    _
-                ))
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
             ));
 
             let result = exchange.price_to_tick(orderbook::MAX_PRICE + 1);
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(
-                    _
-                ))
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::TickOutOfBounds(_))
             ));
 
             Ok(())
@@ -2351,7 +2345,7 @@ mod tests {
 
             // Verify PairCreated event was emitted
             exchange.assert_emitted_events(vec![StablecoinDEXEvents::PairCreated(
-                        IStablecoinDEX::PairCreated {
+                IStablecoinDEX::PairCreated {
                     key,
                     base: base_token,
                     quote: quote_token,
@@ -3351,9 +3345,7 @@ mod tests {
             let error = result.unwrap_err();
             assert!(matches!(
                 error,
-                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidFlipTick(
-                    _
-                ))
+                TempoPrecompileError::StablecoinDEX(StablecoinDEXError::InvalidFlipTick(_))
             ));
 
             let valid_flip_tick = 30i16;
