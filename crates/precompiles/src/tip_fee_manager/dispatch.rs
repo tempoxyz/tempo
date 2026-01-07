@@ -19,12 +19,14 @@ enum TipFeeManagerCall {
 
 impl TipFeeManagerCall {
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
-        match IFeeManagerCalls::abi_decode(calldata) {
-            Ok(call) => return Ok(Self::FeeManager(call)),
-            Err(alloy::sol_types::Error::UnknownSelector { .. }) => {}
-            Err(e) => return Err(e),
+        // safe to expect as `dispatch_call` pre-validates calldata len
+        let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+
+        if IFeeManagerCalls::valid_selector(selector) {
+            IFeeManagerCalls::abi_decode(calldata).map(Self::FeeManager)
+        } else {
+            ITIPFeeAMMCalls::abi_decode(calldata).map(Self::Amm)
         }
-        ITIPFeeAMMCalls::abi_decode(calldata).map(Self::Amm)
     }
 }
 
@@ -139,10 +141,13 @@ mod tests {
         Precompile, expect_precompile_revert,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip_fee_manager::{FeeManagerError, amm::PoolKey},
+        tip_fee_manager::{
+            FeeManagerError,
+            amm::{M, MIN_LIQUIDITY, N, PoolKey, SCALE},
+        },
     };
     use alloy::{
-        primitives::{Address, B256},
+        primitives::{Address, B256, U256},
         sol_types::{SolCall, SolValue},
     };
     use tempo_contracts::precompiles::{
@@ -346,6 +351,31 @@ mod tests {
             };
             let result = fee_manager.call(&set_user_call.abi_encode(), user);
             expect_precompile_revert(&result, FeeManagerError::invalid_token());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_amm_constants() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            let result =
+                fee_manager.call(&ITIPFeeAMM::MIN_LIQUIDITYCall {}.abi_encode(), sender)?;
+            assert!(!result.reverted);
+            assert_eq!(U256::abi_decode(&result.bytes)?, MIN_LIQUIDITY);
+
+            let result = fee_manager.call(&ITIPFeeAMM::MCall {}.abi_encode(), sender)?;
+            assert_eq!(U256::abi_decode(&result.bytes)?, M);
+
+            let result = fee_manager.call(&ITIPFeeAMM::NCall {}.abi_encode(), sender)?;
+            assert_eq!(U256::abi_decode(&result.bytes)?, N);
+
+            let result = fee_manager.call(&ITIPFeeAMM::SCALECall {}.abi_encode(), sender)?;
+            assert_eq!(U256::abi_decode(&result.bytes)?, SCALE);
 
             Ok(())
         })
