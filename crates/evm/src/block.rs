@@ -449,9 +449,10 @@ where
 mod tests {
     use super::*;
     use crate::evm::TempoEvm;
-    use alloy_consensus::{Signed, TxLegacy};
+    use alloy_consensus::{Signed, TxLegacy, transaction::Recovered};
     use alloy_evm::{
         EvmEnv,
+        block::BlockExecutor,
         eth::{EthBlockExecutionCtx, receipt_builder::ReceiptBuilder},
     };
     use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
@@ -463,8 +464,9 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::spec::ANDANTINO;
     use tempo_primitives::{
-        SubBlockMetadata, TempoTxType, subblock::SubBlockVersion,
-        transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+        SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
+        subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
+        transaction::{Call, envelope::TEMPO_SYSTEM_TX_SIGNATURE},
     };
     use tempo_revm::{TempoBlockEnv, TempoHaltReason};
 
@@ -1272,9 +1274,7 @@ mod tests {
 
     #[test]
     fn test_validate_shared_gas_limit_exceeded() {
-        let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
-            ANDANTINO.genesis().clone(),
-        ));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
 
         let block_number = 1u64;
         let mut db = State::builder().with_bundle_update().build();
@@ -1330,9 +1330,381 @@ mod tests {
 
     #[test]
     fn test_validate_tx() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Test regular transaction in StartOfBlock section goes to NonShared
+        let tx = create_legacy_tx();
+        let result = executor.validate_tx(&tx, 21000);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), BlockSection::NonShared);
+    }
+
+    fn create_subblock_tx(proposer: &PartialValidatorKey) -> TempoTxEnvelope {
+        let mut nonce_bytes = [0u8; 32];
+        nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
+        nonce_bytes[1..16].copy_from_slice(proposer.as_slice());
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            calls: vec![Call {
+                to: Address::ZERO.into(),
+                input: Default::default(),
+                value: Default::default(),
+            }],
+            gas_limit: 21000,
+            nonce_key: U256::from_be_bytes(nonce_bytes),
+            max_fee_per_gas: 1,
+            max_priority_fee_per_gas: 1,
+            ..Default::default()
+        };
+
+        let signature = TempoSignature::from(Signature::test_signature());
+        TempoTxEnvelope::AA(tx.into_signed(signature))
+    }
+
+    #[test]
+    fn test_validate_tx_subblock_section_already_passed() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let signer = PrivateKey::from_seed(0);
+        let validator_key = B256::from_slice(&signer.public_key());
+        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
+
+        let ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let mut executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Set section to GasIncentive
+        executor.section = BlockSection::GasIncentive;
+
+        let subblock_tx = create_subblock_tx(&proposer);
+        let result = executor.validate_tx(&subblock_tx, 21000);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "subblock section already passed"
+        );
+
+        // Also test with System section
+        executor.section = BlockSection::System {
+            seen_subblocks_signatures: false,
+        };
+        let result = executor.validate_tx(&subblock_tx, 21000);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "subblock section already passed"
+        );
+    }
+
+    #[test]
+    fn test_validate_tx_proposer_subblock_already_processed() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let signer1 = PrivateKey::from_seed(0);
+        let validator_key1 = B256::from_slice(&signer1.public_key());
+        let proposer1 = PartialValidatorKey::from_slice(&validator_key1[..15]);
+
+        let signer2 = PrivateKey::from_seed(1);
+        let validator_key2 = B256::from_slice(&signer2.public_key());
+        let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
+
+        let ctx = crate::TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let mut executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Set section to SubBlock with a different proposer
+        executor.section = BlockSection::SubBlock {
+            proposer: proposer2,
+        };
+
+        // Mark proposer1's subblock as already seen
+        executor.seen_subblocks.push((proposer1, vec![]));
+
+        // Try to submit a tx for proposer1 (already processed)
+        let subblock_tx = create_subblock_tx(&proposer1);
+        let result = executor.validate_tx(&subblock_tx, 21000);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "proposer's subblock already processed"
+        );
+    }
+
+    #[test]
+    fn test_validate_tx_regular_tx_follow_system_tx() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let ctx = crate::TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let mut executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Set section to System
+        executor.section = BlockSection::System {
+            seen_subblocks_signatures: false,
+        };
+
+        // Try to validate a regular tx
+        let tx = create_legacy_tx();
+        let result = executor.validate_tx(&tx, 21000);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "regular transaction can't follow system transaction"
+        );
+    }
+
+    #[test]
+    fn test_commit_transaction() {
         let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
-            tempo_chainspec::spec::ANDANTINO.genesis().clone(),
+            ANDANTINO.genesis().clone(),
         ));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        beneficiary: Address::ZERO,
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let ctx = crate::TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: Some(B256::ZERO),
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 30_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let mut executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Apply pre-execution changes first
+        executor.apply_pre_execution_changes().unwrap();
+
+        // Create execution result
+        let output = ResultAndState {
+            result: revm::context::result::ExecutionResult::Success {
+                reason: revm::context::result::SuccessReason::Return,
+                gas_used: 21000,
+                gas_refunded: 0,
+                logs: vec![],
+                output: revm::context::result::Output::Call(Bytes::new()),
+            },
+            state: Default::default(),
+        };
+
+        let tx = create_legacy_tx();
+        let recovered_tx = Recovered::new_unchecked(tx, Address::ZERO);
+        let gas_used = executor.commit_transaction(output, &recovered_tx).unwrap();
+
+        assert_eq!(gas_used, 21000);
+        assert_eq!(executor.section, BlockSection::NonShared);
+        assert_eq!(executor.inner.receipts.len(), 1);
+    }
+
+    #[test]
+    fn test_finish() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+
+        let block_number = 1u64;
+        let mut db = State::builder().with_bundle_update().build();
+
+        let evm = TempoEvm::new(
+            &mut db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        number: U256::from(block_number),
+                        basefee: 1,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let parent_hash = B256::ZERO;
+        let ctx = crate::TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash,
+                parent_beacon_block_root: None,
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 10_000_000,
+            validator_set: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let mut executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
+
+        // Set section to System with seen_subblocks_signatures
+        executor.section = BlockSection::System {
+            seen_subblocks_signatures: true,
+        };
+
+        let result = executor.finish();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finish_system_tx_not_seen() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
 
         let block_number = 1u64;
         let mut db = State::builder().with_bundle_update().build();
@@ -1370,28 +1742,10 @@ mod tests {
 
         let executor = TempoBlockExecutor::new(evm, ctx, &chainspec);
 
-        // Test regular transaction in StartOfBlock section goes to NonShared
-        let tx = create_legacy_tx();
-        let result = executor.validate_tx(&tx, 21000);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), BlockSection::NonShared);
+        // Section is StartOfBlock, so system tx not seen
+        let result = executor.finish();
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert_eq!(err.to_string(), "end-of-block system transactions not seen");
     }
-
-    #[test]
-    fn test_validate_tx_subblock_section_already_passed() {}
-
-    #[test]
-    fn test_validate_tx_proposer_subblock_already_processed() {}
-
-    #[test]
-    fn test_validate_tx_regular_tx_follow_system_tx() {}
-
-    #[test]
-    fn test_commit_transaction() {}
-
-    #[test]
-    fn test_finish() {}
-
-    #[test]
-    fn test_finish_system_tx_not_seen() {}
 }
