@@ -18,9 +18,19 @@ impl Precompile for AccountKeychain {
             .try_into()
             .unwrap();
 
-        let Ok(call) = IAccountKeychainCalls::abi_decode(calldata) else {
+        if !IAccountKeychainCalls::SELECTORS.contains(&selector) {
             return unknown_selector(selector, self.storage.gas_used())
                 .map(|res| fill_precompile_output(res, &mut self.storage));
+        }
+
+        let Ok(call) = IAccountKeychainCalls::abi_decode(calldata) else {
+            return Ok(fill_precompile_output(
+                revm::precompile::PrecompileOutput::new_reverted(
+                    0,
+                    alloy::primitives::Bytes::new(),
+                ),
+                &mut self.storage,
+            ));
         };
 
         let result = match call {

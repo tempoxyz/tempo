@@ -19,14 +19,12 @@ impl Precompile for NonceManager {
             .try_into()
             .unwrap();
 
-        // Check if selector is known before attempting decode
         if !INonceCalls::SELECTORS.contains(&selector) {
             return unknown_selector(selector, self.storage.gas_used())
                 .map(|res| fill_precompile_output(res, &mut self.storage));
         }
 
         let Ok(call) = INonceCalls::abi_decode(calldata) else {
-            // Known selector but malformed params - return empty revert
             return Ok(fill_precompile_output(
                 revm::precompile::PrecompileOutput::new_reverted(
                     0,
