@@ -37,10 +37,7 @@ export const config = createConfig({
   chains: [tempoTestnet],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoTestnet.id]: withFeePayer(
-      http(),
-      http('https://sponsor.testnet.tempo.xyz'),
-    ),
+    [tempoTestnet.id]: withFeePayer(http(), http('https://sponsor.moderato.tempo.xyz')),
   },
 })
 // [!endregion withFeePayer]
