@@ -6,8 +6,8 @@ yanked = "warn"
 ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
   "RUSTSEC-2024-0436",
-  # https://rustsec.org/advisories/RUSTSEC-2025-0137 ruint reciprocal_mg10 unsoundness. No safe upgrade available and currently unused
-  "RUSTSEC-2025-0137",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0002 lru IterMut unsoundness. alloy-provider doesn't use the vulnerable API
+  "RUSTSEC-2026-0002",
 ]
 
 # This section is considered when running `cargo deny check bans`.
