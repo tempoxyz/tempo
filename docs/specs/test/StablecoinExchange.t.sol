@@ -262,12 +262,13 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 flipOrderId = exchange.placeFlip(address(token1), 1e18, true, 100, 200);
 
         // Orders are immediately active, no executeBlock needed
+        // Event order: Transfer (in), OrderFilled, FlipOrderPlaced, Transfer (out)
 
         vm.expectEmit(true, true, true, true);
         emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
 
         vm.expectEmit(true, true, true, true);
-        emit OrderPlaced(2, alice, address(token1), 1e18, false, 200);
+        emit FlipOrderPlaced(2, alice, address(token1), 1e18, false, 200, 100);
 
         vm.prank(bob);
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
