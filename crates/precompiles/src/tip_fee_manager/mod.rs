@@ -61,10 +61,6 @@ impl TipFeeManager {
             return Err(FeeManagerError::invalid_token().into());
         }
 
-        // FIXME: Either ensure that there are no pending fees for a given
-        // validator before updating the fee token, or update the pending fees structure
-        // to a mapping so that a validator can have multiple fee balances for tokens
-
         // Prevent changing within the validator's own block
         if sender == beneficiary {
             return Err(FeeManagerError::cannot_change_within_block().into());

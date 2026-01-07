@@ -277,7 +277,7 @@ impl TIP20Token {
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (PathUSD)
+        // Loop through quote tokens until we reach the root (pathUSD)
         let mut current = next_quote_token;
         while current != PATH_USD_ADDRESS {
             if current == self.address {
@@ -604,6 +604,7 @@ impl TIP20Token {
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -629,7 +630,7 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
@@ -857,6 +858,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
@@ -940,6 +942,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
@@ -1511,7 +1514,7 @@ pub(crate) mod tests {
                 "from_address should use the provided address directly"
             );
 
-            // Test with reserved token (PathUSD)
+            // Test with reserved token (pathUSD)
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
             let via_from_address_reserved = TIP20Token::from_address(PATH_USD_ADDRESS)?.address;
 
@@ -1761,12 +1764,12 @@ pub(crate) mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // PathUSD is at a reserved address, so we initialize it directly (not via factory)
+            // pathUSD is at a reserved address, so we initialize it directly (not via factory)
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
 
             assert_eq!(path_usd.currency()?, "USD");
-            // PathUSD uses itself as quote token
+            // pathUSD uses itself as quote token
             assert_eq!(path_usd.quote_token()?, PATH_USD_ADDRESS);
             Ok(())
         })
