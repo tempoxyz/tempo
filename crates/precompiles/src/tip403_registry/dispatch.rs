@@ -1,6 +1,5 @@
 use crate::{
-    Precompile, dispatch_call, input_cost, mutate, mutate_void,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    Precompile, dispatch_call, input_cost, mutate, mutate_void, tip403_registry::TIP403Registry,
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
@@ -14,10 +13,8 @@ impl Precompile for TIP403Registry {
             .map_err(|_| PrecompileError::OutOfGas)?;
 
         dispatch_call(calldata, ITIP403RegistryCalls::abi_decode, |call| match call {
-                ITIP403RegistryCalls::policyIdCounter(_) => {
-                    view(ITIP403Registry::policyIdCounterCall {}, |_| {
-                        self.policy_id_counter()
-                    })
+                ITIP403RegistryCalls::policyIdCounter(call) => {
+                    view(call, |_| self.policy_id_counter())
                 }
                 ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
                 ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
@@ -50,6 +47,7 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
+        tip403_registry::ITIP403Registry,
     };
     use alloy::sol_types::{SolCall, SolValue};
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;

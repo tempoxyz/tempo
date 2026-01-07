@@ -1,7 +1,8 @@
-use super::ITIP20;
 use crate::{
     Precompile, dispatch_call, error::TempoPrecompileError, input_cost, metadata, mutate,
-    mutate_void, tip20::TIP20Token, view,
+    mutate_void,
+    tip20::{ITIP20, TIP20Token},
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
@@ -65,25 +66,23 @@ impl Precompile for TIP20Token {
             // View functions
             TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => view(call, |c| self.balance_of(c)),
             TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
-            TIP20Call::TIP20(ITIP20Calls::quoteToken(_)) => {
-                view(ITIP20::quoteTokenCall {}, |_| self.quote_token())
+            TIP20Call::TIP20(ITIP20Calls::quoteToken(call)) => {
+                view(call, |_| self.quote_token())
             }
-            TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(_)) => {
-                view(ITIP20::nextQuoteTokenCall {}, |_| self.next_quote_token())
+            TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(call)) => {
+                view(call, |_| self.next_quote_token())
             }
-            TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(_)) => {
-                view(ITIP20::PAUSE_ROLECall {}, |_| Ok(Self::pause_role()))
+            TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(call)) => {
+                view(call, |_| Ok(Self::pause_role()))
             }
-            TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(_)) => {
-                view(ITIP20::UNPAUSE_ROLECall {}, |_| Ok(Self::unpause_role()))
+            TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(call)) => {
+                view(call, |_| Ok(Self::unpause_role()))
             }
-            TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(_)) => {
-                view(ITIP20::ISSUER_ROLECall {}, |_| Ok(Self::issuer_role()))
+            TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(call)) => {
+                view(call, |_| Ok(Self::issuer_role()))
             }
-            TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(_)) => {
-                view(ITIP20::BURN_BLOCKED_ROLECall {}, |_| {
-                    Ok(Self::burn_blocked_role())
-                })
+            TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(call)) => {
+                view(call, |_| Ok(Self::burn_blocked_role()))
             }
 
             // State changing functions
@@ -147,18 +146,14 @@ impl Precompile for TIP20Token {
             TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
             }
-            TIP20Call::TIP20(ITIP20Calls::claimRewards(_)) => {
-                mutate(ITIP20::claimRewardsCall {}, msg_sender, |_, _| {
-                    self.claim_rewards(msg_sender)
-                })
+            TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
+                mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
             }
-            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(_)) => {
-                view(ITIP20::globalRewardPerTokenCall {}, |_| {
-                    self.get_global_reward_per_token()
-                })
+            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
+                view(call, |_| self.get_global_reward_per_token())
             }
-            TIP20Call::TIP20(ITIP20Calls::optedInSupply(_)) => {
-                view(ITIP20::optedInSupplyCall {}, |_| self.get_opted_in_supply())
+            TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
+                view(call, |_| self.get_opted_in_supply())
             }
             TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
                 self.get_user_reward_info(c.account).map(|info| info.into())

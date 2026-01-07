@@ -7,7 +7,7 @@ use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
 use crate::{
     Precompile, dispatch_call, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
+    stablecoin_exchange::{StablecoinExchange, orderbook::compute_book_key},
     view,
 };
 
@@ -40,10 +40,8 @@ impl Precompile for StablecoinExchange {
                 IStablecoinExchangeCalls::books(call) => {
                     view(call, |c| self.books(c.pairKey).map(Into::into))
                 }
-                IStablecoinExchangeCalls::nextOrderId(_) => {
-                    view(IStablecoinExchange::nextOrderIdCall {}, |_| {
-                        self.next_order_id()
-                    })
+                IStablecoinExchangeCalls::nextOrderId(call) => {
+                    view(call, |_| self.next_order_id())
                 }
                 IStablecoinExchangeCalls::createPair(call) => {
                     mutate(call, msg_sender, |_, c| self.create_pair(c.base))
@@ -85,41 +83,23 @@ impl Precompile for StablecoinExchange {
                 IStablecoinExchangeCalls::quoteSwapExactAmountOut(call) => view(call, |c| {
                     self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
                 }),
-                IStablecoinExchangeCalls::MIN_TICK(_) => {
-                    view(IStablecoinExchange::MIN_TICKCall {}, |_| {
-                        Ok(crate::stablecoin_exchange::MIN_TICK)
-                    })
+                IStablecoinExchangeCalls::MIN_TICK(call) => {
+                    view(call, |_| Ok(crate::stablecoin_exchange::MIN_TICK))
                 }
-                IStablecoinExchangeCalls::MAX_TICK(_) => {
-                    view(IStablecoinExchange::MAX_TICKCall {}, |_| {
-                        Ok(crate::stablecoin_exchange::MAX_TICK)
-                    })
+                IStablecoinExchangeCalls::MAX_TICK(call) => {
+                    view(call, |_| Ok(crate::stablecoin_exchange::MAX_TICK))
                 }
-                IStablecoinExchangeCalls::TICK_SPACING(_) => {
-                    view(IStablecoinExchange::TICK_SPACINGCall {}, |_| {
-                        Ok(crate::stablecoin_exchange::TICK_SPACING)
-                    })
+                IStablecoinExchangeCalls::TICK_SPACING(call) => {
+                    view(call, |_| Ok(crate::stablecoin_exchange::TICK_SPACING))
                 }
-                IStablecoinExchangeCalls::PRICE_SCALE(_) => {
-                    view(IStablecoinExchange::PRICE_SCALECall {}, |_| {
-                        Ok(crate::stablecoin_exchange::PRICE_SCALE)
-                    })
+                IStablecoinExchangeCalls::PRICE_SCALE(call) => {
+                    view(call, |_| Ok(crate::stablecoin_exchange::PRICE_SCALE))
                 }
-                IStablecoinExchangeCalls::MIN_ORDER_AMOUNT(_) => {
-                    view(IStablecoinExchange::MIN_ORDER_AMOUNTCall {}, |_| {
-                        Ok(crate::stablecoin_exchange::MIN_ORDER_AMOUNT)
-                    })
+                IStablecoinExchangeCalls::MIN_ORDER_AMOUNT(call) => {
+                    view(call, |_| Ok(crate::stablecoin_exchange::MIN_ORDER_AMOUNT))
                 }
-                IStablecoinExchangeCalls::MIN_PRICE(_) => {
-                    view(IStablecoinExchange::MIN_PRICECall {}, |_| {
-                        Ok(self.min_price())
-                    })
-                }
-                IStablecoinExchangeCalls::MAX_PRICE(_) => {
-                    view(IStablecoinExchange::MAX_PRICECall {}, |_| {
-                        Ok(self.max_price())
-                    })
-                }
+                IStablecoinExchangeCalls::MIN_PRICE(call) => view(call, |_| Ok(self.min_price())),
+                IStablecoinExchangeCalls::MAX_PRICE(call) => view(call, |_| Ok(self.max_price())),
                 IStablecoinExchangeCalls::tickToPrice(call) => view(call, |c| {
                     Ok(crate::stablecoin_exchange::tick_to_price(c.tick))
                 }),
