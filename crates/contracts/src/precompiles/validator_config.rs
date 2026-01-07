@@ -78,10 +78,6 @@ crate::sol! {
         /// @return The count of validators
         function validatorCount() external view returns (uint64);
 
-        /// Get the epoch at which a fresh DKG ceremony will be triggered
-        /// @return The epoch number for the next DKG ceremony
-        function nextDkgCeremony() external view returns (uint64);
-
         // Errors
         error Unauthorized();
         error ValidatorAlreadyExists();

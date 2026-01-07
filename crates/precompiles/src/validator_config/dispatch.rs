@@ -50,11 +50,6 @@ impl Precompile for ValidatorConfig {
                     self.validators(call.validator)
                 })
             }
-            IValidatorConfig::nextDkgCeremonyCall::SELECTOR => {
-                view::<IValidatorConfig::nextDkgCeremonyCall>(calldata, |_call| {
-                    self.next_dkg_ceremony()
-                })
-            }
 
             // Mutate functions
             IValidatorConfig::addValidatorCall::SELECTOR => {

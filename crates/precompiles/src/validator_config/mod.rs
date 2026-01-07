@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
