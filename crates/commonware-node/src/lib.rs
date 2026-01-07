@@ -10,6 +10,7 @@ pub mod consensus;
 pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
+pub mod feed;
 pub mod metrics;
 pub(crate) mod utils;
 
@@ -38,6 +39,7 @@ pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
     config: Args,
     execution_node: TempoFullNode,
+    feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let share = config
         .signing_share
@@ -64,6 +66,7 @@ pub async fn run_consensus_stack(
         config.mailbox_size,
         config.max_message_size_bytes,
         config.bypass_ip_check,
+        config.allow_private_ips,
     )
     .await
     .wrap_err("failed to start network")?;
@@ -131,6 +134,8 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+
+        feed_state,
     }
     .try_init()
     .await
@@ -171,6 +176,7 @@ async fn instantiate_network(
     mailbox_size: usize,
     max_message_size: u32,
     bypass_ip_check: bool,
+    allow_private_ips: bool,
 ) -> eyre::Result<(
     lookup::Network<commonware_runtime::tokio::Context, PrivateKey>,
     lookup::Oracle<PublicKey>,
@@ -182,6 +188,7 @@ async fn instantiate_network(
         mailbox_size,
         tracked_peer_sets: PEERSETS_TO_TRACK,
         bypass_ip_check,
+        allow_private_ips,
         ..lookup::Config::recommended(signing_key, &p2p_namespace, listen_addr, max_message_size)
     };
 

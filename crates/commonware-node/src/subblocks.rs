@@ -832,6 +832,7 @@ async fn validate_subblock(
     let scheme = scheme_provider
         .scoped(epoch)
         .ok_or_eyre("scheme not found")?;
+    let participants = scheme.participants().len() as usize;
 
     eyre::ensure!(
         scheme.participants().iter().any(|p| p == &sender),
@@ -841,9 +842,7 @@ async fn validate_subblock(
     // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE
-        / TEMPO_SHARED_GAS_DIVISOR as usize
-        / scheme.participants().len() as usize;
+    let max_size = MAX_RLP_BLOCK_SIZE / TEMPO_SHARED_GAS_DIVISOR as usize / participants;
     if subblock.total_tx_size() > max_size {
         warn!(
             size = subblock.total_tx_size(),
@@ -852,6 +851,21 @@ async fn validate_subblock(
         return Ok(());
     }
 
+    // Bound subblock gas at the per-validator allocation.
+    let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
+    let mut total_gas = 0u64;
+    for tx in subblock.transactions_recovered() {
+        total_gas = total_gas.saturating_add(tx.gas_limit());
+        if total_gas > gas_budget {
+            warn!(
+                total_gas,
+                gas_budget, "subblock exceeds gas budget, skipping"
+            );
+            return Ok(());
+        }
+    }
+
+    // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));

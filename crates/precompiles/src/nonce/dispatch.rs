@@ -1,10 +1,7 @@
-use crate::{
-    Precompile, fill_precompile_output, input_cost, nonce::NonceManager, unknown_selector, view,
-};
-use alloy::{primitives::Address, sol_types::SolCall};
+use crate::{Precompile, dispatch_call, input_cost, nonce::NonceManager, view};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
-
-use super::INonce;
+use tempo_contracts::precompiles::INonce::INonceCalls;
 
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -12,22 +9,9 @@ impl Precompile for NonceManager {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
-
-        let result = match selector {
-            INonce::getNonceCall::SELECTOR => {
-                view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
-            }
-            _ => unknown_selector(selector, self.storage.gas_used()),
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        dispatch_call(calldata, INonceCalls::abi_decode, |call| match call {
+            INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
+        })
     }
 }
 
