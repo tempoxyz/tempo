@@ -88,12 +88,7 @@ impl<TContext: Spawner> Actor<TContext> {
         certificate: &impl Encode,
     ) -> CertifiedBlock {
         let certificate = hex::encode(certificate.encode());
-        let height = self
-            .marshal
-            .get_block(&digest)
-            .await
-            .map(|b| b.height())
-            .unwrap_or(0);
+        let height = self.marshal.get_block(&digest).await.map(|b| b.height());
 
         CertifiedBlock {
             epoch,

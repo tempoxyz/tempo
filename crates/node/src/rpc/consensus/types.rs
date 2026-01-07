@@ -11,7 +11,8 @@ use tokio::sync::broadcast;
 pub struct CertifiedBlock {
     pub epoch: u64,
     pub view: u64,
-    pub height: u64,
+    /// Block height, if known. May be `None` if the block hasn't been stored yet.
+    pub height: Option<u64>,
     pub digest: B256,
     pub certificate: String,
 }

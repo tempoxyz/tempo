@@ -1,8 +1,9 @@
 //! Shared state for the feed module.
 
-use crate::alias::marshal;
+use crate::{alias::marshal, consensus::Digest};
 use alloy_primitives::hex;
 use commonware_codec::Encode;
+use commonware_consensus::Block as _;
 use parking_lot::RwLock;
 use std::sync::{Arc, OnceLock};
 use tempo_node::rpc::consensus::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
@@ -61,6 +62,27 @@ impl FeedStateHandle {
     pub(super) fn write(&self) -> parking_lot::RwLockWriteGuard<'_, FeedState> {
         self.state.write()
     }
+
+    /// Get the marshal mailbox, logging if not yet set.
+    fn marshal(&self) -> Option<marshal::Mailbox> {
+        let marshal = self.marshal.get().cloned();
+        if marshal.is_none() {
+            tracing::debug!("marshal not yet set");
+        }
+        marshal
+    }
+
+    /// Fill in the height for a block if it's missing by querying the marshal.
+    async fn maybe_fill_height(&self, block: &mut CertifiedBlock) {
+        if block.height.is_none()
+            && let Some(mut marshal) = self.marshal()
+        {
+            block.height = marshal
+                .get_block(&Digest(block.digest))
+                .await
+                .map(|b| b.height());
+        }
+    }
 }
 
 impl Default for FeedStateHandle {
@@ -84,15 +106,19 @@ impl std::fmt::Debug for FeedStateHandle {
 impl ConsensusFeed for FeedStateHandle {
     async fn get_finalization(&self, query: Query) -> Option<CertifiedBlock> {
         match query {
-            Query::Latest => self.state.read().latest_finalized.clone(),
+            Query::Latest => {
+                let mut block = self.state.read().latest_finalized.clone()?;
+                self.maybe_fill_height(&mut block).await;
+                Some(block)
+            }
             Query::Height(height) => {
-                let mut marshal = self.marshal.get().cloned()?;
+                let mut marshal = self.marshal()?;
                 let finalization = marshal.get_finalization(height).await?;
 
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
-                    height,
+                    height: Some(height),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.certificate.encode()),
                 })
@@ -101,10 +127,21 @@ impl ConsensusFeed for FeedStateHandle {
     }
 
     async fn get_latest(&self) -> ConsensusState {
-        let state = self.state.read();
+        let (mut finalized, notarized) = {
+            let state = self.state.read();
+            (
+                state.latest_finalized.clone(),
+                state.latest_notarized.clone(),
+            )
+        };
+
+        if let Some(ref mut block) = finalized {
+            self.maybe_fill_height(block).await;
+        }
+
         ConsensusState {
-            finalized: state.latest_finalized.clone(),
-            notarized: state.latest_notarized.clone(),
+            finalized,
+            notarized,
         }
     }
 

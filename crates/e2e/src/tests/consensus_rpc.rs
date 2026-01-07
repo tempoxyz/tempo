@@ -76,20 +76,21 @@ async fn consensus_subscribe_and_query_finalization() {
                 saw_notarized = true;
             }
             Event::Finalized { block, .. } => {
+                let height = block.height.unwrap();
                 assert!(
-                    block.height > current_height,
+                    height > current_height,
                     "finalized height should be > {current_height}"
                 );
 
                 let queried_block = http_client
-                    .get_finalization(Query::Height(block.height))
+                    .get_finalization(Query::Height(height))
                     .await
                     .unwrap()
                     .unwrap();
 
                 assert_eq!(queried_block, block);
 
-                current_height = block.height;
+                current_height = height;
                 saw_finalized = true;
             }
             Event::Nullified { .. } => {}
