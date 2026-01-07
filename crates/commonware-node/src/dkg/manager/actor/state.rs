@@ -20,6 +20,7 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript},
 };
 use commonware_p2p::Address;
+use commonware_parallel::Strategy;
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
 use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
@@ -1086,9 +1087,9 @@ impl Player {
     pub(super) fn finalize(
         self,
         logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
-        concurrency: usize,
+        strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
-        self.player.finalize(logs, concurrency)
+        self.player.finalize(logs, strategy)
     }
 }
 

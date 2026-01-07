@@ -60,6 +60,7 @@ use commonware_p2p::{
     Blocker, Receiver, Sender,
     utils::mux::{Builder as _, MuxHandle, Muxer},
 };
+use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
 };
@@ -309,18 +310,22 @@ where
 
         let n_participants = participants.len();
         // Register the new signing scheme with the scheme provider.
+        let is_signer = matches!(share, Some(..));
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::signer(crate::config::NAMESPACE, participants, public, share)
-                .expect("our private share must match our slice of the public key")
+            Scheme::signer(
+                crate::config::NAMESPACE,
+                participants,
+                public,
+                share,
+                Sequential,
+            )
+            .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(crate::config::NAMESPACE, participants, public)
+            Scheme::verifier(crate::config::NAMESPACE, participants, public, Sequential)
         };
-
         self.config.scheme_provider.register(epoch, scheme.clone());
-
-        let is_signer = matches!(scheme, Scheme::Signer { .. });
 
         let engine = simplex::Engine::new(
             self.context.with_label("consensus_engine"),
@@ -455,6 +460,7 @@ where
                     crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
+                    Sequential,
                 ),
             );
             self.confirmed_latest_network_epoch

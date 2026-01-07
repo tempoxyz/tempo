@@ -23,6 +23,7 @@ use commonware_p2p::{
     Address, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, NZU32, ordered};
 
@@ -761,7 +762,7 @@ where
                 // that they are not revealed), that it must have the shares
                 // available. Upon restart, the shares must be replayed against
                 // the player state.
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         (new_output, Some(new_share))
@@ -775,7 +776,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, None)
@@ -1137,7 +1138,7 @@ where
             );
 
             let (output, share) = if let Some(player_state) = player_state {
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, share)) => {
                         info!("DKG ceremony was a success");
                         (new_output, Some(share))
@@ -1151,7 +1152,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("DKG ceremony was a success");
                         (output, None)
