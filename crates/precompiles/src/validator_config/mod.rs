@@ -103,7 +103,7 @@ impl ValidatorConfig {
     /// Get all validators (view function)
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
         let count = self.validators_array.len()?;
-        let mut validators = Vec::new();
+        let mut validators = Vec::with_capacity(count);
 
         for i in 0..count {
             // Read validator address from the array at index i
