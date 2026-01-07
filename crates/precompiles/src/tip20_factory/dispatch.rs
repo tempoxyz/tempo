@@ -1,8 +1,10 @@
-use crate::{Precompile, fill_precompile_output, input_cost, mutate, unknown_selector, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use crate::{
+    Precompile, fill_precompile_output, input_cost, mutate, tip20_factory::TIP20Factory,
+    unknown_selector, view,
+};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
-
-use crate::tip20_factory::{ITIP20Factory, TIP20Factory};
+use tempo_contracts::precompiles::ITIP20Factory::ITIP20FactoryCalls;
 
 impl Precompile for TIP20Factory {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -18,21 +20,27 @@ impl Precompile for TIP20Factory {
             .try_into()
             .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
-        let result = match selector {
-            ITIP20Factory::createTokenCall::SELECTOR => {
-                mutate::<ITIP20Factory::createTokenCall>(calldata, msg_sender, |s, call| {
-                    self.create_token(s, call)
-                })
+        if !ITIP20FactoryCalls::SELECTORS.contains(&selector) {
+            return unknown_selector(selector, self.storage.gas_used())
+                .map(|res| fill_precompile_output(res, &mut self.storage));
+        }
+
+        let Ok(call) = ITIP20FactoryCalls::abi_decode(calldata) else {
+            return Ok(fill_precompile_output(
+                revm::precompile::PrecompileOutput::new_reverted(
+                    0,
+                    alloy::primitives::Bytes::new(),
+                ),
+                &mut self.storage,
+            ));
+        };
+
+        let result = match call {
+            ITIP20FactoryCalls::createToken(call) => {
+                mutate(call, msg_sender, |s, c| self.create_token(s, c))
             }
-            ITIP20Factory::isTIP20Call::SELECTOR => {
-                view::<ITIP20Factory::isTIP20Call>(calldata, |call| self.is_tip20(call.token))
-            }
-            ITIP20Factory::getTokenAddressCall::SELECTOR => {
-                view::<ITIP20Factory::getTokenAddressCall>(calldata, |call| {
-                    self.get_token_address(call)
-                })
-            }
-            _ => unknown_selector(selector, self.storage.gas_used()),
+            ITIP20FactoryCalls::isTIP20(call) => view(call, |c| self.is_tip20(c.token)),
+            ITIP20FactoryCalls::getTokenAddress(call) => view(call, |c| self.get_token_address(c)),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))

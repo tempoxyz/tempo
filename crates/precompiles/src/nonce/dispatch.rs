@@ -1,10 +1,9 @@
 use crate::{
     Precompile, fill_precompile_output, input_cost, nonce::NonceManager, unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
-
-use super::INonce;
+use tempo_contracts::precompiles::INonce::INonceCalls;
 
 impl Precompile for NonceManager {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -20,11 +19,25 @@ impl Precompile for NonceManager {
             .try_into()
             .unwrap();
 
-        let result = match selector {
-            INonce::getNonceCall::SELECTOR => {
-                view::<INonce::getNonceCall>(calldata, |call| self.get_nonce(call))
-            }
-            _ => unknown_selector(selector, self.storage.gas_used()),
+        // Check if selector is known before attempting decode
+        if !INonceCalls::SELECTORS.contains(&selector) {
+            return unknown_selector(selector, self.storage.gas_used())
+                .map(|res| fill_precompile_output(res, &mut self.storage));
+        }
+
+        let Ok(call) = INonceCalls::abi_decode(calldata) else {
+            // Known selector but malformed params - return empty revert
+            return Ok(fill_precompile_output(
+                revm::precompile::PrecompileOutput::new_reverted(
+                    0,
+                    alloy::primitives::Bytes::new(),
+                ),
+                &mut self.storage,
+            ));
+        };
+
+        let result = match call {
+            INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))

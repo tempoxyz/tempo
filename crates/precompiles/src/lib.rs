@@ -200,17 +200,8 @@ fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResu
 }
 
 #[inline]
-fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    let Ok(call) = T::abi_decode(calldata) else {
-        // TODO refactor
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
-    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
-}
-
-#[inline]
-pub fn mutate<T: SolCall>(
-    calldata: &[u8],
+fn mutate<T: SolCall>(
+    call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
@@ -220,15 +211,18 @@ pub fn mutate<T: SolCall>(
             StaticCallNotAllowed {}.abi_encode().into(),
         ));
     }
-    let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
+fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
+    f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+/// Like [`mutate_void`] but takes a pre-decoded call (for enum-based dispatch).
+#[inline]
 fn mutate_void<T: SolCall>(
-    calldata: &[u8],
+    call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
@@ -238,9 +232,6 @@ fn mutate_void<T: SolCall>(
             StaticCallNotAllowed {}.abi_encode().into(),
         ));
     }
-    let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 

@@ -1,12 +1,13 @@
 //! Stablecoin DEX precompile
 //!
 //! This module provides the precompile interface for the Stablecoin DEX.
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
 use crate::{
     Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
+    stablecoin_exchange::{StablecoinExchange, orderbook::compute_book_key},
     unknown_selector, view,
 };
 
@@ -24,165 +25,119 @@ impl Precompile for StablecoinExchange {
             .try_into()
             .map_err(|_| PrecompileError::Other("Invalid function selector length".into()))?;
 
-        let result = match selector {
-            IStablecoinExchange::placeCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeCall>(calldata, msg_sender, |s, call| {
-                    self.place(s, call.token, call.amount, call.isBid, call.tick)
-                })
-            }
-            IStablecoinExchange::placeFlipCall::SELECTOR => {
-                mutate::<IStablecoinExchange::placeFlipCall>(calldata, msg_sender, |s, call| {
-                    self.place_flip(
-                        s,
-                        call.token,
-                        call.amount,
-                        call.isBid,
-                        call.tick,
-                        call.flipTick,
-                        false,
-                    )
-                })
-            }
+        if !IStablecoinExchangeCalls::SELECTORS.contains(&selector) {
+            return unknown_selector(selector, self.storage.gas_used())
+                .map(|res| fill_precompile_output(res, &mut self.storage));
+        }
 
-            IStablecoinExchange::balanceOfCall::SELECTOR => {
-                view::<IStablecoinExchange::balanceOfCall>(calldata, |call| {
-                    self.balance_of(call.user, call.token)
-                })
-            }
+        let Ok(call) = IStablecoinExchangeCalls::abi_decode(calldata) else {
+            return Ok(fill_precompile_output(
+                revm::precompile::PrecompileOutput::new_reverted(
+                    0,
+                    alloy::primitives::Bytes::new(),
+                ),
+                &mut self.storage,
+            ));
+        };
 
-            IStablecoinExchange::getOrderCall::SELECTOR => {
-                view::<IStablecoinExchange::getOrderCall>(calldata, |call| {
-                    self.get_order(call.orderId).map(|order| order.into())
+        use crate::stablecoin_exchange::IStablecoinExchange;
+        let result = match call {
+            IStablecoinExchangeCalls::place(call) => mutate(call, msg_sender, |s, c| {
+                self.place(s, c.token, c.amount, c.isBid, c.tick)
+            }),
+            IStablecoinExchangeCalls::placeFlip(call) => mutate(call, msg_sender, |s, c| {
+                self.place_flip(s, c.token, c.amount, c.isBid, c.tick, c.flipTick, false)
+            }),
+            IStablecoinExchangeCalls::balanceOf(call) => {
+                view(call, |c| self.balance_of(c.user, c.token))
+            }
+            IStablecoinExchangeCalls::getOrder(call) => view(call, |c| {
+                self.get_order(c.orderId).map(|order| order.into())
+            }),
+            IStablecoinExchangeCalls::getTickLevel(call) => view(call, |c| {
+                let level = self.get_price_level(c.base, c.tick, c.isBid)?;
+                Ok((level.head, level.tail, level.total_liquidity).into())
+            }),
+            IStablecoinExchangeCalls::pairKey(call) => {
+                view(call, |c| Ok(compute_book_key(c.tokenA, c.tokenB)))
+            }
+            IStablecoinExchangeCalls::books(call) => {
+                view(call, |c| self.books(c.pairKey).map(Into::into))
+            }
+            IStablecoinExchangeCalls::nextOrderId(_) => {
+                view(IStablecoinExchange::nextOrderIdCall {}, |_| {
+                    self.next_order_id()
                 })
             }
-
-            IStablecoinExchange::getTickLevelCall::SELECTOR => {
-                view::<IStablecoinExchange::getTickLevelCall>(calldata, |call| {
-                    let level = self.get_price_level(call.base, call.tick, call.isBid)?;
-                    Ok((level.head, level.tail, level.total_liquidity).into())
+            IStablecoinExchangeCalls::createPair(call) => {
+                mutate(call, msg_sender, |_, c| self.create_pair(c.base))
+            }
+            IStablecoinExchangeCalls::withdraw(call) => {
+                mutate_void(call, msg_sender, |s, c| self.withdraw(s, c.token, c.amount))
+            }
+            IStablecoinExchangeCalls::cancel(call) => {
+                mutate_void(call, msg_sender, |s, c| self.cancel(s, c.orderId))
+            }
+            IStablecoinExchangeCalls::cancelStaleOrder(call) => {
+                mutate_void(call, msg_sender, |_, c| self.cancel_stale_order(c.orderId))
+            }
+            IStablecoinExchangeCalls::swapExactAmountIn(call) => {
+                mutate(call, msg_sender, |s, c| {
+                    self.swap_exact_amount_in(s, c.tokenIn, c.tokenOut, c.amountIn, c.minAmountOut)
                 })
             }
-
-            IStablecoinExchange::pairKeyCall::SELECTOR => {
-                view::<IStablecoinExchange::pairKeyCall>(calldata, |call| {
-                    Ok(compute_book_key(call.tokenA, call.tokenB))
+            IStablecoinExchangeCalls::swapExactAmountOut(call) => {
+                mutate(call, msg_sender, |s, c| {
+                    self.swap_exact_amount_out(s, c.tokenIn, c.tokenOut, c.amountOut, c.maxAmountIn)
                 })
             }
-
-            IStablecoinExchange::booksCall::SELECTOR => {
-                view::<IStablecoinExchange::booksCall>(calldata, |call| {
-                    self.books(call.pairKey).map(Into::into)
-                })
-            }
-
-            IStablecoinExchange::nextOrderIdCall::SELECTOR => {
-                view::<IStablecoinExchange::nextOrderIdCall>(calldata, |_call| self.next_order_id())
-            }
-            IStablecoinExchange::createPairCall::SELECTOR => {
-                mutate::<IStablecoinExchange::createPairCall>(calldata, msg_sender, |_s, call| {
-                    self.create_pair(call.base)
-                })
-            }
-            IStablecoinExchange::withdrawCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::withdrawCall>(calldata, msg_sender, |s, call| {
-                    self.withdraw(s, call.token, call.amount)
-                })
-            }
-            IStablecoinExchange::cancelCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::cancelCall>(calldata, msg_sender, |s, call| {
-                    self.cancel(s, call.orderId)
-                })
-            }
-            IStablecoinExchange::cancelStaleOrderCall::SELECTOR => {
-                mutate_void::<IStablecoinExchange::cancelStaleOrderCall>(
-                    calldata,
-                    msg_sender,
-                    |_s, call| self.cancel_stale_order(call.orderId),
-                )
-            }
-            IStablecoinExchange::swapExactAmountInCall::SELECTOR => {
-                mutate::<IStablecoinExchange::swapExactAmountInCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| {
-                        self.swap_exact_amount_in(
-                            s,
-                            call.tokenIn,
-                            call.tokenOut,
-                            call.amountIn,
-                            call.minAmountOut,
-                        )
-                    },
-                )
-            }
-            IStablecoinExchange::swapExactAmountOutCall::SELECTOR => {
-                mutate::<IStablecoinExchange::swapExactAmountOutCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| {
-                        self.swap_exact_amount_out(
-                            s,
-                            call.tokenIn,
-                            call.tokenOut,
-                            call.amountOut,
-                            call.maxAmountIn,
-                        )
-                    },
-                )
-            }
-            IStablecoinExchange::quoteSwapExactAmountInCall::SELECTOR => {
-                view::<IStablecoinExchange::quoteSwapExactAmountInCall>(calldata, |call| {
-                    self.quote_swap_exact_amount_in(call.tokenIn, call.tokenOut, call.amountIn)
-                })
-            }
-            IStablecoinExchange::quoteSwapExactAmountOutCall::SELECTOR => {
-                view::<IStablecoinExchange::quoteSwapExactAmountOutCall>(calldata, |call| {
-                    self.quote_swap_exact_amount_out(call.tokenIn, call.tokenOut, call.amountOut)
-                })
-            }
-            IStablecoinExchange::MIN_TICKCall::SELECTOR => {
-                view::<IStablecoinExchange::MIN_TICKCall>(calldata, |_call| {
+            IStablecoinExchangeCalls::quoteSwapExactAmountIn(call) => view(call, |c| {
+                self.quote_swap_exact_amount_in(c.tokenIn, c.tokenOut, c.amountIn)
+            }),
+            IStablecoinExchangeCalls::quoteSwapExactAmountOut(call) => view(call, |c| {
+                self.quote_swap_exact_amount_out(c.tokenIn, c.tokenOut, c.amountOut)
+            }),
+            IStablecoinExchangeCalls::MIN_TICK(_) => {
+                view(IStablecoinExchange::MIN_TICKCall {}, |_| {
                     Ok(crate::stablecoin_exchange::MIN_TICK)
                 })
             }
-            IStablecoinExchange::MAX_TICKCall::SELECTOR => {
-                view::<IStablecoinExchange::MAX_TICKCall>(calldata, |_call| {
+            IStablecoinExchangeCalls::MAX_TICK(_) => {
+                view(IStablecoinExchange::MAX_TICKCall {}, |_| {
                     Ok(crate::stablecoin_exchange::MAX_TICK)
                 })
             }
-            IStablecoinExchange::TICK_SPACINGCall::SELECTOR => {
-                view::<IStablecoinExchange::TICK_SPACINGCall>(calldata, |_call| {
+            IStablecoinExchangeCalls::TICK_SPACING(_) => {
+                view(IStablecoinExchange::TICK_SPACINGCall {}, |_| {
                     Ok(crate::stablecoin_exchange::TICK_SPACING)
                 })
             }
-            IStablecoinExchange::PRICE_SCALECall::SELECTOR => {
-                view::<IStablecoinExchange::PRICE_SCALECall>(calldata, |_call| {
+            IStablecoinExchangeCalls::PRICE_SCALE(_) => {
+                view(IStablecoinExchange::PRICE_SCALECall {}, |_| {
                     Ok(crate::stablecoin_exchange::PRICE_SCALE)
                 })
             }
-            IStablecoinExchange::MIN_ORDER_AMOUNTCall::SELECTOR => {
-                view::<IStablecoinExchange::MIN_ORDER_AMOUNTCall>(calldata, |_call| {
+            IStablecoinExchangeCalls::MIN_ORDER_AMOUNT(_) => {
+                view(IStablecoinExchange::MIN_ORDER_AMOUNTCall {}, |_| {
                     Ok(crate::stablecoin_exchange::MIN_ORDER_AMOUNT)
                 })
             }
-            IStablecoinExchange::MIN_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MIN_PRICECall>(calldata, |_call| Ok(self.min_price()))
-            }
-            IStablecoinExchange::MAX_PRICECall::SELECTOR => {
-                view::<IStablecoinExchange::MAX_PRICECall>(calldata, |_call| Ok(self.max_price()))
-            }
-            IStablecoinExchange::tickToPriceCall::SELECTOR => {
-                view::<IStablecoinExchange::tickToPriceCall>(calldata, |call| {
-                    Ok(crate::stablecoin_exchange::tick_to_price(call.tick))
+            IStablecoinExchangeCalls::MIN_PRICE(_) => {
+                view(IStablecoinExchange::MIN_PRICECall {}, |_| {
+                    Ok(self.min_price())
                 })
             }
-            IStablecoinExchange::priceToTickCall::SELECTOR => {
-                view::<IStablecoinExchange::priceToTickCall>(calldata, |call| {
-                    self.price_to_tick(call.price)
+            IStablecoinExchangeCalls::MAX_PRICE(_) => {
+                view(IStablecoinExchange::MAX_PRICECall {}, |_| {
+                    Ok(self.max_price())
                 })
             }
-
-            _ => unknown_selector(selector, self.storage.gas_used()),
+            IStablecoinExchangeCalls::tickToPrice(call) => view(call, |c| {
+                Ok(crate::stablecoin_exchange::tick_to_price(c.tick))
+            }),
+            IStablecoinExchangeCalls::priceToTick(call) => {
+                view(call, |c| self.price_to_tick(c.price))
+            }
         };
 
         result.map(|res| fill_precompile_output(res, &mut self.storage))
