@@ -503,9 +503,10 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Creates pathUSD as a TIP20 at its reserved address.
-/// This is the only token permitted by the TIP20Factory to use quote_token = Address::ZERO,
-/// forming the root of the USD quote-token tree.
+/// Creates pathUSD as a TIP20 token at its reserved address through the TIP20Factory.
+/// This is the only token allowed to use quote_token = Address::ZERO in the TIP20Factory forming
+/// the basis of other USD stablecoins.
+/// NOTE: factory must already be initialized.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -513,16 +514,25 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        TIP20Factory::new().create_token_reserved_address(
-            PATH_USD_ADDRESS,
-            "pathUSD",
-            "pathUSD",
-            "USD",
-            Address::ZERO,
-            admin,
-        )?;
+        let mut factory = TIP20Factory::new();
+        assert!(
+            factory
+                .is_initialized()
+                .expect("Could not check factory initialization"),
+            "TIP20Factory must be initialized before creating tokens"
+        );
+        factory
+            .create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )
+            .expect("Could not create token");
 
-        // Initialize pathUSD directly (not via factory) since it's at a reserved address.
+        // Initialize pathUSD token and grant issuer role to admin
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("Could not create pathUSD token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
@@ -544,7 +554,8 @@ fn create_path_usd_token(
     })
 }
 
-/// Creates a TIP20 token through the factory (factory must already be initialized)
+/// Creates a TIP20 token at a reserved address through the TIP20Factory.
+/// NOTE: factory must already be initialized.
 #[expect(clippy::too_many_arguments)]
 fn create_and_mint_token(
     symbol: &str,
