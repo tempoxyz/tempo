@@ -197,13 +197,12 @@ fn main() -> eyre::Result<()> {
                 #[cfg(not(feature = "jemalloc-prof"))]
                 let extra_routes = axum::Router::new();
 
-                let mut metrics_server =
-                    tempo_commonware_node::metrics::install_with_extra_routes(
-                        ctx.with_label("metrics"),
-                        args.consensus.metrics_address,
-                        extra_routes,
-                    )
-                    .fuse();
+                let mut metrics_server = tempo_commonware_node::metrics::install_with_extra_routes(
+                    ctx.with_label("metrics"),
+                    args.consensus.metrics_address,
+                    extra_routes,
+                )
+                .fuse();
                 let consensus_stack = run_consensus_stack(&ctx, args.consensus, node);
                 tokio::pin!(consensus_stack);
                 loop {
