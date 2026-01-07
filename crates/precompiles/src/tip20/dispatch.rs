@@ -1,10 +1,10 @@
 use super::ITIP20;
 use crate::{
-    Precompile, error::TempoPrecompileError, fill_precompile_output, input_cost, metadata, mutate,
-    mutate_void, tip20::TIP20Token, unknown_selector, view,
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, metadata, mutate,
+    mutate_void, tip20::TIP20Token, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
 /// Combined enum for dispatching to either ITIP20 or IRolesAuth
@@ -43,172 +43,163 @@ impl Precompile for TIP20Token {
             ));
         }
 
-        let call = match TIP20Call::decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
+        dispatch_call(
+            TIP20Call::decode(calldata),
+            |call| match call {
+                // Metadata functions (no calldata decoding needed)
+                TIP20Call::TIP20(ITIP20Calls::name(_)) => {
+                    metadata::<ITIP20::nameCall>(|| self.name())
+                }
+                TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {
+                    metadata::<ITIP20::symbolCall>(|| self.symbol())
+                }
+                TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
+                    metadata::<ITIP20::decimalsCall>(|| self.decimals())
+                }
+                TIP20Call::TIP20(ITIP20Calls::currency(_)) => {
+                    metadata::<ITIP20::currencyCall>(|| self.currency())
+                }
+                TIP20Call::TIP20(ITIP20Calls::totalSupply(_)) => {
+                    metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
+                }
+                TIP20Call::TIP20(ITIP20Calls::supplyCap(_)) => {
+                    metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferPolicyId(_)) => {
+                    metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
+                }
+                TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
+                    metadata::<ITIP20::pausedCall>(|| self.paused())
+                }
 
-        let result = match call {
-            // Metadata functions (no calldata decoding needed)
-            TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
-            TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {
-                metadata::<ITIP20::symbolCall>(|| self.symbol())
-            }
-            TIP20Call::TIP20(ITIP20Calls::decimals(_)) => {
-                metadata::<ITIP20::decimalsCall>(|| self.decimals())
-            }
-            TIP20Call::TIP20(ITIP20Calls::currency(_)) => {
-                metadata::<ITIP20::currencyCall>(|| self.currency())
-            }
-            TIP20Call::TIP20(ITIP20Calls::totalSupply(_)) => {
-                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::supplyCap(_)) => {
-                metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferPolicyId(_)) => {
-                metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
-            }
-            TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
-                metadata::<ITIP20::pausedCall>(|| self.paused())
-            }
+                // View functions
+                TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => {
+                    view(call, |c| self.balance_of(c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
+                TIP20Call::TIP20(ITIP20Calls::quoteToken(_)) => {
+                    view(ITIP20::quoteTokenCall {}, |_| self.quote_token())
+                }
+                TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(_)) => {
+                    view(ITIP20::nextQuoteTokenCall {}, |_| self.next_quote_token())
+                }
+                TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(_)) => {
+                    view(ITIP20::PAUSE_ROLECall {}, |_| Ok(Self::pause_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(_)) => {
+                    view(ITIP20::UNPAUSE_ROLECall {}, |_| Ok(Self::unpause_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(_)) => {
+                    view(ITIP20::ISSUER_ROLECall {}, |_| Ok(Self::issuer_role()))
+                }
+                TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(_)) => {
+                    view(ITIP20::BURN_BLOCKED_ROLECall {}, |_| {
+                        Ok(Self::burn_blocked_role())
+                    })
+                }
 
-            // View functions
-            TIP20Call::TIP20(ITIP20Calls::balanceOf(call)) => view(call, |c| self.balance_of(c)),
-            TIP20Call::TIP20(ITIP20Calls::allowance(call)) => view(call, |c| self.allowance(c)),
-            TIP20Call::TIP20(ITIP20Calls::quoteToken(_)) => {
-                view(ITIP20::quoteTokenCall {}, |_| self.quote_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::nextQuoteToken(_)) => {
-                view(ITIP20::nextQuoteTokenCall {}, |_| self.next_quote_token())
-            }
-            TIP20Call::TIP20(ITIP20Calls::PAUSE_ROLE(_)) => {
-                view(ITIP20::PAUSE_ROLECall {}, |_| Ok(Self::pause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::UNPAUSE_ROLE(_)) => {
-                view(ITIP20::UNPAUSE_ROLECall {}, |_| Ok(Self::unpause_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::ISSUER_ROLE(_)) => {
-                view(ITIP20::ISSUER_ROLECall {}, |_| Ok(Self::issuer_role()))
-            }
-            TIP20Call::TIP20(ITIP20Calls::BURN_BLOCKED_ROLE(_)) => {
-                view(ITIP20::BURN_BLOCKED_ROLECall {}, |_| {
-                    Ok(Self::burn_blocked_role())
-                })
-            }
+                // State changing functions
+                TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
+                    mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
+                    mutate(call, msg_sender, |s, c| self.transfer(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
+                    mutate(call, msg_sender, |s, c| self.approve(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.change_transfer_policy_id(s, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.pause(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.complete_quote_token_update(s, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.mint(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
+                    mutate(call, msg_sender, |sender, c| {
+                        self.transfer_from_with_memo(sender, c)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::claimRewards(_)) => {
+                    mutate(ITIP20::claimRewardsCall {}, msg_sender, |_, _| {
+                        self.claim_rewards(msg_sender)
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(_)) => {
+                    view(ITIP20::globalRewardPerTokenCall {}, |_| {
+                        self.get_global_reward_per_token()
+                    })
+                }
+                TIP20Call::TIP20(ITIP20Calls::optedInSupply(_)) => {
+                    view(ITIP20::optedInSupplyCall {}, |_| self.get_opted_in_supply())
+                }
+                TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
+                    self.get_user_reward_info(c.account).map(|info| info.into())
+                }),
+                TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
+                    view(call, |c| self.get_pending_rewards(c.account))
+                }
 
-            // State changing functions
-            TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
-                mutate(call, msg_sender, |s, c| self.approve(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.change_transfer_policy_id(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.pause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.complete_quote_token_update(s, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
-                mutate(call, msg_sender, |sender, c| {
-                    self.transfer_from_with_memo(sender, c)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
-            }
-            TIP20Call::TIP20(ITIP20Calls::claimRewards(_)) => {
-                mutate(ITIP20::claimRewardsCall {}, msg_sender, |_, _| {
-                    self.claim_rewards(msg_sender)
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(_)) => {
-                view(ITIP20::globalRewardPerTokenCall {}, |_| {
-                    self.get_global_reward_per_token()
-                })
-            }
-            TIP20Call::TIP20(ITIP20Calls::optedInSupply(_)) => {
-                view(ITIP20::optedInSupplyCall {}, |_| self.get_opted_in_supply())
-            }
-            TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
-                self.get_user_reward_info(c.account).map(|info| info.into())
-            }),
-            TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
-                view(call, |c| self.get_pending_rewards(c.account))
-            }
-
-            // RolesAuth functions
-            TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
-                view(call, |c| self.has_role(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
-                view(call, |c| self.get_role_admin(c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
-            }
-            TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
-            }
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+                // RolesAuth functions
+                TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
+                    view(call, |c| self.has_role(c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
+                    view(call, |c| self.get_role_admin(c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
+                }
+                TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
+                }
+            },
+        )
     }
 }
 

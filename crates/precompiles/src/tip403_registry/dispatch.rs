@@ -1,10 +1,10 @@
 use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
+    Precompile, dispatch_call, input_cost, mutate, mutate_void,
     tip403_registry::{ITIP403Registry, TIP403Registry},
-    unknown_selector, view,
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
 impl Precompile for TIP403Registry {
@@ -19,49 +19,36 @@ impl Precompile for TIP403Registry {
             ));
         }
 
-        let call = match ITIP403RegistryCalls::abi_decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
-
-        let result = match call {
-            ITIP403RegistryCalls::policyIdCounter(_) => {
-                view(ITIP403Registry::policyIdCounterCall {}, |_| {
-                    self.policy_id_counter()
-                })
-            }
-            ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
-            ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
-            ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| self.is_authorized(c)),
-            ITIP403RegistryCalls::createPolicy(call) => {
-                mutate(call, msg_sender, |s, c| self.create_policy(s, c))
-            }
-            ITIP403RegistryCalls::createPolicyWithAccounts(call) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.create_policy_with_accounts(s, c)
-                })
-            }
-            ITIP403RegistryCalls::setPolicyAdmin(call) => {
-                mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c))
-            }
-            ITIP403RegistryCalls::modifyPolicyWhitelist(call) => {
-                mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c))
-            }
-            ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
-                mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
-            }
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        dispatch_call(
+            ITIP403RegistryCalls::abi_decode(calldata),
+            |call| match call {
+                ITIP403RegistryCalls::policyIdCounter(_) => {
+                    view(ITIP403Registry::policyIdCounterCall {}, |_| {
+                        self.policy_id_counter()
+                    })
+                }
+                ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
+                ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
+                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| self.is_authorized(c)),
+                ITIP403RegistryCalls::createPolicy(call) => {
+                    mutate(call, msg_sender, |s, c| self.create_policy(s, c))
+                }
+                ITIP403RegistryCalls::createPolicyWithAccounts(call) => {
+                    mutate(call, msg_sender, |s, c| {
+                        self.create_policy_with_accounts(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::setPolicyAdmin(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c))
+                }
+                ITIP403RegistryCalls::modifyPolicyWhitelist(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c))
+                }
+                ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
+                }
+            },
+        )
     }
 }
 

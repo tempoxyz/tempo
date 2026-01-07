@@ -1,7 +1,7 @@
 use super::ValidatorConfig;
-use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
 
 impl Precompile for ValidatorConfig {
@@ -16,53 +16,40 @@ impl Precompile for ValidatorConfig {
             ));
         }
 
-        let call = match IValidatorConfigCalls::abi_decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
-
-        let result = match call {
-            IValidatorConfigCalls::owner(_) => view(
-                tempo_contracts::precompiles::IValidatorConfig::ownerCall {},
-                |_| self.owner(),
-            ),
-            IValidatorConfigCalls::getValidators(_) => view(
-                tempo_contracts::precompiles::IValidatorConfig::getValidatorsCall {},
-                |_| self.get_validators(),
-            ),
-            IValidatorConfigCalls::getNextFullDkgCeremony(_) => view(
-                tempo_contracts::precompiles::IValidatorConfig::getNextFullDkgCeremonyCall {},
-                |_| self.get_next_full_dkg_ceremony(),
-            ),
-            IValidatorConfigCalls::addValidator(call) => {
-                mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
-            }
-            IValidatorConfigCalls::updateValidator(call) => {
-                mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
-            }
-            IValidatorConfigCalls::changeValidatorStatus(call) => {
-                mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
-            }
-            IValidatorConfigCalls::changeOwner(call) => {
-                mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
-            }
-            IValidatorConfigCalls::setNextFullDkgCeremony(call) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.set_next_full_dkg_ceremony(s, c)
-                })
-            }
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        dispatch_call(
+            IValidatorConfigCalls::abi_decode(calldata),
+            |call| match call {
+                IValidatorConfigCalls::owner(_) => view(
+                    tempo_contracts::precompiles::IValidatorConfig::ownerCall {},
+                    |_| self.owner(),
+                ),
+                IValidatorConfigCalls::getValidators(_) => view(
+                    tempo_contracts::precompiles::IValidatorConfig::getValidatorsCall {},
+                    |_| self.get_validators(),
+                ),
+                IValidatorConfigCalls::getNextFullDkgCeremony(_) => view(
+                    tempo_contracts::precompiles::IValidatorConfig::getNextFullDkgCeremonyCall {},
+                    |_| self.get_next_full_dkg_ceremony(),
+                ),
+                IValidatorConfigCalls::addValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
+                }
+                IValidatorConfigCalls::updateValidator(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.update_validator(s, c))
+                }
+                IValidatorConfigCalls::changeValidatorStatus(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_validator_status(s, c))
+                }
+                IValidatorConfigCalls::changeOwner(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.change_owner(s, c))
+                }
+                IValidatorConfigCalls::setNextFullDkgCeremony(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.set_next_full_dkg_ceremony(s, c)
+                    })
+                }
+            },
+        )
     }
 }
 

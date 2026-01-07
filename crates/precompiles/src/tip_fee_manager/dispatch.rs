@@ -1,14 +1,14 @@
 use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate, mutate_void,
+    Precompile, dispatch_call, input_cost, mutate, mutate_void,
     storage::Handler,
     tip_fee_manager::{
         ITIPFeeAMM, TipFeeManager,
         amm::{M, MIN_LIQUIDITY, N, SCALE},
     },
-    unknown_selector, view,
+    view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
 
 /// Combined enum for dispatching to either IFeeManager or ITIPFeeAMM
@@ -40,21 +40,8 @@ impl Precompile for TipFeeManager {
             ));
         }
 
-        let call = match TipFeeManagerCall::decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
-
-        let result = match call {
+        let beneficiary = self.storage.beneficiary();
+        dispatch_call(TipFeeManagerCall::decode(calldata), |call| match call {
             // IFeeManager functions
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
                 view(call, |c| self.user_tokens(c))
@@ -67,7 +54,7 @@ impl Precompile for TipFeeManager {
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
                 mutate_void(call, msg_sender, |s, c| {
-                    self.set_validator_token(s, c, self.storage.beneficiary())
+                    self.set_validator_token(s, c, beneficiary)
                 })
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::setUserToken(call)) => {
@@ -140,9 +127,7 @@ impl Precompile for TipFeeManager {
                     self.rebalance_swap(s, c.userToken, c.validatorToken, c.amountOut, c.to)
                 })
             }
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        })
     }
 }
 

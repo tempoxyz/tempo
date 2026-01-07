@@ -1,8 +1,6 @@
-use crate::{
-    Precompile, fill_precompile_output, input_cost, nonce::NonceManager, unknown_selector, view,
-};
+use crate::{Precompile, dispatch_call, input_cost, nonce::NonceManager, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::INonce::INonceCalls;
 
 impl Precompile for NonceManager {
@@ -17,25 +15,9 @@ impl Precompile for NonceManager {
             ));
         }
 
-        let call = match INonceCalls::abi_decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
-
-        let result = match call {
+        dispatch_call(INonceCalls::abi_decode(calldata), |call| match call {
             INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        })
     }
 }
 

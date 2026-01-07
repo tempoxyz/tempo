@@ -236,10 +236,7 @@ fn mutate_void<T: SolCall>(
 }
 
 #[inline]
-fn fill_precompile_output(
-    mut output: PrecompileOutput,
-    storage: &mut StorageCtx,
-) -> PrecompileOutput {
+fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
@@ -254,6 +251,30 @@ fn fill_precompile_output(
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
+}
+
+/// Helper function to decode calldata and dispatch it.
+#[inline]
+fn dispatch_call<T, F>(
+    result: core::result::Result<T, alloy::sol_types::Error>,
+    f: F,
+) -> PrecompileResult
+where
+    F: FnOnce(T) -> PrecompileResult,
+{
+    let storage = StorageCtx::default();
+
+    match result {
+        Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),
+        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+            unknown_selector(*selector, storage.gas_used())
+                .map(|res| fill_precompile_output(res, &storage))
+        }
+        Err(_) => Ok(fill_precompile_output(
+            PrecompileOutput::new_reverted(0, Bytes::new()),
+            &storage,
+        )),
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use super::AccountKeychain;
-use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;
 
 impl Precompile for AccountKeychain {
@@ -16,41 +16,28 @@ impl Precompile for AccountKeychain {
             ));
         }
 
-        let call = match IAccountKeychainCalls::abi_decode(calldata) {
-            Ok(call) => call,
-            Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
-                return unknown_selector(*selector, self.storage.gas_used())
-                    .map(|res| fill_precompile_output(res, &mut self.storage));
-            }
-            Err(_) => {
-                return Ok(fill_precompile_output(
-                    PrecompileOutput::new_reverted(0, alloy::primitives::Bytes::new()),
-                    &mut self.storage,
-                ));
-            }
-        };
-
-        let result = match call {
-            IAccountKeychainCalls::authorizeKey(call) => {
-                mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
-            }
-            IAccountKeychainCalls::revokeKey(call) => {
-                mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
-            }
-            IAccountKeychainCalls::updateSpendingLimit(call) => {
-                mutate_void(call, msg_sender, |sender, c| {
-                    self.update_spending_limit(sender, c)
-                })
-            }
-            IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
-            IAccountKeychainCalls::getRemainingLimit(call) => {
-                view(call, |c| self.get_remaining_limit(c))
-            }
-            IAccountKeychainCalls::getTransactionKey(call) => {
-                view(call, |c| self.get_transaction_key(c, msg_sender))
-            }
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        dispatch_call(
+            IAccountKeychainCalls::abi_decode(calldata),
+            |call| match call {
+                IAccountKeychainCalls::authorizeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                }
+                IAccountKeychainCalls::revokeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
+                }
+                IAccountKeychainCalls::updateSpendingLimit(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.update_spending_limit(sender, c)
+                    })
+                }
+                IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
+                IAccountKeychainCalls::getRemainingLimit(call) => {
+                    view(call, |c| self.get_remaining_limit(c))
+                }
+                IAccountKeychainCalls::getTransactionKey(call) => {
+                    view(call, |c| self.get_transaction_key(c, msg_sender))
+                }
+            },
+        )
     }
 }
