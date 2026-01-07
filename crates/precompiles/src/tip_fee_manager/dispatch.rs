@@ -34,14 +34,7 @@ impl Precompile for TipFeeManager {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        let beneficiary = self.storage.beneficiary();
-        dispatch_call(TipFeeManagerCall::decode(calldata), |call| match call {
+        dispatch_call(calldata, TipFeeManagerCall::decode, |call| match call {
             // IFeeManager functions
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::userTokens(call)) => {
                 view(call, |c| self.user_tokens(c))
@@ -49,11 +42,9 @@ impl Precompile for TipFeeManager {
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::validatorTokens(call)) => {
                 view(call, |c| self.validator_tokens(c))
             }
-            TipFeeManagerCall::FeeManager(IFeeManagerCalls::getFeeTokenBalance(call)) => {
-                view(call, |c| self.get_fee_token_balance(c))
-            }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::setValidatorToken(call)) => {
                 mutate_void(call, msg_sender, |s, c| {
+                    let beneficiary = self.storage.beneficiary();
                     self.set_validator_token(s, c, beneficiary)
                 })
             }
@@ -93,13 +84,11 @@ impl Precompile for TipFeeManager {
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::liquidityBalances(call)) => {
                 view(call, |c| self.liquidity_balances[c.poolId][c.user].read())
             }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(_)) => view(ITIPFeeAMM::MCall {}, |_| Ok(M)),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(_)) => view(ITIPFeeAMM::NCall {}, |_| Ok(N)),
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(_)) => {
-                view(ITIPFeeAMM::SCALECall {}, |_| Ok(SCALE))
-            }
-            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(_)) => {
-                view(ITIPFeeAMM::MIN_LIQUIDITYCall {}, |_| Ok(MIN_LIQUIDITY))
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::M(call)) => view(call, |_| Ok(M)),
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::N(call)) => view(call, |_| Ok(N)),
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::SCALE(call)) => view(call, |_| Ok(SCALE)),
+            TipFeeManagerCall::Amm(ITIPFeeAMMCalls::MIN_LIQUIDITY(call)) => {
+                view(call, |_| Ok(MIN_LIQUIDITY))
             }
             TipFeeManagerCall::Amm(ITIPFeeAMMCalls::mint(call)) => {
                 mutate(call, msg_sender, |s, c| {

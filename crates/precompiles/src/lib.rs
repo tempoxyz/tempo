@@ -42,7 +42,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -255,14 +255,19 @@ pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
 
 /// Helper function to decode calldata and dispatch it.
 #[inline]
-fn dispatch_call<T, F>(
-    result: core::result::Result<T, alloy::sol_types::Error>,
-    f: F,
-) -> PrecompileResult
-where
-    F: FnOnce(T) -> PrecompileResult,
-{
+fn dispatch_call<T>(
+    calldata: &[u8],
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    f: impl FnOnce(T) -> PrecompileResult,
+) -> PrecompileResult {
+    if calldata.len() < 4 {
+        return Err(PrecompileError::Other(
+            "Invalid input: missing function selector".into(),
+        ));
+    }
+
     let storage = StorageCtx::default();
+    let result = decode(calldata);
 
     match result {
         Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),

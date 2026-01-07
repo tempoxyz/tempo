@@ -37,7 +37,9 @@ derive_more.workspace = true
 serde.workspace = true
 
 [dev-dependencies]
+alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
 eyre.workspace = true
+futures.workspace = true
 test-case.workspace = true
 tokio.workspace = true
 
@@ -45,6 +47,7 @@ tokio.workspace = true
 default = []
 asm-keccak = [
     "alloy-primitives/asm-keccak",
+    "alloy/asm-keccak",
 ]
 tempo-compat = [
     "dep:reth-evm",

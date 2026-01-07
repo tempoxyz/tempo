@@ -1,5 +1,7 @@
 use super::ValidatorConfig;
-use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
+use crate::{
+    Precompile, dispatch_call, error::TempoPrecompileError, input_cost, mutate_void, view,
+};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
 use tempo_contracts::precompiles::IValidatorConfig::IValidatorConfigCalls;
@@ -10,27 +12,29 @@ impl Precompile for ValidatorConfig {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
         dispatch_call(
-            IValidatorConfigCalls::abi_decode(calldata),
+            calldata,
+            IValidatorConfigCalls::abi_decode,
             |call| match call {
-                IValidatorConfigCalls::owner(_) => view(
-                    tempo_contracts::precompiles::IValidatorConfig::ownerCall {},
-                    |_| self.owner(),
-                ),
-                IValidatorConfigCalls::getValidators(_) => view(
-                    tempo_contracts::precompiles::IValidatorConfig::getValidatorsCall {},
-                    |_| self.get_validators(),
-                ),
-                IValidatorConfigCalls::getNextFullDkgCeremony(_) => view(
-                    tempo_contracts::precompiles::IValidatorConfig::getNextFullDkgCeremonyCall {},
-                    |_| self.get_next_full_dkg_ceremony(),
-                ),
+                // View functions
+                IValidatorConfigCalls::owner(call) => view(call, |_| self.owner()),
+                IValidatorConfigCalls::getValidators(call) => view(call, |_| self.get_validators()),
+                IValidatorConfigCalls::getNextFullDkgCeremony(call) => {
+                    view(call, |_| self.get_next_full_dkg_ceremony())
+                }
+                IValidatorConfigCalls::validatorsArray(call) => view(call, |c| {
+                    let index =
+                        u64::try_from(c.index).map_err(|_| TempoPrecompileError::array_oob())?;
+                    self.validators_array(index)
+                }),
+                IValidatorConfigCalls::validators(call) => {
+                    view(call, |c| self.validators(c.validator))
+                }
+                IValidatorConfigCalls::validatorCount(call) => {
+                    view(call, |_| self.validator_count())
+                }
+
+                // Mutate functions
                 IValidatorConfigCalls::addValidator(call) => {
                     mutate_void(call, msg_sender, |s, c| self.add_validator(s, c))
                 }

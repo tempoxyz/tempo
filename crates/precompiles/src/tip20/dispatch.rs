@@ -37,13 +37,7 @@ impl Precompile for TIP20Token {
                 .into_precompile_result(self.storage.gas_used());
         }
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        dispatch_call(TIP20Call::decode(calldata), |call| match call {
+        dispatch_call(calldata, TIP20Call::decode, |call| match call {
             // Metadata functions (no calldata decoding needed)
             TIP20Call::TIP20(ITIP20Calls::name(_)) => metadata::<ITIP20::nameCall>(|| self.name()),
             TIP20Call::TIP20(ITIP20Calls::symbol(_)) => {

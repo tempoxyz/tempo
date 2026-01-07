@@ -7,7 +7,7 @@ use tempo_contracts::precompiles::IStablecoinExchange::IStablecoinExchangeCalls;
 
 use crate::{
     Precompile, dispatch_call, input_cost, mutate, mutate_void,
-    stablecoin_exchange::{StablecoinExchange, orderbook::compute_book_key},
+    stablecoin_exchange::{IStablecoinExchange, StablecoinExchange, orderbook::compute_book_key},
     view,
 };
 
@@ -17,16 +17,7 @@ impl Precompile for StablecoinExchange {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        use crate::stablecoin_exchange::IStablecoinExchange;
-        dispatch_call(
-            IStablecoinExchangeCalls::abi_decode(calldata),
-            |call| match call {
+        dispatch_call(calldata, IStablecoinExchangeCalls::abi_decode, |call| match call {
                 IStablecoinExchangeCalls::place(call) => mutate(call, msg_sender, |s, c| {
                     self.place(s, c.token, c.amount, c.isBid, c.tick)
                 }),

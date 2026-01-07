@@ -9,13 +9,7 @@ impl Precompile for NonceManager {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        dispatch_call(INonceCalls::abi_decode(calldata), |call| match call {
+        dispatch_call(calldata, INonceCalls::abi_decode, |call| match call {
             INonceCalls::getNonce(call) => view(call, |c| self.get_nonce(c)),
         })
     }

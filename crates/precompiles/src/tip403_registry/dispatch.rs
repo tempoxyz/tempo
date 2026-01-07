@@ -13,15 +13,7 @@ impl Precompile for TIP403Registry {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        dispatch_call(
-            ITIP403RegistryCalls::abi_decode(calldata),
-            |call| match call {
+        dispatch_call(calldata, ITIP403RegistryCalls::abi_decode, |call| match call {
                 ITIP403RegistryCalls::policyIdCounter(_) => {
                     view(ITIP403Registry::policyIdCounterCall {}, |_| {
                         self.policy_id_counter()

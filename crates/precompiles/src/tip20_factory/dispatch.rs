@@ -9,15 +9,7 @@ impl Precompile for TIP20Factory {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        dispatch_call(
-            ITIP20FactoryCalls::abi_decode(calldata),
-            |call| match call {
+        dispatch_call(calldata, ITIP20FactoryCalls::abi_decode, |call| match call {
                 ITIP20FactoryCalls::createToken(call) => {
                     mutate(call, msg_sender, |s, c| self.create_token(s, c))
                 }

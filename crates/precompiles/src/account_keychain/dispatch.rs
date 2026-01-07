@@ -10,15 +10,7 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        if calldata.len() < 4 {
-            return Err(PrecompileError::Other(
-                "Invalid input: missing function selector".into(),
-            ));
-        }
-
-        dispatch_call(
-            IAccountKeychainCalls::abi_decode(calldata),
-            |call| match call {
+        dispatch_call(calldata, IAccountKeychainCalls::abi_decode, |call| match call {
                 IAccountKeychainCalls::authorizeKey(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
                 }

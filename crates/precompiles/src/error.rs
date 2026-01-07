@@ -82,6 +82,10 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::UnderOverflow)
     }
 
+    pub fn array_oob() -> Self {
+        Self::Panic(PanicKind::ArrayOutOfBounds)
+    }
+
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
             Self::StablecoinExchange(e) => e.abi_encode().into(),
