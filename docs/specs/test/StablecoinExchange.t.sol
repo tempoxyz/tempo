@@ -1683,7 +1683,9 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, true, tick, false, 0);
+            emit OrderPlaced(
+                exchange.nextOrderId(), user, address(token1), amount, true, tick, false, 0
+            );
         }
 
         vm.prank(user);
@@ -1696,7 +1698,9 @@ contract StablecoinExchangeTest is BaseTest {
     {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, false, tick, false, 0);
+            emit OrderPlaced(
+                exchange.nextOrderId(), user, address(token1), amount, false, tick, false, 0
+            );
         }
 
         vm.prank(user);
