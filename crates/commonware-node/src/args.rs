@@ -117,10 +117,10 @@ pub struct Args {
     #[arg(long = "consensus.bypass-ip-check", default_value_t = false)]
     pub bypass_ip_check: bool,
 
-    /// Reduces security by enabling connections from private IPs.
-    /// Only enable in trusted network environments.
-    #[arg(long = "consensus.allow-private-ips", default_value_t = false)]
-    pub allow_private_ips: bool,
+    /// Use P2P defaults optimized for local network environments.
+    /// Only enable in non-production network nodes.
+    #[arg(long = "consensus.use-local-defaults", default_value_t = false)]
+    pub use_local_defaults: bool,
 
     /// The interval at which to broadcast subblocks to the next proposer.
     /// Each built subblock is immediately broadcasted to the next proposer (if it's known).
