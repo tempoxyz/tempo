@@ -235,7 +235,10 @@ where
 #[cfg(test)]
 mod tests {
     use reth_revm::context::BlockEnv;
-    use revm::{context::TxEnv, database::EmptyDB};
+    use revm::{
+        context::TxEnv,
+        database::{EmptyDB, in_memory_db::CacheDB},
+    };
 
     use super::*;
 
@@ -271,17 +274,197 @@ mod tests {
     }
 
     #[test]
-    fn test_transact_raw() {}
+    fn test_transact_raw() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 0,
+                        gas_limit: 30_000_000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::repeat_byte(0x01),
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Call(Address::repeat_byte(0x02)),
+                ..Default::default()
+            },
+            is_system_tx: false,
+            fee_token: None,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.gas_used(), 21000);
+    }
 
     #[test]
-    fn test_transact_raw_system_tx() {}
+    fn test_transact_raw_system_tx() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // System transaction
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Call(Address::repeat_byte(0x01)),
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+        // System transactions should not consume gas
+        assert_eq!(result.result.gas_used(), 0);
+    }
 
     #[test]
-    fn test_transact_raw_system_tx_must_be_call() {}
+    fn test_transact_raw_system_tx_must_be_call() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // System transaction with Create kind
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Create,
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            EVMError::Transaction(TempoInvalidTransaction::SystemTransactionMustBeCall)
+        ));
+    }
 
     #[test]
-    fn test_transact_raw_system_tx_failed() {}
+    fn test_transact_raw_system_tx_failed() {
+        let mut cache_db = CacheDB::new(EmptyDB::default());
+        // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
+        let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
+        let contract_addr = Address::repeat_byte(0xaa);
+
+        cache_db.insert_account_info(
+            contract_addr,
+            revm::state::AccountInfo {
+                code_hash: alloy_primitives::keccak256(&revert_code),
+                code: Some(revm::bytecode::Bytecode::new_raw(revert_code)),
+                ..Default::default()
+            },
+        );
+
+        let mut evm = TempoEvm::new(
+            cache_db,
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // System transaction that will fail with call to contract that reverts
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 100000,
+                kind: TxKind::Call(contract_addr),
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            EVMError::Transaction(TempoInvalidTransaction::SystemTransactionFailed(_))
+        ));
+    }
 
     #[test]
-    fn test_transact_system_call() {}
+    fn test_transact_system_call() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let caller = Address::repeat_byte(0x01);
+        let contract = Address::repeat_byte(0x02);
+        let data = Bytes::from_static(&[0x01, 0x02, 0x03]);
+
+        let result = evm.transact_system_call(caller, contract, data);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+    }
 }
