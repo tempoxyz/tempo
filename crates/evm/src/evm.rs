@@ -467,4 +467,43 @@ mod tests {
         let result = result.unwrap();
         assert!(result.result.is_success());
     }
+
+    #[test]
+    fn test_take_revert_logs() {
+        let mut evm = TempoEvm::new(
+            EmptyDB::default(),
+            EvmEnv {
+                block_env: TempoBlockEnv {
+                    inner: BlockEnv {
+                        basefee: 1,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        assert!(evm.take_revert_logs().is_empty());
+
+        let log1 = Log::new_unchecked(
+            Address::repeat_byte(0x01),
+            vec![alloy_primitives::B256::repeat_byte(0xaa)],
+            Bytes::from_static(&[0x01, 0x02]),
+        );
+        let log2 = Log::new_unchecked(
+            Address::repeat_byte(0x02),
+            vec![],
+            Bytes::from_static(&[0x03, 0x04]),
+        );
+        evm.inner.logs.push(log1.clone());
+        evm.inner.logs.push(log2.clone());
+
+        let logs = evm.take_revert_logs();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].address, Address::repeat_byte(0x01));
+        assert_eq!(logs[1].address, Address::repeat_byte(0x02));
+
+        assert!(evm.take_revert_logs().is_empty());
+    }
 }
