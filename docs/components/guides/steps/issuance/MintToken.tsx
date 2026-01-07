@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { type Address, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { useDemoContext } from '../../../DemoContext'

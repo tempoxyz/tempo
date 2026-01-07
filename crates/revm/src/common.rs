@@ -521,7 +521,7 @@ mod tests {
     #[test]
     fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
         let caller = Address::random();
-        // Use PathUSD as token_in since it's a known valid USD fee token
+        // Use pathUSD as token_in since it's a known valid USD fee token
         let token_in = DEFAULT_FEE_TOKEN;
         let token_out = address!("0x20C0000000000000000000000000000000000001");
 

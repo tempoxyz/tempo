@@ -115,10 +115,6 @@ impl TipFeeManager {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
-        // Validate both tokens are USD currency
-        validate_usd_currency(user_token)?;
-        validate_usd_currency(validator_token)?;
-
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
 
@@ -301,6 +297,10 @@ impl TipFeeManager {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
         }
+
+        // Validate both tokens are USD currency
+        validate_usd_currency(user_token)?;
+        validate_usd_currency(validator_token)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
         // Check user has sufficient liquidity
@@ -635,10 +635,9 @@ mod tests {
     }
 
     #[test]
-    fn test_rebalance_swap_rejects_non_usd_tokens() -> eyre::Result<()> {
+    fn test_burn_rejects_non_usd_tokens() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
-        let to = Address::random();
         StorageCtx::enter(&mut storage, || {
             let eur_token = TIP20Setup::create("EuroToken", "EUR", admin)
                 .currency("EUR")
@@ -646,24 +645,24 @@ mod tests {
             let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
-            let result = amm.rebalance_swap(
+            let result = amm.burn(
                 admin,
                 eur_token.address(),
                 usd_token.address(),
                 U256::from(1000),
-                to,
+                admin,
             );
             assert!(matches!(
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
             ));
 
-            let result = amm.rebalance_swap(
+            let result = amm.burn(
                 admin,
                 usd_token.address(),
                 eur_token.address(),
                 U256::from(1000),
-                to,
+                admin,
             );
             assert!(matches!(
                 result,

@@ -49,8 +49,9 @@ The "spend" token is the token that will be spent to place the order.
 
 ```tsx twoslash [ApproveSpend.tsx]
 // @noErrors
-import { Addresses, Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
+import { Addresses } from 'viem/tempo'
+import { Hooks } from 'wagmi/tempo'
 
 const pathUsd = '0x20c0000000000000000000000000000000000000'
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -145,7 +146,7 @@ function PlaceOrder(props: { orderType: 'buy' | 'sell' }) {
 
 ### View order details
 
-After placing an order, you can query its details to see the current state, including the amount filled and remaining using [`Hooks.dex.useOrder`](/sdk/typescript/wagmi/hooks/dex.useOrder).
+After placing an order, you can query its details to see the current state, including the amount filled and remaining using [`Hooks.dex.useOrder`](https://wagmi.sh/tempo/hooks/dex.useOrder).
 
 <Demo.Container name="View Order">
   <Step.Connect stepNumber={1} />
@@ -158,7 +159,7 @@ After placing an order, you can query its details to see the current state, incl
 
 ```tsx twoslash [QueryOrder.tsx]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 const orderId = 123n
 
@@ -179,7 +180,7 @@ console.log('Is flip order:', order?.isFlip)
 
 :::
 
-For more details on querying orders, see the [`Hooks.dex.useOrder`](/sdk/typescript/wagmi/hooks/dex.useOrder) documentation.
+For more details on querying orders, see the [`Hooks.dex.useOrder`](https://wagmi.sh/tempo/hooks/dex.useOrder) documentation.
 
 ::::
 
@@ -203,7 +204,7 @@ When you cancel an order, any remaining funds are credited to your exchange bala
 ```tsx twoslash [ManageOrder.tsx]
 // @noErrors
 import { Actions, Addresses } from 'viem/tempo'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
@@ -280,7 +281,7 @@ declare module 'wagmi' {
   }
 }
 // ---cut---
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 const { data: metadata } = Hooks.token.useGetMetadata({ // [!code focus]
   token: '0x20c0000000000000000000000000000000000001', // AlphaUSD // [!code focus]
