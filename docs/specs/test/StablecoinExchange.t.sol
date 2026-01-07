@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {IStablecoinExchange} from "../src/interfaces/IStablecoinExchange.sol";
-import {ITIP20} from "../src/interfaces/ITIP20.sol";
-import {ITIP403Registry} from "../src/interfaces/ITIP403Registry.sol";
-import {BaseTest} from "./BaseTest.t.sol";
-import {MockTIP20} from "./mocks/MockTIP20.sol";
+import { IStablecoinExchange } from "../src/interfaces/IStablecoinExchange.sol";
+import { ITIP20 } from "../src/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "../src/interfaces/ITIP403Registry.sol";
+import { BaseTest } from "./BaseTest.t.sol";
+import { MockTIP20 } from "./mocks/MockTIP20.sol";
 
 contract StablecoinExchangeTest is BaseTest {
+
     bytes32 pairKey;
     uint128 constant INITIAL_BALANCE = 10_000e18;
 
     event OrderPlaced(
-        uint128 indexed orderId, address indexed maker, address indexed base, uint128 amount, bool isBid, int16 tick
+        uint128 indexed orderId,
+        address indexed maker,
+        address indexed base,
+        uint128 amount,
+        bool isBid,
+        int16 tick
     );
 
     event FlipOrderPlaced(
@@ -28,7 +34,11 @@ contract StablecoinExchangeTest is BaseTest {
     event OrderCancelled(uint128 indexed orderId);
 
     event OrderFilled(
-        uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill
+        uint128 indexed orderId,
+        address indexed maker,
+        address indexed taker,
+        uint128 amountFilled,
+        bool partialFill
     );
 
     event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
@@ -85,9 +95,13 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     function test_CreatePair() public {
-        ITIP20 newQuote = ITIP20(factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin, bytes32("newquote")));
+        ITIP20 newQuote = ITIP20(
+            factory.createToken("New Quote", "NQUOTE", "USD", pathUSD, admin, bytes32("newquote"))
+        );
 
-        ITIP20 newBase = ITIP20(factory.createToken("New Base", "NBASE", "USD", newQuote, admin, bytes32("newbase")));
+        ITIP20 newBase = ITIP20(
+            factory.createToken("New Base", "NBASE", "USD", newQuote, admin, bytes32("newbase"))
+        );
         bytes32 expectedKey = exchange.pairKey(address(newBase), address(newQuote));
 
         if (!isTempo) {
@@ -103,8 +117,11 @@ contract StablecoinExchangeTest is BaseTest {
     function test_OrderbookPairs_AreOrderSensitive_AcrossQuoteUpdates() public {
         // Create a dedicated base token and two possible quote tokens, all USD-denominated.
         vm.startPrank(admin);
-        ITIP20 base = ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin, bytes32(0)));
-        ITIP20 quote1 = ITIP20(factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin, bytes32(uint256(1))));
+        ITIP20 base =
+            ITIP20(factory.createToken("OBBase", "OBB", "USD", pathUSD, admin, bytes32(0)));
+        ITIP20 quote1 = ITIP20(
+            factory.createToken("OBQuote1", "OBQ1", "USD", pathUSD, admin, bytes32(uint256(1)))
+        );
         vm.stopPrank();
 
         // Initial state: base quotes pathUSD
@@ -174,7 +191,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(exchange)), expectedEscrow);
 
         // Verify order is immediately active in orderbook
-        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), 100, true);
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(address(token1), 100, true);
         assertEq(bidHead, orderId);
         assertEq(bidTail, orderId);
         assertEq(bidLiquidity, 1e18);
@@ -190,7 +208,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(token1.balanceOf(address(exchange)), 1e18);
 
         // Verify order is immediately active in orderbook
-        (uint128 askHead, uint128 askTail, uint128 askLiquidity) = exchange.getTickLevel(address(token1), 100, false);
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), 100, false);
         assertEq(askHead, orderId);
         assertEq(askTail, orderId);
         assertEq(askLiquidity, 1e18);
@@ -214,7 +233,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(pathUSD.balanceOf(address(exchange)), expectedEscrow);
 
         // Verify order is immediately active in orderbook
-        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), 100, true);
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(address(token1), 100, true);
         assertEq(bidHead, orderId);
         assertEq(bidTail, orderId);
         assertEq(bidLiquidity, 1e18);
@@ -236,7 +256,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(token1.balanceOf(address(exchange)), 1e18);
 
         // Verify order is immediately active in orderbook
-        (uint128 askHead, uint128 askTail, uint128 askLiquidity) = exchange.getTickLevel(address(token1), 100, false);
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), 100, false);
         assertEq(askHead, orderId);
         assertEq(askTail, orderId);
         assertEq(askLiquidity, 1e18);
@@ -273,13 +294,15 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(exchange.nextOrderId(), 5);
 
         // Verify liquidity at tick levels - orders are immediately active
-        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), 100, true);
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(address(token1), 100, true);
 
         assertEq(bidHead, bid0);
         assertEq(bidTail, bid1);
         assertEq(bidLiquidity, 3e18);
 
-        (uint128 askHead, uint128 askTail, uint128 askLiquidity) = exchange.getTickLevel(address(token1), 150, false);
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), 150, false);
         assertEq(askHead, ask0);
         assertEq(askTail, ask1);
         assertEq(askLiquidity, 3e18);
@@ -302,7 +325,8 @@ contract StablecoinExchangeTest is BaseTest {
         assertEq(exchange.balanceOf(alice, address(pathUSD)), escrowAmount);
 
         // Verify order removed from orderbook
-        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), 100, true);
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(address(token1), 100, true);
         assertEq(bidHead, 0);
         assertEq(bidTail, 0);
         assertEq(bidLiquidity, 0);
@@ -329,7 +353,8 @@ contract StablecoinExchangeTest is BaseTest {
         // Orders are immediately active
 
         uint128 amountOut = 500e18;
-        uint128 amountIn = exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), amountOut);
+        uint128 amountIn =
+            exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), amountOut);
 
         uint32 price = exchange.tickToPrice(100);
         uint128 expectedAmountIn = (amountOut * price) / exchange.PRICE_SCALE();
@@ -354,7 +379,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), amountOut, maxAmountIn);
 
         assertEq(amountIn, expectedAmountIn);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut);
@@ -369,7 +395,9 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn2 = exchange.swapExactAmountOut(address(pathUSD), address(token1), remainingAmount, maxAmountIn);
+        uint128 amountIn2 = exchange.swapExactAmountOut(
+            address(pathUSD), address(token1), remainingAmount, maxAmountIn
+        );
 
         assertEq(amountIn2, expectedAmountIn2);
         assertEq(token1.balanceOf(alice), initialBaseBalance + amountOut + remainingAmount);
@@ -407,7 +435,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountIn = exchange.swapExactAmountOut(address(pathUSD), address(token1), buyAmount, maxIn);
+        uint128 amountIn =
+            exchange.swapExactAmountOut(address(pathUSD), address(token1), buyAmount, maxIn);
 
         assertEq(amountIn, totalCost);
         assertEq(token1.balanceOf(alice), initBalance + buyAmount);
@@ -419,7 +448,8 @@ contract StablecoinExchangeTest is BaseTest {
         // Orders are immediately active
 
         uint128 amountIn = 500e18;
-        uint128 amountOut = exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), amountIn);
+        uint128 amountOut =
+            exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), amountIn);
 
         uint32 price = exchange.tickToPrice(100);
         uint128 expectedProceeds = (amountIn * price) / exchange.PRICE_SCALE();
@@ -444,7 +474,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountOut = exchange.swapExactAmountIn(address(token1), address(pathUSD), amountIn, minAmountOut);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(pathUSD), amountIn, minAmountOut);
 
         assertEq(amountOut, expectedAmountOut);
         assertEq(pathUSD.balanceOf(alice), initialQuoteBalance + amountOut);
@@ -460,8 +491,9 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountOut2 =
-            exchange.swapExactAmountIn(address(token1), address(pathUSD), remainingAmount, minAmountOut2);
+        uint128 amountOut2 = exchange.swapExactAmountIn(
+            address(token1), address(pathUSD), remainingAmount, minAmountOut2
+        );
 
         assertEq(amountOut2, expectedAmountOut2);
         assertEq(pathUSD.balanceOf(alice), initialQuoteBalance + amountOut + amountOut2);
@@ -499,7 +531,8 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         vm.prank(alice);
-        uint128 amountOut = exchange.swapExactAmountIn(address(token1), address(pathUSD), sellAmount, minOut);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(pathUSD), sellAmount, minOut);
 
         assertEq(amountOut, totalOut);
         assertEq(pathUSD.balanceOf(alice), initBalance + totalOut);
@@ -577,13 +610,15 @@ contract StablecoinExchangeTest is BaseTest {
         // Note: Validation order - tick bounds, tick spacing, then amount
         if (tick < exchange.MIN_TICK() || tick > exchange.MAX_TICK()) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(IStablecoinExchange.TickOutOfBounds.selector, tick);
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.TickOutOfBounds.selector, tick);
         } else if (tick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
             expectedError = abi.encodeWithSelector(IStablecoinExchange.InvalidTick.selector);
         } else if (amount < exchange.MIN_ORDER_AMOUNT()) {
             shouldRevert = true;
-            expectedError = abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
+            expectedError =
+                abi.encodeWithSelector(IStablecoinExchange.BelowMinimumOrderSize.selector, amount);
         }
 
         // Execute and verify
@@ -606,7 +641,12 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     // Test flip order validation rules
-    function testFuzz_PlaceFlipOrder_ValidationRules(uint128 amount, int16 tick, int16 flipTick, bool isBid) public {
+    function testFuzz_PlaceFlipOrder_ValidationRules(
+        uint128 amount,
+        int16 tick,
+        int16 flipTick,
+        bool isBid
+    ) public {
         tick = int16(bound(int256(tick), type(int16).min, type(int16).max));
         flipTick = int16(bound(int256(flipTick), type(int16).min, type(int16).max));
 
@@ -658,7 +698,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test pair creation validation
     function test_CreatePair_RevertIf_NonUsdToken() public {
         // Create a non-USD token
-        ITIP20 eurToken = ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
+        ITIP20 eurToken =
+            ITIP20(factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, bytes32("eur")));
 
         try exchange.createPair(address(eurToken)) {
             revert CallShouldHaveReverted();
@@ -711,7 +752,9 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     // Test withdraw validation
-    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount) public {
+    function testFuzz_Withdraw_RevertIf_InsufficientBalance(uint128 balance, uint128 withdrawAmount)
+        public
+    {
         vm.assume(balance < type(uint128).max); // Avoid overflow in balance + 1
         withdrawAmount = uint128(bound(withdrawAmount, balance + 1, type(uint128).max));
 
@@ -737,7 +780,8 @@ contract StablecoinExchangeTest is BaseTest {
     // Test swap validation
     function test_Swap_RevertIf_PairNotExists() public {
         // Try to swap between two tokens that don't have a trading pair
-        ITIP20 token3 = ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin, bytes32("token3")));
+        ITIP20 token3 =
+            ITIP20(factory.createToken("Token3", "TK3", "USD", pathUSD, admin, bytes32("token3")));
 
         try exchange.swapExactAmountIn(address(token3), address(token2), 100, 0) {
             revert CallShouldHaveReverted();
@@ -773,7 +817,9 @@ contract StablecoinExchangeTest is BaseTest {
         try exchange.swapExactAmountIn(address(token1), address(pathUSD), 100, 0) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
-            assertEq(err, abi.encodeWithSelector(IStablecoinExchange.InsufficientLiquidity.selector));
+            assertEq(
+                err, abi.encodeWithSelector(IStablecoinExchange.InsufficientLiquidity.selector)
+            );
         }
     }
 
@@ -802,7 +848,12 @@ contract StablecoinExchangeTest is BaseTest {
             try exchange.priceToTick(price) {
                 revert CallShouldHaveReverted();
             } catch (bytes memory err) {
-                assertEq(err, abi.encodeWithSelector(IStablecoinExchange.TickOutOfBounds.selector, expectedTick));
+                assertEq(
+                    err,
+                    abi.encodeWithSelector(
+                        IStablecoinExchange.TickOutOfBounds.selector, expectedTick
+                    )
+                );
             }
         } else {
             // Valid price range - should succeed
@@ -934,7 +985,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find direct path
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), minOrderAmount);
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(pathUSD), address(token1), minOrderAmount);
             assertGt(amountOut, 0);
         } else if (scenario == 1) {
             // Sibling tokens through pathUSD
@@ -957,7 +1009,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should route token1 -> pathUSD -> token2
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(address(token1), address(token2), minOrderAmount);
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(token2), minOrderAmount);
             assertGt(amountOut, 0);
         } else {
             // Reverse direction
@@ -967,7 +1020,8 @@ contract StablecoinExchangeTest is BaseTest {
             // Orders are immediately active
 
             // Should find path in reverse
-            uint128 amountOut = exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), minOrderAmount);
+            uint128 amountOut =
+                exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), minOrderAmount);
             assertGt(amountOut, 0);
         }
     }
@@ -978,15 +1032,18 @@ contract StablecoinExchangeTest is BaseTest {
         // The path algorithm will find token1 -> pathUSD -> isolatedToken
         // But the swap will fail because the isolatedToken pair doesn't exist
 
-        ITIP20 isolatedToken =
-            ITIP20(factory.createToken("Isolated", "ISO", "USD", pathUSD, admin, bytes32("isolated")));
+        ITIP20 isolatedToken = ITIP20(
+            factory.createToken("Isolated", "ISO", "USD", pathUSD, admin, bytes32("isolated"))
+        );
 
         // Don't create a pair for isolatedToken - this means the orderbook doesn't exist
 
         // Try to swap token1 -> isolatedToken
         // Path exists in token tree, but orderbook pair doesn't exist
         // Expect any revert (specifically PairDoesNotExist but exact error encoding varies)
-        try exchange.quoteSwapExactAmountIn(address(token1), address(isolatedToken), exchange.MIN_ORDER_AMOUNT()) {
+        try exchange.quoteSwapExactAmountIn(
+            address(token1), address(isolatedToken), exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted as expected
@@ -994,7 +1051,11 @@ contract StablecoinExchangeTest is BaseTest {
     }
 
     // Fuzz test: routing handles various token pair combinations
-    function testFuzz_Routing_TokenPairCombinations(bool useToken1, bool useToken2, bool swapDirection) public {
+    function testFuzz_Routing_TokenPairCombinations(
+        bool useToken1,
+        bool useToken2,
+        bool swapDirection
+    ) public {
         // Setup both token pairs
         exchange.createPair(address(token2));
 
@@ -1024,7 +1085,9 @@ contract StablecoinExchangeTest is BaseTest {
         address tokenOut = swapDirection ? address(pathUSD) : address(token1);
 
         // Always use try/catch since liquidity setup varies and may not support this direction
-        try exchange.quoteSwapExactAmountIn(tokenIn, tokenOut, minOrderAmount) returns (uint128 amountOut) {
+        try exchange.quoteSwapExactAmountIn(tokenIn, tokenOut, minOrderAmount) returns (
+            uint128 amountOut
+        ) {
             // Success - verify output
             assertGt(amountOut, 0);
         } catch {
@@ -1052,14 +1115,18 @@ contract StablecoinExchangeTest is BaseTest {
         // Test with non-TIP20 token (should fail when trying to get quote token)
         address invalidToken = address(0x123456);
 
-        try exchange.quoteSwapExactAmountIn(invalidToken, address(token1), exchange.MIN_ORDER_AMOUNT()) {
+        try exchange.quoteSwapExactAmountIn(
+            invalidToken, address(token1), exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted - exact error depends on whether token implements interface
         }
 
         // Test swap to non-TIP20 token
-        try exchange.quoteSwapExactAmountIn(address(token1), invalidToken, exchange.MIN_ORDER_AMOUNT()) {
+        try exchange.quoteSwapExactAmountIn(
+            address(token1), invalidToken, exchange.MIN_ORDER_AMOUNT()
+        ) {
             revert CallShouldHaveReverted();
         } catch {
             // Successfully reverted
@@ -1175,7 +1242,8 @@ contract StablecoinExchangeTest is BaseTest {
         int16 flipTick = 200;
 
         vm.prank(alice);
-        uint128 flipOrderId = exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
+        uint128 flipOrderId =
+            exchange.placeFlip(address(token1), orderAmount, true, bidTick, flipTick);
         assertEq(flipOrderId, 1);
 
         vm.prank(admin);
@@ -1186,7 +1254,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint256 bobInitialPathUSD = pathUSD.balanceOf(bob);
 
         vm.prank(bob);
-        uint128 amountOut = exchange.swapExactAmountIn(address(token1), address(pathUSD), orderAmount, 0);
+        uint128 amountOut =
+            exchange.swapExactAmountIn(address(token1), address(pathUSD), orderAmount, 0);
 
         assertGt(amountOut, 0);
         assertEq(token1.balanceOf(bob), bobInitialToken1 - orderAmount);
@@ -1197,7 +1266,8 @@ contract StablecoinExchangeTest is BaseTest {
 
         assertEq(exchange.nextOrderId(), 2);
 
-        (uint128 askHead,, uint128 askLiquidity) = exchange.getTickLevel(address(token1), flipTick, false);
+        (uint128 askHead,, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), flipTick, false);
         assertEq(askHead, 0);
         assertEq(askLiquidity, 0);
     }
@@ -1225,12 +1295,22 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.withdraw(address(token1), aliceBaseBalance);
 
         // Verify Alice's internal balance is now 0
-        assertEq(exchange.balanceOf(alice, address(token1)), 0, "Alice's internal balance should be 0");
+        assertEq(
+            exchange.balanceOf(alice, address(token1)), 0, "Alice's internal balance should be 0"
+        );
 
         // Verify Alice still has sufficient external token balance and approval for a flip order
         // For a flip ask at tick 200, she would need to escrow base tokens
-        assertGt(token1.balanceOf(alice), orderAmount, "Alice should have sufficient external token balance");
-        assertGt(token1.allowance(alice, address(exchange)), orderAmount, "Alice should have sufficient approval");
+        assertGt(
+            token1.balanceOf(alice),
+            orderAmount,
+            "Alice should have sufficient external token balance"
+        );
+        assertGt(
+            token1.allowance(alice, address(exchange)),
+            orderAmount,
+            "Alice should have sufficient approval"
+        );
 
         uint128 nextOrderIdBefore = exchange.nextOrderId();
 
@@ -1306,7 +1386,9 @@ contract StablecoinExchangeTest is BaseTest {
         registry.modifyPolicyBlacklist(policyId, alice, true);
 
         // Verify alice is blacklisted in pathUSD
-        assertFalse(registry.isAuthorized(policyId, alice), "Alice should be blacklisted in pathUSD");
+        assertFalse(
+            registry.isAuthorized(policyId, alice), "Alice should be blacklisted in pathUSD"
+        );
 
         // Alice tries to place an ask order to SELL token1 for pathUSD
         // Even though alice is authorized in token1 (the escrow token), she is blacklisted in pathUSD
@@ -1390,7 +1472,8 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.cancelStaleOrder(orderId);
 
         // Verify order is removed from orderbook
-        (uint128 askHead, uint128 askTail, uint128 askLiquidity) = exchange.getTickLevel(address(token1), 100, false);
+        (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
+            exchange.getTickLevel(address(token1), 100, false);
         assertEq(askHead, 0);
         assertEq(askTail, 0);
         assertEq(askLiquidity, 0);
@@ -1418,7 +1501,8 @@ contract StablecoinExchangeTest is BaseTest {
 
         // Calculate expected escrow
         uint32 price = exchange.tickToPrice(100);
-        uint128 expectedEscrow = uint128((uint256(orderAmount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
+        uint128 expectedEscrow =
+            uint128((uint256(orderAmount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
 
         // Blacklist alice
         vm.prank(admin);
@@ -1434,7 +1518,8 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.cancelStaleOrder(orderId);
 
         // Verify order is removed from orderbook
-        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), 100, true);
+        (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
+            exchange.getTickLevel(address(token1), 100, true);
         assertEq(bidHead, 0);
         assertEq(bidTail, 0);
         assertEq(bidLiquidity, 0);
@@ -1514,7 +1599,11 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.cancelStaleOrder(orderId);
 
         // Verify escrow is refunded
-        assertEq(exchange.balanceOf(alice, address(token1)), orderAmount, "Alice should have escrow refunded");
+        assertEq(
+            exchange.balanceOf(alice, address(token1)),
+            orderAmount,
+            "Alice should have escrow refunded"
+        );
     }
 
     /// @notice Test that the order maker can also cancel their own stale order
@@ -1539,7 +1628,11 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.cancelStaleOrder(orderId);
 
         // Verify escrow is refunded
-        assertEq(exchange.balanceOf(alice, address(token1)), orderAmount, "Alice should have escrow refunded");
+        assertEq(
+            exchange.balanceOf(alice, address(token1)),
+            orderAmount,
+            "Alice should have escrow refunded"
+        );
     }
 
     /// @notice Test canceling stale order in the middle of a tick level's linked list
@@ -1557,7 +1650,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 order3 = _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT(), 100);
 
         // Verify tick has all three orders
-        (uint128 head, uint128 tail, uint128 liquidity) = exchange.getTickLevel(address(token1), 100, false);
+        (uint128 head, uint128 tail, uint128 liquidity) =
+            exchange.getTickLevel(address(token1), 100, false);
         assertEq(head, order1);
         assertEq(tail, order3);
         assertEq(liquidity, exchange.MIN_ORDER_AMOUNT() * 3);
@@ -1591,7 +1685,10 @@ contract StablecoinExchangeTest is BaseTest {
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _placeBidOrder(address user, uint128 amount, int16 tick) internal returns (uint128 orderId) {
+    function _placeBidOrder(address user, uint128 amount, int16 tick)
+        internal
+        returns (uint128 orderId)
+    {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
             emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, true, tick);
@@ -1601,7 +1698,10 @@ contract StablecoinExchangeTest is BaseTest {
         orderId = exchange.place(address(token1), amount, true, tick);
     }
 
-    function _placeAskOrder(address user, uint128 amount, int16 tick) internal returns (uint128 orderId) {
+    function _placeAskOrder(address user, uint128 amount, int16 tick)
+        internal
+        returns (uint128 orderId)
+    {
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
             emit OrderPlaced(exchange.nextOrderId(), user, address(token1), amount, false, tick);
@@ -1637,7 +1737,9 @@ contract StablecoinExchangeTest is BaseTest {
         );
 
         // With the fix, baseIn should equal baseAmount (order fully consumed)
-        assertEq(baseIn, baseAmount, "Order should be fully filled when taker takes all available quote");
+        assertEq(
+            baseIn, baseAmount, "Order should be fully filled when taker takes all available quote"
+        );
     }
 
     function testFuzz_BidExactOutRounding_FullOrderConsumption(uint128 amount, int16 tick) public {
@@ -1658,7 +1760,9 @@ contract StablecoinExchangeTest is BaseTest {
 
         // Bob takes all available quote
         vm.prank(bob);
-        uint128 baseIn = exchange.swapExactAmountOut(address(token1), address(pathUSD), release, type(uint128).max);
+        uint128 baseIn = exchange.swapExactAmountOut(
+            address(token1), address(pathUSD), release, type(uint128).max
+        );
 
         // Order should be fully consumed
         assertEq(baseIn, amount, "Order should be fully filled");
@@ -1672,7 +1776,8 @@ contract StablecoinExchangeTest is BaseTest {
         uint128 amount = exchange.MIN_ORDER_AMOUNT(); // 100_000_000
 
         uint32 price = exchange.tickToPrice(tick);
-        uint128 escrow = uint128((uint256(amount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
+        uint128 escrow =
+            uint128((uint256(amount) * uint256(price)) / uint256(exchange.PRICE_SCALE()));
 
         // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
         vm.startPrank(admin);
@@ -1704,7 +1809,11 @@ contract StablecoinExchangeTest is BaseTest {
 
     /// @notice Fuzz test: splitting a trade into smaller pieces should never give the taker a better price.
     /// With ceiling rounding on asks, the taker pays at least as much (usually more) when splitting.
-    function testFuzz_AskRounding_SplittingNeverCheaper(uint128 totalBaseOut, uint8 numSplits, int16 tick) public {
+    function testFuzz_AskRounding_SplittingNeverCheaper(
+        uint128 totalBaseOut,
+        uint8 numSplits,
+        int16 tick
+    ) public {
         // Bound inputs
         totalBaseOut = uint128(bound(totalBaseOut, exchange.MIN_ORDER_AMOUNT() * 2, 1e18));
         numSplits = uint8(bound(numSplits, 2, 10));
@@ -1734,12 +1843,18 @@ contract StablecoinExchangeTest is BaseTest {
                 thisAmount += remainder; // last split gets the remainder
             }
             if (thisAmount > 0) {
-                totalSplitQuote += exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), thisAmount);
+                totalSplitQuote += exchange.quoteSwapExactAmountOut(
+                    address(pathUSD), address(token1), thisAmount
+                );
             }
         }
 
         // Splitting should never be cheaper (ceiling rounding means splits cost >= single)
-        assertGe(totalSplitQuote, singleTradeQuote, "Splitting trades should never give taker a better price");
+        assertGe(
+            totalSplitQuote,
+            singleTradeQuote,
+            "Splitting trades should never give taker a better price"
+        );
     }
 
     /// @notice PoC: Without the fix, at price < 1.0, trading 1 base at a time costs 0 quote each.
@@ -1754,12 +1869,14 @@ contract StablecoinExchangeTest is BaseTest {
         exchange.place(address(token1), askAmount, false, tick);
 
         // Quote for single trade of 100 base
-        uint128 singleTradeQuote = exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 100);
+        uint128 singleTradeQuote =
+            exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 100);
 
         // Quote for 100 trades of 1 base each
         uint128 totalOneAtATime = 0;
         for (uint256 i = 0; i < 100; i++) {
-            uint128 quoteFor1 = exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 1);
+            uint128 quoteFor1 =
+                exchange.quoteSwapExactAmountOut(address(pathUSD), address(token1), 1);
             totalOneAtATime += quoteFor1;
 
             // With ceiling rounding, each 1-base trade costs at least 1 quote
@@ -1767,6 +1884,9 @@ contract StablecoinExchangeTest is BaseTest {
         }
 
         // With the fix, 100 trades of 1 base costs MORE than single trade (ceiling rounds up)
-        assertGe(totalOneAtATime, singleTradeQuote, "Splitting into 1-unit trades should not be cheaper");
+        assertGe(
+            totalOneAtATime, singleTradeQuote, "Splitting into 1-unit trades should not be cheaper"
+        );
     }
+
 }
