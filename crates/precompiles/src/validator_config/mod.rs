@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    error::{Result, TempoPrecompileError},
+    error::Result,
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256};
@@ -30,10 +30,6 @@ struct Validator {
 #[contract(addr = VALIDATOR_CONFIG_ADDRESS)]
 pub struct ValidatorConfig {
     owner: Address,
-    // NOTE(rusowsky): we delete `validator_count`, as that info is available via `validators_array.len()`
-    // However, such change will have to be coordinated in a hardfork. Additionally, we must ensure that
-    // `validators_array` and `validators` are kept in slots 2 and 3 to preserve the storage layout.
-    validator_count: u64,
     validators_array: Vec<Address>,
     validators: Mapping<Address, Validator>,
     /// The epoch at which a fresh DKG ceremony will be triggered
@@ -76,7 +72,7 @@ impl ValidatorConfig {
 
     /// Get the current validator count
     pub fn validator_count(&self) -> Result<u64> {
-        self.validator_count.read()
+        self.validators_array.len().map(|c| c as u64)
     }
 
     /// Get validator address at a specific index in the validators array
@@ -106,7 +102,7 @@ impl ValidatorConfig {
 
     /// Get all validators (view function)
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
-        let count = self.validator_count()?;
+        let count = self.validators_array.len()?;
         let mut validators = Vec::new();
 
         for i in 0..count {
@@ -184,14 +180,7 @@ impl ValidatorConfig {
         self.validators[call.newValidatorAddress].write(validator)?;
 
         // Add the validator public key to the validators array
-        self.validators_array.push(call.newValidatorAddress)?;
-
-        // Increment the validator count
-        self.validator_count.write(
-            count
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )
+        self.validators_array.push(call.newValidatorAddress)
     }
 
     /// Update validator information (and optionally rotate to new address)
