@@ -20,7 +20,7 @@ impl GenerateGenesis {
             output,
             genesis_args,
         } = self;
-        let (genesis, consensus_config) = genesis_args
+        let (genesis, mut consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed generating genesis")?;
@@ -61,10 +61,12 @@ impl GenerateGenesis {
                             signing_key_dst.display()
                         )
                     })?;
+                let signing_share_encryption_dst =
+                    validator.dst_signing_share_encryption_key(&output);
                 let signing_share_dst = validator.dst_signing_share(&output);
                 validator
                     .signing_share
-                    .write_to_file(&signing_share_dst)
+                    .write_to_file(&signing_share_dst, &mut consensus_config.rng)
                     .wrap_err_with(|| {
                         format!(
                             "failed writing bls12381 signing share to `{}`",

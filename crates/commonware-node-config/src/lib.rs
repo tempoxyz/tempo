@@ -13,6 +13,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use crypto_common::{generic_array::typenum::Unsigned as _, rand_core::CryptoRngCore};
+use rand::rngs::OsRng;
 
 #[cfg(test)]
 mod tests;
@@ -30,12 +31,22 @@ pub struct EncryptionKey(ChaCha20Poly1305);
 impl EncryptionKey {
     /// Generates a random secret.
     pub fn random(rng: &mut impl CryptoRngCore) -> Vec<u8> {
-        let key = ChaCha20Poly1305::generate_key(rng);
-        const_hex::encode(&key).into_bytes()
+        ChaCha20Poly1305::generate_key(rng).to_vec()
+    }
+
+    /// Generates a random secret.
+    pub fn random_hex(rng: &mut impl CryptoRngCore) -> String {
+        const_hex::encode(ChaCha20Poly1305::generate_key(rng).to_vec())
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncryptionKeyError> {
-        let bytes = const_hex::decode(bytes).map_err(EncryptionKeyErrorKind::Hex)?;
+        let key =
+            ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
+        Ok(Self(key))
+    }
+
+    pub fn from_hex(hex: &[u8]) -> Result<Self, EncryptionKeyError> {
+        let bytes = const_hex::decode(hex).map_err(EncryptionKeyErrorKind::Hex)?;
         let key =
             ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
         Ok(Self(key))
@@ -138,7 +149,7 @@ impl SigningKey {
         Self::try_from_hex(&hex)
     }
 
-    pub fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
+    fn try_from_hex(hex: &str) -> Result<Self, SigningKeyError> {
         let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
@@ -195,26 +206,34 @@ impl SigningShare {
         self.inner
     }
 
-    pub fn read_from_file<P: AsRef<Path>>(path: P) -> Result<Self, SigningShareError> {
-        let hex = std::fs::read_to_string(path).map_err(SigningShareErrorKind::Read)?;
-        Self::try_from_hex(&hex)
+    pub fn read_from_file<P: AsRef<Path>>(
+        path: P,
+        key: &EncryptionKey,
+    ) -> Result<Self, SigningShareError> {
+        let bytes = std::fs::read(path).map_err(SigningShareErrorKind::Read)?;
+        Self::try_from_hex(&bytes, key)
     }
 
-    pub fn try_from_hex(hex: &str) -> Result<Self, SigningShareError> {
+    pub fn try_from_hex(hex: &[u8], key: &EncryptionKey) -> Result<Self, SigningShareError> {
         let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
-        let inner = Share::decode(&bytes[..]).map_err(SigningShareErrorKind::Parse)?;
+        let inner = key
+            .decrypt_decodable::<Share>(&bytes)
+            .map_err(SigningShareErrorKind::Decrypt)?;
         Ok(Self { inner })
     }
 
-    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningShareError> {
-        std::fs::write(path, self.to_string()).map_err(SigningShareErrorKind::Write)?;
+    pub fn write_to_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+        key: &EncryptionKey,
+        rng: &mut impl CryptoRngCore,
+    ) -> Result<(), SigningShareError> {
+        std::fs::write(path, self.to_hex(key, rng)).map_err(SigningShareErrorKind::Write)?;
         Ok(())
     }
-}
 
-impl Display for SigningShare {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&const_hex::encode_prefixed(self.inner.encode().as_ref()))
+    pub fn to_hex(&self, key: &EncryptionKey, rng: &mut impl CryptoRngCore) -> String {
+        const_hex::encode(key.encrypt_encodable(&self.inner, rng))
     }
 }
 
@@ -235,8 +254,8 @@ pub struct SigningShareError {
 enum SigningShareErrorKind {
     #[error("failed decoding file contents as hex-encoded bytes")]
     Hex(#[source] const_hex::FromHexError),
-    #[error("failed parsing hex-decoded bytes as bls12381 private share")]
-    Parse(#[source] commonware_codec::Error),
+    #[error("failed decrypting bls12381 private share")]
+    Decrypt(#[source] DecryptError),
     #[error("failed reading file")]
     Read(#[source] std::io::Error),
     #[error("failed writing to file")]
