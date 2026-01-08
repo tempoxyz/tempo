@@ -4,7 +4,6 @@ out = "out"
 libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
-via_ir = true
 
 [profile.ci]
 optimizer = true

@@ -177,7 +177,8 @@ contract StablecoinDEXTest is BaseTest {
 
         uint32 price = exchange.tickToPrice(100);
         // Escrow rounds UP to favor protocol
-        uint256 expectedEscrow = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1) / uint256(exchange.PRICE_SCALE());
+        uint256 expectedEscrow = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1)
+            / uint256(exchange.PRICE_SCALE());
         assertEq(pathUSD.balanceOf(alice), uint256(INITIAL_BALANCE) - expectedEscrow);
         assertEq(pathUSD.balanceOf(address(exchange)), expectedEscrow);
 
@@ -196,7 +197,7 @@ contract StablecoinDEXTest is BaseTest {
         // amount = 9900000011, tick = 10, price = 100010
         // escrow = 9900000011 * 100010 / 100000 = 9900990011.99110
         // floor would give 9900990011, ceil gives 9900990012
-        uint128 amount = 9900000011;
+        uint128 amount = 9_900_000_011;
         int16 tick = 10;
 
         uint128 orderId = _placeBidOrder(alice, amount, tick);
@@ -218,11 +219,17 @@ contract StablecoinDEXTest is BaseTest {
         // Verify the contract used ceiling division
         uint256 actualEscrow = uint256(INITIAL_BALANCE) - pathUSD.balanceOf(alice);
         assertEq(actualEscrow, ceilEscrow, "Escrow should use ceiling division (round UP)");
-        assertEq(pathUSD.balanceOf(address(exchange)), ceilEscrow, "Exchange should receive ceiling amount");
+        assertEq(
+            pathUSD.balanceOf(address(exchange)),
+            ceilEscrow,
+            "Exchange should receive ceiling amount"
+        );
     }
 
     /// @notice Fuzz test that escrow always rounds UP for bid orders
-    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(uint128 amount, int16 tickMultiplier) public {
+    function testFuzz_PlaceBidOrder_EscrowAlwaysRoundsUp(uint128 amount, int16 tickMultiplier)
+        public
+    {
         // Constrain amount to be >= MIN_ORDER_AMOUNT and reasonable for our balance
         uint128 minAmount = exchange.MIN_ORDER_AMOUNT();
         vm.assume(amount >= minAmount && amount <= INITIAL_BALANCE / 2);
@@ -277,7 +284,8 @@ contract StablecoinDEXTest is BaseTest {
 
         uint32 price = exchange.tickToPrice(100);
         // Escrow rounds UP to favor protocol
-        uint256 expectedEscrow = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1) / uint256(exchange.PRICE_SCALE());
+        uint256 expectedEscrow = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1)
+            / uint256(exchange.PRICE_SCALE());
         assertEq(pathUSD.balanceOf(alice), uint256(INITIAL_BALANCE) - expectedEscrow);
         assertEq(pathUSD.balanceOf(address(exchange)), expectedEscrow);
 
@@ -365,7 +373,8 @@ contract StablecoinDEXTest is BaseTest {
 
         // Verify tokens were returned to balance - escrow rounds UP to favor protocol
         uint32 price = exchange.tickToPrice(100);
-        uint256 escrowAmount = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1) / uint256(exchange.PRICE_SCALE());
+        uint256 escrowAmount = (uint256(1e18) * uint256(price) + exchange.PRICE_SCALE() - 1)
+            / uint256(exchange.PRICE_SCALE());
         assertEq(exchange.balanceOf(alice, address(pathUSD)), escrowAmount);
 
         // Verify order removed from orderbook
@@ -1526,8 +1535,10 @@ contract StablecoinDEXTest is BaseTest {
 
         // Calculate expected escrow - rounds UP to favor protocol
         uint32 price = exchange.tickToPrice(100);
-        uint128 expectedEscrow =
-            uint128((uint256(orderAmount) * uint256(price) + exchange.PRICE_SCALE() - 1) / uint256(exchange.PRICE_SCALE()));
+        uint128 expectedEscrow = uint128(
+            (uint256(orderAmount) * uint256(price) + exchange.PRICE_SCALE() - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
 
         // Blacklist alice
         vm.prank(admin);
@@ -1820,8 +1831,10 @@ contract StablecoinDEXTest is BaseTest {
 
         uint32 price = exchange.tickToPrice(tick);
         // Escrow rounds UP to favor protocol
-        uint128 escrow =
-            uint128((uint256(amount) * uint256(price) + exchange.PRICE_SCALE() - 1) / uint256(exchange.PRICE_SCALE()));
+        uint128 escrow = uint128(
+            (uint256(amount) * uint256(price) + exchange.PRICE_SCALE() - 1)
+                / uint256(exchange.PRICE_SCALE())
+        );
 
         // Give charlie base tokens so they can pay `amountIn` at the end of swapExactAmountOut.
         vm.startPrank(admin);
