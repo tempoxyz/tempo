@@ -93,7 +93,7 @@ impl From<DecryptErrorKind> for DecryptError {
 
 #[derive(Debug, thiserror::Error)]
 enum DecryptErrorKind {
-    #[error("the encoded input lenght was invalid")]
+    #[error("the encoded input length was invalid")]
     InvalidLength,
     #[error("failed decoding decrypted bytes into target type")]
     Decode(commonware_codec::Error),

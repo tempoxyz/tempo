@@ -39,7 +39,7 @@ fn joins_from_snapshot() {
 
         // Change the validator's storage prefix from under it. This simulates
         // starting a new validator from a snapshot:
-        // TOOD: spin up a new validator and actually copy over the execution
+        // TODO: spin up a new validator and actually copy over the execution
         // layer state.
         stopped.consensus_config.partition_prefix.push_str("_moved");
         stopped.start().await;
