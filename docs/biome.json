@@ -25,10 +25,33 @@
       }
     }
   },
+  "html": {
+    "formatter": {
+      "indentStyle": "space"
+    }
+  },
+  "css": {
+    "formatter": {
+      "enabled": true,
+      "indentStyle": "space"
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
   "javascript": {
     "formatter": {
+      "indentStyle": "space",
       "quoteStyle": "single",
       "semicolons": "asNeeded"
+    }
+  },
+  "json": {
+    "formatter": {
+      "enabled": true
+    },
+    "linter": {
+      "enabled": true
     }
   },
   "assist": {
@@ -38,5 +61,32 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/ph.js", "**/google6bae3dfb1e9772fa.html"],
+      "files": {
+        "maxSize": 1
+      },
+      "linter": {
+        "enabled": false
+      },
+      "formatter": {
+        "enabled": false
+      },
+      "javascript": {
+        "formatter": {
+          "enabled": false
+        },
+        "linter": {
+          "enabled": false
+        }
+      },
+      "html": {
+        "formatter": {
+          "enabled": false
+        }
+      }
+    }
+  ]
 }
