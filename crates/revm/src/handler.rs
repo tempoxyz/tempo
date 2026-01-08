@@ -360,14 +360,14 @@ where
                 }
 
                 // Include gas from all previous successful calls + failed call
-                let gas_used_by_failed_call = frame_result.gas().used();
-                let total_gas_used = (gas_limit - remaining_gas) + gas_used_by_failed_call;
+                let gas_spent_by_failed_call = frame_result.gas().spent();
+                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
 
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
                 // (the frame_result has the limit from just the last call)
                 let mut corrected_gas = Gas::new(gas_limit);
                 if instruction_result.is_revert() {
-                    corrected_gas.set_spent(total_gas_used);
+                    corrected_gas.set_spent(total_gas_spent);
                 } else {
                     corrected_gas.spend_all();
                 }
@@ -378,12 +378,12 @@ where
             }
 
             // Call succeeded - accumulate gas usage and refunds
-            let gas_used = frame_result.gas().used();
+            let gas_spent = frame_result.gas().spent();
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
             // Subtract only execution gas (intrinsic gas already deducted upfront)
-            remaining_gas = remaining_gas.saturating_sub(gas_used);
+            remaining_gas = remaining_gas.saturating_sub(gas_spent);
 
             final_result = Some(frame_result);
         }
@@ -395,12 +395,12 @@ where
         let mut result =
             final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
-        let total_gas_used = gas_limit - remaining_gas;
+        let total_gas_spent = gas_limit - remaining_gas;
 
         // Create new Gas with correct limit, because Gas does not have a set_limit method
         // (the frame_result has the limit from just the last call)
         let mut corrected_gas = Gas::new(gas_limit);
-        corrected_gas.set_spent(total_gas_used);
+        corrected_gas.set_spent(total_gas_spent);
         corrected_gas.set_refund(accumulated_gas_refund);
         *result.gas_mut() = corrected_gas;
 
@@ -2169,5 +2169,99 @@ mod tests {
         })
         .unwrap();
         assert_eq!(gas, EXISTING_NONCE_KEY_GAS);
+    }
+
+    #[test]
+    fn test_multicall_gas_refund_accounting() {
+        use crate::evm::TempoEvm;
+        use alloy_primitives::{Bytes, TxKind};
+        use revm::{
+            Context, Journal,
+            context::CfgEnv,
+            database::{CacheDB, EmptyDB},
+            handler::FrameResult,
+            interpreter::{CallOutcome, Gas, InstructionResult, InterpreterResult},
+        };
+        use tempo_primitives::transaction::Call;
+
+        const GAS_LIMIT: u64 = 100_000;
+        const INTRINSIC_GAS: u64 = 21_000;
+        // Mock call's gas: (CALL_0, CALL_1)
+        const SPENT: (u64, u64) = (1000, 500);
+        const REFUND: (i64, i64) = (100, 50);
+
+        // Create minimal EVM context
+        let db = CacheDB::new(EmptyDB::default());
+        let journal = Journal::new(db);
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(CfgEnv::default())
+            .with_tx(TempoTxEnv {
+                inner: revm::context::TxEnv {
+                    gas_limit: GAS_LIMIT,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .with_new_journal(journal);
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        // Create mock calls
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+        ];
+
+        let (mut call_idx, calls_gas) = (0, [(SPENT.0, REFUND.0), (SPENT.1, REFUND.1)]);
+        let result = handler.execute_multi_call_with(
+            &mut evm,
+            &InitialAndFloorGas::new(INTRINSIC_GAS, 0),
+            calls,
+            |_handler, _evm, _gas| {
+                let (spent, refund) = calls_gas[call_idx];
+                call_idx += 1;
+
+                // Create gas with specific spent and refund values
+                let mut gas = Gas::new(GAS_LIMIT);
+                gas.set_spent(spent);
+                gas.record_refund(refund);
+
+                // Mock successful frame result
+                Ok(FrameResult::Call(CallOutcome::new(
+                    InterpreterResult::new(InstructionResult::Stop, Bytes::new(), gas),
+                    0..0,
+                )))
+            },
+        );
+
+        let result = result.expect("execute_multi_call_with should succeed");
+        let final_gas = result.gas();
+
+        assert_eq!(
+            final_gas.spent(),
+            INTRINSIC_GAS + SPENT.0 + SPENT.1,
+            "Total spent should be intrinsic_gas + sum of all calls' spent values"
+        );
+        assert_eq!(
+            final_gas.refunded(),
+            REFUND.0 + REFUND.1,
+            "Total refund should be sum of all calls' refunded values"
+        );
+        assert_eq!(
+            final_gas.used(),
+            INTRINSIC_GAS + SPENT.0 + SPENT.1 - (REFUND.0 + REFUND.1) as u64,
+            "used() should be spent - refund"
+        );
     }
 }
