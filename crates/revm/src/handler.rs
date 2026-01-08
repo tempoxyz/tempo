@@ -2186,6 +2186,7 @@ mod tests {
 
         const GAS_LIMIT: u64 = 100_000;
         const INTRINSIC_GAS: u64 = 21_000;
+        // Mock call's gas: (CALL_0, CALL_1)
         const SPENT: (u64, u64) = (1000, 500);
         const REFUND: (i64, i64) = (100, 50);
 
