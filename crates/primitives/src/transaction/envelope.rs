@@ -640,6 +640,8 @@ mod tests {
 
         assert!(!envelope.is_fee_token());
         assert_eq!(envelope.fee_token(), None);
+        assert!(!envelope.is_aa());
+        assert!(envelope.as_aa().is_none());
     }
 
     #[test]
@@ -882,6 +884,32 @@ mod tests {
             !regular_tx.is_system_tx(),
             "Regular tx should not be system tx"
         );
+
+        // fee_payer() for non-AA returns sender
+        let sender = Address::random();
+        assert_eq!(system_tx.fee_payer(sender).unwrap(), sender);
+
+        // calls() iterator for non-AA returns single item
+        let calls: Vec<_> = system_tx.calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
+
+        // subblock_proposer() returns None for non-subblock tx
+        assert!(system_tx.subblock_proposer().is_none());
+
+        // AA-specific methods
+        let aa_envelope = create_aa_envelope(Call {
+            to: TxKind::Call(PAYMENT_TKN),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        });
+        assert!(aa_envelope.is_aa());
+        assert!(aa_envelope.as_aa().is_some());
+        assert_eq!(aa_envelope.fee_token(), Some(PAYMENT_TKN));
+
+        // calls() for AA tx
+        let aa_calls: Vec<_> = aa_envelope.calls().collect();
+        assert_eq!(aa_calls.len(), 1);
     }
 
     #[test]

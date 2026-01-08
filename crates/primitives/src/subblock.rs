@@ -364,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn test_subblock_signature_hash() {
+    fn test_subblock_signature_and_recovery() {
         let subblock = SubBlock {
             version: SubBlockVersion::V1,
             parent_hash: B256::random(),
@@ -392,6 +392,38 @@ mod tests {
         expected_buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
         subblock.encode(&mut expected_buf);
         assert_eq!(hash1, keccak256(&expected_buf));
+
+        // SignedSubBlock
+        let signed = SignedSubBlock {
+            inner: subblock.clone(),
+            signature: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        // SignedSubBlock RLP roundtrip
+        let mut buf = Vec::new();
+        signed.encode(&mut buf);
+        assert_eq!(buf.len(), signed.length());
+        let decoded = SignedSubBlock::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded, signed);
+
+        // Deref to SubBlock works
+        assert_eq!(signed.version, SubBlockVersion::V1);
+        assert_eq!(signed.fee_recipient, subblock.fee_recipient);
+
+        // RecoveredSubBlock
+        let validator = B256::random();
+        let recovered = RecoveredSubBlock::new_unchecked(signed.clone(), vec![], validator);
+
+        // Accessors
+        assert_eq!(recovered.validator(), validator);
+        assert!(recovered.transactions_recovered().next().is_none()); // empty
+
+        // metadata()
+        let meta = recovered.metadata();
+        assert_eq!(meta.version, SubBlockVersion::V1);
+        assert_eq!(meta.validator, validator);
+        assert_eq!(meta.fee_recipient, subblock.fee_recipient);
+        assert_eq!(meta.signature, Bytes::from(vec![1, 2, 3, 4]));
     }
 
     #[test]
@@ -404,5 +436,16 @@ mod tests {
         assert_eq!(SubBlockVersion::try_from(0u8), Err(0));
         assert_eq!(SubBlockVersion::try_from(2u8), Err(2));
         assert_eq!(SubBlockVersion::try_from(255u8), Err(255));
+
+        // RLP encode/decode
+        let mut buf = Vec::new();
+        SubBlockVersion::V1.encode(&mut buf);
+        assert_eq!(buf.len(), SubBlockVersion::V1.length());
+        let decoded = SubBlockVersion::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded, SubBlockVersion::V1);
+
+        // Invalid version decode
+        let invalid_buf = [2u8];
+        assert!(SubBlockVersion::decode(&mut invalid_buf.as_slice()).is_err());
     }
 }

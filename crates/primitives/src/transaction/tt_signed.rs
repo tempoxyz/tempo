@@ -485,7 +485,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_computation() {
+    fn test_hash_and_transaction_trait() {
+        use alloy_consensus::Transaction;
+
         let tx = make_tx();
         let sig =
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
@@ -510,7 +512,8 @@ mod tests {
         );
 
         // into_parts returns the hash
-        let (returned_tx, returned_sig, returned_hash) = signed.into_parts();
+        let signed_for_parts = AASigned::new_unhashed(tx.clone(), sig.clone());
+        let (returned_tx, returned_sig, returned_hash) = signed_for_parts.into_parts();
         assert_eq!(returned_tx, tx);
         assert_eq!(returned_sig, sig);
         assert_eq!(returned_hash, hash1);
@@ -518,6 +521,8 @@ mod tests {
 
     #[test]
     fn test_rlp_encode_decode_roundtrip() {
+        use alloy_eips::eip2718::Encodable2718;
+
         let tx = make_tx();
         let sig =
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
@@ -540,6 +545,16 @@ mod tests {
         let decoded_2718 =
             AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
         assert_eq!(decoded_2718.tx(), signed.tx());
+
+        // trie_hash equals hash
+        assert_eq!(signed.trie_hash(), *signed.hash());
+
+        // fallback_decode returns error (Tempo txs must be typed)
+        let fallback_result = AASigned::fallback_decode(&mut [].as_ref());
+        assert!(fallback_result.is_err());
+
+        // encode_2718_len matches actual encoded length
+        assert_eq!(signed.encode_2718_len(), eip_buf.len());
     }
 
     #[test]

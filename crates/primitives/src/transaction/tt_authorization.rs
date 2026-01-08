@@ -310,7 +310,7 @@ pub mod tests {
         };
 
         let signature = TempoSignature::default(); // Use secp256k1 test signature
-        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
         let mut buf = Vec::new();
         signed.encode(&mut buf);
@@ -318,6 +318,20 @@ pub mod tests {
         let decoded = TempoSignedAuthorization::decode(&mut buf.as_slice()).unwrap();
         assert_eq!(buf.len(), signed.length());
         assert_eq!(decoded, signed);
+
+        // Test accessors
+        assert_eq!(signed.inner(), &auth);
+        assert_eq!(signed.signature(), &signature);
+        assert!(signed.size() > 0);
+
+        // Test Deref to Authorization
+        assert_eq!(signed.chain_id, auth.chain_id);
+        assert_eq!(signed.address, auth.address);
+        assert_eq!(signed.nonce, auth.nonce);
+
+        // Test strip_signature
+        let stripped = signed.strip_signature();
+        assert_eq!(stripped, auth);
     }
 
     #[test]
@@ -367,21 +381,60 @@ pub mod tests {
         let placeholder_sig = TempoSignature::default();
         let temp_signed = TempoSignedAuthorization::new_unchecked(auth.clone(), placeholder_sig);
         let signature = sign_hash(&signing_key, &temp_signed.signature_hash());
-        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
+        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
 
         // Recovery should succeed
         let recovered = signed.recover_authority();
         assert!(recovered.is_ok());
         assert_eq!(recovered.unwrap(), expected_address);
 
-        // Sign a different hash
+        // into_recovered() returns RecoveredAuthorization
+        let signed_for_into =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let std_recovered = signed_for_into.into_recovered();
+        assert_eq!(std_recovered.authority(), Some(expected_address));
+
+        // RecoveredTempoAuthorization - lazy recovery
+        let signed_for_lazy =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let lazy_recovered = RecoveredTempoAuthorization::new(signed_for_lazy);
+        assert_eq!(lazy_recovered.authority(), Some(expected_address));
+        assert!(matches!(
+            lazy_recovered.authority_status(),
+            RecoveredAuthority::Valid(_)
+        ));
+
+        // RecoveredTempoAuthorization::recover() - eager recovery
+        let signed_for_eager =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let eager_recovered = RecoveredTempoAuthorization::recover(signed_for_eager);
+        assert_eq!(eager_recovered.authority(), Some(expected_address));
+
+        // Accessors on RecoveredTempoAuthorization
+        assert_eq!(eager_recovered.signed().inner(), &auth);
+        assert_eq!(eager_recovered.inner(), &auth);
+        assert_eq!(eager_recovered.signature(), &signature);
+
+        // into_recovered_authorization()
+        let signed_for_convert =
+            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let converted = RecoveredTempoAuthorization::new(signed_for_convert);
+        let std_auth = converted.into_recovered_authorization();
+        assert_eq!(std_auth.authority(), Some(expected_address));
+
+        // Sign a different hash - invalid recovery
         let wrong_hash = B256::random();
-        let signature = sign_hash(&signing_key, &wrong_hash);
-        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
+        let wrong_signature = sign_hash(&signing_key, &wrong_hash);
+        let bad_signed = TempoSignedAuthorization::new_unchecked(auth, wrong_signature);
 
         // Recovery succeeds but yields wrong address
-        let recovered = signed.recover_authority();
+        let recovered = bad_signed.recover_authority();
         assert!(recovered.is_ok());
         assert_ne!(recovered.unwrap(), expected_address);
+
+        // RecoveredTempoAuthorization with wrong sig still recovers (to wrong address)
+        let bad_lazy = RecoveredTempoAuthorization::new(bad_signed);
+        assert!(bad_lazy.authority().is_some());
+        assert_ne!(bad_lazy.authority().unwrap(), expected_address);
     }
 }
