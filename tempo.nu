@@ -239,6 +239,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, htt
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         "--faucet.amount" "1000000000000"
+        "--faucet.address" "0x20c0000000000000000000000000000000000000"
         "--faucet.address" "0x20c0000000000000000000000000000000000001"
     ]
 }
