@@ -2407,7 +2407,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2425,7 +2425,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "paste",
@@ -2437,7 +2437,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2465,7 +2465,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2478,6 +2478,7 @@ dependencies = [
  "commonware-math",
  "commonware-parallel",
  "commonware-utils",
+ "crc-fast",
  "ctutils",
  "ecdsa",
  "ed25519-consensus",
@@ -2495,7 +2496,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2510,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2522,7 +2523,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2548,7 +2549,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "cfg-if",
  "rayon",
@@ -2557,7 +2558,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2577,17 +2578,17 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "async-lock",
  "axum",
  "bytes",
  "cfg-if",
  "commonware-codec",
+ "commonware-cryptography",
  "commonware-macros",
  "commonware-parallel",
  "commonware-utils",
- "crc32fast",
  "criterion",
  "futures",
  "getrandom 0.2.16",
@@ -2613,7 +2614,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2624,7 +2625,6 @@ dependencies = [
  "commonware-parallel",
  "commonware-runtime",
  "commonware-utils",
- "crc32fast",
  "futures",
  "futures-util",
  "prometheus-client",
@@ -2637,7 +2637,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2657,7 +2657,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.64"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=6030f686a5e3347ec9a3e966626994365dc1c82d#6030f686a5e3347ec9a3e966626994365dc1c82d"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166#9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2871,6 +2871,16 @@ name = "crc-catalog"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
+
+[[package]]
+name = "crc-fast"
+version = "1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e75b2483e97a5a7da73ac68a05b629f9c53cff58d8ed1c77866079e18b00dba5"
+dependencies = [
+ "digest 0.10.7",
+ "spin",
+]
 
 [[package]]
 name = "crc32fast"

@@ -367,15 +367,15 @@ vergen-git2 = "1"
 # reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
 
 [patch.crates-io]
-# Commonware main right after https://github.com/commonwarexyz/monorepo/pull/2667 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "6030f686a5e3347ec9a3e966626994365dc1c82d" }
+# Commonware PR https://github.com/commonwarexyz/monorepo/pull/2740
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "9bfaf83fe3be78fc2bac5cc788d9bfd9acadb166" }
