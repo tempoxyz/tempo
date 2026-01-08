@@ -12,8 +12,7 @@ use commonware_cryptography::{
     bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
-use crypto_common::generic_array::typenum::Unsigned as _;
-use crypto_common::rand_core::CryptoRngCore;
+use crypto_common::{generic_array::typenum::Unsigned as _, rand_core::CryptoRngCore};
 
 #[cfg(test)]
 mod tests;
