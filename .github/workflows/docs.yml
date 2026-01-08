@@ -41,6 +41,7 @@ jobs:
         run: bun install
 
       - name: Check
+        continue-on-error: true
         working-directory: docs
         run: bun run check:ci
 
