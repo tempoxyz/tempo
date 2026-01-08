@@ -800,7 +800,7 @@ mod tests {
                 ))
             ));
 
-            // Assert that the main key bypasses spending limits, does not affect exisitng limits
+            // Assert that the main key bypasses spending limits, does not affect existing limits
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(1000))?;
 
