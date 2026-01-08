@@ -11,3 +11,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+declare namespace NodeJS {
+  interface ProcessEnv extends ImportMetaEnv {
+    readonly NODE_ENV: 'development' | 'production' | 'test'
+  }
+}

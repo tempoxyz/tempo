@@ -20,4 +20,3 @@ tmp
 
 # Sonda bundle diagnostic files
 .sonda
-.env*.local
