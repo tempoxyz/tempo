@@ -467,4 +467,269 @@ mod tests {
         ];
         assert!(validate_calls(&calls, false).is_ok());
     }
+
+    #[test]
+    fn test_tx_env() {
+        let tx_env = super::TempoTxEnv::default();
+
+        // Test default values
+        assert_eq!(tx_env.inner.nonce, 0);
+        assert!(tx_env.inner.access_list.is_empty());
+        assert!(tx_env.fee_token.is_none());
+        assert!(!tx_env.is_system_tx);
+        assert!(tx_env.fee_payer.is_none());
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_transaction_env_set_gas_limit() {
+        use reth_evm::TransactionEnv;
+
+        let mut tx_env = super::TempoTxEnv::default();
+
+        tx_env.set_gas_limit(21000);
+        assert_eq!(tx_env.inner.gas_limit, 21000);
+
+        tx_env.set_gas_limit(100_000);
+        assert_eq!(tx_env.inner.gas_limit, 100_000);
+    }
+
+    #[test]
+    fn test_transaction_env_nonce() {
+        use reth_evm::TransactionEnv;
+
+        let mut tx_env = super::TempoTxEnv::default();
+        assert_eq!(TransactionEnv::nonce(&tx_env), 0);
+
+        tx_env.set_nonce(42);
+        assert_eq!(TransactionEnv::nonce(&tx_env), 42);
+
+        tx_env.set_nonce(u64::MAX);
+        assert_eq!(TransactionEnv::nonce(&tx_env), u64::MAX);
+    }
+
+    #[test]
+    fn test_transaction_env_set_access_list() {
+        use reth_evm::TransactionEnv;
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        let mut tx_env = super::TempoTxEnv::default();
+        assert!(tx_env.inner.access_list.is_empty());
+
+        let access_list = AccessList(vec![
+            AccessListItem {
+                address: alloy_primitives::Address::ZERO,
+                storage_keys: vec![alloy_primitives::B256::ZERO],
+            },
+            AccessListItem {
+                address: alloy_primitives::Address::repeat_byte(0x01),
+                storage_keys: vec![
+                    alloy_primitives::B256::repeat_byte(0x01),
+                    alloy_primitives::B256::repeat_byte(0x02),
+                ],
+            },
+        ]);
+
+        tx_env.set_access_list(access_list.clone());
+        assert_eq!(tx_env.inner.access_list.0.len(), 2);
+        assert_eq!(
+            tx_env.inner.access_list.0[0].address,
+            alloy_primitives::Address::ZERO
+        );
+        assert_eq!(tx_env.inner.access_list.0[0].storage_keys.len(), 1);
+        assert_eq!(tx_env.inner.access_list.0[1].storage_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_transaction_env_combined_operations() {
+        use reth_evm::TransactionEnv;
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        let mut tx_env = super::TempoTxEnv::default();
+
+        // Set all values
+        tx_env.set_gas_limit(50_000);
+        tx_env.set_nonce(100);
+        tx_env.set_access_list(AccessList(vec![AccessListItem {
+            address: alloy_primitives::Address::repeat_byte(0xAB),
+            storage_keys: vec![],
+        }]));
+
+        // Verify all values are set correctly
+        assert_eq!(tx_env.inner.gas_limit, 50_000);
+        assert_eq!(TransactionEnv::nonce(&tx_env), 100);
+        assert_eq!(tx_env.inner.access_list.0.len(), 1);
+        assert_eq!(
+            tx_env.inner.access_list.0[0].address,
+            alloy_primitives::Address::repeat_byte(0xAB)
+        );
+    }
+
+    #[test]
+    fn test_transaction_env_from_tx_env() {
+        use reth_evm::TransactionEnv;
+        use revm::context::TxEnv;
+
+        let inner = TxEnv {
+            gas_limit: 75_000,
+            nonce: 55,
+            ..Default::default()
+        };
+
+        let tx_env: super::TempoTxEnv = inner.into();
+
+        assert_eq!(tx_env.inner.gas_limit, 75_000);
+        assert_eq!(TransactionEnv::nonce(&tx_env), 55);
+        assert!(tx_env.fee_token.is_none());
+        assert!(!tx_env.is_system_tx);
+        assert!(tx_env.fee_payer.is_none());
+        assert!(tx_env.tempo_tx_env.is_none());
+    }
+
+    #[test]
+    fn test_first_call_without_aa() {
+        use alloy_primitives::{Address, Bytes};
+        use revm::context::TxEnv;
+
+        // Test without tempo_tx_env (non-AA transaction)
+        let addr = Address::repeat_byte(0x42);
+        let data = Bytes::from(vec![0x01, 0x02, 0x03]);
+
+        let tx_env = super::TempoTxEnv {
+            inner: TxEnv {
+                kind: TxKind::Call(addr),
+                data: data.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let first_call = tx_env.first_call();
+        assert!(first_call.is_some());
+        let (kind, input) = first_call.unwrap();
+        assert_eq!(*kind, TxKind::Call(addr));
+        assert_eq!(input, data.as_ref());
+    }
+
+    #[test]
+    fn test_first_call_with_aa() {
+        use alloy_primitives::{Address, Bytes, U256};
+        use tempo_primitives::transaction::Call;
+
+        // Test with tempo_tx_env (AA transaction)
+        let addr1 = Address::repeat_byte(0x11);
+        let addr2 = Address::repeat_byte(0x22);
+        let input1 = Bytes::from(vec![0xAA, 0xBB]);
+        let input2 = Bytes::from(vec![0xCC, 0xDD]);
+
+        let tx_env = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(addr1),
+                        value: U256::ZERO,
+                        input: input1.clone(),
+                    },
+                    Call {
+                        to: TxKind::Call(addr2),
+                        value: U256::from(100),
+                        input: input2,
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let first_call = tx_env.first_call();
+        assert!(first_call.is_some());
+        let (kind, input) = first_call.unwrap();
+        assert_eq!(*kind, TxKind::Call(addr1));
+        assert_eq!(input, input1.as_ref());
+    }
+
+    #[test]
+    fn test_first_call_with_empty_aa_calls() {
+        // Test with tempo_tx_env but empty calls list
+        let tx_env = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        assert!(tx_env.first_call().is_none());
+    }
+
+    #[test]
+    fn test_calls() {
+        use alloy_primitives::{Address, Bytes, U256};
+        use revm::context::TxEnv;
+        use tempo_primitives::transaction::Call;
+
+        let addr1 = Address::repeat_byte(0x11);
+        let addr2 = Address::repeat_byte(0x22);
+        let input1 = Bytes::from(vec![0x01]);
+        let input2 = Bytes::from(vec![0x02, 0x03]);
+        let input3 = Bytes::from(vec![0x04, 0x05, 0x06]);
+
+        // Non-AA transaction: returns single call from inner TxEnv
+        let non_aa_tx = super::TempoTxEnv {
+            inner: TxEnv {
+                kind: TxKind::Call(addr1),
+                data: input1.clone(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let calls: Vec<_> = non_aa_tx.calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(*calls[0].0, TxKind::Call(addr1));
+        assert_eq!(calls[0].1, input1.as_ref());
+
+        // AA transaction with multiple calls
+        let aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(addr1),
+                        value: U256::ZERO,
+                        input: input1.clone(),
+                    },
+                    Call {
+                        to: TxKind::Call(addr2),
+                        value: U256::from(50),
+                        input: input2.clone(),
+                    },
+                    Call {
+                        to: TxKind::Create,
+                        value: U256::from(100),
+                        input: input3.clone(),
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let calls: Vec<_> = aa_tx.calls().collect();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(*calls[0].0, TxKind::Call(addr1));
+        assert_eq!(calls[0].1, input1.as_ref());
+        assert_eq!(*calls[1].0, TxKind::Call(addr2));
+        assert_eq!(calls[1].1, input2.as_ref());
+        assert_eq!(*calls[2].0, TxKind::Create);
+        assert_eq!(calls[2].1, input3.as_ref());
+
+        // AA transaction with empty calls list
+        let empty_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let calls: Vec<_> = empty_aa_tx.calls().collect();
+        assert!(calls.is_empty());
+    }
 }

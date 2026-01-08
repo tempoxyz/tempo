@@ -147,8 +147,6 @@ where
         self.inner.frame_run()
     }
 
-    #[doc = " Returns the result of the frame to the caller. Frame is popped from the frame stack."]
-    #[doc = " Consumes the frame result or returns it if there is more frames to run."]
     fn frame_return_result(
         &mut self,
         result: <Self::Frame as FrameTr>::FrameResult,
@@ -191,27 +189,367 @@ where
 
 #[cfg(test)]
 mod tests {
-    use alloy_evm::{Evm, EvmFactory};
-    use alloy_primitives::{Address, TxKind, U256, bytes};
+    use alloy_eips::eip7702::Authorization;
+    use alloy_evm::{Evm, EvmFactory, FromRecoveredTx};
+    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
+    use alloy_sol_types::SolCall;
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use p256::{
+        ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
+        elliptic_curve::rand_core::OsRng,
+    };
     use reth_evm::EvmInternals;
     use revm::{
-        Context, InspectEvm, MainContext,
+        Context, DatabaseRef, ExecuteCommitEvm, ExecuteEvm, InspectEvm, MainContext,
         bytecode::opcode,
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
-        inspector::CountInspector,
+        handler::system_call::SystemCallEvm,
+        inspector::{CountInspector, InspectSystemCallEvm},
         state::{AccountInfo, Bytecode},
     };
+    use sha2::{Digest, Sha256};
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
-        TIP20_FACTORY_ADDRESS,
+        NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        nonce::NonceManager,
         storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
         tip20::ITIP20,
     };
-    use tempo_primitives::transaction::KeychainSignature;
+    use tempo_primitives::{
+        TempoTransaction,
+        transaction::{
+            KeyAuthorization, KeychainSignature, SignatureType, TempoSignedAuthorization,
+            tempo_transaction::Call,
+            tt_signature::{
+                PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
+                normalize_p256_s,
+            },
+        },
+    };
 
-    use crate::TempoEvm;
+    use crate::{TempoBlockEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv};
+
+    // ==================== Test Constants ====================
+
+    /// Default balance for funded accounts (1 ETH)
+    const DEFAULT_BALANCE: u128 = 1_000_000_000_000_000_000;
+
+    /// Identity precompile address (0x04)
+    const IDENTITY_PRECOMPILE: Address = Address::new([
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
+    ]);
+
+    // ==================== Test Utility Functions ====================
+
+    /// Create an empty EVM instance with default settings and no inspector.
+    fn create_evm() -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(Default::default());
+        TempoEvm::new(ctx, ())
+    }
+
+    /// Create an EVM instance with a specific block timestamp.
+    fn create_evm_with_timestamp(timestamp: u64) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut block = TempoBlockEnv::default();
+        block.inner.timestamp = U256::from(timestamp);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(block)
+            .with_cfg(Default::default())
+            .with_tx(Default::default());
+
+        TempoEvm::new(ctx, ())
+    }
+
+    /// Fund an account with the default balance (1 ETH).
+    fn fund_account(evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>, address: Address) {
+        evm.ctx.db_mut().insert_account_info(
+            address,
+            AccountInfo {
+                balance: U256::from(DEFAULT_BALANCE),
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Create an EVM with a funded account at the given address.
+    fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let mut evm = create_evm();
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with a specific timestamp and a funded account.
+    fn create_funded_evm_with_timestamp(
+        address: Address,
+        timestamp: u64,
+    ) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let mut evm = create_evm_with_timestamp(timestamp);
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM instance with a custom inspector.
+    fn create_evm_with_inspector<I>(inspector: I) -> TempoEvm<CacheDB<EmptyDB>, I> {
+        let db = CacheDB::new(EmptyDB::new());
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(Default::default())
+            .with_tx(Default::default());
+        TempoEvm::new(ctx, inspector)
+    }
+
+    /// Helper struct for managing P256 key pairs in tests.
+    struct P256KeyPair {
+        signing_key: SigningKey,
+        pub_key_x: alloy_primitives::B256,
+        pub_key_y: alloy_primitives::B256,
+        address: Address,
+    }
+
+    impl P256KeyPair {
+        /// Generate a new random P256 key pair.
+        fn random() -> Self {
+            let signing_key = SigningKey::random(&mut OsRng);
+            let verifying_key = signing_key.verifying_key();
+            let encoded_point = verifying_key.to_encoded_point(false);
+            let pub_key_x =
+                alloy_primitives::B256::from_slice(encoded_point.x().unwrap().as_slice());
+            let pub_key_y =
+                alloy_primitives::B256::from_slice(encoded_point.y().unwrap().as_slice());
+            let address = derive_p256_address(&pub_key_x, &pub_key_y);
+
+            Self {
+                signing_key,
+                pub_key_x,
+                pub_key_y,
+                address,
+            }
+        }
+
+        /// Create a WebAuthn signature for the given challenge.
+        fn sign_webauthn(&self, challenge: &[u8]) -> eyre::Result<WebAuthnSignature> {
+            // Create authenticator data
+            let mut authenticator_data = vec![0u8; 37];
+            authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
+            authenticator_data[32] = 0x01; // UP flag set
+            authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
+
+            // Create client data JSON
+            let challenge_b64url = URL_SAFE_NO_PAD.encode(challenge);
+            let client_data_json = format!(
+                r#"{{"type":"webauthn.get","challenge":"{challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
+            );
+
+            // Compute message hash
+            let client_data_hash = Sha256::digest(client_data_json.as_bytes());
+            let mut final_hasher = Sha256::new();
+            final_hasher.update(&authenticator_data);
+            final_hasher.update(client_data_hash);
+            let message_hash = final_hasher.finalize();
+
+            // Sign
+            let signature: p256::ecdsa::Signature = self.signing_key.sign_prehash(&message_hash)?;
+            let sig_bytes = signature.to_bytes();
+
+            // Construct WebAuthn data
+            let mut webauthn_data = Vec::new();
+            webauthn_data.extend_from_slice(&authenticator_data);
+            webauthn_data.extend_from_slice(client_data_json.as_bytes());
+
+            Ok(WebAuthnSignature {
+                webauthn_data: Bytes::from(webauthn_data),
+                r: alloy_primitives::B256::from_slice(&sig_bytes[0..32]),
+                s: normalize_p256_s(&sig_bytes[32..64]),
+                pub_key_x: self.pub_key_x,
+                pub_key_y: self.pub_key_y,
+            })
+        }
+
+        /// Create a signed EIP-7702 authorization for the given delegate address.
+        fn create_signed_authorization(
+            &self,
+            delegate_address: Address,
+        ) -> eyre::Result<TempoSignedAuthorization> {
+            let auth = Authorization {
+                chain_id: U256::from(1),
+                address: delegate_address,
+                nonce: 0,
+            };
+
+            let mut sig_buf = Vec::new();
+            sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
+            alloy_rlp::Encodable::encode(&auth, &mut sig_buf);
+            let auth_sig_hash = alloy_primitives::keccak256(&sig_buf);
+
+            let webauthn_sig = self.sign_webauthn(auth_sig_hash.as_slice())?;
+            let aa_sig = TempoSignature::Primitive(PrimitiveSignature::WebAuthn(webauthn_sig));
+
+            Ok(TempoSignedAuthorization::new_unchecked(auth, aa_sig))
+        }
+
+        /// Sign a transaction and return it ready for execution.
+        fn sign_tx(&self, tx: TempoTransaction) -> eyre::Result<tempo_primitives::AASigned> {
+            let webauthn_sig = self.sign_webauthn(tx.signature_hash().as_slice())?;
+            Ok(
+                tx.into_signed(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
+                    webauthn_sig,
+                ))),
+            )
+        }
+
+        /// Sign a transaction with KeychainSignature wrapper.
+        fn sign_tx_keychain(
+            &self,
+            tx: TempoTransaction,
+        ) -> eyre::Result<tempo_primitives::AASigned> {
+            let webauthn_sig = self.sign_webauthn(tx.signature_hash().as_slice())?;
+            let keychain_sig =
+                KeychainSignature::new(self.address, PrimitiveSignature::WebAuthn(webauthn_sig));
+            Ok(tx.into_signed(TempoSignature::Keychain(keychain_sig)))
+        }
+    }
+
+    /// Builder for creating test transactions with sensible defaults.
+    struct TxBuilder {
+        calls: Vec<Call>,
+        nonce: u64,
+        nonce_key: U256,
+        gas_limit: u64,
+        valid_before: Option<u64>,
+        valid_after: Option<u64>,
+        authorization_list: Vec<TempoSignedAuthorization>,
+        key_authorization: Option<tempo_primitives::transaction::SignedKeyAuthorization>,
+    }
+
+    impl Default for TxBuilder {
+        fn default() -> Self {
+            Self {
+                calls: vec![],
+                nonce: 0,
+                nonce_key: U256::ZERO,
+                gas_limit: 100_000,
+                valid_before: Some(u64::MAX),
+                valid_after: None,
+                authorization_list: vec![],
+                key_authorization: None,
+            }
+        }
+    }
+
+    impl TxBuilder {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        /// Add a call to the identity precompile with the given input.
+        fn call_identity(mut self, input: &[u8]) -> Self {
+            self.calls.push(Call {
+                to: TxKind::Call(IDENTITY_PRECOMPILE),
+                value: U256::ZERO,
+                input: Bytes::from(input.to_vec()),
+            });
+            self
+        }
+
+        /// Add a call to a specific address.
+        fn call(mut self, to: Address, input: &[u8]) -> Self {
+            self.calls.push(Call {
+                to: TxKind::Call(to),
+                value: U256::ZERO,
+                input: Bytes::from(input.to_vec()),
+            });
+            self
+        }
+
+        /// Add a create call with the given initcode.
+        fn create(mut self, initcode: &[u8]) -> Self {
+            self.calls.push(Call {
+                to: TxKind::Create,
+                value: U256::ZERO,
+                input: Bytes::from(initcode.to_vec()),
+            });
+            self
+        }
+
+        /// Add a call with a specific value transfer.
+        fn call_with_value(mut self, to: Address, input: &[u8], value: U256) -> Self {
+            self.calls.push(Call {
+                to: TxKind::Call(to),
+                value,
+                input: Bytes::from(input.to_vec()),
+            });
+            self
+        }
+
+        fn nonce(mut self, nonce: u64) -> Self {
+            self.nonce = nonce;
+            self
+        }
+
+        fn nonce_key(mut self, nonce_key: U256) -> Self {
+            self.nonce_key = nonce_key;
+            self
+        }
+
+        fn gas_limit(mut self, gas_limit: u64) -> Self {
+            self.gas_limit = gas_limit;
+            self
+        }
+
+        fn valid_before(mut self, valid_before: Option<u64>) -> Self {
+            self.valid_before = valid_before;
+            self
+        }
+
+        fn valid_after(mut self, valid_after: Option<u64>) -> Self {
+            self.valid_after = valid_after;
+            self
+        }
+
+        fn authorization(mut self, auth: TempoSignedAuthorization) -> Self {
+            self.authorization_list.push(auth);
+            self
+        }
+
+        fn key_authorization(
+            mut self,
+            key_auth: tempo_primitives::transaction::SignedKeyAuthorization,
+        ) -> Self {
+            self.key_authorization = Some(key_auth);
+            self
+        }
+
+        fn build(self) -> TempoTransaction {
+            TempoTransaction {
+                chain_id: 1,
+                fee_token: None,
+                max_priority_fee_per_gas: 0,
+                max_fee_per_gas: 0,
+                gas_limit: self.gas_limit,
+                calls: self.calls,
+                access_list: Default::default(),
+                nonce_key: self.nonce_key,
+                nonce: self.nonce,
+                fee_payer_signature: None,
+                valid_before: self.valid_before,
+                valid_after: self.valid_after,
+                key_authorization: self.key_authorization,
+                tempo_authorization_list: self.authorization_list,
+            }
+        }
+    }
+
+    // ==================== End Test Utility Functions ====================
 
     #[test]
     fn test_access_millis_timestamp() -> eyre::Result<()> {
@@ -258,9 +596,6 @@ mod tests {
     #[test]
     fn test_inspector_calls() -> eyre::Result<()> {
         // This test calls TIP20 setSupplyCap which emits a SupplyCapUpdate log event
-        use alloy_sol_types::SolCall;
-        use tempo_precompiles::PATH_USD_ADDRESS;
-
         let caller = Address::repeat_byte(0x01);
         let contract = Address::repeat_byte(0x42);
 
@@ -314,15 +649,7 @@ mod tests {
         let bytecode = Bytecode::new_raw(bytecode_bytes.into());
 
         // Set up EVM with TIP20 infrastructure
-        let db = CacheDB::new(EmptyDB::new());
-
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(Default::default())
-            .with_tx(Default::default());
-
-        let mut evm: TempoEvm<CacheDB<EmptyDB>, _> = TempoEvm::new(ctx, CountInspector::new());
+        let mut evm = create_evm_with_inspector(CountInspector::new());
         // Set up TIP20 using the storage context pattern
         {
             let ctx = &mut evm.ctx;
@@ -351,7 +678,6 @@ mod tests {
         let tx_env = TxEnv {
             caller,
             kind: TxKind::Call(contract),
-            gas_price: 0,
             gas_limit: 1_000_000,
             ..Default::default()
         };
@@ -359,51 +685,71 @@ mod tests {
             .inspect_tx(tx_env.into())
             .expect("execution should succeed");
 
-        assert!(
-            result.result.is_success(),
-            "Transaction should succeed: {:?}",
-            result.result
-        );
+        assert!(result.result.is_success());
 
         // Verify that a SupplyCapUpdate log was emitted by the TIP20 precompile
-        assert_eq!(
-            result.result.logs().len(),
-            2,
-            "Should have emitted 1 log, result: {:?}",
-            result.result
-        );
-        assert_eq!(
-            result.result.logs()[0].address,
-            TIP20_FACTORY_ADDRESS,
-            "Log should be from TIP20_FACTORY"
-        );
+        assert_eq!(result.result.logs().len(), 3);
+        // Log should be from TIP20_FACTORY
+        assert_eq!(result.result.logs()[0].address, PATH_USD_ADDRESS);
 
         // Get the inspector and verify counts
         let inspector = &evm.inspector;
 
         // Verify CALL opcode was executed (the call to PATH_USD)
-        assert_eq!(
-            inspector.get_count(opcode::CALL),
-            1,
-            "Should have 1 CALL opcode"
-        );
-        assert_eq!(
-            inspector.get_count(opcode::STOP),
-            1,
-            "Should have 1 STOP opcode"
-        );
+        assert_eq!(inspector.get_count(opcode::CALL), 1);
+
+        assert_eq!(inspector.get_count(opcode::STOP), 1);
 
         // Verify log count
-        assert_eq!(inspector.log_count(), 1, "Should have 1 log");
+        assert_eq!(inspector.log_count(), 1);
 
         // Verify call count (initial tx + CALL to PATH_USD)
-        assert_eq!(
-            inspector.call_count(),
-            2,
-            "Should have 2 calls (initial tx + CALL)"
+        assert_eq!(inspector.call_count(), 2);
+
+        // Should have 2 call ends
+        assert_eq!(inspector.call_end_count(), 2);
+
+        // ==================== Multi-call Tempo transaction test ====================
+        // Test inspector with a Tempo transaction that has multiple calls
+
+        let key_pair = P256KeyPair::random();
+        let tempo_caller = key_pair.address;
+
+        // Create signed authorization for Tempo tx
+        let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
+
+        // Create a transaction with 3 calls to identity precompile
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01, 0x02])
+            .call_identity(&[0x03, 0x04])
+            .call_identity(&[0x05, 0x06])
+            .authorization(signed_auth)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, tempo_caller);
+
+        // Create a new EVM with fresh inspector for multi-call test
+        let mut multi_evm = create_evm_with_inspector(CountInspector::new());
+        multi_evm.ctx.db_mut().insert_account_info(
+            tempo_caller,
+            AccountInfo {
+                balance: U256::from(DEFAULT_BALANCE),
+                ..Default::default()
+            },
         );
 
-        assert_eq!(inspector.call_end_count(), 2, "Should have 2 call ends");
+        // Execute the multi-call transaction with inspector
+        let multi_result = multi_evm.inspect_tx(tx_env)?;
+        assert!(multi_result.result.is_success(),);
+
+        // Verify inspector tracked all 3 calls
+        let multi_inspector = &multi_evm.inspector;
+
+        // Multi-call Tempo transactions execute each call as a separate frame
+        // call_count = 3 (one for each identity precompile call)
+        assert_eq!(multi_inspector.call_count(), 3,);
+        assert_eq!(multi_inspector.call_end_count(), 3,);
 
         Ok(())
     }
@@ -414,303 +760,58 @@ mod tests {
     /// - Two calls to the identity precompile (0x04)
     #[test]
     fn test_tempo_tx() -> eyre::Result<()> {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_evm::FromRecoveredTx;
-        use alloy_primitives::{B256, Bytes};
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-        use p256::{
-            ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
-            elliptic_curve::rand_core::OsRng,
-        };
-        use revm::{DatabaseRef, ExecuteCommitEvm, ExecuteEvm};
-        use sha2::{Digest, Sha256};
-        use tempo_primitives::{
-            TempoTransaction,
-            transaction::{
-                KeyAuthorization, SignatureType, TempoSignedAuthorization,
-                tempo_transaction::Call,
-                tt_signature::{
-                    PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
-                    normalize_p256_s,
-                },
-            },
-        };
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
 
-        use crate::TempoTxEnv;
+        // Create signed authorization
+        let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
 
-        // Identity precompile address (0x04)
-        let identity_precompile = Address::from_slice(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
-        ]);
+        // Create and sign transaction with two calls to identity precompile
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01, 0x02, 0x03, 0x04])
+            .call_identity(&[0xAA, 0xBB, 0xCC, 0xDD])
+            .authorization(signed_auth.clone())
+            .build();
 
-        // Generate P256 key pair for WebAuthn signature
-        let signing_key = SigningKey::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        let encoded_point = verifying_key.to_encoded_point(false);
-        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_slice());
-        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_slice());
-
-        // Derive caller address from P256 public key
-        let caller = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Create a delegate address for EIP-7702 authorization
-        let delegate_address = Address::repeat_byte(0x42);
-
-        // Create authorization (EIP-7702 style)
-        let auth = Authorization {
-            chain_id: U256::from(1),
-            address: delegate_address,
-            nonce: 0,
-        };
-
-        // Compute authorization signature hash
-        let mut sig_buf = Vec::new();
-        sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
-        alloy_rlp::Encodable::encode(&auth, &mut sig_buf);
-        let auth_sig_hash = alloy_primitives::keccak256(&sig_buf);
-
-        // Create WebAuthn authenticator data for authorization
-        let mut auth_authenticator_data = vec![0u8; 37];
-        auth_authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
-        auth_authenticator_data[32] = 0x01; // UP flag set
-        auth_authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
-
-        let auth_challenge_b64url = URL_SAFE_NO_PAD.encode(auth_sig_hash.as_slice());
-        let auth_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{auth_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        // Compute WebAuthn message hash for authorization
-        let auth_client_data_hash = Sha256::digest(auth_client_data_json.as_bytes());
-        let mut auth_final_hasher = Sha256::new();
-        auth_final_hasher.update(&auth_authenticator_data);
-        auth_final_hasher.update(auth_client_data_hash);
-        let auth_message_hash = auth_final_hasher.finalize();
-
-        // Sign authorization with P256
-        let auth_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&auth_message_hash)?;
-        let auth_sig_bytes = auth_signature.to_bytes();
-
-        // Construct WebAuthn data for authorization
-        let mut auth_webauthn_data = Vec::new();
-        auth_webauthn_data.extend_from_slice(&auth_authenticator_data);
-        auth_webauthn_data.extend_from_slice(auth_client_data_json.as_bytes());
-
-        let auth_aa_sig =
-            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                webauthn_data: Bytes::from(auth_webauthn_data),
-                r: B256::from_slice(&auth_sig_bytes[0..32]),
-                s: normalize_p256_s(&auth_sig_bytes[32..64]),
-                pub_key_x,
-                pub_key_y,
-            }));
-        let signed_auth = TempoSignedAuthorization::new_unchecked(auth, auth_aa_sig);
-
-        // Create Tempo transaction with two calls to identity precompile
-        let tx = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
-            max_priority_fee_per_gas: 0,
-            max_fee_per_gas: 0,
-            gas_limit: 100_000,
-            calls: vec![
-                // First call to identity precompile
-                Call {
-                    to: TxKind::Call(identity_precompile),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0x01, 0x02, 0x03, 0x04]), // Input data echoed back
-                },
-                // Second call to identity precompile
-                Call {
-                    to: TxKind::Call(identity_precompile),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0xAA, 0xBB, 0xCC, 0xDD]), // Different input data
-                },
-            ],
-            access_list: Default::default(),
-            nonce_key: U256::ZERO,
-            nonce: 0,
-            fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
-            valid_after: None,
-            key_authorization: None,
-            tempo_authorization_list: vec![signed_auth], // has_aa_auth_list
-        };
-
-        // Get signature hash for the transaction
-        let tx_sig_hash = tx.signature_hash();
-
-        // Create WebAuthn authenticator data for transaction signature
-        let mut tx_authenticator_data = vec![0u8; 37];
-        tx_authenticator_data[0..32].copy_from_slice(&[0xBB; 32]); // rpIdHash
-        tx_authenticator_data[32] = 0x01; // UP flag set
-        tx_authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
-
-        let tx_challenge_b64url = URL_SAFE_NO_PAD.encode(tx_sig_hash.as_slice());
-        let tx_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{tx_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        // Compute WebAuthn message hash for transaction
-        let tx_client_data_hash = Sha256::digest(tx_client_data_json.as_bytes());
-        let mut tx_final_hasher = Sha256::new();
-        tx_final_hasher.update(&tx_authenticator_data);
-        tx_final_hasher.update(tx_client_data_hash);
-        let tx_message_hash = tx_final_hasher.finalize();
-
-        // Sign transaction with P256
-        let tx_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&tx_message_hash)?;
-        let tx_sig_bytes = tx_signature.to_bytes();
-
-        // Construct WebAuthn data for transaction signature
-        let mut tx_webauthn_data = Vec::new();
-        tx_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        tx_webauthn_data.extend_from_slice(tx_client_data_json.as_bytes());
-
-        let tx_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(tx_webauthn_data),
-            r: B256::from_slice(&tx_sig_bytes[0..32]),
-            s: normalize_p256_s(&tx_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
-        // Create signed transaction with WebAuthn signature
-        let signed_tx =
-            tx.clone()
-                .into_signed(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
-                    tx_webauthn_sig.clone(),
-                )));
-
-        // Convert to TempoTxEnv for execution
+        let signed_tx = key_pair.sign_tx(tx.clone())?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
         // Verify transaction has AA auth list
-        assert!(
-            tx_env.tempo_tx_env.is_some(),
-            "Transaction should have tempo_tx_env"
-        );
+        assert!(tx_env.tempo_tx_env.is_some(),);
         let tempo_env = tx_env.tempo_tx_env.as_ref().unwrap();
-        assert_eq!(
-            tempo_env.tempo_authorization_list.len(),
-            1,
-            "Should have 1 authorization"
-        );
-        assert_eq!(tempo_env.aa_calls.len(), 2, "Should have 2 calls");
+        assert_eq!(tempo_env.tempo_authorization_list.len(), 1);
+        assert_eq!(tempo_env.aa_calls.len(), 2);
 
         // Create EVM and execute transaction
-        let db = CacheDB::new(EmptyDB::new());
-        let ctx = Context::mainnet()
-            .with_db(db)
-            .with_block(Default::default())
-            .with_cfg(Default::default())
-            .with_tx(Default::default());
-
-        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(ctx, ());
-
-        // Fund the caller account with some balance for gas
-        evm.ctx.db_mut().insert_account_info(
-            caller,
-            AccountInfo {
-                balance: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-                ..Default::default()
-            },
-        );
+        let mut evm = create_funded_evm(caller);
 
         // Execute the transaction and commit state changes
         let result = evm.transact_commit(tx_env)?;
         assert!(result.is_success());
 
         // Test with KeychainSignature using key_authorization to provision the access key
-        // The key_id for a WebAuthn signature is the same as the caller (derived from P256 public key)
-        let key_id = caller;
-
-        // Create KeyAuthorization to provision the access key
         let key_auth = KeyAuthorization {
             chain_id: 1,
             key_type: SignatureType::WebAuthn,
-            key_id,
-            expiry: None, // Never expires
-            limits: None, // Unlimited spending
+            key_id: caller,
+            expiry: None,
+            limits: None,
         };
-
-        // Sign the KeyAuthorization with WebAuthn (same P256 key)
-        let key_auth_sig_hash = key_auth.signature_hash();
-        let key_auth_challenge_b64url = URL_SAFE_NO_PAD.encode(key_auth_sig_hash.as_slice());
-        let key_auth_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{key_auth_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        let key_auth_client_data_hash = Sha256::digest(key_auth_client_data_json.as_bytes());
-        let mut key_auth_final_hasher = Sha256::new();
-        key_auth_final_hasher.update(&tx_authenticator_data);
-        key_auth_final_hasher.update(key_auth_client_data_hash);
-        let key_auth_message_hash = key_auth_final_hasher.finalize();
-
-        let key_auth_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&key_auth_message_hash)?;
-        let key_auth_sig_bytes = key_auth_signature.to_bytes();
-
-        let mut key_auth_webauthn_data = Vec::new();
-        key_auth_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        key_auth_webauthn_data.extend_from_slice(key_auth_client_data_json.as_bytes());
-
-        let key_auth_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(key_auth_webauthn_data),
-            r: B256::from_slice(&key_auth_sig_bytes[0..32]),
-            s: normalize_p256_s(&key_auth_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
+        let key_auth_webauthn_sig = key_pair.sign_webauthn(key_auth.signature_hash().as_slice())?;
         let signed_key_auth =
             key_auth.into_signed(PrimitiveSignature::WebAuthn(key_auth_webauthn_sig));
 
         // Create transaction with incremented nonce and key_authorization
-        // Note: gas_limit increased to account for key_authorization intrinsic gas cost (~30k)
-        let tx2 = TempoTransaction {
-            nonce: 1, // Increment nonce
-            gas_limit: 150_000,
-            key_authorization: Some(signed_key_auth),
-            ..tx.clone()
-        };
+        let tx2 = TxBuilder::new()
+            .call_identity(&[0x01, 0x02, 0x03, 0x04])
+            .call_identity(&[0xAA, 0xBB, 0xCC, 0xDD])
+            .authorization(signed_auth.clone())
+            .nonce(1)
+            .gas_limit(150_000)
+            .key_authorization(signed_key_auth)
+            .build();
 
-        // Create a new WebAuthn signature for the new transaction hash
-        let tx2_sig_hash = tx2.signature_hash();
-
-        let tx2_challenge_b64url = URL_SAFE_NO_PAD.encode(tx2_sig_hash.as_slice());
-        let tx2_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{tx2_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        let tx2_client_data_hash = Sha256::digest(tx2_client_data_json.as_bytes());
-        let mut tx2_final_hasher = Sha256::new();
-        tx2_final_hasher.update(&tx_authenticator_data);
-        tx2_final_hasher.update(tx2_client_data_hash);
-        let tx2_message_hash = tx2_final_hasher.finalize();
-
-        let tx2_signature: p256::ecdsa::Signature = signing_key.sign_prehash(&tx2_message_hash)?;
-        let tx2_sig_bytes = tx2_signature.to_bytes();
-
-        let mut tx2_webauthn_data = Vec::new();
-        tx2_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        tx2_webauthn_data.extend_from_slice(tx2_client_data_json.as_bytes());
-
-        let tx2_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(tx2_webauthn_data),
-            r: B256::from_slice(&tx2_sig_bytes[0..32]),
-            s: normalize_p256_s(&tx2_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
-        // Create KeychainSignature wrapping the new WebAuthn signature
-        let keychain_signature =
-            KeychainSignature::new(caller, PrimitiveSignature::WebAuthn(tx2_webauthn_sig));
-
-        let signed_tx = tx2.into_signed(TempoSignature::Keychain(keychain_signature));
-
+        let signed_tx = key_pair.sign_tx_keychain(tx2)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
         // Explicitly test tempo_tx_env.signature.as_keychain()
@@ -724,264 +825,78 @@ mod tests {
             .expect("Signature should be a KeychainSignature");
 
         // Validate KeychainSignature properties
-        assert_eq!(
-            keychain_sig.user_address, caller,
-            "KeychainSignature user_address should match the caller"
-        );
+        // KeychainSignature user_address should match the caller
+        assert_eq!(keychain_sig.user_address, caller,);
 
         // Verify the inner signature is WebAuthn
-        assert!(
-            matches!(keychain_sig.signature, PrimitiveSignature::WebAuthn(_)),
-            "Inner signature should be WebAuthn"
-        );
+        assert!(matches!(
+            keychain_sig.signature,
+            PrimitiveSignature::WebAuthn(_)
+        ));
 
         // Verify key_id recovery works correctly using the transaction signature hash
         let recovered_key_id = keychain_sig
             .key_id(&tempo_env_keychain.signature_hash)
             .expect("Key ID recovery should succeed");
-        assert_eq!(
-            recovered_key_id, caller,
-            "Recovered key_id should match caller (P256 key derives to same address)"
-        );
+        assert_eq!(recovered_key_id, caller,);
 
         // Execute the transaction with keychain signature and commit state changes
         let result = evm.transact_commit(tx_env)?;
         assert!(result.is_success());
 
         // Test a transaction with a failing call to TIP20 contract with wrong input
-        // TIP20 requires at least 4 bytes for the function selector
-        use tempo_precompiles::PATH_USD_ADDRESS;
+        let tx_fail = TxBuilder::new()
+            .call(PATH_USD_ADDRESS, &[0x01, 0x02]) // Too short for TIP20
+            .nonce(2)
+            .build();
 
-        let tx_fail = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
-            max_priority_fee_per_gas: 0,
-            max_fee_per_gas: 0,
-            gas_limit: 100_000,
-            calls: vec![
-                // Call to TIP20 contract with invalid calldata (too short - missing function selector)
-                Call {
-                    to: TxKind::Call(PATH_USD_ADDRESS),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0x01, 0x02]), // Only 2 bytes, but TIP20 requires 4+ bytes for selector
-                },
-            ],
-            access_list: Default::default(),
-            nonce_key: U256::ZERO,
-            nonce: 2, // Increment nonce
-            fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
-            valid_after: None,
-            key_authorization: None,
-            tempo_authorization_list: vec![],
-        };
-
-        // Create WebAuthn signature for the failing transaction
-        let tx_fail_sig_hash = tx_fail.signature_hash();
-
-        let tx_fail_challenge_b64url = URL_SAFE_NO_PAD.encode(tx_fail_sig_hash.as_slice());
-        let tx_fail_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{tx_fail_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        let tx_fail_client_data_hash = Sha256::digest(tx_fail_client_data_json.as_bytes());
-        let mut tx_fail_final_hasher = Sha256::new();
-        tx_fail_final_hasher.update(&tx_authenticator_data);
-        tx_fail_final_hasher.update(tx_fail_client_data_hash);
-        let tx_fail_message_hash = tx_fail_final_hasher.finalize();
-
-        let tx_fail_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&tx_fail_message_hash)?;
-        let tx_fail_sig_bytes = tx_fail_signature.to_bytes();
-
-        let mut tx_fail_webauthn_data = Vec::new();
-        tx_fail_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        tx_fail_webauthn_data.extend_from_slice(tx_fail_client_data_json.as_bytes());
-
-        let tx_fail_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(tx_fail_webauthn_data),
-            r: B256::from_slice(&tx_fail_sig_bytes[0..32]),
-            s: normalize_p256_s(&tx_fail_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
-        // Use keychain signature for the failing transaction
-        let keychain_signature_fail =
-            KeychainSignature::new(caller, PrimitiveSignature::WebAuthn(tx_fail_webauthn_sig));
-
-        let signed_tx_fail = tx_fail.into_signed(TempoSignature::Keychain(keychain_signature_fail));
-
+        let signed_tx_fail = key_pair.sign_tx_keychain(tx_fail)?;
         let tx_env_fail = TempoTxEnv::from_recovered_tx(&signed_tx_fail, caller);
 
-        // Execute the transaction with failing call - should fail due to invalid TIP20 input
         let result_fail = evm.transact(tx_env_fail)?;
-        assert!(
-            !result_fail.result.is_success(),
-            "Transaction with invalid TIP20 calldata should fail"
-        );
+        assert!(!result_fail.result.is_success());
 
         // Test 2D nonce transaction (nonce_key > 0)
-        // 2D nonces are stored in the NonceManager precompile instead of account state
-        use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+        let nonce_key_2d = U256::from(42);
 
-        let nonce_key_2d = U256::from(42); // Use a non-zero nonce key for 2D nonce
+        let tx_2d = TxBuilder::new()
+            .call_identity(&[0x2D, 0x2D, 0x2D, 0x2D])
+            .nonce_key(nonce_key_2d)
+            .build();
 
-        // Create a transaction with 2D nonce
-        let tx_2d_nonce = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
-            max_priority_fee_per_gas: 0,
-            max_fee_per_gas: 0,
-            gas_limit: 100_000,
-            calls: vec![Call {
-                to: TxKind::Call(identity_precompile),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0x2D, 0x2D, 0x2D, 0x2D]), // "2D" pattern
-            }],
-            access_list: Default::default(),
-            nonce_key: nonce_key_2d, // Non-zero nonce key = 2D nonce
-            nonce: 0,                // First transaction for this nonce key
-            fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
-            valid_after: None,
-            key_authorization: None,
-            tempo_authorization_list: vec![],
-        };
-
-        // Create WebAuthn signature for the 2D nonce transaction
-        let tx_2d_sig_hash = tx_2d_nonce.signature_hash();
-
-        let tx_2d_challenge_b64url = URL_SAFE_NO_PAD.encode(tx_2d_sig_hash.as_slice());
-        let tx_2d_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{tx_2d_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        let tx_2d_client_data_hash = Sha256::digest(tx_2d_client_data_json.as_bytes());
-        let mut tx_2d_final_hasher = Sha256::new();
-        tx_2d_final_hasher.update(&tx_authenticator_data);
-        tx_2d_final_hasher.update(tx_2d_client_data_hash);
-        let tx_2d_message_hash = tx_2d_final_hasher.finalize();
-
-        let tx_2d_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&tx_2d_message_hash)?;
-        let tx_2d_sig_bytes = tx_2d_signature.to_bytes();
-
-        let mut tx_2d_webauthn_data = Vec::new();
-        tx_2d_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        tx_2d_webauthn_data.extend_from_slice(tx_2d_client_data_json.as_bytes());
-
-        let tx_2d_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(tx_2d_webauthn_data),
-            r: B256::from_slice(&tx_2d_sig_bytes[0..32]),
-            s: normalize_p256_s(&tx_2d_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
-        // Use KeychainSignature for the 2D nonce transaction
-        let keychain_signature_2d =
-            KeychainSignature::new(caller, PrimitiveSignature::WebAuthn(tx_2d_webauthn_sig));
-
-        let signed_tx_2d = tx_2d_nonce.into_signed(TempoSignature::Keychain(keychain_signature_2d));
-
+        let signed_tx_2d = key_pair.sign_tx_keychain(tx_2d)?;
         let tx_env_2d = TempoTxEnv::from_recovered_tx(&signed_tx_2d, caller);
 
-        // Verify the transaction has the correct nonce_key
-        assert!(
-            tx_env_2d.tempo_tx_env.is_some(),
-            "2D nonce transaction should have tempo_tx_env"
-        );
-        let tempo_env_2d = tx_env_2d.tempo_tx_env.as_ref().unwrap();
+        assert!(tx_env_2d.tempo_tx_env.is_some());
         assert_eq!(
-            tempo_env_2d.nonce_key, nonce_key_2d,
-            "Should have nonce_key = 42"
+            tx_env_2d.tempo_tx_env.as_ref().unwrap().nonce_key,
+            nonce_key_2d
         );
 
-        // Execute the 2D nonce transaction - should succeed
         let result_2d = evm.transact_commit(tx_env_2d)?;
-        assert!(
-            result_2d.is_success(),
-            "2D nonce transaction should succeed"
-        );
+        assert!(result_2d.is_success());
 
-        // Verify that the 2D nonce was incremented in the NonceManager precompile storage
+        // Verify 2D nonce was incremented
         let nonce_slot = NonceManager::new().nonces[caller][nonce_key_2d].slot();
         let stored_nonce = evm
             .ctx
             .db()
             .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
             .unwrap_or_default();
-        assert_eq!(
-            stored_nonce,
-            U256::from(1),
-            "2D nonce should be incremented to 1 after transaction"
-        );
+        assert_eq!(stored_nonce, U256::from(1));
 
-        // Test second 2D nonce transaction with incremented nonce
-        let tx_2d_nonce_2 = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
-            max_priority_fee_per_gas: 0,
-            max_fee_per_gas: 0,
-            gas_limit: 100_000,
-            calls: vec![Call {
-                to: TxKind::Call(identity_precompile),
-                value: U256::ZERO,
-                input: Bytes::from(vec![0x2E, 0x2E, 0x2E, 0x2E]), // Different data
-            }],
-            access_list: Default::default(),
-            nonce_key: nonce_key_2d, // Same nonce key
-            nonce: 1,                // Incremented nonce
-            fee_payer_signature: None,
-            valid_before: Some(u64::MAX),
-            valid_after: None,
-            key_authorization: None,
-            tempo_authorization_list: vec![],
-        };
+        // Test second 2D nonce transaction
+        let tx_2d_2 = TxBuilder::new()
+            .call_identity(&[0x2E, 0x2E, 0x2E, 0x2E])
+            .nonce_key(nonce_key_2d)
+            .nonce(1)
+            .build();
 
-        // Sign and execute second 2D nonce transaction
-        let tx_2d_2_sig_hash = tx_2d_nonce_2.signature_hash();
-        let tx_2d_2_challenge_b64url = URL_SAFE_NO_PAD.encode(tx_2d_2_sig_hash.as_slice());
-        let tx_2d_2_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{tx_2d_2_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        let tx_2d_2_client_data_hash = Sha256::digest(tx_2d_2_client_data_json.as_bytes());
-        let mut tx_2d_2_final_hasher = Sha256::new();
-        tx_2d_2_final_hasher.update(&tx_authenticator_data);
-        tx_2d_2_final_hasher.update(tx_2d_2_client_data_hash);
-        let tx_2d_2_message_hash = tx_2d_2_final_hasher.finalize();
-
-        let tx_2d_2_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&tx_2d_2_message_hash)?;
-        let tx_2d_2_sig_bytes = tx_2d_2_signature.to_bytes();
-
-        let mut tx_2d_2_webauthn_data = Vec::new();
-        tx_2d_2_webauthn_data.extend_from_slice(&tx_authenticator_data);
-        tx_2d_2_webauthn_data.extend_from_slice(tx_2d_2_client_data_json.as_bytes());
-
-        let tx_2d_2_webauthn_sig = WebAuthnSignature {
-            webauthn_data: Bytes::from(tx_2d_2_webauthn_data),
-            r: B256::from_slice(&tx_2d_2_sig_bytes[0..32]),
-            s: normalize_p256_s(&tx_2d_2_sig_bytes[32..64]),
-            pub_key_x,
-            pub_key_y,
-        };
-
-        let keychain_signature_2d_2 =
-            KeychainSignature::new(caller, PrimitiveSignature::WebAuthn(tx_2d_2_webauthn_sig));
-
-        let signed_tx_2d_2 =
-            tx_2d_nonce_2.into_signed(TempoSignature::Keychain(keychain_signature_2d_2));
-
+        let signed_tx_2d_2 = key_pair.sign_tx_keychain(tx_2d_2)?;
         let tx_env_2d_2 = TempoTxEnv::from_recovered_tx(&signed_tx_2d_2, caller);
 
         let result_2d_2 = evm.transact_commit(tx_env_2d_2)?;
-        assert!(
-            result_2d_2.is_success(),
-            "Second 2D nonce transaction should succeed"
-        );
+        assert!(result_2d_2.is_success());
 
         // Verify nonce incremented again
         let stored_nonce_2 = evm
@@ -989,11 +904,7 @@ mod tests {
             .db()
             .storage_ref(NONCE_PRECOMPILE_ADDRESS, nonce_slot)
             .unwrap_or_default();
-        assert_eq!(
-            stored_nonce_2,
-            U256::from(2),
-            "2D nonce should be incremented to 2 after second transaction"
-        );
+        assert_eq!(stored_nonce_2, U256::from(2));
 
         Ok(())
     }
@@ -1002,316 +913,397 @@ mod tests {
     /// Tests `valid_after` and `valid_before` fields against block timestamp.
     #[test]
     fn test_tempo_tx_time_window() -> eyre::Result<()> {
-        use alloy_eips::eip7702::Authorization;
-        use alloy_evm::FromRecoveredTx;
-        use alloy_primitives::{B256, Bytes};
-        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-        use p256::{
-            ecdsa::{SigningKey, signature::hazmat::PrehashSigner},
-            elliptic_curve::rand_core::OsRng,
-        };
-        use revm::ExecuteEvm;
-        use sha2::{Digest, Sha256};
-        use tempo_primitives::{
-            TempoTransaction,
-            transaction::{
-                TempoSignedAuthorization,
-                tempo_transaction::Call,
-                tt_signature::{
-                    PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
-                    normalize_p256_s,
-                },
-            },
-        };
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
 
-        use crate::{TempoBlockEnv, TempoTxEnv};
+        // Create signed authorization
+        let signed_auth = key_pair.create_signed_authorization(Address::repeat_byte(0x42))?;
 
-        // Identity precompile address (0x04)
-        let identity_precompile = Address::from_slice(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
-        ]);
-
-        // Generate P256 key pair for WebAuthn signature
-        let signing_key = SigningKey::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        let encoded_point = verifying_key.to_encoded_point(false);
-        let pub_key_x = B256::from_slice(encoded_point.x().unwrap().as_slice());
-        let pub_key_y = B256::from_slice(encoded_point.y().unwrap().as_slice());
-
-        // Derive caller address from P256 public key
-        let caller = derive_p256_address(&pub_key_x, &pub_key_y);
-
-        // Create a delegate address for EIP-7702 authorization
-        let delegate_address = Address::repeat_byte(0x42);
-
-        // Create authorization (EIP-7702 style)
-        let auth = Authorization {
-            chain_id: U256::from(1),
-            address: delegate_address,
-            nonce: 0,
-        };
-
-        // Compute authorization signature hash
-        let mut sig_buf = Vec::new();
-        sig_buf.push(tempo_primitives::transaction::tt_authorization::MAGIC);
-        alloy_rlp::Encodable::encode(&auth, &mut sig_buf);
-        let auth_sig_hash = alloy_primitives::keccak256(&sig_buf);
-
-        // Create WebAuthn authenticator data for authorization
-        let mut auth_authenticator_data = vec![0u8; 37];
-        auth_authenticator_data[0..32].copy_from_slice(&[0xAA; 32]); // rpIdHash
-        auth_authenticator_data[32] = 0x01; // UP flag set
-        auth_authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
-
-        let auth_challenge_b64url = URL_SAFE_NO_PAD.encode(auth_sig_hash.as_slice());
-        let auth_client_data_json = format!(
-            r#"{{"type":"webauthn.get","challenge":"{auth_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-        );
-
-        // Compute WebAuthn message hash for authorization
-        let auth_client_data_hash = Sha256::digest(auth_client_data_json.as_bytes());
-        let mut auth_final_hasher = Sha256::new();
-        auth_final_hasher.update(&auth_authenticator_data);
-        auth_final_hasher.update(auth_client_data_hash);
-        let auth_message_hash = auth_final_hasher.finalize();
-
-        // Sign authorization with P256
-        let auth_signature: p256::ecdsa::Signature =
-            signing_key.sign_prehash(&auth_message_hash)?;
-        let auth_sig_bytes = auth_signature.to_bytes();
-
-        // Construct WebAuthn data for authorization
-        let mut auth_webauthn_data = Vec::new();
-        auth_webauthn_data.extend_from_slice(&auth_authenticator_data);
-        auth_webauthn_data.extend_from_slice(auth_client_data_json.as_bytes());
-
-        let auth_aa_sig =
-            TempoSignature::Primitive(PrimitiveSignature::WebAuthn(WebAuthnSignature {
-                webauthn_data: Bytes::from(auth_webauthn_data),
-                r: B256::from_slice(&auth_sig_bytes[0..32]),
-                s: normalize_p256_s(&auth_sig_bytes[32..64]),
-                pub_key_x,
-                pub_key_y,
-            }));
-        let signed_auth = TempoSignedAuthorization::new_unchecked(auth, auth_aa_sig);
-
-        // Helper closure to create and sign a transaction
-        let create_signed_tx = |nonce: u64, valid_after: Option<u64>, valid_before: Option<u64>| {
-            let tx = TempoTransaction {
-                chain_id: 1,
-                fee_token: None,
-                max_priority_fee_per_gas: 0,
-                max_fee_per_gas: 0,
-                gas_limit: 100_000,
-                calls: vec![Call {
-                    to: TxKind::Call(identity_precompile),
-                    value: U256::ZERO,
-                    input: Bytes::from(vec![0x01, 0x02, 0x03, 0x04]),
-                }],
-                access_list: Default::default(),
-                nonce_key: U256::ZERO,
-                nonce,
-                fee_payer_signature: None,
-                valid_before,
-                valid_after,
-                key_authorization: None,
-                tempo_authorization_list: vec![signed_auth.clone()],
-            };
-
-            // Get signature hash for the transaction
-            let tx_sig_hash = tx.signature_hash();
-
-            // Create WebAuthn authenticator data for transaction signature
-            let mut tx_authenticator_data = vec![0u8; 37];
-            tx_authenticator_data[0..32].copy_from_slice(&[0xBB; 32]); // rpIdHash
-            tx_authenticator_data[32] = 0x01; // UP flag set
-            tx_authenticator_data[33..37].copy_from_slice(&[0, 0, 0, 0]); // signCount
-
-            let tx_challenge_b64url = URL_SAFE_NO_PAD.encode(tx_sig_hash.as_slice());
-            let tx_client_data_json = format!(
-                r#"{{"type":"webauthn.get","challenge":"{tx_challenge_b64url}","origin":"https://example.com","crossOrigin":false}}"#
-            );
-
-            // Compute WebAuthn message hash for transaction
-            let tx_client_data_hash = Sha256::digest(tx_client_data_json.as_bytes());
-            let mut tx_final_hasher = Sha256::new();
-            tx_final_hasher.update(&tx_authenticator_data);
-            tx_final_hasher.update(tx_client_data_hash);
-            let tx_message_hash = tx_final_hasher.finalize();
-
-            // Sign transaction with P256
-            let tx_signature: p256::ecdsa::Signature =
-                signing_key.sign_prehash(&tx_message_hash).unwrap();
-            let tx_sig_bytes = tx_signature.to_bytes();
-
-            // Construct WebAuthn data for transaction signature
-            let mut tx_webauthn_data = Vec::new();
-            tx_webauthn_data.extend_from_slice(&tx_authenticator_data);
-            tx_webauthn_data.extend_from_slice(tx_client_data_json.as_bytes());
-
-            let tx_webauthn_sig = WebAuthnSignature {
-                webauthn_data: Bytes::from(tx_webauthn_data),
-                r: B256::from_slice(&tx_sig_bytes[0..32]),
-                s: normalize_p256_s(&tx_sig_bytes[32..64]),
-                pub_key_x,
-                pub_key_y,
-            };
-
-            tx.into_signed(TempoSignature::Primitive(PrimitiveSignature::WebAuthn(
-                tx_webauthn_sig,
-            )))
-        };
-
-        // Helper to create EVM with specific block timestamp
-        let create_evm_with_timestamp = |timestamp: u64| {
-            let db = CacheDB::new(EmptyDB::new());
-            let mut block = TempoBlockEnv::default();
-            block.inner.timestamp = U256::from(timestamp);
-
-            let ctx = Context::mainnet()
-                .with_db(db)
-                .with_block(block)
-                .with_cfg(Default::default())
-                .with_tx(Default::default());
-
-            let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(ctx, ());
-
-            // Fund the caller account with some balance for gas
-            evm.ctx.db_mut().insert_account_info(
-                caller,
-                AccountInfo {
-                    balance: U256::from(1_000_000_000_000_000_000u128), // 1 ETH
-                    ..Default::default()
-                },
-            );
-
-            evm
+        // Helper to create and sign a transaction with time window parameters
+        let create_signed_tx = |valid_after: Option<u64>, valid_before: Option<u64>| {
+            let tx = TxBuilder::new()
+                .call_identity(&[0x01, 0x02, 0x03, 0x04])
+                .authorization(signed_auth.clone())
+                .valid_after(valid_after)
+                .valid_before(valid_before)
+                .build();
+            key_pair.sign_tx(tx)
         };
 
         // Test case 1: Transaction fails when block_timestamp < valid_after
         {
-            let mut evm = create_evm_with_timestamp(100); // Block timestamp = 100
-            let signed_tx = create_signed_tx(0, Some(200), None); // valid_after = 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 100);
+            let signed_tx = create_signed_tx(Some(200), None)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env);
-            assert!(
-                result.is_err(),
-                "Transaction should fail when block_timestamp < valid_after"
-            );
-            let err = result.unwrap_err();
-            let err_str = format!("{:?}", err);
-            assert!(
-                err_str.contains("ValidAfter"),
-                "Error should be ValidAfter, got: {}",
-                err_str
-            );
+            assert!(result.is_err());
+            assert!(format!("{:?}", result.unwrap_err()).contains("ValidAfter"));
         }
 
         // Test case 2: Transaction fails when block_timestamp >= valid_before
         {
-            let mut evm = create_evm_with_timestamp(200); // Block timestamp = 200
-            let signed_tx = create_signed_tx(0, None, Some(200)); // valid_before = 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 200);
+            let signed_tx = create_signed_tx(None, Some(200))?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env);
-            assert!(
-                result.is_err(),
-                "Transaction should fail when block_timestamp >= valid_before"
-            );
-            let err = result.unwrap_err();
-            let err_str = format!("{:?}", err);
-            assert!(
-                err_str.contains("ValidBefore"),
-                "Error should be ValidBefore, got: {}",
-                err_str
-            );
+            assert!(result.is_err());
+            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
         }
 
         // Test case 3: Transaction fails when block_timestamp > valid_before
         {
-            let mut evm = create_evm_with_timestamp(300); // Block timestamp = 300
-            let signed_tx = create_signed_tx(0, None, Some(200)); // valid_before = 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 300);
+            let signed_tx = create_signed_tx(None, Some(200))?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env);
-            assert!(
-                result.is_err(),
-                "Transaction should fail when block_timestamp > valid_before"
-            );
-            let err = result.unwrap_err();
-            let err_str = format!("{:?}", err);
-            assert!(
-                err_str.contains("ValidBefore"),
-                "Error should be ValidBefore, got: {}",
-                err_str
-            );
+            assert!(result.is_err());
+            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
         }
 
         // Test case 4: Transaction succeeds when exactly at valid_after boundary
         {
-            let mut evm = create_evm_with_timestamp(200); // Block timestamp = 200
-            let signed_tx = create_signed_tx(0, Some(200), None); // valid_after = 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 200);
+            let signed_tx = create_signed_tx(Some(200), None)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env)?;
-            assert!(
-                result.result.is_success(),
-                "Transaction should succeed when block_timestamp == valid_after"
-            );
+            assert!(result.result.is_success());
         }
 
         // Test case 5: Transaction succeeds when within time window
         {
-            let mut evm = create_evm_with_timestamp(150); // Block timestamp = 150
-            let signed_tx = create_signed_tx(0, Some(100), Some(200)); // 100 <= 150 < 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 150);
+            let signed_tx = create_signed_tx(Some(100), Some(200))?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env)?;
-            assert!(
-                result.result.is_success(),
-                "Transaction should succeed when within time window"
-            );
+            assert!(result.result.is_success());
         }
 
-        // Test case 6: Transaction fails when block_timestamp is before valid_after in a window
+        // Test case 6: Transaction fails when block_timestamp < valid_after in a window
         {
-            let mut evm = create_evm_with_timestamp(50); // Block timestamp = 50
-            let signed_tx = create_signed_tx(0, Some(100), Some(200)); // valid_after = 100
+            let mut evm = create_funded_evm_with_timestamp(caller, 50);
+            let signed_tx = create_signed_tx(Some(100), Some(200))?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env);
-            assert!(
-                result.is_err(),
-                "Transaction should fail when block_timestamp < valid_after in a window"
-            );
-            let err = result.unwrap_err();
-            let err_str = format!("{:?}", err);
-            assert!(
-                err_str.contains("ValidAfter"),
-                "Error should be ValidAfter, got: {}",
-                err_str
-            );
+            assert!(result.is_err());
+            assert!(format!("{:?}", result.unwrap_err()).contains("ValidAfter"));
         }
 
-        // Test case 7: Transaction fails when block_timestamp is at/after valid_before in a window
+        // Test case 7: Transaction fails when block_timestamp >= valid_before in a window
         {
-            let mut evm = create_evm_with_timestamp(200); // Block timestamp = 200
-            let signed_tx = create_signed_tx(0, Some(100), Some(200)); // valid_before = 200
+            let mut evm = create_funded_evm_with_timestamp(caller, 200);
+            let signed_tx = create_signed_tx(Some(100), Some(200))?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
             let result = evm.transact(tx_env);
+            assert!(result.is_err());
+            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
+        }
+
+        Ok(())
+    }
+
+    /// Test executing a Tempo transaction where the first call is a Create kind.
+    /// This should succeed as CREATE is allowed as the first call.
+    #[test]
+    fn test_tempo_tx_create_first_call() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Simple contract that just returns: PUSH1 0x00 PUSH1 0x00 RETURN
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
+
+        // Create transaction with CREATE as first call (no authorization list)
+        let tx = TxBuilder::new()
+            .create(&initcode)
+            .call_identity(&[0x01, 0x02])
+            .gas_limit(200_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        // Create EVM and execute
+        let mut evm = create_funded_evm(caller);
+        let result = evm.transact_commit(tx_env)?;
+
+        assert!(result.is_success(), "CREATE as first call should succeed");
+
+        Ok(())
+    }
+
+    /// Test that a Tempo transaction fails when CREATE is the second call.
+    /// CREATE must be the first call if used.
+    #[test]
+    fn test_tempo_tx_create_second_call_fails() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Simple initcode
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
+
+        // Create transaction with a regular call first, then CREATE second
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01, 0x02])
+            .create(&initcode)
+            .gas_limit(200_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        // Create EVM and execute - should fail validation
+        let mut evm = create_funded_evm(caller);
+        let result = evm.transact(tx_env);
+
+        assert!(result.is_err(), "CREATE as second call should fail");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                revm::context::result::EVMError::Transaction(
+                    TempoInvalidTransaction::CallsValidation(msg)
+                ) if msg.contains("first call")
+            ),
+            "Expected CallsValidation error about 'first call', got: {err:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Test validate_aa_initial_tx_gas error cases.
+    /// Tests all error paths in the AA initial transaction gas validation:
+    /// - CreateInitCodeSizeLimit: when initcode exceeds max size
+    /// - ValueTransferNotAllowedInAATx: when a call has non-zero value
+    /// - InsufficientGasForIntrinsicCost: when gas_limit < intrinsic_gas
+    #[test]
+    fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
+        use revm::{context::result::EVMError, handler::Handler};
+
+        use crate::handler::TempoEvmHandler;
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Helper to create EVM with signed transaction
+        let create_evm_with_tx =
+            |tx: TempoTransaction| -> eyre::Result<TempoEvm<CacheDB<EmptyDB>, ()>> {
+                let signed_tx = key_pair.sign_tx(tx)?;
+                let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+                let mut evm = create_funded_evm(caller);
+                evm.ctx.tx = tx_env;
+                Ok(evm)
+            };
+
+        let handler = TempoEvmHandler::default();
+
+        // Test 1: CreateInitCodeSizeLimit - initcode exceeds max size
+        {
+            // Default max initcode size is 49152 bytes (2 * MAX_CODE_SIZE)
+            let oversized_initcode = vec![0x60; 50_000];
+
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .create(&oversized_initcode)
+                    .gas_limit(10_000_000)
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
             assert!(
-                result.is_err(),
-                "Transaction should fail when block_timestamp >= valid_before in a window"
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::EthInvalidTransaction(
+                            revm::context::result::InvalidTransaction::CreateInitCodeSizeLimit
+                        )
+                    ))
+                ),
+                "Expected CreateInitCodeSizeLimit error, got: {result:?}"
             );
-            let err = result.unwrap_err();
-            let err_str = format!("{:?}", err);
+        }
+
+        // Test 2: ValueTransferNotAllowedInAATx - call has non-zero value
+        {
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .call_with_value(IDENTITY_PRECOMPILE, &[0x01, 0x02], U256::from(1000))
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
             assert!(
-                err_str.contains("ValidBefore"),
-                "Error should be ValidBefore, got: {}",
-                err_str
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::ValueTransferNotAllowedInAATx
+                    ))
+                ),
+                "Expected ValueTransferNotAllowedInAATx error, got: {result:?}"
             );
+        }
+
+        // Test 3: InsufficientGasForIntrinsicCost - gas_limit < intrinsic_gas
+        {
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .call_identity(&[0x01, 0x02, 0x03, 0x04])
+                    .gas_limit(1000) // Way too low, intrinsic cost is at least 21000
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
+            assert!(
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                            gas_limit: 1000,
+                            intrinsic_gas
+                        }
+                    )) if intrinsic_gas > 1000
+                ),
+                "Expected InsufficientGasForIntrinsicCost error, got: {result:?}"
+            );
+        }
+
+        // Test 4: InsufficientGasForIntrinsicCost - gas_limit < floor_gas (EIP-7623)
+        {
+            let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
+
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .call_identity(&large_calldata)
+                    .gas_limit(31_000) // Above initial_gas (~30600) but below floor_gas (~32500)
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
+
+            // Should fail because gas_limit < floor_gas
+            assert!(
+                matches!(
+                    result,
+                    Err(EVMError::Transaction(
+                        TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                            gas_limit: 31_000,
+                            intrinsic_gas
+                        }
+                    )) if intrinsic_gas > 31_000
+                ),
+                "Expected InsufficientGasForIntrinsicCost (floor gas), got: {result:?}"
+            );
+        }
+
+        // Test 5: Success when gas_limit >= both initial_gas and floor_gas
+        // Verifies floor_gas > initial_gas for large calldata (EIP-7623 scenario)
+        {
+            let large_calldata = vec![0x42; 1000];
+
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .call_identity(&large_calldata)
+                    .gas_limit(100_000) // Plenty of gas for both initial and floor
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
+            assert!(
+                result.is_ok(),
+                "Expected success with sufficient gas, got: {result:?}"
+            );
+
+            let gas = result.unwrap();
+            // Verify floor_gas > initial_gas for this calldata (EIP-7623 scenario)
+            assert!(
+                gas.floor_gas > gas.initial_gas,
+                "Expected floor_gas ({}) > initial_gas ({}) for large calldata",
+                gas.floor_gas,
+                gas.initial_gas
+            );
+        }
+
+        // Test 6: Success case - sufficient gas provided (small calldata)
+        {
+            let evm = create_evm_with_tx(
+                TxBuilder::new()
+                    .call_identity(&[0x01, 0x02, 0x03, 0x04])
+                    .gas_limit(100_000)
+                    .build(),
+            )?;
+
+            let result = handler.validate_initial_tx_gas(&evm);
+            assert!(result.is_ok(), "Expected success, got: {result:?}");
+
+            let gas = result.unwrap();
+            assert!(
+                gas.initial_gas >= 21_000,
+                "Initial gas should be at least 21k base"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Test system call functions and inspector management.
+    /// Tests `system_call_one_with_caller`, `inspect_one_system_call_with_caller`, and `set_inspector`.
+    #[test]
+    fn test_system_call_and_inspector() -> eyre::Result<()> {
+        let caller = Address::repeat_byte(0x01);
+        let contract = Address::repeat_byte(0x42);
+
+        // Deploy a simple contract that returns success
+        // DIFFICULTY NUMBER PUSH1 0x00 PUSH1 0x00 RETURN (returns empty data)
+        let bytecode = Bytecode::new_raw(bytes!("444360006000F3"));
+
+        // Test system_call_one_with_caller (no inspector needed)
+        {
+            let mut evm = create_evm();
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+
+            let result = evm.system_call_one_with_caller(caller, contract, Bytes::new())?;
+            assert!(result.is_success());
+        }
+
+        // Test set_inspector and inspect_one_system_call_with_caller
+        {
+            let mut evm = create_evm_with_inspector(CountInspector::new());
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+
+            // Test inspect_one_system_call_with_caller
+            let result = evm.inspect_one_system_call_with_caller(caller, contract, Bytes::new())?;
+            assert!(result.is_success());
+
+            // Verify inspector was called
+            assert!(evm.inspector.call_count() > 0,);
+
+            // Test set_inspector - replace with a fresh CountInspector
+            evm.set_inspector(CountInspector::new());
+
+            // Verify the new inspector starts fresh
+            assert_eq!(evm.inspector.call_count(), 0,);
+
+            // Run another system call and verify new inspector records it
+            let result = evm.inspect_one_system_call_with_caller(caller, contract, Bytes::new())?;
+            assert!(result.is_success());
+            assert!(evm.inspector.call_count() > 0);
         }
 
         Ok(())
