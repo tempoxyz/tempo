@@ -89,15 +89,9 @@ contract AccountKeychain is IAccountKeychain {
             revert KeyAlreadyRevoked();
         }
 
-        // Convert SignatureType enum to u8 for storage
-        uint8 sigType;
-        if (signatureType == SignatureType.Secp256k1) {
-            sigType = 0;
-        } else if (signatureType == SignatureType.P256) {
-            sigType = 1;
-        } else if (signatureType == SignatureType.WebAuthn) {
-            sigType = 2;
-        } else {
+        // Convert SignatureType enum to uint8 for storage (enums are uint8 under the hood)
+        uint8 sigType = uint8(signatureType);
+        if (sigType > 2) {
             revert InvalidSignatureType();
         }
 
@@ -115,8 +109,7 @@ contract AccountKeychain is IAccountKeychain {
         }
 
         // Emit event
-        bytes32 publicKeyBytes = bytes32(uint256(uint160(keyId)));
-        emit KeyAuthorized(msg.sender, publicKeyBytes, sigType, expiry);
+        emit KeyAuthorized(msg.sender, keyId, sigType, expiry);
     }
 
     /// @inheritdoc IAccountKeychain
@@ -139,8 +132,7 @@ contract AccountKeychain is IAccountKeychain {
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        bytes32 publicKeyBytes = bytes32(uint256(uint160(keyId)));
-        emit KeyRevoked(msg.sender, publicKeyBytes);
+        emit KeyRevoked(msg.sender, keyId);
     }
 
     /// @inheritdoc IAccountKeychain
@@ -174,8 +166,7 @@ contract AccountKeychain is IAccountKeychain {
         spendingLimits[limitKey][token] = newLimit;
 
         // Emit event
-        bytes32 publicKeyBytes = bytes32(uint256(uint160(keyId)));
-        emit SpendingLimitUpdated(msg.sender, publicKeyBytes, token, newLimit);
+        emit SpendingLimitUpdated(msg.sender, keyId, token, newLimit);
     }
 
     // ============ View Functions ============
@@ -286,8 +277,10 @@ contract AccountKeychain is IAccountKeychain {
             revert SpendingLimitExceeded();
         }
 
-        // Update remaining limit
-        spendingLimits[limitKey][token] = remaining - amount;
+        // Update remaining limit (safe due to above check)
+        unchecked {
+            spendingLimits[limitKey][token] = remaining - amount;
+        }
     }
 
 }

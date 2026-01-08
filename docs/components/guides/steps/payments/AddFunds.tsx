@@ -1,12 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
-import type { Chain } from 'tempo.ts/viem'
-import { Actions } from 'tempo.ts/viem'
-import { Hooks } from 'tempo.ts/wagmi'
-import type { Client, Transport } from 'viem'
+import type { Chain, Client, Transport } from 'viem'
 import { parseUnits } from 'viem'
 import { mnemonicToAccount } from 'viem/accounts'
+import { Actions } from 'viem/tempo'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { Button, Login, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
@@ -34,14 +33,14 @@ export function AddFunds(props: DemoStepProps) {
       if (!address) throw new Error('account.address not found')
       if (!client) throw new Error('client not found')
 
-      if (import.meta.env.VITE_LOCAL !== 'true')
+      if (import.meta.env.VITE_ENVIRONMENT !== 'local')
         await Actions.faucet.fundSync(
-          client as unknown as Client<Transport, Chain.Chain<null>>,
+          client as unknown as Client<Transport, Chain>,
           { account: address },
         )
       else {
         await Actions.token.transferSync(
-          client as unknown as Client<Transport, Chain.Chain<null>>,
+          client as unknown as Client<Transport, Chain>,
           {
             account: mnemonicToAccount(
               'test test test test test test test test test test test junk',

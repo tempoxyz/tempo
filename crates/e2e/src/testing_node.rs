@@ -8,51 +8,67 @@ use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only}
 use reth_ethereum::{
     provider::{
         DatabaseProviderFactory, ProviderFactory,
-        providers::{BlockchainProvider, StaticFileProvider},
+        providers::{BlockchainProvider, RocksDBProvider, StaticFileProvider},
     },
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{path::PathBuf, sync::Arc};
-use tempo_commonware_node::consensus;
+use tempo_commonware_node::{
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
+    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
+    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, consensus,
+};
 use tempo_node::node::TempoNode;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 /// A testing node that can start and stop both consensus and execution layers.
-pub struct TestingNode {
+pub struct TestingNode<TClock>
+where
+    TClock: commonware_runtime::Clock,
+{
     /// Unique identifier for this node
-    uid: String,
+    pub uid: String,
     /// Public key of the validator
-    public_key: PublicKey,
+    pub public_key: PublicKey,
     /// Simulated network oracle for test environments
-    oracle: Oracle<PublicKey>,
+    pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
-    consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+    pub consensus_config:
+        consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
-    consensus_handle: Option<Handle<eyre::Result<()>>>,
+    pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
-    execution_node_datadir: PathBuf,
+    pub execution_node_datadir: PathBuf,
     /// Running execution node (None if execution is stopped)
-    execution_node: Option<ExecutionNode>,
+    pub execution_node: Option<ExecutionNode>,
     /// Handle to the execution runtime for spawning new execution nodes
-    execution_runtime: ExecutionRuntimeHandle,
+    pub execution_runtime: ExecutionRuntimeHandle,
     /// Configuration for the execution node
-    execution_config: ExecutionNodeConfig,
+    pub execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
-    execution_database: Option<Arc<DatabaseEnv>>,
+    pub execution_database: Option<Arc<DatabaseEnv>>,
     /// Last block number in database when stopped (used for restart verification)
-    last_db_block_on_stop: Option<u64>,
+    pub last_db_block_on_stop: Option<u64>,
 }
 
-impl TestingNode {
+impl<TClock> TestingNode<TClock>
+where
+    TClock: commonware_runtime::Clock,
+{
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
     /// Call `start()` to start both consensus and execution.
     pub fn new(
         uid: String,
         public_key: PublicKey,
-        oracle: Oracle<PublicKey>,
-        consensus_config: consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>>,
+        oracle: Oracle<PublicKey, TClock>,
+        consensus_config: consensus::Builder<
+            Control<PublicKey, TClock>,
+            Context,
+            SocketManager<PublicKey, TClock>,
+        >,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
     ) -> Self {
@@ -88,19 +104,24 @@ impl TestingNode {
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+    ) -> &consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>
+    {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::Builder<Control<PublicKey>, Context, SocketManager<PublicKey>> {
+    ) -> &mut consensus::Builder<
+        Control<PublicKey, TClock>,
+        Context,
+        SocketManager<PublicKey, TClock>,
+    > {
         &mut self.consensus_config
     }
 
     /// Get a reference to the oracle.
-    pub fn oracle(&self) -> &Oracle<PublicKey> {
+    pub fn oracle(&self) -> &Oracle<PublicKey, TClock> {
         &self.oracle
     }
 
@@ -118,6 +139,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is already running.
+    #[instrument(skip_all, fields(last_db_block = self.last_db_block_on_stop))]
     async fn start_execution(&mut self) {
         assert!(
             self.execution_node.is_none(),
@@ -187,61 +209,48 @@ impl TestingNode {
         let pending = self
             .oracle
             .control(self.public_key.clone())
-            .register(0)
+            .register(PENDING_CHANNEL_IDENT, PENDING_LIMIT)
             .await
             .unwrap();
         let recovered = self
             .oracle
             .control(self.public_key.clone())
-            .register(1)
+            .register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT)
             .await
             .unwrap();
         let resolver = self
             .oracle
             .control(self.public_key.clone())
-            .register(2)
+            .register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT)
             .await
             .unwrap();
         let broadcast = self
             .oracle
             .control(self.public_key.clone())
-            .register(3)
+            .register(BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT)
             .await
             .unwrap();
         let marshal = self
             .oracle
             .control(self.public_key.clone())
-            .register(4)
+            .register(MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT)
             .await
             .unwrap();
         let dkg = self
             .oracle
             .control(self.public_key.clone())
-            .register(5)
-            .await
-            .unwrap();
-        let boundary_certs = self
-            .oracle
-            .control(self.public_key.clone())
-            .register(6)
+            .register(DKG_CHANNEL_IDENT, DKG_LIMIT)
             .await
             .unwrap();
         let subblocks = self
             .oracle
             .control(self.public_key.clone())
-            .register(7)
+            .register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT)
             .await
             .unwrap();
 
         let consensus_handle = engine.start(
-            pending,
-            recovered,
-            resolver,
-            broadcast,
-            marshal,
-            dkg,
-            boundary_certs,
-            subblocks,
+            pending, recovered, resolver, broadcast, marshal, dkg, subblocks,
         );
 
         self.consensus_handle = Some(consensus_handle);
@@ -261,6 +270,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if consensus is not running.
+    #[instrument(skip_all)]
     async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
@@ -281,6 +291,7 @@ impl TestingNode {
     ///
     /// # Panics
     /// Panics if execution node is not running.
+    #[instrument(skip_all)]
     async fn stop_execution(&mut self) {
         debug!(%self.uid, "stopping execution node for testing node");
         let execution_node = self.execution_node.take().unwrap_or_else(|| {
@@ -297,6 +308,10 @@ impl TestingNode {
             .expect("failed to get database provider")
             .last_block_number()
             .expect("failed to get last block number from database");
+        tracing::debug!(
+            last_db_block,
+            "storing last block block number to verify restart"
+        );
         self.last_db_block_on_stop = Some(last_db_block);
 
         execution_node.shutdown().await;
@@ -386,10 +401,15 @@ impl TestingNode {
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"), true)
                 .expect("failed to open static files");
 
+        let rocksdb = RocksDBProvider::builder(self.execution_node_datadir.join("rocksdb"))
+            .build()
+            .unwrap();
+
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<TempoNode, _>>::new(
             database,
-            execution_runtime::chainspec_arc(),
+            Arc::new(execution_runtime::chainspec()),
             static_file_provider,
+            rocksdb,
         )
         .expect("failed to create provider factory");
 
@@ -439,19 +459,14 @@ mod tests {
 
         std::thread::spawn(move || {
             runner.start(|context| async move {
-                let setup = Setup {
-                    how_many_signers: 1,
-                    how_many_verifiers: 0,
-                    seed: 0,
-                    linkage: Link {
+                let setup = Setup::new()
+                    .how_many_signers(1)
+                    .linkage(Link {
                         latency: Duration::from_millis(10),
                         jitter: Duration::from_millis(1),
                         success_rate: 1.0,
-                    },
-                    epoch_length: 100,
-                    connect_execution_layer_nodes: false,
-                    allegretto_in_seconds: None,
-                };
+                    })
+                    .epoch_length(100);
 
                 let (mut nodes, _execution_runtime) =
                     setup_validators(context.clone(), setup).await;

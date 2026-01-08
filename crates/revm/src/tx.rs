@@ -12,7 +12,7 @@ use revm::context::{
     },
 };
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope, TxFeeToken,
+    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
     },
@@ -50,6 +50,11 @@ pub struct TempoBatchCallEnv {
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
+
+    /// Optional access key ID override for gas estimation.
+    /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
+    /// This is not used in actual transaction execution - the key_id is recovered from the signature.
+    pub override_key_id: Option<Address>,
 }
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
@@ -246,63 +251,6 @@ impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<TxFeeToken> for TempoTxEnv {
-    fn from_recovered_tx(tx: &TxFeeToken, caller: Address) -> Self {
-        let TxFeeToken {
-            chain_id,
-            nonce,
-            gas_limit,
-            to,
-            value,
-            input,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            access_list,
-            authorization_list,
-            fee_token,
-            fee_payer_signature,
-        } = tx;
-        Self {
-            inner: TxEnv {
-                tx_type: tx.ty(),
-                caller,
-                gas_limit: *gas_limit,
-                gas_price: *max_fee_per_gas,
-                kind: *to,
-                value: *value,
-                data: input.clone(),
-                nonce: *nonce,
-                chain_id: Some(*chain_id),
-                gas_priority_fee: Some(*max_priority_fee_per_gas),
-                access_list: access_list.clone(),
-                authorization_list: authorization_list
-                    .iter()
-                    .map(|auth| {
-                        Either::Right(RecoveredAuthorization::new_unchecked(
-                            auth.inner().clone(),
-                            auth.signature()
-                                .ok()
-                                .and_then(|signature| {
-                                    secp256k1::recover_signer(&signature, auth.signature_hash())
-                                        .ok()
-                                })
-                                .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid),
-                        ))
-                    })
-                    .collect(),
-                ..Default::default()
-            },
-            fee_token: *fee_token,
-            is_system_tx: false,
-            fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
-            }),
-            tempo_tx_env: None, // Non-AA transaction
-        }
-    }
-}
-
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
@@ -373,8 +321,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             fee_payer: fee_payer_signature.map(|sig| {
-                sig.recover_address_from_prehash(&tx.fee_payer_signature_hash(caller))
-                    .ok()
+                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
@@ -391,6 +338,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
+                // override_key_id is only used for gas estimation, not actual execution
+                override_key_id: None,
             })),
         }
     }
@@ -410,7 +359,6 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
             TempoTxEnvelope::Eip1559(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::Eip7702(tx) => TxEnv::from_recovered_tx(tx.tx(), sender).into(),
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
-            TempoTxEnvelope::FeeToken(tx) => Self::from_recovered_tx(tx.tx(), sender),
         }
     }
 }
@@ -425,12 +373,6 @@ impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
     }
 }
 
-impl FromTxWithEncoded<TxFeeToken> for TempoTxEnv {
-    fn from_encoded_tx(tx: &TxFeeToken, sender: Address, _encoded: Bytes) -> Self {
-        Self::from_recovered_tx(tx, sender)
-    }
-}
-
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
     fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
@@ -440,5 +382,89 @@ impl FromTxWithEncoded<AASigned> for TempoTxEnv {
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::TxKind;
+    use tempo_primitives::transaction::{Call, validate_calls};
+
+    fn create_call(to: TxKind) -> Call {
+        Call {
+            to,
+            value: alloy_primitives::U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn test_validate_empty_calls_list() {
+        let result = validate_calls(&[], false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_single_call_ok() {
+        let calls = vec![create_call(TxKind::Call(alloy_primitives::Address::ZERO))];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_single_create_ok() {
+        let calls = vec![create_call(TxKind::Create)];
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_with_authorization_list_fails() {
+        let calls = vec![create_call(TxKind::Create)];
+        let result = validate_calls(&calls, true); // has_authorization_list = true
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("CREATE"));
+    }
+
+    #[test]
+    fn test_validate_create_not_first_call_fails() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Create), // CREATE as second call - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_multiple_creates_fails() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Create), // Second CREATE - should fail
+        ];
+        let result = validate_calls(&calls, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("first call"));
+    }
+
+    #[test]
+    fn test_validate_create_first_then_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Create),
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        // No auth list, so CREATE is allowed
+        assert!(validate_calls(&calls, false).is_ok());
+    }
+
+    #[test]
+    fn test_validate_multiple_calls_ok() {
+        let calls = vec![
+            create_call(TxKind::Call(alloy_primitives::Address::ZERO)),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+            create_call(TxKind::Call(alloy_primitives::Address::random())),
+        ];
+        assert!(validate_calls(&calls, false).is_ok());
     }
 }

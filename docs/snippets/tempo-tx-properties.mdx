@@ -365,7 +365,7 @@ transactions thereafter can be signed by the access key.
 
     ```tsx twoslash [example.ts]
     // @noErrors
-    import { Account, WebCryptoP256 } from 'tempo.ts/viem'
+    import { Account, WebCryptoP256 } from 'viem/tempo'
     import { client } from './viem.config'
 
     // 1. Instantiate account.
@@ -402,8 +402,8 @@ transactions thereafter can be signed by the access key.
     
     ```tsx twoslash [example.ts]
     // @noErrors
-    import { tempo } from 'tempo.ts/chains'
-    import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+    import { tempoTestnet } from 'viem/chains'
+    import { KeyManager, webAuthn } from 'wagmi/tempo'
     import { createConfig, http } from 'wagmi'
     
     export const config = createConfig({
@@ -413,10 +413,10 @@ transactions thereafter can be signed by the access key.
           keyManager: KeyManager.localStorage(),
         }),
       ],
-      chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+      chains: [tempoTestnet],
       multiInjectedProviderDiscovery: false,
       transports: {
-        [tempo.id]: http(),
+        [tempoTestnet.id]: http(),
       },
     })
     ```

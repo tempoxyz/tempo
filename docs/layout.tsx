@@ -3,10 +3,13 @@ import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { Json } from 'ox'
-import React from 'react'
+import { PostHogProvider as PostHogProviderBase } from 'posthog-js/react'
+import type React from 'react'
 import { Toaster } from 'sonner'
 import { WagmiProvider } from 'wagmi'
 import { DemoContextProvider } from './components/DemoContext'
+import { PageViewTracker } from './components/PageViewTracker'
+import { PostHogSiteIdentifier } from './components/PostHogSiteIdentifier'
 import * as WagmiConfig from './wagmi.config'
 
 const queryClient = new QueryClient({
@@ -17,29 +20,54 @@ const queryClient = new QueryClient({
   },
 })
 
+const config = WagmiConfig.getConfig()
+const mipdConfig = WagmiConfig.getConfig({
+  multiInjectedProviderDiscovery: true,
+})
+
+function PostHogProvider({ children }: React.PropsWithChildren) {
+  const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
+  const posthogHost = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
+
+  if (!posthogKey || !posthogHost) return children
+
+  return (
+    <PostHogProviderBase
+      apiKey={posthogKey}
+      options={{
+        api_host: posthogHost,
+        defaults: '2025-05-24',
+        capture_exceptions: true, // This enables capturing exceptions using Error Tracking
+        debug: import.meta.env.MODE === 'development',
+      }}
+    >
+      {children}
+    </PostHogProviderBase>
+  )
+}
+
 export default function Layout(
   props: React.PropsWithChildren<{
     path: string
     frontmatter?: { mipd?: boolean }
   }>,
 ) {
-  const config = React.useMemo(
-    () =>
-      WagmiConfig.getConfig({
-        multiInjectedProviderDiscovery: Boolean(props.frontmatter?.mipd),
-      }),
-    [props.frontmatter?.mipd],
-  )
+  const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
+  const posthogHost = import.meta.env.VITE_PUBLIC_POSTHOG_HOST
 
   return (
     <>
-      <WagmiProvider config={config}>
-        <QueryClientProvider client={queryClient}>
-          <NuqsAdapter>
-            <DemoContextProvider>{props.children}</DemoContextProvider>
-          </NuqsAdapter>
-        </QueryClientProvider>
-      </WagmiProvider>
+      <PostHogProvider>
+        <WagmiProvider config={props.frontmatter?.mipd ? mipdConfig : config}>
+          <QueryClientProvider client={queryClient}>
+            <NuqsAdapter>
+              {posthogKey && posthogHost && <PostHogSiteIdentifier />}
+              {posthogKey && posthogHost && <PageViewTracker />}
+              <DemoContextProvider>{props.children}</DemoContextProvider>
+            </NuqsAdapter>
+          </QueryClientProvider>
+        </WagmiProvider>
+      </PostHogProvider>
 
       <Toaster
         className="z-[42069] select-none"

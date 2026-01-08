@@ -6,7 +6,7 @@ Provide liquidity to the DEX by placing limit orders or flip orders in the oncha
 
 When your orders are filled, you earn the spread between bid and ask prices while helping facilitate trades for other users.
 
-You can only place orders on pairs between a token and its designated quote token. All TIP-20 tokens specify a quote token for trading pairs. [PathUSD](/protocol/exchange/pathUSD) can be used as a simple choice for a quote token.
+You can only place orders on pairs between a token and its designated quote token. All TIP-20 tokens specify a quote token for trading pairs. [pathUSD](/protocol/exchange/pathUSD) can be used as a simple choice for a quote token.
 
 ## Overview
 
@@ -144,22 +144,13 @@ Orders follow a specific lifecycle:
 
 1. **Placement**: When you call `place()` or `placeFlip()`:
    - Tokens are debited from your DEX balance (or transferred if insufficient)
-   - Order is queued but **not yet visible** to other contracts
+   - Order is immediately added to the active book and visible to other contracts
    - Returns an order ID immediately
 
-2. **End of Block**: All queued orders are added to the book:
-   - Processed in the order they were placed
-   - Filled flip orders from this block are added first
-   - Orders become visible and matchable
-
-3. **Filling**: As market orders execute against your order:
+2. **Filling**: As market orders execute against your order:
    - Your order fills partially or completely
    - Proceeds are credited to your DEX balance
-   - If a flip order fills completely, it creates a new order on the opposite side
-
-<Callout type="note">
-  **MEV Protection**: The delayed execution prevents backrunning and JIT (Just-In-Time) liquidity attacks, since orders aren't visible until the block ends.
-</Callout>
+   - If a flip order fills completely, a new order is immediately created on the opposite side
 
 ## Cancelling Orders
 

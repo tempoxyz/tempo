@@ -12,4 +12,14 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-alloy = { workspace = true, features = ["sol-types", "rpc", "contract"] }
+alloy-contract = { workspace = true, optional = true }
+alloy-primitives.workspace = true
+alloy-sol-types = { workspace = true, features = ["json"] }
+
+[dev-dependencies]
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = ["rpc"]
+rpc = ["dep:alloy-contract"]

@@ -11,6 +11,8 @@ pub use assemble::TempoBlockAssembler;
 mod block;
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
+#[cfg(feature = "engine")]
+mod engine;
 mod error;
 pub use error::TempoEvmError;
 pub mod evm;
@@ -24,11 +26,8 @@ use alloy_evm::{
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{
-    self, ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-};
-use reth_primitives_traits::{SealedBlock, SealedHeader, SignerRecoverable};
-use tempo_payload_types::TempoExecutionData;
+use reth_evm::{self, ConfigureEvm, EvmEnvFor};
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -40,6 +39,9 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
+
+#[cfg(test)]
+mod test_utils;
 
 /// Tempo-related EVM configuration.
 #[derive(Debug, Clone)]
@@ -197,9 +199,9 @@ impl ConfigureEvm for TempoEvmConfig {
                 // no ommers in tempo
                 ommers: &[],
                 withdrawals: block.body().withdrawals.as_ref().map(Cow::Borrowed),
+                extra_data: block.extra_data().clone(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            extra_data: block.header().extra_data().clone(),
             shared_gas_limit: block.header().gas_limit()
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Not available when we only have a block body.
@@ -219,9 +221,9 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 ommers: &[],
                 withdrawals: attributes.inner.withdrawals.map(Cow::Owned),
+                extra_data: attributes.inner.extra_data,
             },
             general_gas_limit: attributes.general_gas_limit,
-            extra_data: attributes.extra_data,
             shared_gas_limit: attributes.inner.gas_limit
                 / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
             // Fine to not validate during block building.
@@ -231,62 +233,298 @@ impl ConfigureEvm for TempoEvmConfig {
     }
 }
 
-impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
-    fn evm_env_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<EvmEnvFor<Self>, Self::Error> {
-        self.evm_env(&payload.block)
-    }
-
-    fn context_for_payload<'a>(
-        &self,
-        payload: &'a TempoExecutionData,
-    ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
-        let TempoExecutionData {
-            block,
-            validator_set,
-        } = payload;
-        let mut context = self.context_for_block(block)?;
-
-        context.validator_set = validator_set.clone();
-
-        Ok(context)
-    }
-
-    fn tx_iterator_for_payload(
-        &self,
-        payload: &TempoExecutionData,
-    ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
-        let transactions = payload.block.body().transactions.clone().into_iter();
-        let convert = |tx: TempoTxEnvelope| tx.try_into_recovered();
-
-        Ok((transactions, convert))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempo_chainspec::hardfork::{TempoHardfork, TempoHardforks};
+    use crate::test_utils::test_chainspec;
+    use alloy_consensus::{BlockHeader, Signed, TxLegacy};
+    use alloy_primitives::{B256, Bytes, Signature, TxKind, U256};
+    use alloy_rlp::{Encodable, bytes::BytesMut};
+    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
+    use std::collections::HashMap;
+    use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_primitives::{
+        BlockBody, SubBlockMetadata, subblock::SubBlockVersion,
+        transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
+    };
 
     #[test]
     fn test_evm_config_can_query_tempo_hardforks() {
-        // Create a test chainspec with Adagio at genesis
-        let chainspec = Arc::new(tempo_chainspec::TempoChainSpec::from_genesis(
-            tempo_chainspec::spec::ANDANTINO.genesis().clone(),
-        ));
-
-        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec);
-
-        // Should be able to query Tempo hardforks through the chainspec
-        assert!(evm_config.chain_spec().is_adagio_active_at_timestamp(0));
-        assert!(evm_config.chain_spec().is_adagio_active_at_timestamp(1000));
-
-        // Should be able to query activation condition
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
         let activation = evm_config
             .chain_spec()
-            .tempo_fork_activation(TempoHardfork::Adagio);
+            .tempo_fork_activation(TempoHardfork::Genesis);
         assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn test_evm_env() {
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 100,
+                timestamp: 1000,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(1000),
+                beneficiary: alloy_primitives::Address::repeat_byte(0x01),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            shared_gas_limit: 3_000_000,
+        };
+
+        let result = evm_config.evm_env(&header);
+        assert!(result.is_ok());
+
+        let evm_env = result.unwrap();
+
+        // Verify block env fields
+        assert_eq!(evm_env.block_env.inner.number, U256::from(header.number()));
+        assert_eq!(
+            evm_env.block_env.inner.timestamp,
+            U256::from(header.timestamp())
+        );
+        assert_eq!(evm_env.block_env.inner.gas_limit, header.gas_limit());
+        assert_eq!(evm_env.block_env.inner.beneficiary, header.beneficiary());
+
+        // Verify Tempo-specific field
+        assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
+    }
+
+    #[test]
+    fn test_next_evm_env() {
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+
+        let parent = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 99,
+                timestamp: 900,
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(1000),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 0,
+            shared_gas_limit: 3_000_000,
+        };
+
+        let attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: 1000,
+                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x02),
+                prev_randao: B256::repeat_byte(0x03),
+                gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
+                withdrawals: None,
+                extra_data: Default::default(),
+            },
+            general_gas_limit: 10_000_000,
+            shared_gas_limit: 3_000_000,
+            timestamp_millis_part: 750,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let result = evm_config.next_evm_env(&parent, &attributes);
+        assert!(result.is_ok());
+
+        let evm_env = result.unwrap();
+
+        // Verify block env uses attributes
+        // parent + 1
+        assert_eq!(evm_env.block_env.inner.number, U256::from(100));
+        assert_eq!(evm_env.block_env.inner.timestamp, U256::from(1000));
+        assert_eq!(
+            evm_env.block_env.inner.beneficiary,
+            Address::repeat_byte(0x02)
+        );
+        assert_eq!(evm_env.block_env.inner.gas_limit, 30_000_000);
+
+        // Verify Tempo-specific field
+        assert_eq!(evm_env.block_env.timestamp_millis_part, 750);
+    }
+
+    #[test]
+    fn test_context_for_block() {
+        let chainspec = test_chainspec();
+        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+
+        // Create subblock metadata
+        let validator_key = B256::repeat_byte(0x01);
+        let fee_recipient = alloy_primitives::Address::repeat_byte(0x02);
+        let metadata = vec![SubBlockMetadata {
+            version: SubBlockVersion::V1,
+            validator: validator_key,
+            fee_recipient,
+            signature: Bytes::from_static(&[0; 64]),
+        }];
+
+        // Create system tx with metadata
+        let block_number = 1u64;
+        let mut input = BytesMut::new();
+        metadata.encode(&mut input);
+        input.extend_from_slice(&U256::from(block_number).to_be_bytes::<32>());
+
+        let system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(reth_chainspec::EthChainSpec::chain(&*chainspec).id()),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 0,
+                to: TxKind::Call(alloy_primitives::Address::ZERO),
+                value: U256::ZERO,
+                input: input.freeze().into(),
+            },
+            TEMPO_SYSTEM_TX_SIGNATURE,
+        ));
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: block_number,
+                timestamp: 1000,
+                gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::ZERO),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            shared_gas_limit: 3_000_000,
+        };
+
+        let body = BlockBody {
+            transactions: vec![system_tx],
+            ommers: vec![],
+            withdrawals: None,
+        };
+
+        let block = Block { header, body };
+        let sealed_block = SealedBlock::seal_slow(block);
+
+        let result = evm_config.context_for_block(&sealed_block);
+        assert!(result.is_ok());
+
+        let context = result.unwrap();
+
+        // Verify context fields
+        assert_eq!(context.general_gas_limit, 10_000_000);
+        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert!(context.validator_set.is_none());
+
+        // Verify subblock_fee_recipients was extracted from metadata
+        let partial_key = PartialValidatorKey::from_slice(&validator_key[..15]);
+        assert_eq!(
+            context.subblock_fee_recipients.get(&partial_key),
+            Some(&fee_recipient)
+        );
+    }
+
+    #[test]
+    fn test_context_for_block_no_subblock_metadata() {
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+
+        // Create a block without subblock metadata system tx
+        let regular_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 1,
+                gas_limit: 21000,
+                to: TxKind::Call(alloy_primitives::Address::repeat_byte(0x01)),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            },
+            Signature::test_signature(),
+        ));
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 1,
+                timestamp: 1000,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 500,
+            shared_gas_limit: 3_000_000,
+        };
+
+        let body = BlockBody {
+            transactions: vec![regular_tx],
+            ommers: vec![],
+            withdrawals: None,
+        };
+
+        let block = Block { header, body };
+        let sealed_block = SealedBlock::seal_slow(block);
+
+        let result = evm_config.context_for_block(&sealed_block);
+
+        // Should fail because no subblock metadata tx was found
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            TempoEvmError::NoSubblockMetadataFound
+        ));
+    }
+
+    #[test]
+    fn test_context_for_next_block() {
+        let evm_config = TempoEvmConfig::new_with_default_factory(test_chainspec());
+
+        let parent_header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 99,
+                timestamp: 900,
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 0,
+            shared_gas_limit: 3_000_000,
+        };
+        let parent = SealedHeader::seal_slow(parent_header);
+
+        let fee_recipient = Address::repeat_byte(0x02);
+        let mut subblock_fee_recipients = HashMap::new();
+        let partial_key = PartialValidatorKey::from_slice(&[0x01; 15]);
+        subblock_fee_recipients.insert(partial_key, fee_recipient);
+
+        let attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: 1000,
+                suggested_fee_recipient: alloy_primitives::Address::repeat_byte(0x03),
+                prev_randao: B256::repeat_byte(0x04),
+                gas_limit: 30_000_000,
+                parent_beacon_block_root: Some(B256::repeat_byte(0x05)),
+                withdrawals: None,
+                extra_data: Default::default(),
+            },
+            general_gas_limit: 12_000_000,
+            shared_gas_limit: 4_000_000,
+            timestamp_millis_part: 999,
+            subblock_fee_recipients: subblock_fee_recipients.clone(),
+        };
+
+        let result = evm_config.context_for_next_block(&parent, attributes);
+        assert!(result.is_ok());
+
+        let context = result.unwrap();
+
+        // Verify context fields from attributes
+        assert_eq!(context.general_gas_limit, 12_000_000);
+        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert!(context.validator_set.is_none());
+        assert_eq!(context.inner.parent_hash, parent.hash());
+        assert_eq!(
+            context.inner.parent_beacon_block_root,
+            Some(B256::repeat_byte(0x05))
+        );
+
+        // Verify subblock_fee_recipients passed through
+        assert_eq!(
+            context.subblock_fee_recipients.get(&partial_key),
+            Some(&fee_recipient)
+        );
     }
 }

@@ -18,18 +18,13 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, transferCall},
     ITIPFeeAMM, UnknownFunctionSelector,
 };
-use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_ACCOUNT_REGISTRAR, storage::slots::mapping_slot, tip20,
-};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_eth_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -40,7 +35,6 @@ async fn test_eth_call() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
@@ -69,10 +63,7 @@ async fn test_eth_call() -> eyre::Result<()> {
 async fn test_eth_trace_call() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -81,9 +72,9 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
+    let token_address = *token.address();
 
     // First, mint some tokens to the caller for testing
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
@@ -127,7 +118,10 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let token_storage_diff = token_diff.storage.clone();
     // Assert sender token balance has changed
-    let slot = mapping_slot(caller, tip20::slots::BALANCES);
+    let slot = TIP20Token::from_address(token_address)
+        .expect("valid TIP20 address")
+        .balances[caller]
+        .slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -141,7 +135,10 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
-    let slot = mapping_slot(recipient, tip20::slots::BALANCES);
+    let slot = TIP20Token::from_address(token_address)
+        .expect("valid TIP20 address")
+        .balances[recipient]
+        .slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -160,10 +157,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 async fn test_eth_get_logs() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -173,7 +167,6 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     // Setup test token
     let token = setup_test_token(provider.clone(), caller).await?;
 
-    // Use u128 range since supply cap is u128::MAX with allegretto
     let mint_amount = U256::from(rand::random::<u128>());
     let mint_receipt = token
         .mint(caller, mint_amount)
@@ -223,10 +216,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
 async fn test_eth_estimate_gas() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -241,7 +231,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 109051);
+    assert_eq!(gas, 84654);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -258,10 +248,7 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new()
-        .allegretto_activated()
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -297,10 +284,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let fee_amm = ITIPFeeAMM::new(tempo_precompiles::TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Provide liquidity for the fee token pair
-    // Use mintWithValidatorToken as mint is disabled post-Moderato
     let liquidity_amount = U256::from(u32::MAX);
     fee_amm
-        .mintWithValidatorToken(
+        .mint(
             *user_fee_token.address(),
             validator_token_address,
             liquidity_amount,
@@ -312,7 +298,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Set different fee tokens for user and validator
-    // Note that the validator defaults to the PathUSD
+    // Note that the validator defaults to the pathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
         .send()
@@ -367,11 +353,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
 async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    // Note: This test uses moderato genesis (without allegretto) to test older behavior
-    let setup = TestNodeBuilder::new()
-        .with_genesis(include_str!("../assets/test-genesis-moderato.json").to_string())
-        .build_http_only()
-        .await?;
+    let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
@@ -384,7 +366,7 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     calldata.extend_from_slice(&[0u8; 64]);
 
     let tx = TransactionRequest::default()
-        .to(TIP_ACCOUNT_REGISTRAR)
+        .to(TIP20_FACTORY_ADDRESS)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
     // The call should fail with UnknownFunctionSelector error

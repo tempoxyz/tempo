@@ -1,4 +1,4 @@
-FROM rust:1.88-bookworm AS chef
+FROM rust:1.91-bookworm AS chef
 
 RUN cargo install cargo-chef sccache
 
@@ -13,6 +13,7 @@ FROM chef AS builder
 
 ARG RUST_PROFILE=profiling
 ARG RUST_FEATURES="asm-keccak,jemalloc,otlp"
+ARG EXTRA_RUSTFLAGS=""
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
@@ -26,12 +27,12 @@ RUN apt-get update \
 
 ENV RUSTC_WRAPPER=sccache \
     SCCACHE_DIR=/sccache \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
 
 COPY --from=planner /app/recipe.json recipe.json
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked,id=cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked,id=cargo-git \
     --mount=type=cache,target=$SCCACHE_DIR,sharing=locked,id=sccache \
+    RUSTFLAGS="-C link-arg=-fuse-ld=mold ${EXTRA_RUSTFLAGS}" \
     cargo chef cook --profile ${RUST_PROFILE} --features "${RUST_FEATURES}" --recipe-path recipe.json

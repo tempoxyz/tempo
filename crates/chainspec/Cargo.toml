@@ -12,28 +12,28 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-commonware-node-config.workspace = true
-tempo-primitives = { workspace = true, features = ["default"] }
+tempo-primitives.workspace = true
 
-reth-cli.workspace = true
+reth-cli = { workspace = true, optional = true }
 reth-chainspec.workspace = true
 reth-network-peers.workspace = true
-reth-ethereum = { workspace = true, features = ["evm"] }
 
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-hardforks.workspace = true
 
-eyre.workspace = true
+eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 
 [features]
-default = ["serde"]
+default = ["serde", "cli"]
 serde = [
     "alloy-eips/serde",
     "alloy-hardforks/serde",
     "alloy-primitives/serde",
     "tempo-primitives/serde"
 ]
+cli = ["dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

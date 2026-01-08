@@ -1,69 +1,38 @@
-use super::{AccountKeychain, IAccountKeychain};
-use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate_void,
-    storage::PrecompileStorageProvider, unknown_selector, view,
-};
-use alloy::{primitives::Address, sol_types::SolCall};
+use super::AccountKeychain;
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;
 
-impl<S: PrecompileStorageProvider> Precompile for AccountKeychain<'_, S> {
+impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         self.storage
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
-
-        let result = match selector {
-            IAccountKeychain::authorizeKeyCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::authorizeKeyCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.authorize_key(sender, call),
-                )
-            }
-
-            IAccountKeychain::revokeKeyCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::revokeKeyCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.revoke_key(sender, call),
-                )
-            }
-
-            IAccountKeychain::updateSpendingLimitCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::updateSpendingLimitCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.update_spending_limit(sender, call),
-                )
-            }
-
-            IAccountKeychain::getKeyCall::SELECTOR => {
-                view::<IAccountKeychain::getKeyCall>(calldata, |call| self.get_key(call))
-            }
-
-            IAccountKeychain::getRemainingLimitCall::SELECTOR => {
-                view::<IAccountKeychain::getRemainingLimitCall>(calldata, |call| {
-                    self.get_remaining_limit(call)
-                })
-            }
-
-            IAccountKeychain::getTransactionKeyCall::SELECTOR => {
-                view::<IAccountKeychain::getTransactionKeyCall>(calldata, |call| {
-                    self.get_transaction_key(call, msg_sender)
-                })
-            }
-
-            _ => unknown_selector(selector, self.storage.gas_used(), self.storage.spec()),
-        };
-
-        result.map(|res| fill_precompile_output(res, self.storage))
+        dispatch_call(
+            calldata,
+            IAccountKeychainCalls::abi_decode,
+            |call| match call {
+                IAccountKeychainCalls::authorizeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                }
+                IAccountKeychainCalls::revokeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
+                }
+                IAccountKeychainCalls::updateSpendingLimit(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.update_spending_limit(sender, c)
+                    })
+                }
+                IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
+                IAccountKeychainCalls::getRemainingLimit(call) => {
+                    view(call, |c| self.get_remaining_limit(c))
+                }
+                IAccountKeychainCalls::getTransactionKey(call) => {
+                    view(call, |c| self.get_transaction_key(c, msg_sender))
+                }
+            },
+        )
     }
 }

@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 tempo-alloy = { workspace = true, features = ["tempo-compat"] }
-tempo-evm = { workspace = true, features = ["rpc"] }
+tempo-evm = { workspace = true, features = ["rpc", "engine"] }
 tempo-transaction-pool.workspace = true
 tempo-chainspec.workspace = true
 tempo-consensus.workspace = true
@@ -36,7 +36,6 @@ reth-rpc.workspace = true
 reth-rpc-eth-api.workspace = true
 reth-rpc-builder.workspace = true
 reth-node-api.workspace = true
-reth-chainspec.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-engine-local.workspace = true

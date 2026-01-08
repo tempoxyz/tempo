@@ -1,13 +1,10 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
+use alloy_primitives::{Address, U256};
 
-sol! {
+crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     interface IRolesAuth {
         function hasRole(address account, bytes32 role) external view returns (bool);
         function getRoleAdmin(bytes32 role) external view returns (bytes32);
@@ -21,7 +18,9 @@ sol! {
 
         error Unauthorized();
     }
+}
 
+crate::sol! {
     /// TIP20 token interface providing standard ERC20 functionality with Tempo-specific extensions.
     ///
     /// TIP20 tokens extend the ERC20 standard with:
@@ -33,7 +32,7 @@ sol! {
     /// The interface supports both standard token operations and administrative functions
     /// for managing token behavior and compliance requirements.
     #[derive(Debug, PartialEq, Eq)]
-    #[sol(rpc, abi)]
+    #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20 {
         // Standard token functions
@@ -61,8 +60,6 @@ sol! {
         function burnWithMemo(uint256 amount, bytes32 memo) external;
         function transferWithMemo(address to, uint256 amount, bytes32 memo) external;
         function transferFromWithMemo(address from, address to, uint256 amount, bytes32 memo) external returns (bool);
-        function feeRecipient() external view returns (address);
-        function setFeeRecipient(address newRecipient) external view returns (address);
 
         // Admin Functions
         function changeTransferPolicyId(uint64 newPolicyId) external;
@@ -88,14 +85,6 @@ sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
-        struct RewardStream {
-            address funder;
-            uint64 startTime;
-            uint64 endTime;
-            uint256 ratePerSecondScaled;
-            uint256 amountTotal;
-        }
-
         struct UserRewardInfo {
             address rewardRecipient;
             uint256 rewardPerToken;
@@ -103,16 +92,13 @@ sol! {
         }
 
         // Reward Functions
-        function startReward(uint256 amount, uint32 secs) external returns (uint64);
+        function distributeReward(uint256 amount) external;
         function setRewardRecipient(address recipient) external;
-        function cancelReward(uint64 id) external returns (uint256);
         function claimRewards() external returns (uint256);
-        function finalizeStreams(uint64 timestamp) external;
-        function getStream(uint64 id) external view returns (RewardStream memory);
-        function totalRewardPerSecond() external view returns (uint256);
         function optedInSupply() external view returns (uint128);
-        function nextStreamId() external view returns (uint64);
+        function globalRewardPerToken() external view returns (uint256);
         function userRewardInfo(address account) external view returns (UserRewardInfo memory);
+        function getPendingRewards(address account) external view returns (uint128);
 
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
@@ -126,10 +112,8 @@ sol! {
         event PauseStateUpdate(address indexed updater, bool isPaused);
         event NextQuoteTokenSet(address indexed updater, address indexed nextQuoteToken);
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
-        event RewardScheduled(address indexed funder, uint64 indexed id, uint256 amount, uint32 durationSeconds);
-        event RewardCanceled(address indexed funder, uint64 indexed id, uint256 refund);
+        event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
-        event FeeRecipientUpdated(address indexed updater, address indexed newRecipient);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -145,14 +129,12 @@ sol! {
         error InvalidQuoteToken();
         error TransfersDisabled();
         error InvalidAmount();
-        error NotStreamFunder();
-        error StreamInactive();
         error NoOptedInSupply();
         error Unauthorized();
-        error RewardsDisabled();
-        error ScheduledRewardsDisabled();
         error ProtectedAddress();
         error InvalidToken();
+        error Uninitialized();
+        error InvalidTransferPolicyId();
     }
 }
 
@@ -238,29 +220,9 @@ impl TIP20Error {
         Self::InvalidAmount(ITIP20::InvalidAmount {})
     }
 
-    /// Error for when stream does not exist
-    pub const fn stream_inactive() -> Self {
-        Self::StreamInactive(ITIP20::StreamInactive {})
-    }
-
-    /// Error for when msg.sedner is not stream funder
-    pub const fn not_stream_funder() -> Self {
-        Self::NotStreamFunder(ITIP20::NotStreamFunder {})
-    }
-
     /// Error for when opted in supply is 0
     pub const fn no_opted_in_supply() -> Self {
         Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for when rewards are disabled
-    pub const fn rewards_disabled() -> Self {
-        Self::RewardsDisabled(ITIP20::RewardsDisabled {})
-    }
-
-    /// Error for when scheduled rewards are disabled post-moderato
-    pub const fn scheduled_rewards_disabled() -> Self {
-        Self::ScheduledRewardsDisabled(ITIP20::ScheduledRewardsDisabled {})
     }
 
     /// Error for operations on protected addresses (like burning `FeeManager` tokens)
@@ -271,5 +233,15 @@ impl TIP20Error {
     /// Error when an address is not a valid TIP20 token
     pub const fn invalid_token() -> Self {
         Self::InvalidToken(ITIP20::InvalidToken {})
+    }
+
+    /// Error when transfer policy ID does not exist
+    pub const fn invalid_transfer_policy_id() -> Self {
+        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
+    }
+
+    /// Error when token is uninitialized (has no bytecode)
+    pub const fn uninitialized() -> Self {
+        Self::Uninitialized(ITIP20::Uninitialized {})
     }
 }

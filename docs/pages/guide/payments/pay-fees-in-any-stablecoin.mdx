@@ -4,7 +4,7 @@ showOutline: 1
 
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
-import { betaUsd } from '../../../components/guides/tokens.ts'
+import { betaUsd, thetaUsd, pathUsd } from '../../../components/guides/tokens.ts'
 import LucideCoins from '~icons/lucide/coins'
 import * as Card from '../../../components/Card.tsx'
 import { Tabs } from '../../../components/Tabs.tsx'
@@ -34,7 +34,7 @@ Using a custom fee token is as simple as passing a `feeToken` attribute to mutab
 
 ```tsx twoslash
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
@@ -93,7 +93,7 @@ Before you can pay fees in a token of your choice, you need to fund your account
 
 The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding.
 
-<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false} tokens={[Demo.alphaUsd, Demo.betaUsd]}>
+<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false} tokens={[Demo.alphaUsd, Demo.betaUsd, Demo.thetaUsd, Demo.pathUsd]}>
   <Step.AddFunds stepNumber={1} last />
 </Demo.Container>
 
@@ -101,7 +101,7 @@ The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 
 function AddFunds() {
@@ -142,11 +142,13 @@ After this step, your users can send payments with a specified fee token by clic
 :::code-group
 
 ```tsx twoslash [PayWithFeeToken.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 const betaUsd = '0x20c0000000000000000000000000000000000002'
+const thetaUsd = '0x20c0000000000000000000000000000000000003'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 
 // @noErrors
 function PayWithFeeToken() {
@@ -183,6 +185,8 @@ function PayWithFeeToken() {
         <select name="feeToken">
           <option value={alphaUsd}>AlphaUSD</option>
           <option value={betaUsd}>BetaUSD</option>
+          <option value={thetaUsd}>ThetaUSD</option>
+          <option value={pathUsd}>pathUSD</option>
         </select>
       </div>
       <button type="submit" disabled={sendPayment.isPending}>
@@ -206,11 +210,13 @@ Now that users can send payments with a specified fee token, you can link to the
 :::code-group
 
 ```tsx twoslash [PayWithFeeToken.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 const alphaUsd = '0x20c0000000000000000000000000000000000001'
 const betaUsd = '0x20c0000000000000000000000000000000000002'
+const thetaUsd = '0x20c0000000000000000000000000000000000003'
+const pathUsd = '0x20c0000000000000000000000000000000000000'
 
 // @noErrors
 function PayWithFeeToken() {
@@ -271,7 +277,7 @@ Before you can pay fees in a token of your choice, you need to fund your account
 
 The built-in Tempo testnet faucet includes `AlphaUSD` and `BetaUSD` when funding.
 
-<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false} tokens={[Demo.alphaUsd, Demo.betaUsd]}>
+<Demo.Container name="Add Funds" footerVariant="balances" showBadge={false} tokens={[Demo.alphaUsd, Demo.betaUsd, Demo.thetaUsd, Demo.pathUsd]}>
   <Step.AddFunds stepNumber={1} last />
 </Demo.Container>
 
@@ -326,6 +332,35 @@ const receipt = await client.token.transferSync({
 ::::
 
   </Tabs.Tab>
+</Tabs>
+
+# Recipes
+
+## Set user fee token 
+
+You can also set a persistent default fee token for an account, so users don't need to specify `feeToken` on every transaction. Learn more about fee token preferences [here](/protocol/fees/spec-fee#fee-token-preferences).
+
+<Tabs className="-mt-2">
+<Tabs.Tab value="Wagmi">
+
+<div className="h-6" />
+
+```tsx twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:wagmi-hooks]
+```
+
+</Tabs.Tab>
+<Tabs.Tab value="Viem">
+
+<div className="h-6" />
+
+```ts twoslash
+// @noErrors
+// [!include ~/snippets/unformatted/fee.setUserToken.ts:viem]
+```
+
+</Tabs.Tab>
 </Tabs>
 
 ## Learning Resources

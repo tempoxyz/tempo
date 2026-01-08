@@ -6,8 +6,8 @@ use alloy_provider::Provider;
 use alloy_rpc_types_eth::{TransactionRequest, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{
-    AASigned, SignatureType, TempoTransaction, TempoTxEnvelope, TxFeeToken,
-    transaction::{Call, TempoSignedAuthorization, TempoTypedTransaction},
+    AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction},
 };
 
 use crate::TempoNetwork;
@@ -52,6 +52,14 @@ pub struct TempoTransactionRequest {
     /// Required when key_type is WebAuthn to calculate calldata gas costs.
     pub key_data: Option<Bytes>,
 
+    /// Optional access key ID for gas estimation.
+    /// When provided, indicates the transaction uses a Keychain (access key) signature.
+    /// This enables accurate gas estimation for:
+    /// - Keychain signature validation overhead (+3,000 gas)
+    /// - Spending limits enforcement during execution
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<Address>,
+
     /// Optional authorization list for Tempo transactions (supports multiple signature types)
     #[serde(
         default,
@@ -59,6 +67,11 @@ pub struct TempoTransactionRequest {
         rename = "aaAuthorizationList"
     )]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
+
+    /// Key authorization for provisioning an access key (for gas estimation).
+    /// Provide a signed KeyAuthorization when the transaction provisions an access key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_authorization: Option<SignedKeyAuthorization>,
 }
 
 impl TempoTransactionRequest {
@@ -77,54 +90,6 @@ impl TempoTransactionRequest {
     pub fn with_nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = Some(nonce_key);
         self
-    }
-
-    pub fn build_fee_token(self) -> Result<TxFeeToken, ValueError<Self>> {
-        let Some(to) = self.inner.to else {
-            return Err(ValueError::new(
-                self,
-                "Missing 'to' field for FeeToken transaction.",
-            ));
-        };
-        let Some(nonce) = self.inner.nonce else {
-            return Err(ValueError::new(
-                self,
-                "Missing 'nonce' field for FeeToken transaction.",
-            ));
-        };
-        let Some(gas_limit) = self.inner.gas else {
-            return Err(ValueError::new(
-                self,
-                "Missing 'gas_limit' field for FeeToken transaction.",
-            ));
-        };
-        let Some(max_fee_per_gas) = self.inner.max_fee_per_gas else {
-            return Err(ValueError::new(
-                self,
-                "Missing 'max_fee_per_gas' field for FeeToken transaction.",
-            ));
-        };
-        let Some(max_priority_fee_per_gas) = self.inner.max_priority_fee_per_gas else {
-            return Err(ValueError::new(
-                self,
-                "Missing 'max_priority_fee_per_gas' field for FeeToken transaction.",
-            ));
-        };
-
-        Ok(TxFeeToken {
-            chain_id: self.inner.chain_id.unwrap_or(1),
-            nonce,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            to,
-            fee_token: self.fee_token,
-            value: self.inner.value.unwrap_or_default(),
-            input: self.inner.input.into_input().unwrap_or_default(),
-            access_list: self.inner.access_list.unwrap_or_default(),
-            authorization_list: self.inner.authorization_list.unwrap_or_default(),
-            fee_payer_signature: None,
-        })
     }
 
     /// Attempts to build a [`TempoTransaction`] with the configured fields.
@@ -225,7 +190,6 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
             TempoTxEnvelope::Eip2930(tx) => tx.into(),
             TempoTxEnvelope::Eip1559(tx) => tx.into(),
             TempoTxEnvelope::Eip7702(tx) => tx.into(),
-            TempoTxEnvelope::FeeToken(tx) => tx.into(),
             TempoTxEnvelope::AA(tx) => tx.into(),
         }
     }
@@ -233,12 +197,6 @@ impl From<TempoTxEnvelope> for TempoTransactionRequest {
 
 pub trait FeeToken {
     fn fee_token(&self) -> Option<Address>;
-}
-
-impl FeeToken for TxFeeToken {
-    fn fee_token(&self) -> Option<Address> {
-        self.fee_token
-    }
 }
 
 impl FeeToken for TempoTransaction {
@@ -307,7 +265,9 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             tempo_authorization_list: tx.tempo_authorization_list,
             key_type: None,
             key_data: None,
+            key_id: None,
             nonce_key: Some(tx.nonce_key),
+            key_authorization: tx.key_authorization,
         }
     }
 }
@@ -341,11 +301,6 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
                 fee_token: None,
                 ..Default::default()
             },
-            TempoTypedTransaction::FeeToken(tx) => Self {
-                fee_token: tx.fee_token,
-                inner: TransactionRequest::from_transaction(tx),
-                ..Default::default()
-            },
             TempoTypedTransaction::AA(tx) => tx.into(),
         }
     }
@@ -353,7 +308,7 @@ impl From<TempoTypedTransaction> for TempoTransactionRequest {
 
 /// Extension trait for [`CallBuilder`]
 pub trait TempoCallBuilderExt {
-    /// Sets the `fee_token` field in the [`TempoTransaction`] or [`TxFeeToken`] transaction to the provided value
+    /// Sets the `fee_token` field in the [`TempoTransaction`] transaction to the provided value
     fn fee_token(self, fee_token: Address) -> Self;
 
     /// Sets the `nonce_key` field in the [`TempoTransaction`] transaction to the provided value

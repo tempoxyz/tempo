@@ -8,7 +8,7 @@ import LucideSignature from '~icons/lucide/signature'
 
 {/* Short description of the guide. What we are building, why we are building it, and what we will learn. */}
 
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam elementum odio ante, sit amet tincidunt leo scelerisque vitae. Donec placerat imperdiet nibh in efficitur. Nam pharetra euismod tortor ac suscipit. Quisque nec ultrices nisl. Sed in magna sapien. Duis vel risus sed leo gravida volutpat a id libero. Pellentesque ut nunc vel turpis tristique bibendum ut eu mauris. Aliquam aliquet nunc orci, eu mattis nisi hendrerit sed. Donec volutpat dolor lectus, sit amet facilisis arcu pretium nec.
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam elementum odio ante, sit amet tincidunt leo scelerisque vitae.
 
 <Demo.Container name="!Replace Me!" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/replace-me">
   <Step.Connect stepNumber={1} />
@@ -20,15 +20,73 @@ Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nullam elementum odio a
 
 {/* Steps to follow to get the demo working and fully functioning end-to-end */}
 
-::::steps
-
 ### Lorem
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit.
 
+:::code-group
+
+```tsx twoslash [Component.tsx]
+// @noErrors
+export function Component() {
+  return (
+    <div>
+      {/* Component code here */}
+    </div>
+  )
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
+  },
+})
+```
+
+:::
+
 ### Ipsum
 
 Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+
+:::code-group
+
+```tsx twoslash [Component.tsx]
+// @noErrors
+export function Component() {
+  // Component code here
+}
+```
+
+```tsx twoslash [config.ts] filename="config.ts"
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+
+export const config = createConfig({
+  chains: [tempoTestnet],
+  connectors: [webAuthn({
+    keyManager: KeyManager.localStorage(),
+  })],
+  transports: {
+    [tempoTestnet.id]: http(),
+  },
+})
+```
+
+:::
 
 ::::
 

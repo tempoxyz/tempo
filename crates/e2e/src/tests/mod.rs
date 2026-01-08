@@ -4,10 +4,12 @@ use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as
 use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
+mod consensus_rpc;
 mod dkg;
 mod linkage;
 mod restart;
 mod subblocks;
+mod sync;
 
 #[test_traced]
 fn spawning_execution_node_works() {
@@ -36,6 +38,8 @@ fn spawning_execution_node_works() {
             secret_key: alloy_primitives::B256::random(),
             trusted_peers: vec![],
             port: 0,
+            validator_key: None,
+            feed_state: None,
         };
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");

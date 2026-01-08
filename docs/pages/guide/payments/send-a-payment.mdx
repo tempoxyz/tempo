@@ -43,7 +43,7 @@ The built-in Tempo testnet faucet funds accounts with `AlphaUSD`.
 
 ```tsx twoslash [AddFunds.ts]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 
 function AddFunds() {
@@ -82,7 +82,7 @@ Now that you have `AlphaUSD` you are ready to add logic to send a payment with a
 :::code-group
 
 ```tsx twoslash [SendPaymentWithMemo.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits, stringToHex, pad } from 'viem'
 
 // @noErrors
@@ -140,7 +140,7 @@ Now that you can send a payment, you can display the transaction receipt on succ
 :::code-group
 
 ```tsx twoslash [SendPaymentWithMemo.tsx]
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits, stringToHex, pad } from 'viem'
 
 // @noErrors
@@ -200,7 +200,7 @@ const { receipt } = await client.token.transferSync({
 
 ```rs [Rust]
 use alloy::{
-    primitives::{U256, address},
+    primitives::{address, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
@@ -213,18 +213,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let token = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000001"), // AlphaUSD // [!code focus]
-        provider, // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     let receipt = token // [!code focus]
         .transfer( // [!code focus]
             address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb"), // [!code focus]
-            U256::from(100).pow(U256::from(10e6)), // 100 tokens (6 decimals) // [!code focus]
+            U256::from(100_000_000), // 100 tokens (6 decimals) // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
         .await? // [!code focus]
         .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Transfer successful: {:?}", receipt.transaction_hash); // [!code focus]
 
     Ok(())
 }
@@ -257,7 +259,7 @@ const { receipt } = await client.token.transferSync({
 
 ```rs [Rust]
 use alloy::{
-    primitives::{B256, U256, address},
+    primitives::{address, B256, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{TempoNetwork, contracts::precompiles::ITIP20};
@@ -270,19 +272,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let token = ITIP20::new( // [!code focus]
         address!("0x20c0000000000000000000000000000000000001"), // AlphaUSD // [!code focus]
-        provider, // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     let receipt = token // [!code focus]
         .transferWithMemo( // [!code focus]
             address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb"), // [!code focus]
-            U256::from(100).pow(U256::from(10e6)), // 100 tokens (6 decimals) // [!code focus]
+            U256::from(100_000_000), // 100 tokens (6 decimals) // [!code focus]
             B256::left_padding_from("INV-12345".as_bytes()), // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
         .await? // [!code focus]
         .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Transfer successful: {:?}", receipt.transaction_hash); // [!code focus]
 
     Ok(())
 }
@@ -327,7 +331,7 @@ Send multiple payments in a single transaction using batch transactions:
 
 ```ts [example.ts]
 import { encodeFunctionData, parseUnits } from 'viem'
-import { Abis } from 'tempo.ts/viem'
+import { Abis } from 'viem/tempo'
 import { client } from './viem.config'
 
 const tokenABI = Abis.tip20
@@ -362,7 +366,7 @@ const hash = await client.sendTransaction({ calls })
 
 ```rust [Rust]
 use alloy::{
-    primitives::{U256, address},
+    primitives::{address, Address, U256},
     providers::{Provider, ProviderBuilder},
     sol_types::SolCall,
 };
@@ -377,35 +381,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&std::env::var("RPC_URL").expect("No RPC URL set"))
         .await?;
 
+    let recipient1 = address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb"); // [!code focus]
+    let recipient2 = address!("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"); // [!code focus]
+    let token_address: Address = address!("0x20c0000000000000000000000000000000000001"); // [!code focus]
+
     let calls = vec![ // [!code focus]
         Call { // [!code focus]
-            to: address!("0x20c0000000000000000000000000000000000001").into(), // [!code focus]
+            to: token_address.into(), // [!code focus]
             input: ITIP20::transferCall { // [!code focus]
                 to: recipient1, // [!code focus]
-                amount: U256::from(100).pow(U256::from(10e6)), // [!code focus]
+                amount: U256::from(100_000_000), // [!code focus]
             } // [!code focus]
             .abi_encode() // [!code focus]
             .into(), // [!code focus]
             value: U256::ZERO, // [!code focus]
         }, // [!code focus]
         Call { // [!code focus]
-            to: address!("0x20c0000000000000000000000000000000000001").into(), // [!code focus]
+            to: token_address.into(), // [!code focus]
             input: ITIP20::transferCall { // [!code focus]
                 to: recipient2, // [!code focus]
-                amount: U256::from(50).pow(U256::from(10e6)), // [!code focus]
+                amount: U256::from(50_000_000), // [!code focus]
             } // [!code focus]
             .abi_encode() // [!code focus]
             .into(), // [!code focus]
             value: U256::ZERO, // [!code focus]
         }, // [!code focus]
     ]; // [!code focus]
-    let tx_hash = provider // [!code focus]
+
+    let pending = provider // [!code focus]
         .send_transaction(TempoTransactionRequest { // [!code focus]
             calls, // [!code focus]
             ..Default::default() // [!code focus]
         }) // [!code focus]
-        .await? // [!code focus]
-        .tx_hash(); // [!code focus]
+        .await?; // [!code focus]
+    let tx_hash = pending.tx_hash(); // [!code focus]
+
+    println!("Batch transaction sent: {tx_hash:?}"); // [!code focus]
 
     Ok(())
 }
@@ -433,7 +444,7 @@ You can use the `isPending` property from the `useTransferSync` hook to show pen
 If an error unexpectedly occurs, you can display an error message to the user by using the `error` property from the `useTransferSync` hook.
 
 ```tsx
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 function SendPayment() {
   const sendPayment = Hooks.token.useTransferSync()

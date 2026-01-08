@@ -39,7 +39,7 @@ Add liquidity to your token's fee pool:
 
 ```tsx twoslash [TypeScript]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
@@ -65,7 +65,7 @@ address yourToken = 0x20c0000000000000000000000000000000000004; // Your issued t
 address validatorToken = 0x20c0000000000000000000000000000000000001; // AlphaUSD
 
 // Add 100 AlphaUSD of liquidity to the fee pool
-feeAmm.mintWithValidatorToken(
+feeAmm.mint(
   yourToken,
   validatorToken,
   100_000_000, // 100 tokens (6 decimals)
@@ -81,7 +81,7 @@ You can also check your token's fee pool liquidity at any time:
 
 ```tsx twoslash [TypeScript]
 // @noErrors
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 const { data: pool } = Hooks.amm.usePool({
   userToken: yourToken,
@@ -115,7 +115,7 @@ Your users can send payments using your issued stablecoin as the fee token:
 
 ```tsx twoslash [PayWithIssuedToken.tsx]
 import React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useConnection } from 'wagmi'
 import { parseUnits, pad, stringToHex, isAddress } from 'viem'
 
@@ -197,11 +197,11 @@ export function PayWithIssuedToken() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -224,7 +224,7 @@ token.transfer(recipient, 100_000_000);
 
 ```rust [Rust]
 use alloy::{
-    primitives::{U256, address},
+    primitives::{address, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{
@@ -245,21 +245,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fee_amm = ITIPFeeAMM::new( // [!code focus]
         TIP_FEE_MANAGER_ADDRESS, // [!code focus]
-        provider,                // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     let recipient = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // [!code focus]
 
     // Add 100 AlphaUSD of liquidity to the fee pool
     fee_amm // [!code focus]
-        .mintWithValidatorToken( // [!code focus]
-            your_token,              // [!code focus]
-            validator_token,         // [!code focus]
+        .mint( // [!code focus]
+            your_token, // [!code focus]
+            validator_token, // [!code focus]
             U256::from(100_000_000), // [!code focus]
-            recipient,               // [!code focus]
+            recipient, // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Fee liquidity added successfully"); // [!code focus]
 
     Ok(())
 }
@@ -317,7 +321,7 @@ Before promoting fee payments with your token, thoroughly test the flow on testn
   />
   <Card.Link
     description="Add and remove liquidity to enable fee conversions"
-    href="/guide/stablecoin-exchange/managing-fee-liquidity"
+    href="/guide/stablecoin-dex/managing-fee-liquidity"
     icon={LucideDroplet}
     title="Managing Fee Liquidity"
   />

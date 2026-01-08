@@ -664,7 +664,7 @@ contract AccountKeychainTest is BaseTest {
             vm.expectEmit(true, true, false, true);
             emit IAccountKeychain.KeyAuthorized(
                 alice,
-                bytes32(uint256(uint160(aliceAccessKey))),
+                aliceAccessKey,
                 1, // P256
                 uint64(block.timestamp + 1 days)
             );
@@ -697,7 +697,7 @@ contract AccountKeychainTest is BaseTest {
 
         if (!isTempo) {
             vm.expectEmit(true, true, false, false);
-            emit IAccountKeychain.KeyRevoked(alice, bytes32(uint256(uint160(aliceAccessKey))));
+            emit IAccountKeychain.KeyRevoked(alice, aliceAccessKey);
         }
 
         keychain.revokeKey(aliceAccessKey);
@@ -721,9 +721,7 @@ contract AccountKeychainTest is BaseTest {
 
         if (!isTempo) {
             vm.expectEmit(true, true, true, true);
-            emit IAccountKeychain.SpendingLimitUpdated(
-                alice, bytes32(uint256(uint160(aliceAccessKey))), USDC, 2000e6
-            );
+            emit IAccountKeychain.SpendingLimitUpdated(alice, aliceAccessKey, USDC, 2000e6);
         }
 
         keychain.updateSpendingLimit(aliceAccessKey, USDC, 2000e6);

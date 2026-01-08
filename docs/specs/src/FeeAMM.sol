@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { TIP20Factory } from "./TIP20Factory.sol";
+import { TempoUtilities } from "./TempoUtilities.sol";
 import { IERC20 } from "./interfaces/IERC20.sol";
 import { IFeeAMM } from "./interfaces/IFeeAMM.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
@@ -12,13 +14,22 @@ contract FeeAMM is IFeeAMM {
     uint256 public constant SCALE = 10_000;
     uint256 public constant MIN_LIQUIDITY = 1000;
 
-    mapping(bytes32 => Pool) public pools;
-    mapping(bytes32 => uint128) internal pendingFeeSwapIn; // Amount of userToken to be added from fee swaps
-    mapping(bytes32 => uint256) public totalSupply; // Total LP tokens for each pool
-    mapping(bytes32 => mapping(address => uint256)) public liquidityBalances; // LP token balances
+    TIP20Factory internal constant TIP20_FACTORY =
+        TIP20Factory(0x20Fc000000000000000000000000000000000000);
 
+    mapping(bytes32 => Pool) public pools;
+    mapping(bytes32 => uint256) public totalSupply;
+    mapping(bytes32 => mapping(address => uint256)) public liquidityBalances;
+
+    // Reverts if x does not fit in uint128
+    function _requireU128(uint256 x) internal pure {
+        if (x > type(uint128).max) revert InvalidAmount();
+    }
+
+    // Reverts if token is not a TIP20 with "USD" currency
     function _requireUSDTIP20(address token) internal view {
-        if (bytes14(bytes20(token)) != 0x20c0000000000000000000000000) revert InvalidToken();
+        // Check that the token is a deployed TIP20 (prefix + tokenIdCounter check)
+        if (!TempoUtilities.isTIP20(token)) revert InvalidToken();
         if (keccak256(bytes(ITIP20(token).currency())) != keccak256(bytes("USD"))) {
             revert InvalidCurrency();
         }
@@ -38,29 +49,31 @@ contract FeeAMM is IFeeAMM {
         return pools[poolId];
     }
 
-    function reserveLiquidity(address userToken, address validatorToken, uint256 maxAmount)
+    function checkSufficientLiquidity(address userToken, address validatorToken, uint256 maxAmount)
         internal
+        view
     {
         bytes32 poolId = getPoolId(userToken, validatorToken);
-
-        // Calculate output at fixed price m = 0.9970
-        uint256 maxAmountOut = (maxAmount * M) / SCALE;
-
-        // Check if there's enough validatorToken available (accounting for pending swaps)
-        require(
-            _getEffectiveValidatorReserve(poolId) >= maxAmountOut,
-            "INSUFFICIENT_LIQUIDITY_FOR_FEE_SWAP"
-        );
-        pendingFeeSwapIn[poolId] += uint128(maxAmount);
+        uint256 amountOutNeeded = (maxAmount * M) / SCALE;
+        if (pools[poolId].reserveValidatorToken < amountOutNeeded) revert InsufficientLiquidity();
     }
 
-    function releaseLiquidityPostTx(address userToken, address validatorToken, uint256 refundAmount)
+    function executeFeeSwap(address userToken, address validatorToken, uint256 amountIn)
         internal
+        returns (uint256 amountOut)
     {
         bytes32 poolId = getPoolId(userToken, validatorToken);
+        Pool storage pool = pools[poolId];
 
-        // Track pending swap input
-        pendingFeeSwapIn[poolId] -= uint128(refundAmount);
+        amountOut = (amountIn * M) / SCALE;
+
+        _requireU128(amountIn);
+        _requireU128(amountOut);
+
+        if (pool.reserveValidatorToken < amountOut) revert InsufficientLiquidity();
+
+        pool.reserveUserToken += uint128(amountIn);
+        pool.reserveValidatorToken -= uint128(amountOut);
     }
 
     function rebalanceSwap(address userToken, address validatorToken, uint256 amountOut, address to)
@@ -76,6 +89,16 @@ contract FeeAMM is IFeeAMM {
 
         Pool storage pool = pools[poolId];
 
+        // Ensure amounts fit in uint128
+        _requireU128(amountOut);
+        _requireU128(amountIn);
+
+        if (uint256(pool.reserveValidatorToken) + amountIn > type(uint128).max) {
+            revert InsufficientReserves();
+        }
+
+        if (pool.reserveUserToken < amountOut) revert InvalidAmount();
+
         pool.reserveValidatorToken += uint128(amountIn);
         pool.reserveUserToken -= uint128(amountOut);
 
@@ -86,21 +109,8 @@ contract FeeAMM is IFeeAMM {
         emit RebalanceSwap(userToken, validatorToken, msg.sender, amountIn, amountOut);
     }
 
-    /// @notice Two-sided mint is disabled post-Moderato.
-    /// Use mintWithValidatorToken instead for single-sided liquidity provision.
+    /// Single-sided liquidity provision.
     function mint(
-        address userToken,
-        address validatorToken,
-        uint256 amountUserToken,
-        uint256 amountValidatorToken,
-        address to
-    ) external returns (uint256 liquidity) {
-        // Two-sided mint is disabled post-Moderato
-        // The precompile returns UnknownFunctionSelector for this function
-        revert MintDisabled();
-    }
-
-    function mintWithValidatorToken(
         address userToken,
         address validatorToken,
         uint256 amountValidatorToken,
@@ -110,6 +120,7 @@ contract FeeAMM is IFeeAMM {
 
         _requireUSDTIP20(userToken);
         _requireUSDTIP20(validatorToken);
+
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         Pool storage pool = pools[poolId];
@@ -126,14 +137,17 @@ contract FeeAMM is IFeeAMM {
             // Subsequent deposits: mint as if user called rebalanceSwap then minted with both
             // which works out to the formula:
             // liquidity = amountValidatorToken * _totalSupply / (V + n * U), with n = N / SCALE
-            uint256 denom =
-                uint256(pool.reserveValidatorToken) + (N * uint256(pool.reserveUserToken)) / SCALE;
+            uint256 product = (N * uint256(pool.reserveUserToken)) / SCALE;
+            uint256 denom = uint256(pool.reserveValidatorToken) + product;
             liquidity = (amountValidatorToken * _totalSupply) / denom; // rounds down
         }
 
         if (liquidity == 0) {
             revert InsufficientLiquidity();
         }
+
+        // Ensure amounts fit in uint128
+        _requireU128(amountValidatorToken);
 
         // Transfer validator tokens from user
         ITIP20(validatorToken).systemTransferFrom(msg.sender, address(this), amountValidatorToken);
@@ -145,21 +159,29 @@ contract FeeAMM is IFeeAMM {
         totalSupply[poolId] += liquidity;
         liquidityBalances[poolId][to] += liquidity;
 
-        emit Mint(msg.sender, userToken, validatorToken, 0, amountValidatorToken, liquidity);
+        emit Mint(msg.sender, to, userToken, validatorToken, amountValidatorToken, liquidity);
     }
 
     function burn(address userToken, address validatorToken, uint256 liquidity, address to)
         external
         returns (uint256 amountUserToken, uint256 amountValidatorToken)
     {
+        if (userToken == validatorToken) revert IdenticalAddresses();
+
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         Pool storage pool = pools[poolId];
 
-        if (liquidityBalances[poolId][msg.sender] < liquidity) revert InsufficientLiquidity();
+        if (liquidityBalances[poolId][msg.sender] < liquidity) {
+            revert InsufficientLiquidity();
+        }
 
         // Calculate amounts
         (amountUserToken, amountValidatorToken) = _calculateBurnAmounts(pool, poolId, liquidity);
+
+        // Ensure amounts fit in uint128
+        _requireU128(amountUserToken);
+        _requireU128(amountValidatorToken);
 
         // Burn LP tokens
         liquidityBalances[poolId][msg.sender] -= liquidity;
@@ -194,58 +216,6 @@ contract FeeAMM is IFeeAMM {
         // Calculate pro-rata share of reserves
         amountUserToken = (liquidity * pool.reserveUserToken) / _totalSupply;
         amountValidatorToken = (liquidity * pool.reserveValidatorToken) / _totalSupply;
-
-        // Check that withdrawal doesn't violate pending swaps
-        // Don't need to check userToken since it only increases during the block
-        uint256 availableValidatorToken = _getEffectiveValidatorReserve(poolId);
-
-        require(
-            amountValidatorToken <= availableValidatorToken,
-            "WITHDRAWAL_EXCEEDS_AVAILABLE_VALIDATOR_TOKEN"
-        );
-    }
-
-    function executePendingFeeSwaps(address userToken, address validatorToken)
-        internal
-        returns (uint256 amountOut)
-    {
-        bytes32 poolId = getPoolId(userToken, validatorToken);
-        Pool storage pool = pools[poolId];
-
-        // Store the input amount to return
-        uint256 amountIn = pendingFeeSwapIn[poolId];
-
-        // Calculate output from input
-        amountOut = (amountIn * M) / SCALE;
-
-        // Apply pending fee swap to reserves
-        // Add userToken input, subtract validatorToken output
-        pool.reserveUserToken = uint128(uint256(pool.reserveUserToken) + amountIn);
-        pool.reserveValidatorToken = uint128(uint256(pool.reserveValidatorToken) - amountOut);
-
-        // Clear pending swap
-        pendingFeeSwapIn[poolId] = 0;
-
-        emit FeeSwap(userToken, validatorToken, amountIn, amountOut);
-    }
-
-    function sqrt(uint256 x) internal pure returns (uint256) {
-        if (x == 0) return 0;
-        uint256 z = (x + 1) / 2;
-        uint256 y = x;
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
-        }
-        return y;
-    }
-
-    // Helper functions for pending reserve calculations
-
-    function _getEffectiveValidatorReserve(bytes32 poolId) private view returns (uint256) {
-        // Effective validatorToken reserve = current - pendingOut
-        uint256 pendingOut = (pendingFeeSwapIn[poolId] * M) / SCALE;
-        return uint256(pools[poolId].reserveValidatorToken) - pendingOut;
     }
 
 }

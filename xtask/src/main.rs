@@ -1,28 +1,27 @@
 //! xtask is a Swiss army knife of tools that help with running and testing tempo.
-use std::{net::SocketAddr, path::PathBuf};
+use std::net::SocketAddr;
 
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet,
+    generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
 use clap::Parser as _;
 use commonware_codec::DecodeExt;
-use commonware_cryptography::{PrivateKeyExt as _, Signer, ed25519::PrivateKey};
 use eyre::Context;
-use rand::SeedableRng as _;
-use tempo_commonware_node_config::SigningKey;
 
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
 mod genesis_args;
+mod get_dkg_outcome;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let args = Args::parse();
     match args.action {
+        Action::GetDkgOutcome(args) => args.run().await.wrap_err("failed to get DKG outcome"),
         Action::GenerateGenesis(args) => args.run().await.wrap_err("failed generating genesis"),
         Action::GenerateDevnet(args) => args
             .run()
@@ -33,7 +32,6 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
-        Action::GenerateSigningKey(args) => args.run(),
     }
 }
 
@@ -48,47 +46,12 @@ struct Args {
 }
 
 #[derive(Debug, clap::Subcommand)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "the variant names map to actual cli inputs and are desired"
-)]
 enum Action {
+    GetDkgOutcome(GetDkgOutcome),
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
-    GenerateSigningKey(GenerateSigningKey),
-}
-
-/// Generates an ed25519 signing key pair to be used in consensus.
-#[derive(Debug, clap::Args)]
-struct GenerateSigningKey {
-    /// Destination of the generated signing key.
-    #[arg(long, short, value_name = "FILE")]
-    output: PathBuf,
-    /// AVOID IN PRODUCTION.
-    /// Optional seed for the random generator used when generating the key.
-    /// Use this only in environments that require reproducible keys.
-    #[arg(long, value_name = "NUMBER")]
-    seed: Option<u64>,
-}
-
-impl GenerateSigningKey {
-    fn run(self) -> eyre::Result<()> {
-        let Self { output, seed } = self;
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
-        let signing_key = PrivateKey::from_rng(&mut rng);
-        let validating_key = signing_key.public_key();
-        let signing_key = SigningKey::from(signing_key);
-        signing_key
-            .write_to_file(&output)
-            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
-        println!(
-            "wrote signing key to: {}\nvalidating/public key: {validating_key}",
-            output.display()
-        );
-        Ok(())
-    }
 }
 
 #[derive(Debug, clap::Args)]

@@ -12,16 +12,22 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_genesis::Genesis;
+use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
+use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256};
 use commonware_codec::Encode;
 use commonware_cryptography::ed25519::PublicKey;
-use eyre::WrapErr as _;
+use commonware_utils::ordered;
+use eyre::{OptionExt as _, WrapErr as _};
 use futures::StreamExt;
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
+    evm::{
+        primitives::EvmEnv,
+        revm::db::{CacheDB, EmptyDB},
+    },
     network::{
-        Peers,
+        Peers as _,
         api::{
             NetworkEventListenerProvider, PeersInfo,
             events::{NetworkEvent, PeerEvent},
@@ -40,15 +46,144 @@ use secp256k1::SecretKey;
 use std::net::TcpListener;
 use tempfile::TempDir;
 use tempo_chainspec::TempoChainSpec;
-use tempo_commonware_node_config::PublicPolynomial;
-use tempo_node::{TempoFullNode, node::TempoNode};
-use tempo_precompiles::{VALIDATOR_CONFIG_ADDRESS, validator_config::IValidatorConfig};
+use tempo_commonware_node::feed::FeedStateHandle;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+use tempo_node::{
+    TempoFullNode,
+    evm::{TempoEvmFactory, evm::TempoEvm},
+    node::TempoNode,
+    rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+};
+use tempo_precompiles::{
+    VALIDATOR_CONFIG_ADDRESS,
+    storage::StorageCtx,
+    validator_config::{IValidatorConfig, ValidatorConfig},
+};
 
 const ADMIN_INDEX: u32 = 0;
 const VALIDATOR_START_INDEX: u32 = 1;
 
 /// Same mnemonic as used in the imported test-genesis and in the `tempo-node` integration tests.
 pub const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
+
+#[derive(Default, Debug)]
+pub struct Builder {
+    epoch_length: Option<u64>,
+    initial_dkg_outcome: Option<OnchainDkgOutcome>,
+    validators: Option<ordered::Map<PublicKey, SocketAddr>>,
+}
+
+impl Builder {
+    pub fn new() -> Self {
+        Self {
+            epoch_length: None,
+            initial_dkg_outcome: None,
+            validators: None,
+        }
+    }
+
+    pub fn with_epoch_length(self, epoch_length: u64) -> Self {
+        Self {
+            epoch_length: Some(epoch_length),
+            ..self
+        }
+    }
+
+    pub fn with_initial_dkg_outcome(self, initial_dkg_outcome: OnchainDkgOutcome) -> Self {
+        Self {
+            initial_dkg_outcome: Some(initial_dkg_outcome),
+            ..self
+        }
+    }
+
+    pub fn with_validators(self, validators: ordered::Map<PublicKey, SocketAddr>) -> Self {
+        Self {
+            validators: Some(validators),
+            ..self
+        }
+    }
+
+    pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
+        let Self {
+            epoch_length,
+            initial_dkg_outcome,
+            validators,
+        } = self;
+
+        let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
+        let initial_dkg_outcome =
+            initial_dkg_outcome.ok_or_eyre("must specify initial DKG outcome")?;
+        let validators = validators.ok_or_eyre("must specify validators")?;
+
+        assert!(initial_dkg_outcome.next_players() == validators.keys(),);
+
+        let mut genesis = genesis();
+        genesis
+            .config
+            .extra_fields
+            .insert_value("epochLength".to_string(), epoch_length)
+            .wrap_err("failed to insert epoch length into genesis")?;
+
+        genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
+
+        let mut evm = setup_tempo_evm();
+
+        {
+            let cx = evm.ctx_mut();
+            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
+                // TODO(janis): figure out the owner of the test-genesis.json
+                let mut validator_config = ValidatorConfig::new();
+                validator_config
+                    .initialize(admin())
+                    .wrap_err("Failed to initialize validator config")
+                    .unwrap();
+
+                for (i, (peer, addr)) in validators.iter_pairs().enumerate() {
+                    validator_config
+                        .add_validator(
+                            admin(),
+                            IValidatorConfig::addValidatorCall {
+                                newValidatorAddress: validator(i as u32),
+                                publicKey: peer.encode().as_ref().try_into().unwrap(),
+                                active: true,
+                                inboundAddress: addr.to_string(),
+                                outboundAddress: addr.to_string(),
+                            },
+                        )
+                        .unwrap();
+                }
+            })
+        }
+
+        let evm_state = evm.ctx_mut().journaled_state.evm_state();
+        for (address, account) in evm_state.iter() {
+            let storage = if !account.storage.is_empty() {
+                Some(
+                    account
+                        .storage
+                        .iter()
+                        .map(|(key, val)| ((*key).into(), val.present_value.into()))
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            genesis.alloc.insert(
+                *address,
+                GenesisAccount {
+                    nonce: Some(account.info.nonce),
+                    code: account.info.code.as_ref().map(|c| c.original_bytes()),
+                    storage,
+                    ..Default::default()
+                },
+            );
+        }
+
+        Ok(ExecutionRuntime::with_chain_spec(
+            TempoChainSpec::from_genesis(genesis),
+        ))
+    }
+}
 
 /// Configuration for launching an execution node.
 #[derive(Clone, Debug)]
@@ -59,6 +194,10 @@ pub struct ExecutionNodeConfig {
     pub trusted_peers: Vec<String>,
     /// Port for the network service.
     pub port: u16,
+    /// Validator public key for filtering subblock transactions.
+    pub validator_key: Option<B256>,
+    /// Feed state handle for consensus RPC (if validator).
+    pub feed_state: Option<FeedStateHandle>,
 }
 
 impl ExecutionNodeConfig {
@@ -97,6 +236,8 @@ impl ExecutionNodeConfigGenerator {
                     secret_key: B256::random(),
                     trusted_peers: vec![],
                     port: 0,
+                    validator_key: None,
+                    feed_state: None,
                 })
                 .collect();
         }
@@ -121,6 +262,8 @@ impl ExecutionNodeConfigGenerator {
                 secret_key: B256::random(),
                 trusted_peers: vec![],
                 port,
+                validator_key: None,
+                feed_state: None,
             })
             .collect();
 
@@ -164,9 +307,8 @@ pub struct ExecutionRuntime {
 }
 
 impl ExecutionRuntime {
-    /// Constructs a new execution runtime to launch execution nodes using the default chainspec.
-    pub fn new() -> Self {
-        Self::with_chain_spec(chainspec())
+    pub fn builder() -> Builder {
+        Builder::new()
     }
 
     /// Constructs a new execution runtime to launch execution nodes.
@@ -174,6 +316,7 @@ impl ExecutionRuntime {
         let tempdir = tempfile::Builder::new()
             // TODO(janis): cargo manifest prefix?
             .prefix("tempo_e2e_test")
+            .disable_cleanup(true)
             .tempdir()
             .expect("must be able to create a temp directory run tun tests");
 
@@ -234,6 +377,27 @@ impl ExecutionRuntime {
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
                                 .changeValidatorStatus(address, active)
+                                .send()
+                                .await
+                                .unwrap()
+                                .get_receipt()
+                                .await
+                                .unwrap();
+                            let _ = response.send(receipt);
+                        }
+                        Message::SetNextFullDkgCeremony(set_next_full_dkg_ceremony) => {
+                            let SetNextFullDkgCeremony {
+                                http_url,
+                                epoch,
+                                response,
+                            } = *set_next_full_dkg_ceremony;
+                            let provider = ProviderBuilder::new()
+                                .wallet(wallet.clone())
+                                .connect_http(http_url);
+                            let validator_config =
+                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                            let receipt = validator_config
+                                .setNextFullDkgCeremony(epoch)
                                 .send()
                                 .await
                                 .unwrap()
@@ -332,6 +496,26 @@ impl ExecutionRuntime {
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
 
+    pub async fn set_next_full_dkg_ceremony(
+        &self,
+        http_url: Url,
+        epoch: u64,
+    ) -> eyre::Result<TransactionReceipt> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(
+                SetNextFullDkgCeremony {
+                    http_url,
+                    epoch,
+                    response: tx,
+                }
+                .into(),
+            )
+            .wrap_err("the execution runtime went away")?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
     pub async fn remove_validator(
         &self,
         http_url: Url,
@@ -365,12 +549,6 @@ impl ExecutionRuntime {
             Ok(()) => Ok(()),
             Err(e) => std::panic::resume_unwind(e),
         }
-    }
-}
-
-impl Default for ExecutionRuntime {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -456,7 +634,7 @@ impl ExecutionNode {
     pub async fn shutdown(self) {
         let _ = self.node.rpc_server_handle().clone().stop();
         self.task_manager
-            .graceful_shutdown_with_timeout(Duration::from_secs(1));
+            .graceful_shutdown_with_timeout(Duration::from_secs(10));
         let _ = self.exit_fut.await;
     }
 }
@@ -466,11 +644,6 @@ impl ExecutionNode {
 /// TODO(janis): allow configuring this.
 pub fn chainspec() -> TempoChainSpec {
     TempoChainSpec::from_genesis(genesis())
-}
-
-/// Returns the chainspec used for e2e tests as Arc.
-pub fn chainspec_arc() -> Arc<TempoChainSpec> {
-    Arc::new(chainspec())
 }
 
 /// Generate execution node name from public key.
@@ -489,52 +662,7 @@ impl std::fmt::Debug for ExecutionNode {
 }
 
 pub fn genesis() -> Genesis {
-    serde_json::from_str(include_str!(
-        "../../node/tests/assets/test-genesis-moderato.json"
-    ))
-    .unwrap()
-}
-
-pub fn insert_allegretto(mut genesis: Genesis, timestamp: u64) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("allegrettoTime".to_string(), timestamp)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_epoch_length(mut genesis: Genesis, epoch_length: u64) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("epochLength".to_string(), epoch_length)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_validators(
-    mut genesis: Genesis,
-    validators: tempo_commonware_node_config::Peers,
-) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("validators".to_string(), validators)
-        .unwrap();
-    genesis
-}
-
-pub fn insert_public_polynomial(
-    mut genesis: Genesis,
-    public_polynomial: PublicPolynomial,
-) -> Genesis {
-    genesis
-        .config
-        .extra_fields
-        .insert_value("publicPolynomial".to_string(), public_polynomial)
-        .unwrap();
-    genesis
+    serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
 /// Launches a tempo execution node.
@@ -552,12 +680,15 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     config: ExecutionNodeConfig,
     database: Arc<DatabaseEnv>,
 ) -> eyre::Result<ExecutionNode> {
+    println!("launching node at {}", datadir.as_ref().display());
     let node_config = NodeConfig::new(Arc::new(chain_spec))
         .with_rpc(
             RpcServerArgs::default()
                 .with_unused_ports()
                 .with_http()
-                .with_http_api(RpcModuleSelection::All),
+                .with_http_api(RpcModuleSelection::All)
+                .with_ws()
+                .with_ws_api(RpcModuleSelection::All),
         )
         .with_datadir_args(DatadirArgs {
             datadir: datadir.as_ref().to_path_buf().into(),
@@ -582,13 +713,27 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c
         });
 
+    let tempo_node = TempoNode::default().with_validator_key(config.validator_key);
+    let feed_state = config.feed_state;
     let node_handle = NodeBuilder::new(node_config)
         .with_database(database)
         .with_launch_context(task_manager.executor())
-        .node(TempoNode::default())
+        .node(tempo_node)
+        .extend_rpc_modules(move |ctx| {
+            if let Some(feed_state) = feed_state {
+                ctx.modules
+                    .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+            }
+            Ok(())
+        })
         .launch()
         .await
-        .wrap_err("failed launching node")?;
+        .wrap_err_with(|| {
+            format!(
+                "failed launching node; databasedir: `{}`",
+                datadir.as_ref().display()
+            )
+        })?;
 
     Ok(ExecutionNode {
         node: node_handle.node,
@@ -601,6 +746,7 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
 enum Message {
     AddValidator(Box<AddValidator>),
     ChangeValidatorStatus(Box<ChangeValidatorStatus>),
+    SetNextFullDkgCeremony(Box<SetNextFullDkgCeremony>),
     SpawnNode {
         name: String,
         config: ExecutionNodeConfig,
@@ -619,6 +765,12 @@ impl From<AddValidator> for Message {
 impl From<ChangeValidatorStatus> for Message {
     fn from(value: ChangeValidatorStatus) -> Self {
         Self::ChangeValidatorStatus(value.into())
+    }
+}
+
+impl From<SetNextFullDkgCeremony> for Message {
+    fn from(value: SetNextFullDkgCeremony) -> Self {
+        Self::SetNextFullDkgCeremony(value.into())
     }
 }
 
@@ -641,6 +793,14 @@ struct ChangeValidatorStatus {
     response: tokio::sync::oneshot::Sender<TransactionReceipt>,
 }
 
+#[derive(Debug)]
+struct SetNextFullDkgCeremony {
+    /// URL of the node to send this to.
+    http_url: Url,
+    epoch: u64,
+    response: tokio::sync::oneshot::Sender<TransactionReceipt>,
+}
+
 pub fn admin() -> Address {
     address(ADMIN_INDEX)
 }
@@ -651,4 +811,11 @@ pub fn validator(idx: u32) -> Address {
 
 pub fn address(index: u32) -> Address {
     secret_key_to_address(MnemonicBuilder::from_phrase_nth(TEST_MNEMONIC, index).credential())
+}
+
+fn setup_tempo_evm() -> TempoEvm<CacheDB<EmptyDB>> {
+    let db = CacheDB::default();
+    let env = EvmEnv::default();
+    let factory = TempoEvmFactory::default();
+    factory.create_evm(db, env)
 }

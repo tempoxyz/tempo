@@ -1,5 +1,5 @@
-import { Hooks } from 'tempo.ts/wagmi'
 import { useConnection, useConnectionEffect } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'

@@ -3,6 +3,7 @@ import { Link as RouterLink } from 'react-router'
 import type LucideArrowLeftRight from '~icons/lucide/arrow-left-right'
 import LucideExternalLink from '~icons/lucide/external-link'
 import { cx } from '../cva.config'
+import { usePostHogTracking } from '../lib/posthog'
 
 export function Link(props: {
   description: string
@@ -13,6 +14,8 @@ export function Link(props: {
 }) {
   const { description, href, icon: Icon, title, sampleHref } = props
   const [sampleHovering, setSampleHovering] = useState(false)
+  const { trackInternalLinkClick, trackExternalLinkClick } =
+    usePostHogTracking()
 
   return (
     <RouterLink
@@ -23,6 +26,11 @@ export function Link(props: {
         },
       )}
       to={href}
+      target={href.startsWith('http') ? '_blank' : undefined}
+      rel={href.startsWith('http') ? 'noopener noreferrer' : undefined}
+      onClick={() => {
+        trackInternalLinkClick(href, title)
+      }}
     >
       {sampleHref && (
         <a
@@ -30,7 +38,10 @@ export function Link(props: {
           href={sampleHref}
           target="_blank"
           rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation()
+            trackExternalLinkClick(sampleHref, 'Sample Project')
+          }}
           onMouseEnter={() => setSampleHovering(true)}
           onMouseLeave={() => setSampleHovering(false)}
         >
@@ -40,8 +51,11 @@ export function Link(props: {
       )}
       <Icon className="text-accent size-4.5" />
       <div className="flex flex-col gap-1">
-        <div className="leading-normal text-gray12 font-[510] text-[15px]">
+        <div className="flex items-center gap-1 leading-normal text-gray12 font-[510] text-[15px]">
           {title}
+          {href.startsWith('http') && (
+            <LucideExternalLink className="text-gray10 size-3" />
+          )}
         </div>
         <div className="leading-normal text-gray11 text-[15px]">
           {description}

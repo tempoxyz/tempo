@@ -16,6 +16,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod defaults;
+mod tempo_cmd;
 
 use clap::Parser;
 use commonware_runtime::{Metrics, Runner};
@@ -30,14 +31,18 @@ use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::run_consensus_stack;
+use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
-use tempo_node::{TempoFullNode, TempoNodeArgs, node::TempoNode};
+use tempo_node::{
+    TempoFullNode, TempoNodeArgs,
+    node::TempoNode,
+    rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
+};
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
 
@@ -61,6 +66,31 @@ struct TempoArgs {
 
     #[command(flatten)]
     pub node_args: TempoNodeArgs,
+
+    #[command(flatten)]
+    #[cfg(feature = "pyroscope")]
+    pub pyroscope_args: PyroscopeArgs,
+}
+
+/// Command line arguments for configuring Pyroscope continuous profiling.
+#[cfg(feature = "pyroscope")]
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+struct PyroscopeArgs {
+    /// Enable Pyroscope continuous profiling
+    #[arg(long = "pyroscope.enabled", default_value_t = false)]
+    pub pyroscope_enabled: bool,
+
+    /// Pyroscope server URL
+    #[arg(long = "pyroscope.server-url", default_value = "http://localhost:4040")]
+    pub server_url: String,
+
+    /// Application name for Pyroscope
+    #[arg(long = "pyroscope.application-name", default_value = "tempo")]
+    pub application_name: String,
+
+    /// Sample rate for profiling (default: 100 Hz)
+    #[arg(long = "pyroscope.sample-rate", default_value_t = 100)]
+    pub sample_rate: u32,
 }
 
 fn main() -> eyre::Result<()> {
@@ -84,6 +114,10 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
+    if let Some(result) = tempo_cmd::try_run_tempo_subcommand() {
+        return result;
+    }
+
     let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
 
@@ -92,8 +126,10 @@ fn main() -> eyre::Result<()> {
     let (consensus_dead_tx, mut consensus_dead_rx) = oneshot::channel();
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
+    let cl_feed_state = consensus_feed::FeedStateHandle::new();
 
     let shutdown_token_clone = shutdown_token.clone();
+    let cl_feed_state_clone = cl_feed_state.clone();
     let consensus_handle = thread::spawn(move || {
         // Exit early if we are not executing `tempo node` command.
         if !is_node {
@@ -143,7 +179,8 @@ fn main() -> eyre::Result<()> {
                     args.consensus.metrics_address,
                 )
                 .fuse();
-                let consensus_stack = run_consensus_stack(&ctx, args.consensus, node);
+                let consensus_stack =
+                    run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
                 tokio::pin!(consensus_stack);
                 loop {
                     tokio::select!(
@@ -189,6 +226,34 @@ fn main() -> eyre::Result<()> {
             .public_key()?
             .map(|key| B256::from_slice(key.as_ref()));
 
+        // Initialize Pyroscope profiling if enabled
+        #[cfg(feature = "pyroscope")]
+        let pyroscope_agent = if args.pyroscope_args.pyroscope_enabled {
+            let agent = pyroscope::PyroscopeAgent::builder(
+                &args.pyroscope_args.server_url,
+                &args.pyroscope_args.application_name,
+            )
+            .backend(pyroscope_pprofrs::pprof_backend(
+                pyroscope_pprofrs::PprofConfig::new()
+                    .sample_rate(args.pyroscope_args.sample_rate)
+                    .report_thread_id()
+                    .report_thread_name(),
+            ))
+            .build()
+            .wrap_err("failed to build Pyroscope agent")?;
+
+            let agent = agent.start().wrap_err("failed to start Pyroscope agent")?;
+            info!(
+                server_url = %args.pyroscope_args.server_url,
+                application_name = %args.pyroscope_args.application_name,
+                "Pyroscope profiling enabled"
+            );
+
+            Some(agent)
+        } else {
+            None
+        };
+
         let NodeHandle {
             node,
             node_exit_future,
@@ -212,6 +277,11 @@ fn main() -> eyre::Result<()> {
                     ctx.modules.merge_configured(ext.into_rpc())?;
                 }
 
+                if validator_key.is_some() {
+                    ctx.modules
+                        .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
+                }
+
                 Ok(())
             })
             .launch_with_debug_capabilities()
@@ -232,6 +302,12 @@ fn main() -> eyre::Result<()> {
                 tracing::info!("received shutdown signal");
             }
         }
+
+        #[cfg(feature = "pyroscope")]
+        if let Some(agent) = pyroscope_agent {
+            agent.shutdown();
+        }
+
         Ok(())
     })
     .wrap_err("execution node failed")?;

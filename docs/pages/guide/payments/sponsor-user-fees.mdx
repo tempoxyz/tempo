@@ -38,7 +38,7 @@ You can stand up a minimal fee payer service using the `Handler.feePayer` handle
 
 ### Configure your client to use the fee payer service
 
-Use the `withFeePayer` transport provided by the TypeScript SDK ([link](/sdk/typescript/viem/transport.withFeePayer)). It routes transactions to the configured fee payer service for sponsorship when `feePayer: true` is requested on a transaction.
+Use the `withFeePayer` transport provided by Viem ([link](https://viem.sh/tempo/transports/withFeePayer)). It routes transactions to the configured fee payer service for sponsorship when `feePayer: true` is requested on a transaction.
 
 <PublicTestnetSponsorTip />
 
@@ -58,7 +58,7 @@ You can also sponsor transactions with a local account. See the [recipe below](/
 :::code-group
 
 ```tsx twoslash [SendSponsoredPayment.tsx] filename="SendSponsoredPayment.tsx"
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -127,10 +127,10 @@ The example above uses a fee payer server to sign and sponsor transactions. If y
 // @noErrors
 import { createClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempo } from 'tempo.ts/chains'
+import { tempoTestnet } from 'viem/chains'
 
 const client = createClient({
-  chain: tempo({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+  chain: tempoTestnet,
   transport: http(),
 })
 

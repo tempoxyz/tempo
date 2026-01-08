@@ -1,5 +1,4 @@
 pub mod envelope;
-pub mod fee_token;
 pub mod key_authorization;
 pub mod tempo_transaction;
 pub mod tt_authorization;
@@ -14,11 +13,10 @@ pub use tt_signature::{
 
 pub use alloy_eips::eip7702::Authorization;
 pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
-pub use fee_token::{FEE_TOKEN_TX_TYPE_ID, TxFeeToken};
 pub use key_authorization::{KeyAuthorization, SignedKeyAuthorization, TokenLimit};
 pub use tempo_transaction::{
     Call, MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
-    SignatureType, TEMPO_TX_TYPE_ID, TempoTransaction,
+    SignatureType, TEMPO_TX_TYPE_ID, TempoTransaction, validate_calls,
 };
 pub use tt_signed::AASigned;
 

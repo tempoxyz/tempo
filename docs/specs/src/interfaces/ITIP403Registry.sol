@@ -27,6 +27,9 @@ interface ITIP403Registry {
     /// @notice Error when attempting to operate on a policy with incompatible type
     error IncompatiblePolicyType();
 
+    /// @notice Error when querying a policy that does not exist
+    error PolicyNotFound();
+
     /// @notice Emitted when a policy's admin is updated
     /// @param policyId The ID of the policy that was updated
     /// @param updater The address that performed the update
@@ -62,6 +65,11 @@ interface ITIP403Registry {
     /// @notice Returns the current policy ID counter
     /// @return The next policy ID that will be assigned to a newly created policy
     function policyIdCounter() external view returns (uint64);
+
+    /// @notice Returns whether a policy exists
+    /// @param policyId The ID of the policy to check
+    /// @return True if the policy exists, false otherwise
+    function policyExists(uint64 policyId) external view returns (bool);
 
     /// @notice Returns the policy data for a given policy ID
     /// @param policyId The ID of the policy to query

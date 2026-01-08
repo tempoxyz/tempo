@@ -13,7 +13,7 @@ contract TIP20RewardsRegistry {
     /// Tracks which tokens have reward streams ending at a given timestamp
     mapping(uint128 => address[]) public streamsEndingAt;
 
-    /// Mapping of (timestamp, token_address) hash to index in streams_ending_at array
+    /// Mapping of (timestamp, token_address) hash to index in `streamsEndingAt` array
     /// Used for efficient removal from the array
     mapping(bytes32 => uint256) public streamIndex;
 }

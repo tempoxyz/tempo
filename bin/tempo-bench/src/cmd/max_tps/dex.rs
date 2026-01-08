@@ -1,7 +1,7 @@
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
-use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{IStablecoinDEX, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
 /// This method performs a one-time setup for sending a lot of transactions:
@@ -21,7 +21,7 @@ pub(super) async fn setup(
         .ok_or_eyre("No signer providers found")?;
     let caller = signer.address();
 
-    info!("Creating tokens");
+    info!(user_tokens, "Creating TIP-20 tokens");
     let progress = ProgressBar::new(user_tokens as u64 + 1);
     // Create quote token
     let quote_token = setup_test_token(provider.clone(), caller, PATH_USD_ADDRESS).await?;
@@ -49,7 +49,7 @@ pub(super) async fn setup(
 
     // Create exchange pairs for each user token
     info!("Creating exchange pairs");
-    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
     join_all(
         user_token_addresses
             .iter()
@@ -70,7 +70,7 @@ pub(super) async fn setup(
 
     // Mint user tokens to each signer
     let mint_amount = U128_MAX / U256::from(signer_providers.len());
-    info!(%mint_amount, "Minting tokens");
+    info!(%mint_amount, "Minting TIP-20 tokens");
     join_all(
         signer_providers
             .iter()
@@ -89,7 +89,7 @@ pub(super) async fn setup(
         max_concurrent_transactions,
     )
     .await
-    .context("Failed to mint tokens")?;
+    .context("Failed to mint TIP-20 tokens")?;
 
     // Approve for each signer quote token and each user token to spend by exchange
     info!("Approving tokens");
@@ -100,7 +100,7 @@ pub(super) async fn setup(
                 all_token_addresses.iter().copied().map(move |token| {
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
+                        let tx = token.approve(STABLECOIN_DEX_ADDRESS, U256::MAX);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -110,7 +110,7 @@ pub(super) async fn setup(
         max_concurrent_transactions,
     )
     .await
-    .context("Failed to approve tokens")?;
+    .context("Failed to approve TIP-20 tokens")?;
 
     // Place flip orders of `order_amount` with tick `tick_over` and flip tick `tick_under` for each signer and each token
     let order_amount = 1000000000000u128;
@@ -122,10 +122,8 @@ pub(super) async fn setup(
             .iter()
             .flat_map(|(_, provider)| {
                 user_token_addresses.iter().copied().map(move |token| {
-                    let exchange = IStablecoinExchangeInstance::new(
-                        STABLECOIN_EXCHANGE_ADDRESS,
-                        provider.clone(),
-                    );
+                    let exchange =
+                        IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
                     Box::pin(async move {
                         let tx =
                             exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
@@ -152,6 +150,7 @@ async fn setup_test_token(
 where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
+    let salt = alloy::primitives::B256::random();
     let receipt = factory
         .createToken(
             "Test".to_owned(),
@@ -159,6 +158,7 @@ where
             "USD".to_owned(),
             quote_token,
             admin,
+            salt,
         )
         .send()
         .await?
@@ -169,9 +169,9 @@ where
         .ok_or_eyre("Token creation event not found")?;
     assert_receipt(receipt)
         .await
-        .context("Failed to create token")?;
+        .context("Failed to create TIP-20 token")?;
 
-    let token_addr = token_id_to_address(event.tokenId.to());
+    let token_addr = event.token;
     let token = ITIP20::new(token_addr, provider.clone());
     let roles = IRolesAuth::new(*token.address(), provider);
     let grant_role_receipt = roles

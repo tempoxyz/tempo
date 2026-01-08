@@ -5,21 +5,17 @@ use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_consensus::{
     Epochable, Reporter, Viewable,
-    marshal::SchemeProvider as _,
     simplex::{
-        select_leader,
-        signing_scheme::{
-            Scheme as _,
-            bls12381_threshold::{self, Scheme},
-        },
+        elector::Random,
+        scheme::bls12381_threshold::{self, Scheme},
         types::Activity,
     },
-    types::Round,
-    utils,
+    types::{Epocher as _, FixedEpocher, Height, Round, View},
 };
 use commonware_cryptography::{
     Signer, Verifier,
     bls12381::primitives::variant::MinSig,
+    certificate::Provider,
     ed25519::{PrivateKey, PublicKey, Signature},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
@@ -46,7 +42,7 @@ use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
-use tracing::{Instrument, Level, Span, debug, instrument, warn};
+use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
 
 /// Maximum number of stored subblock transactions. Used to prevent DOS attacks.
 ///
@@ -62,7 +58,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
-    pub(crate) epoch_length: u64,
+    pub(crate) epoch_strategy: FixedEpocher,
 }
 
 /// Task managing collected subblocks.
@@ -99,8 +95,8 @@ pub(crate) struct Actor<TContext> {
     time_to_build_subblock: Duration,
     /// How often to broadcast subblocks to the current proposer.
     subblock_broadcast_interval: Duration,
-    /// Length of an epoch in blocks.
-    epoch_length: u64,
+    /// The epoch strategy used by tempo.
+    epoch_strategy: FixedEpocher,
 
     /// Current consensus tip. Includes highest observed round, digest and certificate.
     consensus_tip: Option<(Round, BlockHash, bls12381_threshold::Signature<MinSig>)>,
@@ -121,7 +117,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             fee_recipient,
             time_to_build_subblock,
             subblock_broadcast_interval,
-            epoch_length,
+            epoch_strategy,
         }: Config<TContext>,
     ) -> Self {
         let (actions_tx, actions_rx) = mpsc::unbounded();
@@ -137,7 +133,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             fee_recipient,
             time_to_build_subblock,
             subblock_broadcast_interval,
-            epoch_length,
+            epoch_strategy,
             consensus_tip: None,
             subblocks: Default::default(),
             subblock_transactions: Default::default(),
@@ -173,8 +169,23 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                     self.on_new_message(action);
                 },
                 // Handle new subblock transactions.
-                Ok(transaction) = self.subblock_transactions_rx.recv() => {
-                    self.on_new_subblock_transaction(transaction);
+                result = self.subblock_transactions_rx.recv() => {
+                    match result {
+                        Ok(transaction) => {
+                            self.on_new_subblock_transaction(transaction);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            warn!(
+                                lagged_count = count,
+                                "subblock transaction receiver lagged, {} messages dropped",
+                                count
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            error!("subblock transactions channel closed unexpectedly");
+                            break;
+                        }
+                    }
                 },
                 // Handle messages from the network.
                 Ok((sender, message)) = network_rx.recv() => {
@@ -239,7 +250,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
     }
 
     /// Tracking of the current sconsensus state by listening to notarizations and nullifications.
-    #[instrument(skip_all, fields(event.epoch = event.epoch(), event.view = event.view()))]
+    #[instrument(skip_all, fields(event.epoch = %event.epoch(), event.view = %event.view()))]
     fn on_consensus_event(&mut self, event: Activity<Scheme<PublicKey, MinSig>, Digest>) {
         let (new_tip, new_round, new_cert) = match event {
             Activity::Notarization(n) => {
@@ -285,32 +296,37 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             return;
         };
 
-        let epoch_of_next_block = utils::epoch(self.epoch_length, header.number() + 1);
+        let epoch_of_next_block = self
+            .epoch_strategy
+            .containing(Height::new(header.number() + 1))
+            .expect("epoch strategy covers all epochs")
+            .epoch();
 
         // Can't proceed without knowing a validator set for the current epoch.
-        let Some(scheme) = self.scheme_provider.scheme(epoch_of_next_block) else {
-            debug!(epoch_of_next_block, "scheme not found for epoch");
+        let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
+            debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
         };
 
         let next_round = if round.epoch() == epoch_of_next_block {
-            Round::new(round.epoch(), round.view() + 1)
+            Round::new(round.epoch(), round.view().next())
         } else {
-            Round::new(epoch_of_next_block, 1)
+            Round::new(epoch_of_next_block, View::new(1))
         };
 
-        let seed = if next_round.view() == 1 {
+        let seed_signature = if next_round.view() == View::new(1) {
             // First view does not have a seed.
             None
         } else {
-            scheme.seed(*round, certificate)
+            Some(certificate.seed_signature)
         };
 
-        let (next_proposer, _) = select_leader::<Scheme<PublicKey, MinSig>, _>(
-            scheme.participants().as_ref(),
+        let next_proposer = Random::select_leader::<MinSig>(
             next_round,
-            seed,
+            scheme.participants().len(),
+            seed_signature,
         );
+        let next_proposer = scheme.participants()[next_proposer as usize].clone();
 
         debug!(?next_proposer, ?next_round, "determined next proposer");
 
@@ -418,7 +434,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         let node = self.node.clone();
         let validated_subblocks_tx = self.actions_tx.clone();
         let scheme_provider = self.scheme_provider.clone();
-        let epoch_length = self.epoch_length;
+        let epoch_strategy = self.epoch_strategy.clone();
         let span = Span::current();
         self.context.clone().shared(true).spawn(move |_| {
             validate_subblock(
@@ -427,7 +443,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
                 subblock,
                 validated_subblocks_tx,
                 scheme_provider,
-                epoch_length,
+                epoch_strategy,
             )
             .instrument(span)
         });
@@ -690,25 +706,39 @@ async fn build_subblock(
 
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
-            let mut selected_transactions = Vec::new();
-            let mut senders = Vec::new();
-            let mut gas_left =
+            let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
+            let gas_budget =
                 evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / num_validators as u64;
 
+            let mut gas_left = gas_budget;
             let txs = transactions.lock().clone();
+
             for (tx_hash, tx) in txs {
+                // Remove transactions over subblock gas budget
+                if tx.gas_limit() > gas_budget {
+                    warn!(
+                        %tx_hash,
+                        tx_gas_limit = tx.gas_limit(),
+                        gas_budget,
+                        "removing transaction with gas limit exceeding maximum subblock gas budget"
+                    );
+                    to_remove.push(tx_hash);
+                    continue;
+                }
+
+                // Skip transactions that don't fit in remaining budget (may fit in future rounds)
                 if tx.gas_limit() > gas_left {
                     continue;
                 }
+
                 if let Err(err) = evm.transact_commit(&*tx) {
                     warn!(%err, tx_hash = %tx_hash, "invalid subblock candidate transaction");
-                    // Remove invalid transactions from the set.
-                    transactions.lock().swap_remove(&tx_hash);
+                    to_remove.push(tx_hash);
                     continue;
                 }
 
                 gas_left -= tx.gas_limit();
-                selected_transactions.push(tx.inner().clone());
+                selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
                 if start.elapsed() > timeout {
@@ -716,7 +746,15 @@ async fn build_subblock(
                 }
             }
 
-            (selected_transactions, senders)
+            // If necessary, acquire lock and drop all invalid txs
+            if !to_remove.is_empty() {
+                let mut txs = transactions.lock();
+                for hash in to_remove {
+                    txs.swap_remove(&hash);
+                }
+            }
+
+            (selected, senders)
         }
         Err(err) => {
             warn!(%err, "failed to build an evm at block, building an empty subblock");
@@ -732,7 +770,8 @@ async fn build_subblock(
         transactions,
     };
 
-    let signature = signer.sign(None, subblock.signature_hash().as_slice());
+    // TODO: Use a namespace for these signatures?
+    let signature = signer.sign(&[], subblock.signature_hash().as_slice());
     let signed_subblock = SignedSubBlock {
         inner: subblock,
         signature: Bytes::copy_from_slice(signature.as_ref()),
@@ -759,7 +798,7 @@ async fn validate_subblock(
     subblock: SignedSubBlock,
     actions_tx: mpsc::UnboundedSender<Message>,
     scheme_provider: SchemeProvider,
-    epoch_length: u64,
+    epoch_strategy: FixedEpocher,
 ) -> eyre::Result<()> {
     let Ok(signature) =
         Signature::decode(&mut subblock.signature.as_ref()).wrap_err("invalid signature")
@@ -767,7 +806,8 @@ async fn validate_subblock(
         return Err(eyre::eyre!("invalid signature"));
     };
 
-    if !sender.verify(None, subblock.signature_hash().as_slice(), &signature) {
+    // TODO: use a namespace for these signatures?
+    if !sender.verify(&[], subblock.signature_hash().as_slice(), &signature) {
         return Err(eyre::eyre!("invalid signature"));
     }
 
@@ -785,10 +825,14 @@ async fn validate_subblock(
 
     let mut evm = evm_at_block(&node, subblock.parent_hash)?;
 
-    let epoch = utils::epoch(epoch_length, evm.block().number.to::<u64>() + 1);
+    let epoch = epoch_strategy
+        .containing(Height::new(evm.block().number.to::<u64>() + 1))
+        .expect("epoch strategy covers all epochs")
+        .epoch();
     let scheme = scheme_provider
-        .scheme(epoch)
+        .scoped(epoch)
         .ok_or_eyre("scheme not found")?;
+    let participants = scheme.participants().len() as usize;
 
     eyre::ensure!(
         scheme.participants().iter().any(|p| p == &sender),
@@ -798,9 +842,7 @@ async fn validate_subblock(
     // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE
-        / TEMPO_SHARED_GAS_DIVISOR as usize
-        / scheme.participants().len() as usize;
+    let max_size = MAX_RLP_BLOCK_SIZE / TEMPO_SHARED_GAS_DIVISOR as usize / participants;
     if subblock.total_tx_size() > max_size {
         warn!(
             size = subblock.total_tx_size(),
@@ -809,6 +851,21 @@ async fn validate_subblock(
         return Ok(());
     }
 
+    // Bound subblock gas at the per-validator allocation.
+    let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
+    let mut total_gas = 0u64;
+    for tx in subblock.transactions_recovered() {
+        total_gas = total_gas.saturating_add(tx.gas_limit());
+        if total_gas > gas_budget {
+            warn!(
+                total_gas,
+                gas_budget, "subblock exceeds gas budget, skipping"
+            );
+            return Ok(());
+        }
+    }
+
+    // Ensure all transactions can be committed
     for tx in subblock.transactions_recovered() {
         if let Err(err) = evm.transact_commit(tx) {
             return Err(eyre::eyre!("transaction failed to execute: {err:?}"));

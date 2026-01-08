@@ -7,7 +7,6 @@ use alloy::{
     },
 };
 use alloy_eips::Decodable2718;
-use alloy_network::TxSignerSync;
 use alloy_primitives::{Address, TxKind, U256};
 use reth_ethereum::{
     evm::revm::primitives::hex,
@@ -26,15 +25,10 @@ use reth_transaction_pool::{
 use std::sync::Arc;
 use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO, storage::slots, tip_fee_manager};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
-    TempoTransaction, TempoTxEnvelope, TxFeeToken,
-    transaction::{
-        calc_gas_balance_spending,
-        tempo_transaction::Call,
-        tt_signature::{PrimitiveSignature, TempoSignature},
-        tt_signed::AASigned,
-    },
+    TempoTransaction, TempoTxEnvelope,
+    transaction::{calc_gas_balance_spending, tempo_transaction::Call},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -67,7 +61,7 @@ async fn submit_pending_tx() -> eyre::Result<()> {
 
     let tx = TempoTxEnvelope::decode_2718_exact(&raw[..])?.try_into_recovered()?;
     let signer = tx.signer();
-    let slot = slots::mapping_slot(signer, tip_fee_manager::slots::USER_TOKENS);
+    let slot = TipFeeManager::new().user_tokens[signer].slot();
     println!("Submitting tx from {signer} with fee manager token slot 0x{slot:x}");
 
     let res = node
@@ -108,21 +102,24 @@ async fn test_insufficient_funds() -> eyre::Result<()> {
         .launch()
         .await?;
 
-    let mut tx = TxFeeToken {
+    let tx = TempoTransaction {
         chain_id: 1,
         nonce: U256::random().saturating_to(),
-        // Use AlphaUSD since PathUSD is only valid post-Allegretto
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         max_priority_fee_per_gas: 74982851675,
         max_fee_per_gas: 74982851675,
         gas_limit: 1015288,
-        to: Address::random().into(),
+        calls: vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: alloy_primitives::Bytes::new(),
+        }],
         ..Default::default()
     };
     let signer = PrivateKeySigner::random();
 
-    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
-    let tx = TempoTxEnvelope::FeeToken(tx.into_signed(signature));
+    let signature = signer.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let tx: TempoTxEnvelope = tx.clone().into_signed(signature.into()).into();
 
     let res = node
         .pool
@@ -177,18 +174,14 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: alloy_primitives::Bytes::new(),
         }],
-        fee_token: Some(DEFAULT_FEE_TOKEN_PRE_ALLEGRETTO),
+        fee_token: Some(DEFAULT_FEE_TOKEN),
         valid_before: Some(current_time + 1),
         ..Default::default()
     };
 
     // Sign the AA transaction
-    let sig_hash = tx_aa.signature_hash();
-    let signature = signer_wallet.sign_hash_sync(&sig_hash)?;
-    let aa_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature));
-    let signed_tx = AASigned::new_unhashed(tx_aa, aa_signature);
-
-    let envelope: TempoTxEnvelope = signed_tx.into();
+    let signature = signer_wallet.sign_hash_sync(&tx_aa.signature_hash())?;
+    let envelope: TempoTxEnvelope = tx_aa.into_signed(signature.into()).into();
     let recovered = envelope.try_into_recovered()?;
     let tx_hash = *recovered.tx_hash();
     assert_eq!(recovered.signer(), signer_addr);

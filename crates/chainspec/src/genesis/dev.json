@@ -19,17 +19,13 @@
     "osakaTime": 0,
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
-    "adagioTime": 0,
     "epochLength": 302400,
-    "moderatoTime": 0,
-    "allegrettoTime": 0,
-    "allegroModeratoTime": 0,
     "depositContractAddress": "0x00000000219ab540356cbb839cbe05303d7705fa"
   },
   "nonce": "0x42",
   "timestamp": "0x0",
   "extraData": "0x74656d706f2d67656e65736973",
-  "gasLimit": "0xf761ef61000",
+  "gasLimit": "0x1dcd6500",
   "difficulty": "0x0",
   "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0x0000000000000000000000000000000000000000",
@@ -391,6 +387,11 @@
         "0xe270dff72f261e778dc5ab0920b47eb9a22cd1aea97bd050b24ae036f7813d07": "0x00000000000000000000000000000000000000000000000000000002540be018",
         "0xe69abbba1b65a2824aaaf3cebd4e204d1bdf59ae1e7dbc277119b3d9d1a8de6c": "0x000000000000000000000002540be400000000000000000000000002540be400"
       }
+    },
+    "0xAAAAAAAA00000000000000000000000000000000": {
+      "nonce": "0x1",
+      "balance": "0x0",
+      "code": "0xef"
     }
   },
   "baseFeePerGas": "0x2540be400"

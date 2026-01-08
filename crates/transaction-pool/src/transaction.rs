@@ -7,7 +7,9 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
+use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes};
+use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
@@ -18,8 +20,9 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::{nonce::slots, storage::double_mapping_slot};
+use tempo_precompiles::nonce::NonceManager;
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_revm::TempoTxEnv;
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -32,6 +35,8 @@ pub struct TempoPooledTransaction {
     is_payment: bool,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
+    /// Cached prepared [`TempoTxEnv`] for payload building.
+    tx_env: OnceLock<TempoTxEnv>,
 }
 
 impl TempoPooledTransaction {
@@ -51,6 +56,7 @@ impl TempoPooledTransaction {
             },
             is_payment,
             nonce_key_slot: OnceLock::new(),
+            tx_env: OnceLock::new(),
         }
     }
 
@@ -79,11 +85,7 @@ impl TempoPooledTransaction {
         *self.nonce_key_slot.get_or_init(|| {
             let nonce_key = self.nonce_key()?;
             let sender = self.sender();
-            let slot = double_mapping_slot(
-                sender.as_slice(),
-                nonce_key.to_be_bytes::<32>(),
-                slots::NONCES,
-            );
+            let slot = NonceManager::new().nonces[sender][nonce_key].slot();
             Some(slot)
         })
     }
@@ -116,6 +118,31 @@ impl TempoPooledTransaction {
             seq_id: sender,
             nonce: self.nonce(),
         })
+    }
+
+    /// Computes the [`TempoTxEnv`] for this transaction.
+    fn tx_env_slow(&self) -> TempoTxEnv {
+        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+    }
+
+    /// Pre-computes and caches the [`TempoTxEnv`].
+    ///
+    /// This should be called during validation to prepare the transaction environment
+    /// ahead of time, avoiding it during payload building.
+    pub fn prepare_tx_env(&self) {
+        self.tx_env.get_or_init(|| self.tx_env_slow());
+    }
+
+    /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
+    ///
+    /// If the [`TempoTxEnv`] was pre-computed via [`Self::prepare_tx_env`], the cached
+    /// value is used. Otherwise, it is computed on-demand.
+    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
+        WithTxEnv {
+            tx_env,
+            tx: Arc::new(self.inner.transaction),
+        }
     }
 }
 
@@ -169,6 +196,13 @@ pub enum TempoPoolTransactionError {
         "Insufficient liquidity for fee token: {0}, please see https://docs.tempo.xyz/protocol/fees for more"
     )]
     InsufficientLiquidity(Address),
+
+    /// Thrown when an AA transaction's gas limit is insufficient for the calculated intrinsic gas.
+    /// This includes per-call costs, signature verification, and other AA-specific gas costs.
+    #[error(
+        "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
+    )]
+    InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -182,7 +216,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidAfter { .. }
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_) => false,
-            Self::NonZeroValue | Self::SubblockNonceKey => true,
+            Self::NonZeroValue
+            | Self::SubblockNonceKey
+            | Self::InsufficientGasForAAIntrinsicCost { .. } => true,
         }
     }
 
@@ -369,20 +405,20 @@ impl EthPoolTransaction for TempoPooledTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_consensus::TxEip1559;
     use alloy_primitives::address;
-    use tempo_primitives::TxFeeToken;
 
     #[test]
     fn test_payment_classification_caching() {
         // Test that payment classification is properly cached in TempoPooledTransaction
         let payment_addr = address!("20c0000000000000000000000000000000000001");
-        let tx = TxFeeToken {
+        let tx = TxEip1559 {
             to: TxKind::Call(payment_addr),
             gas_limit: 21000,
             ..Default::default()
         };
 
-        let envelope = TempoTxEnvelope::FeeToken(alloy_consensus::Signed::new_unchecked(
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
             tx,
             alloy_primitives::Signature::test_signature(),
             alloy_primitives::B256::ZERO,

@@ -4,12 +4,18 @@ pub use slot::*;
 pub mod mapping;
 pub use mapping::*;
 
-mod bytes_like;
-mod primitives;
+pub mod array;
 pub mod vec;
 
-use crate::{error::Result, storage::StorageOps};
-use alloy::primitives::U256;
+pub mod bytes_like;
+mod primitives;
+
+use crate::{
+    error::Result,
+    storage::{StorageOps, packing},
+};
+use alloy::primitives::{Address, U256, keccak256};
+use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -32,9 +38,7 @@ impl Layout {
     /// Returns true if this field can be packed with adjacent fields.
     pub const fn is_packable(&self) -> bool {
         match self {
-            // TODO(rusowsky): use `Self::Bytes(n) => *n < 32` to reduce gas usage.
-            // Note that this requires a hardfork and must be properly coordinated.
-            Self::Bytes(_) => true,
+            Self::Bytes(n) => *n < 32,
             Self::Slots(_) => false,
         }
     }
@@ -67,7 +71,7 @@ impl Layout {
     }
 }
 
-/// Describes the context in which a `Storable` value is being loaded or stored.
+/// Describes the context in which a storable value is being loaded or stored.
 ///
 /// Determines whether the value occupies an entire storage slot or is packed
 /// with other values at a specific byte offset within a slot.
@@ -85,10 +89,10 @@ impl Layout {
 pub struct LayoutCtx(usize);
 
 impl LayoutCtx {
-    /// Load/store the entire value at `base_slot`.
+    /// Load/store the entire value at a given slot.
     ///
     /// For writes, this directly overwrites the entire slot without needing SLOAD.
-    /// All `Storable` types support this context.
+    /// All storable types support this context.
     pub const FULL: Self = Self(usize::MAX);
 
     /// Load/store a packed primitive at the given byte offset within a slot.
@@ -116,8 +120,11 @@ impl LayoutCtx {
 
 /// Helper trait to access storage layout information without requiring const generic parameter.
 ///
-/// This trait exists to allow the derive macro to query the layout and size of field types
-/// during layout computation, before the slot count is known.
+/// This trait provides compile-time layout information (slot count, byte size, packability)
+/// and a factory method for creating handlers. It enables the derive macro to compute
+/// struct layouts before the final slot count is known.
+///
+/// **NOTE:** Don't need to implement the trait manually. Use `#[derive(Storable)]` instead.
 pub trait StorableType {
     /// Describes how this type is laid out in storage.
     ///
@@ -134,132 +141,147 @@ pub trait StorableType {
 
     /// Whether this type can be packed with adjacent fields.
     const IS_PACKABLE: bool = Self::LAYOUT.is_packable();
+
+    /// Whether this type stores it's data in its base slot or not.
+    ///
+    /// Dynamic types (`Bytes`, `String`, `Vec`) store data at keccak256-addressed
+    /// slots and need special cleanup. Non-dynamic types just zero their slots.
+    const IS_DYNAMIC: bool = false;
+
+    /// The handler type that provides storage access for this type.
+    ///
+    /// For primitives, this is `Slot<Self>`.
+    /// For mappings, this is `Self` (mappings are their own handlers).
+    /// For user-defined structs, this is a generated handler type (e.g., `MyStructHandler`).
+    type Handler;
+
+    /// Creates a handler for this type at the given storage location.
+    fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler;
 }
 
-/// Trait for types that can be stored/loaded from EVM storage.
-///
-/// This trait provides a flexible abstraction for reading and writing Rust types
-/// to EVM storage. Types can occupy one or more consecutive storage slots, enabling
-/// support for both simple values (Address, U256, bool) and complex multi-slot types
-/// (structs, fixed arrays).
-///
-/// # Type Parameter
-///
-/// - `SLOTS`: The number of consecutive storage slots this type occupies.
-///   For single-word types (Address, U256, bool), this is `1`.
-///   For fixed-size arrays, this equals the number of elements.
-///   For user-defined structs, this a number between `1` and the number of fields, which depends on slot packing.
-///
-/// # Storage Layout
-///
-/// For a type with `SLOTS = 3` starting at `base_slot`:
-/// - Slot 0: `base_slot + 0`
-/// - Slot 1: `base_slot + 1`
-/// - Slot 2: `base_slot + 2`
-///
-/// # Safety
-///
-/// Implementations must ensure that:
-/// - Round-trip conversions preserve data: `load(store(x)) == Ok(x)`
-/// - `SLOTS` accurately reflects the number of slots used
-/// - `store` and `load` access exactly `SLOTS` consecutive slots
-/// - `to_evm_words` and `from_evm_words` produce/consume exactly `SLOTS` words
-pub trait Storable<const SLOTS: usize>: Sized + StorableType {
-    /// Load this type from storage starting at the given base slot.
-    ///
-    /// Reads `SLOTS` consecutive slots starting from `base_slot`.
-    ///
-    /// # Context
-    ///
-    /// - `LayoutCtx::FULL`: Load the entire value from `base_slot` (and subsequent slots if multi-slot)
-    /// - `LayoutCtx::packed(offset)`: Load a packed primitive from byte `offset` within `base_slot`
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Storage read fails
-    /// - Data cannot be decoded into this type
-    /// - Context is invalid for this type (e.g., `Packed` for a multi-slot type)
-    fn load<S: StorageOps>(storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<Self>;
+/// Abstracts reading, writing, and deleting values for [`Storable`] types.
+pub trait Handler<T: Storable> {
+    /// Reads the value from storage.
+    fn read(&self) -> Result<T>;
 
-    /// Store this type to storage starting at the given base slot.
-    ///
-    /// Writes `SLOTS` consecutive slots starting from `base_slot`.
-    ///
-    /// # Context
-    ///
-    /// - `LayoutCtx::FULL`: Write the entire value to `base_slot` (overwrites full slot)
-    /// - `LayoutCtx::packed(offset)`: Write a packed primitive at byte `offset` (read-modify-write)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Storage write fails
-    /// - Context is invalid for this type (e.g., `Packed` for a multi-slot type)
-    fn store<S: StorageOps>(&self, storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()>;
+    /// Writes the value to storage.
+    fn write(&mut self, value: T) -> Result<()>;
 
-    /// Delete this type from storage (set all slots to zero).
+    /// Deletes the value from storage (sets to zero).
+    fn delete(&mut self) -> Result<()>;
+
+    /// Reads the value from storage.
+    fn t_read(&self) -> Result<T>;
+
+    /// Writes the value to storage.
+    fn t_write(&mut self, value: T) -> Result<()>;
+
+    /// Deletes the value from storage (sets to zero).
+    fn t_delete(&mut self) -> Result<()>;
+}
+
+/// High-level storage operations for storable types.
+///
+/// This trait provides storage I/O operations: load, store, delete.
+/// Types implement their own logic for handling packed vs full-slot contexts.
+pub trait Storable: StorableType + Sized {
+    /// Load this type from storage at the given slot.
+    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self>;
+
+    /// Store this type to storage at the given slot.
+    fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()>;
+
+    /// Delete this type from storage (set to zero).
     ///
-    /// Sets `SLOTS` consecutive slots to zero, starting from `base_slot`.
-    ///
-    /// # Context
-    ///
-    /// - `LayoutCtx::FULL`: Clear entire slot(s) by writing zero
-    /// - `LayoutCtx::packed(offset)`: Clear only the bytes at the offset (read-modify-write)
-    ///
-    /// The default implementation handles both contexts appropriately.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Storage write fails
-    /// - Context is invalid for this type
-    fn delete<S: StorageOps>(storage: &mut S, base_slot: U256, ctx: LayoutCtx) -> Result<()> {
+    /// Default implementation handles both full-slot and packed contexts:
+    /// - `LayoutCtx::FULL`: Writes zero to all `Self::SLOTS` consecutive slots
+    /// - `LayoutCtx::packed(offset)`: Clears only the bytes at the offset (read-modify-write)
+    fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         match ctx.packed_offset() {
             None => {
-                for offset in 0..SLOTS {
-                    storage.sstore(base_slot + U256::from(offset), U256::ZERO)?;
+                for offset in 0..Self::SLOTS {
+                    storage.store(slot + U256::from(offset), U256::ZERO)?;
                 }
                 Ok(())
             }
             Some(offset) => {
                 // For packed context, we need to preserve other fields in the slot
                 let bytes = Self::BYTES;
-                let current = storage.sload(base_slot)?;
-                let cleared = crate::storage::packing::zero_packed_value(current, offset, bytes)?;
-                storage.sstore(base_slot, cleared)
+                let current = storage.load(slot)?;
+                let cleared = crate::storage::packing::delete_from_word(current, offset, bytes)?;
+                storage.store(slot, cleared)
+            }
+        }
+    }
+}
+
+/// Private module to seal the `Packable` trait.
+#[allow(unnameable_types)]
+pub(in crate::storage::types) mod sealed {
+    /// Marker trait to prevent external implementations of `Packable`.
+    pub trait OnlyPrimitives {}
+}
+
+/// Trait for types that can be packed into EVM storage slots.
+///
+/// This trait is **sealed** - it can only be implemented within this crate
+/// for primitive types that fit in a single U256 word.
+///
+/// # Usage
+///
+/// `Packable` is used by the storage packing system to efficiently pack multiple
+/// small values into a single 32-byte storage slot.
+///
+/// # Warning
+///
+/// `IS_PACKABLE` must be true for the implementing type (enforced at compile time)
+pub trait Packable: FromWord + StorableType {}
+
+/// Trait for primitive types that fit into a single EVM storage slot.
+///
+/// # Warning
+///
+/// Round-trip conversions must preserve data: `from_word(to_word(x)) == x`
+pub trait FromWord: sealed::OnlyPrimitives {
+    /// Encode this type to a single U256 word.
+    fn to_word(&self) -> U256;
+
+    /// Decode this type from a single U256 word.
+    fn from_word(word: U256) -> Result<Self>
+    where
+        Self: Sized;
+}
+
+/// Blanket implementation of `Storable` for all `Packable` types.
+///
+/// This provides a unified load/store implementation for all primitive types,
+/// handling both full-slot and packed contexts automatically.
+impl<T: Packable> Storable for T {
+    #[inline]
+    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+        const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
+
+        match ctx.packed_offset() {
+            None => storage.load(slot).and_then(Self::from_word),
+            Some(offset) => {
+                let slot_value = storage.load(slot)?;
+                packing::extract_from_word(slot_value, offset, Self::BYTES)
             }
         }
     }
 
-    /// Encode this type to an array of U256 words.
-    ///
-    /// Returns exactly `SLOTS` words, where each word represents one storage slot.
-    /// For single-slot types (`SLOTS = 1`), returns a single-element array.
-    /// For multi-slot types, each array element corresponds to one slot's data.
-    ///
-    /// # Packed Storage
-    ///
-    /// When multiple small fields are packed into a single slot, they are
-    /// positioned and combined into a single U256 word according to their
-    /// byte offsets. The derive macro handles this automatically.
-    fn to_evm_words(&self) -> Result<[U256; SLOTS]>;
+    #[inline]
+    fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
+        const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
-    /// Decode this type from an array of U256 words.
-    ///
-    /// Accepts exactly `N` words, where each word represents one storage slot.
-    /// Constructs the complete type from all provided words.
-    ///
-    /// # Packed Storage
-    ///
-    /// When multiple small fields are packed into a single slot, they are
-    /// extracted from the appropriate word using bit shifts and masks.
-    /// The derive macro handles this automatically.
-    fn from_evm_words(words: [U256; SLOTS]) -> Result<Self>;
-
-    /// Test helper to ensure `LAYOUT` and `SLOTS` are in sync.
-    fn validate_layout() {
-        debug_assert_eq!(<Self as StorableType>::SLOTS, SLOTS)
+        match ctx.packed_offset() {
+            None => storage.store(slot, self.to_word()),
+            Some(offset) => {
+                let current = storage.load(slot)?;
+                let updated = packing::insert_into_word(current, self, offset, Self::BYTES)?;
+                storage.store(slot, updated)
+            }
+        }
     }
 }
 
@@ -269,5 +291,77 @@ pub trait Storable<const SLOTS: usize>: Sized + StorableType {
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
 pub trait StorageKey {
+    /// Returns a byte slice for this type.
     fn as_storage_bytes(&self) -> impl AsRef<[u8]>;
+
+    /// Compute storage slot for a mapping with this key.
+    ///
+    /// Left-pads the key to the nearest 32-byte multiple, concatenates
+    /// with the slot, and hashes.
+    fn mapping_slot(&self, slot: U256) -> U256 {
+        let key_bytes = self.as_storage_bytes();
+        let key_bytes = key_bytes.as_ref();
+
+        // Pad key to nearest multiple of 32 bytes
+        let padded_len = key_bytes.len().div_ceil(32) * 32;
+        let mut buf = vec![0u8; padded_len + 32];
+
+        // Left-pad the key bytes
+        buf[padded_len - key_bytes.len()..padded_len].copy_from_slice(key_bytes);
+        // Append slot in big-endian
+        buf[padded_len..].copy_from_slice(&slot.to_be_bytes::<32>());
+
+        U256::from_be_bytes(keccak256(&buf).0)
+    }
+}
+
+/// Cache for computed handlers with stable references.
+///
+/// Enables `Index` implementations on handlers by storing child handlers and
+/// returning references that remain valid across insertions.
+///
+/// Uses `RefCell` for interior mutability with runtime borrow checking.
+/// Re-entrant access will panic rather than cause undefined behavior.
+#[derive(Debug, Default)]
+pub(super) struct HandlerCache<K, H> {
+    inner: RefCell<HashMap<K, Box<H>>>,
+}
+
+impl<K, H> HandlerCache<K, H> {
+    /// Creates a new empty handler cache.
+    #[inline]
+    pub(super) fn new() -> Self {
+        Self {
+            inner: RefCell::new(HashMap::new()),
+        }
+    }
+}
+
+impl<K, H> Clone for HandlerCache<K, H> {
+    /// Creates a new empty cache (cached handlers are not cloned).
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Hash + Eq, H> HandlerCache<K, H> {
+    /// Returns a reference to a lazily initialized handler for the given key.
+    #[inline]
+    pub(super) fn get_or_insert(&self, key: K, f: impl FnOnce() -> H) -> &H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, so `Box` is never moved or deallocated during handler lifetime.
+        unsafe { &*(boxed.as_ref() as *const H) }
+    }
+
+    /// Returns a mutable reference to a lazily initialized handler for the given key.
+    #[inline]
+    pub(super) fn get_or_insert_mut(&mut self, key: K, f: impl FnOnce() -> H) -> &mut H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = cache.entry(key).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address.
+        // Cache is append-only, `&mut self` ensures exclusive access.
+        unsafe { &mut *(boxed.as_mut() as *mut H) }
+    }
 }

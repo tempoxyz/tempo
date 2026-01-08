@@ -43,6 +43,10 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 By default, all existing functionality will work for EVM-compatible wallets, with only a few quirks. For developers of wallets, we strongly encourage you to implement support for Tempo Transactions over regular EVM transactions. See the [transaction differences](#transaction-differences) for more.
 
+:::tip
+If you are building a wallet, read our [guide for wallet developers](/quickstart/wallet-developers).
+:::
+
 ### Handling ETH (native token) Balance Checks
 
 Remember that on Tempo, there is no native gas token.
@@ -92,9 +96,9 @@ Importantly, note that the `amount` field in this case is sent in full. So, if t
 
 #### Consideration 3: The fallback in the case of a non-TIP-20 contract
 
-If the user is calling a contract that is not a TIP-20 token, the EVM transaction will default to the PathUSD token. Thus, in order to send transactions to non-TIP-20 contracts, the wallet must hold some balance of PathUSD.
+If the user is calling a contract that is not a TIP-20 token, the EVM transaction will default to the pathUSD token. Thus, in order to send transactions to non-TIP-20 contracts, the wallet must hold some balance of pathUSD.
 
-On the Tempo Testnet, PathUSD is available from the [faucet](/quickstart/faucet).
+On the Tempo Testnet, pathUSD is available from the [faucet](/quickstart/faucet).
 
 If a wallet wants to submit a non-TIP20 transaction without having to submit the above transaction, we recommend investing in using [Tempo Transactions](/quickstart/integrate-tempo#tempo-transactions) instead.
 

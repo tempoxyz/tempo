@@ -1,11 +1,10 @@
 use alloy_consensus::{BlockHeader, Header, Sealable};
-use alloy_primitives::{Address, B64, B256, BlockHash, BlockNumber, Bloom, Bytes, U256, keccak256};
+use alloy_primitives::{Address, B64, B256, BlockNumber, Bloom, Bytes, U256, keccak256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use reth_primitives_traits::InMemorySize;
 
 /// Tempo block header.
 ///
-/// Encoded as `rlp([inner, general_gas_limit])` meaning that any new
+/// Encoded as `rlp([general_gas_limit, shared_gas_limit, timestamp_millis_part, inner])` meaning that any new
 /// fields added to the inner header will only affect the first list element.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default, RlpEncodable, RlpDecodable)]
 #[cfg_attr(feature = "reth-codec", derive(reth_codecs::Compact))]
@@ -139,7 +138,8 @@ impl BlockHeader for TempoHeader {
     }
 }
 
-impl InMemorySize for TempoHeader {
+#[cfg(feature = "reth")]
+impl reth_primitives_traits::InMemorySize for TempoHeader {
     fn size(&self) -> usize {
         let Self {
             inner,
@@ -160,10 +160,12 @@ impl Sealable for TempoHeader {
     }
 }
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::BlockHeader for TempoHeader {}
 
+#[cfg(feature = "reth")]
 impl reth_primitives_traits::header::HeaderMut for TempoHeader {
-    fn set_parent_hash(&mut self, hash: BlockHash) {
+    fn set_parent_hash(&mut self, hash: B256) {
         self.inner.set_parent_hash(hash);
     }
 

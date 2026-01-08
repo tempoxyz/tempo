@@ -1,5 +1,5 @@
-import { Hooks } from 'tempo.ts/wagmi'
 import type { Address } from 'viem'
+import { Hooks } from 'wagmi/tempo'
 
 type TokenSelectorProps = {
   tokens: Address[]

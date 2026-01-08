@@ -16,16 +16,26 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions_last: Gauge,
+    /// Number of subblocks in the payload.
+    pub(crate) subblocks: Histogram,
+    /// Number of subblocks in the payload.
+    pub(crate) subblocks_last: Gauge,
+    /// Number of subblock transactions in the payload.
+    pub(crate) subblock_transactions: Histogram,
+    /// Number of subblock transactions in the payload.
+    pub(crate) subblock_transactions_last: Gauge,
     /// Amount of gas used in the payload.
     pub(crate) gas_used: Histogram,
     /// Amount of gas used in the payload.
     pub(crate) gas_used_last: Gauge,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
-    /// The time it took to execute start-of-block system transactions in seconds.
-    pub(crate) start_block_txs_execution_duration_seconds: Histogram,
     /// The time it took to execute one transaction in seconds.
     pub(crate) transaction_execution_duration_seconds: Histogram,
+    /// The time it took to execute normal transactions in seconds.
+    pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
+    /// The time it took to execute subblock transactions in seconds.
+    pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute all transactions in seconds.
     pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute system transactions in seconds.

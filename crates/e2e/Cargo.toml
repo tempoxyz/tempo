@@ -13,13 +13,18 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic",
-  "rlp"
+  "rlp",
+  "providers",
 ] }
+alloy-evm.workspace = true
 alloy-genesis.workspace = true
 alloy-primitives.workspace = true
 
 commonware-codec.workspace = true
+# fuzz features provides access to dkg fixtures
+commonware-consensus = { workspace = true, features = ["fuzz"] }
 commonware-cryptography.workspace = true
+commonware-math.workspace = true
 commonware-p2p.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
 commonware-utils.workspace = true
@@ -36,10 +41,10 @@ reth-node-metrics.workspace = true
 reth-rpc-builder.workspace = true
 
 tempo-chainspec.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
-tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true
-tempo-precompiles.workspace = true
+tempo-precompiles = { workspace = true, features = ["rpc"] }
 
 futures.workspace = true
 tempfile.workspace = true
@@ -51,6 +56,7 @@ secp256k1.workspace = true
 [dev-dependencies]
 commonware-consensus.workspace = true
 commonware-macros.workspace = true
+jsonrpsee = { workspace = true, features = ["ws-client", "http-client"] }
 tempo-eyre.workspace = true
 tracing-subscriber.workspace = true
 

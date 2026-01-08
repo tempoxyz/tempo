@@ -14,6 +14,7 @@ pub struct HashMapStorageProvider {
     timestamp: U256,
     beneficiary: Address,
     spec: TempoHardfork,
+    is_static: bool,
 }
 
 impl HashMapStorageProvider {
@@ -37,28 +38,12 @@ impl HashMapStorageProvider {
             ),
             beneficiary: Address::ZERO,
             spec,
+            is_static: false,
         }
     }
 
-    pub fn set_nonce(&mut self, address: Address, nonce: u64) {
-        let account = self.accounts.entry(address).or_default();
-        account.nonce = nonce;
-    }
-
-    pub fn set_timestamp(&mut self, timestamp: U256) {
-        self.timestamp = timestamp;
-    }
-
-    pub fn set_beneficiary(&mut self, beneficiary: Address) {
-        self.beneficiary = beneficiary;
-    }
-
-    pub fn set_spec(&mut self, spec: TempoHardfork) {
-        self.spec = spec;
-    }
-
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
-        self.set_spec(spec);
+        self.spec = spec;
         self
     }
 }
@@ -78,16 +63,19 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
+        account.code_hash = code.hash_slow();
         account.code = Some(code);
         Ok(())
     }
 
-    fn get_account_info(
+    fn with_account_info(
         &mut self,
         address: Address,
-    ) -> Result<&'_ AccountInfo, TempoPrecompileError> {
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
         let account = self.accounts.entry(address).or_default();
-        Ok(&*account)
+        f(&*account);
+        Ok(())
     }
 
     fn sstore(
@@ -149,5 +137,50 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn spec(&self) -> TempoHardfork {
         self.spec
+    }
+
+    fn is_static(&self) -> bool {
+        self.is_static
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl HashMapStorageProvider {
+    pub fn get_account_info(&self, address: Address) -> Option<&AccountInfo> {
+        self.accounts.get(&address)
+    }
+
+    pub fn get_events(&self, address: Address) -> &Vec<LogData> {
+        static EMPTY: Vec<LogData> = Vec::new();
+        self.events.get(&address).unwrap_or(&EMPTY)
+    }
+
+    pub fn set_nonce(&mut self, address: Address, nonce: u64) {
+        let account = self.accounts.entry(address).or_default();
+        account.nonce = nonce;
+    }
+
+    pub fn set_timestamp(&mut self, timestamp: U256) {
+        self.timestamp = timestamp;
+    }
+
+    pub fn set_beneficiary(&mut self, beneficiary: Address) {
+        self.beneficiary = beneficiary;
+    }
+
+    pub fn set_spec(&mut self, spec: TempoHardfork) {
+        self.spec = spec;
+    }
+
+    pub fn clear_transient(&mut self) {
+        self.transient.clear();
+    }
+
+    pub fn clear_events(&mut self, address: Address) {
+        let _ = self
+            .events
+            .entry(address)
+            .and_modify(|v| v.clear())
+            .or_default();
     }
 }

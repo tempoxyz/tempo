@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits } from 'viem'
 import { useConnection } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'

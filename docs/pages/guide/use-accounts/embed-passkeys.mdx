@@ -46,11 +46,11 @@ Next, we will need to configure the `webAuthn` connector in our Wagmi config.
 ```tsx twoslash [config.ts]
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({ // [!code ++]
     keyManager: KeyManager.localStorage(), // [!code ++]
   })], // [!code ++]
@@ -65,7 +65,7 @@ export const config = createConfig({
 
 The `KeyManager.localStorage()` implementation is not recommended for production use as it stores public keys on the client device, meaning it cannot be re-extracted when the user's storage is cleared or if the user is on another device. 
 
-For production, you should opt for a remote key manager such as [`KeyManager.http`](/sdk/typescript/wagmi/keyManagers/http).
+For production, you should opt for a remote key manager such as [`KeyManager.http`](https://wagmi.sh/tempo/keyManagers/http).
 
 :::
 
@@ -132,11 +132,11 @@ export function Example() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({ // [!code ++] 
     keyManager: KeyManager.localStorage(), // [!code ++]
   })], // [!code ++]
@@ -210,11 +210,11 @@ export function Example() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempo } from 'tempo.ts/chains'
-import { KeyManager, webAuthn } from 'tempo.ts/wagmi' // [!code ++]
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo' // [!code ++]
 
 export const config = createConfig({
-  chains: [tempo({ feeToken: '0x20c0000000000000000000000000000000000001' })],
+  chains: [tempoTestnet],
   connectors: [webAuthn({ // [!code ++]
     keyManager: KeyManager.localStorage(), // [!code ++]
   })], // [!code ++]

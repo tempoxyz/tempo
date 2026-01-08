@@ -1,14 +1,16 @@
-//! Drives the execution engine by forwarding consensus messages.
+//! The interface between the consensus layer and the execution layer.
+//!
+//! The application actor implements the [`commonware_consensus::Automaton`]
+//! trait to propose and verify blocks.
 
 use std::time::Duration;
 
+use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::{Metrics, Pacer, Spawner, Storage};
 
 use eyre::WrapErr as _;
 use rand::{CryptoRng, Rng};
 use tempo_node::TempoFullNode;
-
-mod executor;
 
 mod actor;
 mod ingress;
@@ -45,6 +47,8 @@ pub(super) struct Config<TContext> {
     /// For subscribing to blocks distributed via the consensus p2p network.
     pub(super) marshal: crate::alias::marshal::Mailbox,
 
+    pub(super) executor: crate::executor::Mailbox,
+
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: TempoFullNode,
 
@@ -54,10 +58,8 @@ pub(super) struct Config<TContext> {
     /// The minimum amount of time to wait before resolving a new payload from the builder
     pub(super) new_payload_wait_time: Duration,
 
-    /// The number of heights H in an epoch. For a given epoch E, all heights
-    /// `E*H` to and including `(E+1)*H-1` make up the epoch. The block at
-    /// `E*H-1` (saturating) is said to be the genesis (or parent) of the epoch.
-    pub(super) epoch_length: u64,
+    /// The epoch strategy used by tempo, to map block heights to epochs.
+    pub(super) epoch_strategy: FixedEpocher,
 
     /// The scheme provider to use for the application.
     pub(crate) scheme_provider: SchemeProvider,

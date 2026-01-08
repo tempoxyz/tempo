@@ -10,34 +10,34 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{net::SocketAddr, time::Duration};
+use std::{iter::repeat_with, net::SocketAddr, time::Duration};
 
+use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
-    PrivateKeyExt as _, Signer as _,
-    bls12381::{dkg::ops, primitives::variant::MinSig},
+    Signer as _,
+    bls12381::{dkg, primitives::sharing::Mode},
     ed25519::{PrivateKey, PublicKey},
 };
+use commonware_math::algebra::Random as _;
 use commonware_p2p::simulated::{self, Link, Network, Oracle};
 
+use commonware_codec::Encode;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{SystemTimeExt as _, quorum, set::OrderedAssociated};
+use commonware_utils::{TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_chainspec::TempoChainSpec;
+use tempo_commonware_node::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
-
-use crate::execution_runtime::{
-    genesis, insert_allegretto, insert_epoch_length, insert_public_polynomial, insert_validators,
-};
 
 #[cfg(test)]
 mod tests;
@@ -57,14 +57,15 @@ pub struct Setup {
 
     /// The seed used for setting up the deterministic runtime.
     pub seed: u64,
+
     /// The linkage between individual validators.
     pub linkage: Link,
+
     /// The number of heights in an epoch.
     pub epoch_length: u64,
 
+    /// Whether to connect execution layer nodes directly.
     pub connect_execution_layer_nodes: bool,
-
-    pub allegretto_in_seconds: Option<u64>,
 }
 
 impl Setup {
@@ -80,7 +81,6 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
-            allegretto_in_seconds: None,
         }
     }
 
@@ -119,13 +119,6 @@ impl Setup {
             ..self
         }
     }
-
-    pub fn allegretto_in_seconds(self, seconds: u64) -> Self {
-        Self {
-            allegretto_in_seconds: Some(seconds),
-            ..self
-        }
-    }
 }
 
 impl Default for Setup {
@@ -137,7 +130,7 @@ impl Default for Setup {
 /// Sets up validators and returns the nodes and execution runtime.
 ///
 /// The execution runtime is created internally with a chainspec configured
-/// according to the Setup parameters (epoch_length, allegretto, validators, polynomial).
+/// according to the Setup parameters (epoch_length, validators, polynomial).
 ///
 /// The oracle is accessible via `TestingNode::oracle()` if needed for dynamic linking.
 pub async fn setup_validators(
@@ -145,13 +138,12 @@ pub async fn setup_validators(
     Setup {
         how_many_signers,
         how_many_verifiers,
-        seed,
         connect_execution_layer_nodes,
         linkage,
         epoch_length,
-        allegretto_in_seconds,
+        ..
     }: Setup,
-) -> (Vec<TestingNode>, ExecutionRuntime) {
+) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
     let (network, mut oracle) = Network::new(
         context.with_label("network"),
         simulated::Config {
@@ -162,73 +154,77 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let mut private_keys = Vec::new();
-
-    for i in 0..(how_many_signers + how_many_verifiers) {
-        let signer = PrivateKey::from_seed(seed + u64::from(i));
-        private_keys.push(signer);
-    }
-    private_keys.sort_by_key(|s| s.public_key());
-
-    let threshold = quorum(how_many_signers);
-    let (polynomial, shares) =
-        ops::generate_shares::<_, MinSig>(&mut context, None, how_many_signers, threshold);
-
-    let mut nodes = Vec::new();
-
-    // The actual port here does not matter because in the simulated p2p
-    // oracle it will be ignored. But it's nice because the nodes can be
-    // more easily identified in some logs..
-    let peers: OrderedAssociated<_, _> = private_keys
-        .iter()
+    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut context))
         .take(how_many_signers as usize)
-        .cloned()
-        .enumerate()
-        .map(|(i, signer)| {
+        .collect::<Vec<_>>();
+    signer_keys.sort_by_key(|key| key.public_key());
+    let (initial_dkg_outcome, shares) = dkg::deal(
+        &mut context,
+        Mode::NonZeroCounter,
+        ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
+    )
+    .unwrap();
+
+    let onchain_dkg_outcome = OnchainDkgOutcome {
+        epoch: Epoch::zero(),
+        output: initial_dkg_outcome,
+        next_players: shares.keys().clone(),
+        is_next_full_dkg: false,
+    };
+    let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut context))
+        .take(how_many_verifiers as usize)
+        .collect::<Vec<_>>();
+    verifier_keys.sort_by_key(|key| key.public_key());
+
+    // The port here does not matter because it will be ignored in simulated p2p.
+    // Still nice, because sometimes nodes can be better identified in logs.
+    let validators =
+        ordered::Map::try_from_iter(shares.keys().iter().enumerate().map(|(i, key)| {
             (
-                signer.public_key(),
+                key.clone(),
                 SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
             )
-        })
-        .collect::<Vec<_>>()
-        .into();
+        }))
+        .unwrap();
 
-    let mut genesis = genesis();
-    if let Some(allegretto_secs) = allegretto_in_seconds {
-        genesis = insert_allegretto(
-            genesis,
-            context.current().epoch().as_secs() + allegretto_secs,
-        );
-    }
-    genesis = insert_epoch_length(genesis, epoch_length);
-    genesis = insert_public_polynomial(genesis, polynomial.into());
-    genesis = insert_validators(genesis, peers.clone().into());
-
-    let chain_spec = TempoChainSpec::from_genesis(genesis);
-
-    let execution_runtime = ExecutionRuntime::with_chain_spec(chain_spec);
-
-    // Extend shares with None for verifiers
-    let shares: Vec<_> = shares
-        .into_iter()
-        .map(Some)
-        .chain(std::iter::repeat_n(None, how_many_verifiers as usize))
-        .collect();
+    let execution_runtime = ExecutionRuntime::builder()
+        .with_epoch_length(epoch_length)
+        .with_initial_dkg_outcome(onchain_dkg_outcome)
+        .with_validators(validators)
+        .launch()
+        .unwrap();
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)
         .with_peers(connect_execution_layer_nodes)
         .generate();
 
-    for ((private_key, share), execution_config) in private_keys
+    let mut nodes = vec![];
+    for ((private_key, share), mut execution_config) in signer_keys
         .into_iter()
         .zip_eq(shares)
+        .map(|(signing_key, (verifying_key, share))| {
+            assert_eq!(signing_key.public_key(), verifying_key);
+            (signing_key, Some(share))
+        })
+        .chain(verifier_keys.into_iter().map(|key| (key, None)))
         .zip_eq(execution_configs)
     {
         let oracle = oracle.clone();
-        let uid = format!("{CONSENSUS_NODE_PREFIX}-{}", private_key.public_key());
+        let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
+        let feed_state = FeedStateHandle::new();
 
-        let engine_config = tempo_commonware_node::consensus::Builder {
+        execution_config.validator_key = Some(
+            private_key
+                .public_key()
+                .encode()
+                .as_ref()
+                .try_into()
+                .unwrap(),
+        );
+        execution_config.feed_state = Some(feed_state.clone());
+
+        let engine_config = consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: None,
@@ -248,6 +244,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            feed_state,
         };
 
         nodes.push(TestingNode::new(
@@ -276,13 +273,12 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 
         join_all(nodes.iter_mut().map(|node| node.start())).await;
 
-        let pat = format!("{CONSENSUS_NODE_PREFIX}-");
         loop {
             let metrics = context.encode();
 
             let mut success = false;
             for line in metrics.lines() {
-                if !line.starts_with(&pat) {
+                if !line.starts_with(CONSENSUS_NODE_PREFIX) {
                     continue;
                 }
 
@@ -316,9 +312,9 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
 ///
 /// The `restrict_to` function can be used to restrict the linking to certain connections,
 /// otherwise all validators will be linked to all other validators.
-pub async fn link_validators(
-    oracle: &mut Oracle<PublicKey>,
-    validators: &[TestingNode],
+pub async fn link_validators<TClock: commonware_runtime::Clock>(
+    oracle: &mut Oracle<PublicKey, TClock>,
+    validators: &[TestingNode<TClock>],
     link: Link,
     restrict_to: Option<fn(usize, usize, usize) -> bool>,
 ) {
