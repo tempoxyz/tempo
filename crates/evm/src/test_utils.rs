@@ -41,6 +41,9 @@ pub(crate) fn test_evm_with_basefee<DB: Database>(
     )
 }
 
+use crate::block::BlockSection;
+use tempo_primitives::TempoTxEnvelope;
+
 pub(crate) struct TestExecutorBuilder {
     pub(crate) block_number: u64,
     pub(crate) parent_hash: B256,
@@ -49,6 +52,10 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    // Test state to seed into the executor after creation
+    pub(crate) initial_section: Option<BlockSection>,
+    pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
+    pub(crate) initial_incentive_gas_used: u64,
 }
 
 impl Default for TestExecutorBuilder {
@@ -61,6 +68,9 @@ impl Default for TestExecutorBuilder {
             validator_set: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
+            initial_section: None,
+            initial_seen_subblocks: Vec::new(),
+            initial_incentive_gas_used: 0,
         }
     }
 }
@@ -83,6 +93,28 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_parent_beacon_block_root(mut self, root: B256) -> Self {
         self.parent_beacon_block_root = Some(root);
+        self
+    }
+
+    /// Set the initial block section for the executor (for testing section transitions).
+    pub(crate) fn with_section(mut self, section: BlockSection) -> Self {
+        self.initial_section = Some(section);
+        self
+    }
+
+    /// Add a seen subblock to the executor (for testing shared gas validation).
+    pub(crate) fn with_seen_subblock(
+        mut self,
+        proposer: PartialValidatorKey,
+        txs: Vec<TempoTxEnvelope>,
+    ) -> Self {
+        self.initial_seen_subblocks.push((proposer, txs));
+        self
+    }
+
+    /// Set the initial incentive gas used (for testing gas limit validation).
+    pub(crate) fn with_incentive_gas_used(mut self, gas: u64) -> Self {
+        self.initial_incentive_gas_used = gas;
         self
     }
 
@@ -121,6 +153,19 @@ impl TestExecutorBuilder {
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 
-        TempoBlockExecutor::new(evm, ctx, chainspec)
+        let mut executor = TempoBlockExecutor::new(evm, ctx, chainspec);
+
+        // Apply test-specific initial state
+        if let Some(section) = self.initial_section {
+            executor.set_section_for_test(section);
+        }
+        for (proposer, txs) in self.initial_seen_subblocks {
+            executor.add_seen_subblock_for_test(proposer, txs);
+        }
+        if self.initial_incentive_gas_used > 0 {
+            executor.set_incentive_gas_used_for_test(self.initial_incentive_gas_used);
+        }
+
+        executor
     }
 }

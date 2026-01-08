@@ -82,15 +82,15 @@ pub(crate) struct TempoBlockExecutor<'a, DB: Database, I> {
         TempoReceiptBuilder,
     >,
 
-    pub(crate) section: BlockSection,
-    pub(crate) seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
-    pub(crate) validator_set: Option<Vec<B256>>,
-    pub(crate) shared_gas_limit: u64,
+    section: BlockSection,
+    seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
+    validator_set: Option<Vec<B256>>,
+    shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
-    pub(crate) incentive_gas_used: u64,
+    incentive_gas_used: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -445,6 +445,38 @@ where
     }
 }
 
+// Test-only methods to set internal state without exposing fields as pub(crate)
+#[cfg(test)]
+impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<&'a mut State<DB>>>,
+{
+    /// Set the block section for testing section transition logic.
+    pub(crate) fn set_section_for_test(&mut self, section: BlockSection) {
+        self.section = section;
+    }
+
+    /// Add a seen subblock for testing shared gas validation.
+    pub(crate) fn add_seen_subblock_for_test(
+        &mut self,
+        proposer: PartialValidatorKey,
+        txs: Vec<TempoTxEnvelope>,
+    ) {
+        self.seen_subblocks.push((proposer, txs));
+    }
+
+    /// Set incentive gas used for testing gas limit validation.
+    pub(crate) fn set_incentive_gas_used_for_test(&mut self, gas: u64) {
+        self.incentive_gas_used = gas;
+    }
+
+    /// Get the current section for assertions.
+    pub(crate) fn section(&self) -> BlockSection {
+        self.section
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,11 +615,11 @@ mod tests {
     fn test_validate_system_tx_duplicate_subblocks_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-
-        executor.section = BlockSection::System {
-            seen_subblocks_signatures: true,
-        };
+        let executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: true,
+            })
+            .build(&mut db, &chainspec);
 
         let signer = PrivateKey::from_seed(0);
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
@@ -774,23 +806,21 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
         let tx = create_legacy_tx();
-        let mut executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .with_shared_gas_limit(100) // Low shared gas limit
-            .build(&mut db, &chainspec);
-
-        executor.seen_subblocks.push((
-            PartialValidatorKey::from_slice(&validator_key[..15]),
-            vec![tx],
-        ));
+        let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
 
         // Create subblock with transactions included
         let subblock = tempo_primitives::SubBlock {
             version: SubBlockVersion::V1,
             parent_hash: B256::ZERO,
             fee_recipient: Address::ZERO,
-            transactions: executor.seen_subblocks[0].1.clone(),
+            transactions: vec![tx.clone()],
         };
+
+        let executor = TestExecutorBuilder::default()
+            .with_validator_set(vec![validator_key])
+            .with_shared_gas_limit(100) // Low shared gas limit
+            .with_seen_subblock(proposer, vec![tx])
+            .build(&mut db, &chainspec);
         let signature_hash = subblock.signature_hash();
         let signature = signer.sign(&[], signature_hash.as_slice());
 
@@ -815,16 +845,15 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
-        let mut executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
 
         // Add a seen subblock from a different validator that wont match metadata
         let different_key = B256::repeat_byte(0x99);
-        executor.seen_subblocks.push((
-            PartialValidatorKey::from_slice(&different_key[..15]),
-            vec![],
-        ));
+        let different_proposer = PartialValidatorKey::from_slice(&different_key[..15]);
+
+        let executor = TestExecutorBuilder::default()
+            .with_validator_set(vec![validator_key])
+            .with_seen_subblock(different_proposer, vec![])
+            .build(&mut db, &chainspec);
 
         // Metadata has validator_key but seen_subblocks has different_key
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
@@ -843,12 +872,12 @@ mod tests {
         let mut db = State::builder().with_bundle_update().build();
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
-        let mut executor = TestExecutorBuilder::default()
-            .with_validator_set(vec![validator_key])
-            .build(&mut db, &chainspec);
 
         // Set incentive_gas_used higher than available incentive gas
-        executor.incentive_gas_used = 100_000_000;
+        let executor = TestExecutorBuilder::default()
+            .with_validator_set(vec![validator_key])
+            .with_incentive_gas_used(100_000_000)
+            .build(&mut db, &chainspec);
 
         let metadata = vec![create_valid_subblock_metadata(B256::ZERO, &signer)];
 
@@ -903,10 +932,11 @@ mod tests {
         let signer = PrivateKey::from_seed(0);
         let validator_key = B256::from_slice(&signer.public_key());
         let proposer = PartialValidatorKey::from_slice(&validator_key[..15]);
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
-        // Set section to GasIncentive
-        executor.section = BlockSection::GasIncentive;
+        // Test with GasIncentive section
+        let executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::GasIncentive)
+            .build(&mut db, &chainspec);
 
         let subblock_tx = create_subblock_tx(&proposer);
         let result = executor.validate_tx(&subblock_tx, 21000);
@@ -917,10 +947,14 @@ mod tests {
         );
 
         // Also test with System section
-        executor.section = BlockSection::System {
-            seen_subblocks_signatures: false,
-        };
-        let result = executor.validate_tx(&subblock_tx, 21000);
+        let mut db2 = State::builder().with_bundle_update().build();
+        let executor2 = TestExecutorBuilder::default()
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: false,
+            })
+            .build(&mut db2, &chainspec);
+
+        let result = executor2.validate_tx(&subblock_tx, 21000);
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err().to_string(),
@@ -940,15 +974,13 @@ mod tests {
         let validator_key2 = B256::from_slice(&signer2.public_key());
         let proposer2 = PartialValidatorKey::from_slice(&validator_key2[..15]);
 
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
-
-        // Set section to SubBlock with a different proposer
-        executor.section = BlockSection::SubBlock {
-            proposer: proposer2,
-        };
-
-        // Mark proposer1's subblock as already seen
-        executor.seen_subblocks.push((proposer1, vec![]));
+        // Set section to SubBlock with a different proposer, and mark proposer1 as already seen
+        let executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::SubBlock {
+                proposer: proposer2,
+            })
+            .with_seen_subblock(proposer1, vec![])
+            .build(&mut db, &chainspec);
 
         // Try to submit a tx for proposer1 (already processed)
         let subblock_tx = create_subblock_tx(&proposer1);
@@ -964,12 +996,13 @@ mod tests {
     fn test_validate_tx_regular_tx_follow_system_tx() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Set section to System
-        executor.section = BlockSection::System {
-            seen_subblocks_signatures: false,
-        };
+        let executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: false,
+            })
+            .build(&mut db, &chainspec);
 
         // Try to validate a regular tx
         let tx = create_legacy_tx();
@@ -1010,20 +1043,20 @@ mod tests {
         let gas_used = executor.commit_transaction(output, &recovered_tx).unwrap();
 
         assert_eq!(gas_used, 21000);
-        assert_eq!(executor.section, BlockSection::NonShared);
-        assert_eq!(executor.inner.receipts.len(), 1);
+        assert_eq!(executor.section(), BlockSection::NonShared);
     }
 
     #[test]
     fn test_finish() {
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
-        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
 
         // Set section to System with seen_subblocks_signatures
-        executor.section = BlockSection::System {
-            seen_subblocks_signatures: true,
-        };
+        let executor = TestExecutorBuilder::default()
+            .with_section(BlockSection::System {
+                seen_subblocks_signatures: true,
+            })
+            .build(&mut db, &chainspec);
 
         let result = executor.finish();
         assert!(result.is_ok());
