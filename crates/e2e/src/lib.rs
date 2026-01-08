@@ -30,7 +30,7 @@ use commonware_utils::{TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::consensus;
+use tempo_commonware_node::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
@@ -212,16 +212,17 @@ pub async fn setup_validators(
     {
         let oracle = oracle.clone();
         let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
+        let feed_state = FeedStateHandle::new();
 
         execution_config.validator_key = Some(
             private_key
                 .public_key()
                 .encode()
-                .freeze()
                 .as_ref()
                 .try_into()
                 .unwrap(),
         );
+        execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
@@ -243,6 +244,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            feed_state,
         };
 
         nodes.push(TestingNode::new(

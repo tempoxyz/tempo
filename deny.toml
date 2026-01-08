@@ -6,8 +6,10 @@ yanked = "warn"
 ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
   "RUSTSEC-2024-0436",
-  # https://rustsec.org/advisories/RUSTSEC-2025-0137 ruint reciprocal_mg10 unsoundness. No safe upgrade available and currently unused
-  "RUSTSEC-2025-0137",
+  # https://rustsec.org/advisories/RUSTSEC-2026-0002 lru IterMut unsoundness. alloy-provider doesn't use the vulnerable API
+  "RUSTSEC-2026-0002",
+  # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
+  "RUSTSEC-2025-0141",
 ]
 
 # This section is considered when running `cargo deny check bans`.
@@ -56,6 +58,7 @@ allow = [
   # https://github.com/rustls/webpki/blob/main/LICENSE ISC Style
   "LicenseRef-rustls-webpki",
   "CDLA-Permissive-2.0",
+  "OpenSSL",
 ]
 
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
@@ -64,9 +67,6 @@ exceptions = [
   { allow = [
     "MPL-2.0",
   ], name = "option-ext" },
-  { allow = [
-    "MPL-2.0",
-  ], name = "webpki-root-certs" },
 ]
 
 [[licenses.clarify]]

@@ -64,6 +64,20 @@ crate::sol! {
         /// @param epoch The epoch in which to run the fresh DKG ceremony. Epoch N runs the ceremony, and epoch N+1 uses the new DKG polynomial.
         function setNextFullDkgCeremony(uint64 epoch) external;
 
+        /// Get validator address at a specific index in the validators array
+        /// @param index The index in the validators array
+        /// @return The validator address at the given index
+        function validatorsArray(uint256 index) external view returns (address);
+
+        /// Get validator information by address
+        /// @param validator The validator address to look up
+        /// @return The validator struct for the given address
+        function validators(address validator) external view returns (Validator memory);
+
+        /// Get the total number of validators
+        /// @return The count of validators
+        function validatorCount() external view returns (uint64);
+
         // Errors
         error Unauthorized();
         error ValidatorAlreadyExists();

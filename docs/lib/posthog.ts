@@ -150,9 +150,7 @@ export function usePostHogTracking() {
       language?: string,
     ) => {
       const eventName =
-        type === 'code'
-          ? POSTHOG_EVENTS.COPY_CODE
-          : POSTHOG_EVENTS.COPY_COMMAND
+        type === 'code' ? POSTHOG_EVENTS.COPY_CODE : POSTHOG_EVENTS.COPY_COMMAND
 
       posthog?.capture(eventName, {
         [POSTHOG_PROPERTIES.CODE_LANGUAGE]: language,

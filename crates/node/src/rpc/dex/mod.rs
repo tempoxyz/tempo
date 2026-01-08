@@ -11,8 +11,8 @@ use reth_rpc_eth_types::{EthApiError, error::FromEthApiError};
 use tempo_alloy::rpc::pagination::PaginationParams;
 use tempo_evm::TempoEvmConfig;
 use tempo_precompiles::{
-    stablecoin_exchange::{
-        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinExchange, TickLevel,
+    stablecoin_dex::{
+        Order as PrecompileOrder, Orderbook as PrecompileOrderbook, StablecoinDEX, TickLevel,
         orderbook::{OrderbookHandler, compute_book_key},
     },
     storage::{ContractStorage, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
@@ -59,7 +59,7 @@ impl<
         params: PaginationParams<OrdersFilters>,
     ) -> Result<OrdersResponse, DexApiError> {
         let response = self.with_storage_at_block(BlockNumberOrTag::Latest.into(), || {
-            let exchange = StablecoinExchange::new();
+            let exchange = StablecoinDEX::new();
             let exchange_address = exchange.address();
 
             // Determine which books to iterate based on filter
@@ -205,14 +205,14 @@ impl<
         StorageCtx::enter(&mut storage, f)
     }
 
-    /// Creates a `StablecoinExchange` instance at the given block.
+    /// Creates a `StablecoinDEX` instance at the given block.
     /// This builds on `with_storage_at_block` to provide the exchange.
     fn with_exchange_at_block<F, R>(&self, at: BlockId, f: F) -> Result<R, DexApiError>
     where
-        F: FnOnce(&mut StablecoinExchange) -> Result<R, DexApiError>,
+        F: FnOnce(&mut StablecoinDEX) -> Result<R, DexApiError>,
     {
         self.with_storage_at_block(at, || {
-            let mut exchange = StablecoinExchange::new();
+            let mut exchange = StablecoinDEX::new();
             f(&mut exchange)
         })
     }
@@ -471,7 +471,7 @@ impl<'b> BookIterator<'b> {
             order: None,
             starting_order,
             orderbook,
-            handler: StablecoinExchange::new().books[book_key].clone(),
+            handler: StablecoinDEX::new().books[book_key].clone(),
             storage: StorageCtx::default(),
         }
     }
@@ -488,7 +488,7 @@ impl<'b> BookIterator<'b> {
 
     /// Get a PrecompileOrder from an order ID
     pub fn get_order(&self, order_id: u128) -> Result<PrecompileOrder, DexApiError> {
-        StablecoinExchange::new()
+        StablecoinDEX::new()
             .get_order(order_id)
             .map_err(DexApiError::Precompile)
     }
@@ -694,7 +694,7 @@ fn parse_orderbook_cursor(cursor: &str) -> Result<B256, DexApiError> {
 /// Gets book keys to iterate over. If both base and quote are specified, returns only that book.
 /// Otherwise returns all book keys (filtering happens later during iteration).
 fn get_book_keys_for_iteration(
-    exchange: &StablecoinExchange,
+    exchange: &StablecoinDEX,
     base_token: Option<Address>,
     quote_token: Option<Address>,
 ) -> Result<Vec<B256>, DexApiError> {

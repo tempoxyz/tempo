@@ -1,0 +1,491 @@
+import * as Card from '../../../components/Card.tsx'
+import * as Demo from '../../../components/guides/Demo.tsx'
+import * as Step from '../../../components/guides/steps'
+import { Callout } from 'vocs/components'
+import LucideDroplet from '~icons/lucide/droplet'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideCoins from '~icons/lucide/coins'
+
+# Managing Fee Liquidity
+
+The Fee AMM converts transaction fees between stablecoins when users pay in a different token than the validator prefers. This guide shows you how to add and remove liquidity to enable fee conversions.
+
+<Demo.Container name="Manage Fee Liquidity" footerVariant="source" src="tempoxyz/tempo-ts/tree/main/examples/issuance">
+  <Step.Connect stepNumber={1} />
+  <Step.AddFunds stepNumber={2} />
+  <Step.CreateOrLoadToken stepNumber={3} />
+  <Step.MintFeeAmmLiquidity stepNumber={4} waitForBalance={false} />
+  <Step.CheckFeeAmmPool stepNumber={5} />
+  <Step.BurnFeeAmmLiquidity stepNumber={6} last />
+</Demo.Container>
+
+## Steps
+
+::::steps
+
+### Check pool reserves
+
+Before adding liquidity, check the current pool reserves to understand the pool state.
+
+:::code-group
+
+```tsx twoslash [ManageFeeLiquidity.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits } from 'viem'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function ManageFeeLiquidity() {
+  const { data: pool } = Hooks.amm.usePool({ // [!code hl]
+    userToken, // [!code hl]
+    validatorToken, // [!code hl]
+  }) // [!code hl]
+
+  return (
+    <div>
+      <div>User token reserves: {formatUnits(pool?.reserveUserToken ?? 0n, 6)}</div>
+      <div>Validator token reserves: {formatUnits(pool?.reserveValidatorToken ?? 0n, 6)}</div>
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Add liquidity
+
+Add validator token to the pool to receive LP tokens representing your share. The first liquidity provider to a new pool must burn 1,000 units of liquidity. This costs approximately 0.002 USD and prevents attacks on pool reserves. Learn more in the [Fee AMM specification](/protocol/fees/spec-fee-amm).
+
+:::code-group
+
+```tsx twoslash [ManageFeeLiquidity.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits, parseUnits } from 'viem'
+import { useConnection } from 'wagmi'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function ManageFeeLiquidity() {
+  const { address } = useConnection()
+
+  const { data: pool } = Hooks.amm.usePool({
+    userToken,
+    validatorToken,
+  })
+
+  const mintLiquidity = Hooks.amm.useMintSync() // [!code ++]
+
+  return (
+    <div>
+      <div>User token reserves: {formatUnits(pool?.reserveUserToken ?? 0n, 6)}</div>
+      <div>Validator token reserves: {formatUnits(pool?.reserveValidatorToken ?? 0n, 6)}</div>
+      <button type="button" onClick={() => { // [!code ++]
+        if (!address) return // [!code ++]
+        mintLiquidity.mutate({ // [!code ++]
+          userTokenAddress: userToken, // [!code ++]
+          validatorTokenAddress: validatorToken, // [!code ++]
+          validatorTokenAmount: parseUnits('100', 6), // [!code ++]
+          to: address, // [!code ++]
+          feeToken: validatorToken, // [!code ++]
+        }) // [!code ++]
+      }}> {/* [!code ++] */}
+        Add Liquidity {/* [!code ++] */}
+      </button> {/* [!code ++] */}
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Check your LP balance
+
+View your LP token balance to see your share of the pool.
+
+:::code-group
+
+```tsx twoslash [ManageFeeLiquidity.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits, parseUnits } from 'viem'
+import { useConnection } from 'wagmi'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function ManageFeeLiquidity() {
+  const { address } = useConnection()
+
+  const { data: pool } = Hooks.amm.usePool({
+    userToken,
+    validatorToken,
+  })
+
+  const { data: balance } = Hooks.amm.useLiquidityBalance({ // [!code ++]
+    address, // [!code ++]
+    userToken, // [!code ++]
+    validatorToken, // [!code ++]
+  }) // [!code ++]
+
+  const mintLiquidity = Hooks.amm.useMintSync()
+
+  return (
+    <div>
+      <div>LP token balance: {formatUnits(balance ?? 0n, 6)}</div>  {/* [!code ++] */}
+      <div>User token reserves: {formatUnits(pool?.reserveUserToken ?? 0n, 6)}</div>
+      <div>Validator token reserves: {formatUnits(pool?.reserveValidatorToken ?? 0n, 6)}</div>
+      <button type="button" onClick={() => {
+        if (!address) return
+        mintLiquidity.mutate({
+          userTokenAddress: userToken,
+          validatorTokenAddress: validatorToken,
+          validatorTokenAmount: parseUnits('100', 6),
+          to: address,
+          feeToken: validatorToken,
+        })
+      }}>
+        Add Liquidity
+      </button>
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Remove liquidity
+
+Burn LP tokens to withdraw your share of pool reserves plus accumulated fees.
+
+:::code-group
+
+```tsx twoslash [ManageFeeLiquidity.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits, parseUnits } from 'viem'
+import { useConnection } from 'wagmi'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function ManageFeeLiquidity() {
+  const { address } = useConnection()
+
+  const { data: pool } = Hooks.amm.usePool({
+    userToken,
+    validatorToken,
+  })
+
+  const { data: balance } = Hooks.amm.useLiquidityBalance({
+    address,
+    userToken,
+    validatorToken,
+  })
+
+  const mintLiquidity = Hooks.amm.useMintSync()
+  const burnLiquidity = Hooks.amm.useBurnSync() // [!code ++]
+
+  return (
+    <div>
+      <div>LP token balance: {formatUnits(balance ?? 0n, 6)}</div>
+      <div>User token reserves: {formatUnits(pool?.reserveUserToken ?? 0n, 6)}</div>
+      <div>Validator token reserves: {formatUnits(pool?.reserveValidatorToken ?? 0n, 6)}</div>
+      <button type="button" onClick={() => {
+        if (!address) return
+        mintLiquidity.mutate({
+          userTokenAddress: userToken,
+          validatorTokenAddress: validatorToken,
+          validatorTokenAmount: parseUnits('100', 6),
+          to: address,
+          feeToken: validatorToken,
+        })
+      }}>
+        Add Liquidity
+      </button>
+      <button type="button" onClick={() => { // [!code ++]
+        if (!address) return // [!code ++]
+        burnLiquidity.mutate({ // [!code ++]
+          userToken, // [!code ++]
+          validatorToken, // [!code ++]
+          liquidity: parseUnits('10', 6), // Burn 10 LP tokens // [!code ++]
+          to: address, // [!code ++]
+        }) // [!code ++]
+      }}> {/* [!code ++] */}
+        Remove Liquidity {/* [!code ++] */}
+      </button> {/* [!code ++] */}
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+::::
+
+## Recipes
+
+### Monitor pool utilization
+
+Track fee swap activity to understand pool utilization and revenue.
+
+:::code-group
+
+```tsx twoslash [MonitorSwaps.tsx]
+// @noErrors
+import * as React from 'react'
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits } from 'viem'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function MonitorSwaps() {
+  const [swaps, setSwaps] = React.useState<any[]>([])
+
+  Hooks.amm.useWatchFeeSwap({ // [!code hl]
+    userToken, // [!code hl]
+    validatorToken, // [!code hl]
+    onLogs(logs) { // [!code hl]
+      for (const log of logs) { // [!code hl]
+        setSwaps((prev) => [...prev, { // [!code hl]
+          amountIn: formatUnits(log.args.amountIn, 6), // [!code hl]
+          amountOut: formatUnits(log.args.amountOut, 6), // [!code hl]
+          revenue: formatUnits(log.args.amountIn * 30n / 10000n, 6), // [!code hl]
+        }]) // [!code hl]
+      } // [!code hl]
+    }, // [!code hl]
+  }) // [!code hl]
+
+  return (
+    <div>
+      {swaps.map((swap, i) => (
+        <div key={i}>
+          Swap: {swap.amountIn} → {swap.amountOut} (LP revenue: {swap.revenue})
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+### Rebalance pools
+
+You can rebalance pools by swapping validator tokens for accumulated user tokens at a fixed rate. Rebalancing restores validator token reserves and enables continued fee conversions. Learn more [here](/protocol/fees/spec-fee-amm#swap-mechanisms).
+
+:::code-group
+
+```tsx twoslash [RebalancePool.tsx]
+// @noErrors
+import { Hooks } from 'wagmi/tempo'
+import { formatUnits, parseUnits } from 'viem'
+import { useConnection } from 'wagmi'
+
+const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
+const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+
+function RebalancePool() {
+  const { address } = useConnection()
+
+  const { data: pool } = Hooks.amm.usePool({
+    userToken,
+    validatorToken,
+  })
+
+  const rebalance = Hooks.amm.useRebalanceSwapSync() // [!code hl]
+
+  return (
+    <div>
+      <div>User token reserves: {formatUnits(pool?.reserveUserToken ?? 0n, 6)}</div>
+      <div>Validator token reserves: {formatUnits(pool?.reserveValidatorToken ?? 0n, 6)}</div>
+      <button type="button" onClick={() => { // [!code hl]
+        if (!address || !pool) return // [!code hl]
+        // Swap validator token for user token at 0.9985 rate // [!code hl]
+        rebalance.mutate({ // [!code hl]
+          userToken, // [!code hl]
+          validatorToken, // [!code hl]
+          amountOut: pool.reserveUserToken, // Amount of user token to receive // [!code hl]
+          to: address, // [!code hl]
+        }) // [!code hl]
+      }}> { /* [!code hl] */ }
+        Rebalance { /* [!code hl] */ }
+      </button> { /* [!code hl] */ }
+    </div>
+  )
+}
+```
+
+```ts twoslash [wagmi.config.ts]
+// @noErrors
+import { tempoTestnet } from 'viem/chains'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
+import { createConfig, http } from 'wagmi'
+
+export const config = createConfig({
+  connectors: [
+    webAuthn({
+      keyManager: KeyManager.localStorage(),
+    }),
+  ],
+  chains: [tempoTestnet],
+  multiInjectedProviderDiscovery: false,
+  transports: {
+    [tempo.id]: http(),
+  },
+})
+```
+
+:::
+
+
+## Best Practices
+
+### Monitor pool reserves
+
+Regularly check pool reserves to ensure sufficient liquidity for fee conversions. Low reserves can prevent transactions from being processed.
+
+Add liquidity when:
+- Transaction rates increase for a given `userToken`
+- Reserve levels drop below expected daily volume
+- Multiple validators begin preferring the same token
+
+### Maintain adequate reserves
+
+As an issuer, keep sufficient validator token reserves to handle expected transaction volume. Consider your anticipated fee conversion volume when determining reserve levels.
+
+For new token pairs, provide the entire initial amount in the validator token. The pool naturally accumulates user tokens as fees are paid.
+
+### Deploy liquidity strategically
+
+Focus liquidity on pools with:
+- High transaction volume and frequent fee conversions
+- New stablecoins that need initial bootstrapping
+- Validator tokens preferred by multiple validators
+
+## Learning Resources
+
+<Card.Container>
+  <Card.Link
+    description="Complete technical specification of the Fee AMM protocol"
+    href="/protocol/fees/spec-fee-amm"
+    icon={LucideFileText}
+    title="Fee AMM Specification"
+  />
+  <Card.Link
+    description="Learn how the Fee AMM enables flexible fee payments"
+    href="/protocol/fees/fee-amm"
+    icon={LucideDroplet}
+    title="Fee AMM Overview"
+  />
+  <Card.Link
+    description="Enable users to pay fees using your stablecoin"
+    href="/guide/issuance/use-for-fees"
+    icon={LucideCoins}
+    title="Use Your Stablecoin for Fees"
+  />
+</Card.Container>

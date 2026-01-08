@@ -10,8 +10,7 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinExchange, ITIP403Registry,
-    STABLECOIN_EXCHANGE_ADDRESS,
+    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, ITIP403Registry, STABLECOIN_DEX_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -172,19 +171,19 @@ pub trait TempoStateAccess<M = ()> {
             }
         }
 
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
+        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
         // use the input token as the fee token (the token that will be pulled from the user).
         // For AA transactions, this only applies if there's exactly one call.
         let mut calls = tx.calls();
         if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
             && (!tx.is_aa() || calls.next().is_none())
         {
-            if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
@@ -519,14 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
+    fn test_get_fee_token_stablecoin_dex() -> eyre::Result<()> {
         let caller = Address::random();
-        // Use PathUSD as token_in since it's a known valid USD fee token
+        // Use pathUSD as token_in since it's a known valid USD fee token
         let token_in = DEFAULT_FEE_TOKEN;
         let token_out = address!("0x20C0000000000000000000000000000000000001");
 
         // Test swapExactAmountIn
-        let call = IStablecoinExchange::swapExactAmountInCall {
+        let call = IStablecoinDEX::swapExactAmountInCall {
             tokenIn: token_in,
             tokenOut: token_out,
             amountIn: 1000,
@@ -535,7 +534,7 @@ mod tests {
 
         let tx_env = TxEnv {
             data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
             caller,
             ..Default::default()
         };
@@ -549,7 +548,7 @@ mod tests {
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
-        let call = IStablecoinExchange::swapExactAmountOutCall {
+        let call = IStablecoinDEX::swapExactAmountOutCall {
             tokenIn: token_in,
             tokenOut: token_out,
             amountOut: 900,
@@ -558,7 +557,7 @@ mod tests {
 
         let tx_env = TxEnv {
             data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
             caller,
             ..Default::default()
         };

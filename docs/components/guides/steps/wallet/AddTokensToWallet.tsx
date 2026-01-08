@@ -15,7 +15,7 @@ const TOKENS: Token[] = [
   { address: alphaUsd, symbol: 'AlphaUSD', decimals: 6 },
   { address: betaUsd, symbol: 'BetaUSD', decimals: 6 },
   { address: thetaUsd, symbol: 'ThetaUSD', decimals: 6 },
-  { address: pathUsd, symbol: 'PathUSD', decimals: 6 },
+  { address: pathUsd, symbol: 'pathUSD', decimals: 6 },
 ]
 
 function AddTokenButton(props: {
