@@ -42,7 +42,7 @@ jobs:
 
       - name: Check
         working-directory: docs
-        run: bun run check
+        run: bun run check:ci
 
       - name: Check types
         working-directory: docs
