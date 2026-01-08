@@ -530,7 +530,7 @@ mod tests {
             },
         ]);
 
-        tx_env.set_access_list(access_list.clone());
+        tx_env.set_access_list(access_list);
         assert_eq!(tx_env.inner.access_list.0.len(), 2);
         assert_eq!(
             tx_env.inner.access_list.0[0].address,

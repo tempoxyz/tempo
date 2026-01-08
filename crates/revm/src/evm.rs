@@ -773,7 +773,7 @@ mod tests {
             .authorization(signed_auth.clone())
             .build();
 
-        let signed_tx = key_pair.sign_tx(tx.clone())?;
+        let signed_tx = key_pair.sign_tx(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
         // Verify transaction has AA auth list
@@ -805,7 +805,7 @@ mod tests {
         let tx2 = TxBuilder::new()
             .call_identity(&[0x01, 0x02, 0x03, 0x04])
             .call_identity(&[0xAA, 0xBB, 0xCC, 0xDD])
-            .authorization(signed_auth.clone())
+            .authorization(signed_auth)
             .nonce(1)
             .gas_limit(150_000)
             .key_authorization(signed_key_auth)
@@ -1282,7 +1282,7 @@ mod tests {
             evm.ctx.db_mut().insert_account_info(
                 contract,
                 AccountInfo {
-                    code: Some(bytecode.clone()),
+                    code: Some(bytecode),
                     ..Default::default()
                 },
             );
