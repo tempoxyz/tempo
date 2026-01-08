@@ -115,6 +115,14 @@ impl TipFeeManager {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
+        if user_token == validator_token {
+            return Err(TIPFeeAMMError::identical_addresses().into());
+        }
+
+        if amount_out.is_zero() {
+            return Err(TIPFeeAMMError::invalid_amount().into());
+        }
+
         let pool_id = self.pool_id(user_token, validator_token);
         let mut pool = self.pools[pool_id].read()?;
 
@@ -183,6 +191,10 @@ impl TipFeeManager {
     ) -> Result<U256> {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
+        }
+
+        if amount_validator_token.is_zero() {
+            return Err(TIPFeeAMMError::invalid_amount().into());
         }
 
         // Validate both tokens are USD currency
@@ -296,6 +308,10 @@ impl TipFeeManager {
     ) -> Result<(U256, U256)> {
         if user_token == validator_token {
             return Err(TIPFeeAMMError::identical_addresses().into());
+        }
+
+        if liquidity.is_zero() {
+            return Err(TIPFeeAMMError::invalid_amount().into());
         }
 
         // Validate both tokens are USD currency
@@ -544,6 +560,33 @@ mod tests {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
             let result = amm.burn(
+                admin,
+                token.address(),
+                token.address(),
+                U256::from(1000),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIPFeeAMMError(
+                    TIPFeeAMMError::IdenticalAddresses(_)
+                ))
+            ));
+            Ok(())
+        })
+    }
+
+    /// Test identical addresses in rebalance_swap
+    #[test]
+    fn test_rebalance_swap_identical_addresses() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
+            let mut amm = TipFeeManager::new();
+
+            let result = amm.rebalance_swap(
                 admin,
                 token.address(),
                 token.address(),
@@ -970,6 +1013,93 @@ mod tests {
                 amm.check_sufficient_liquidity(user_token, validator_token, too_much)
                     .is_err()
             );
+
+            Ok(())
+        })
+    }
+
+    /// Test zero amount_in in execute_fee_swap
+    #[test]
+    fn test_execute_fee_swap_zero_amount() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .apply()?
+                .address();
+
+            let mut amm = TipFeeManager::new();
+
+            let result = amm.execute_fee_swap(user_token, validator_token, U256::ZERO);
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIPFeeAMMError(
+                    TIPFeeAMMError::InvalidAmount(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    /// Test zero liquidity burn
+    #[test]
+    fn test_burn_zero_liquidity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .apply()?
+                .address();
+
+            let mut amm = TipFeeManager::new();
+
+            let result = amm.burn(admin, user_token, validator_token, U256::ZERO, admin);
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIPFeeAMMError(
+                    TIPFeeAMMError::InvalidAmount(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    /// Test zero liquidity mint
+    #[test]
+    fn test_mint_zero_liquidity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .apply()?
+                .address();
+
+            let mut amm = TipFeeManager::new();
+
+            let result = amm.mint(admin, user_token, validator_token, U256::ZERO, admin);
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIPFeeAMMError(
+                    TIPFeeAMMError::InvalidAmount(_)
+                ))
+            ));
 
             Ok(())
         })
