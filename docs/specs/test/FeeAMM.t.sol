@@ -259,16 +259,14 @@ contract FeeAMMTest is BaseTest {
         assertEq(pool.reserveValidatorToken, 5000e18);
     }
 
-    function testFuzz_MintWithValidatorToken(uint256 initialV, uint256 additionalV) public {
+    function testFuzz_Mint(uint256 initialV, uint256 additionalV) public {
         uint256 minLiq = amm.MIN_LIQUIDITY();
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
 
         // First mint
         initialV = bound(initialV, 2 * minLiq + 2, 5000e18);
         vm.prank(alice);
-        uint256 liquidity1 = amm.mintWithValidatorToken(
-            address(userToken), address(validatorToken), initialV, alice
-        );
+        uint256 liquidity1 = amm.mint(address(userToken), address(validatorToken), initialV, alice);
 
         assertEq(liquidity1, initialV / 2 - minLiq);
         (uint128 reserveU, uint128 reserveV) = amm.pools(poolId);
@@ -280,9 +278,8 @@ contract FeeAMMTest is BaseTest {
         additionalV = bound(additionalV, 1e15, 5000e18);
 
         vm.prank(alice);
-        uint256 liquidity2 = amm.mintWithValidatorToken(
-            address(userToken), address(validatorToken), additionalV, alice
-        );
+        uint256 liquidity2 =
+            amm.mint(address(userToken), address(validatorToken), additionalV, alice);
 
         uint256 denom = uint256(reserveV) + (amm.N() * uint256(reserveU)) / amm.SCALE();
         assertEq(liquidity2, (additionalV * supplyBefore) / denom);
@@ -297,9 +294,7 @@ contract FeeAMMTest is BaseTest {
 
         mintAmount = bound(mintAmount, 2 * minLiq + 2, 10_000e18);
         vm.prank(alice);
-        uint256 liquidity = amm.mintWithValidatorToken(
-            address(userToken), address(validatorToken), mintAmount, alice
-        );
+        uint256 liquidity = amm.mint(address(userToken), address(validatorToken), mintAmount, alice);
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
         (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
@@ -331,9 +326,7 @@ contract FeeAMMTest is BaseTest {
         mintAmount = bound(mintAmount, 2 * minLiq + 2, 10_000e18);
 
         vm.prank(alice);
-        uint256 liquidity = amm.mintWithValidatorToken(
-            address(userToken), address(validatorToken), mintAmount, alice
-        );
+        uint256 liquidity = amm.mint(address(userToken), address(validatorToken), mintAmount, alice);
 
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
 
@@ -357,11 +350,11 @@ contract FeeAMMTest is BaseTest {
 
     function testFuzz_RebalanceSwap(uint256 amountOut) public {
         vm.prank(alice);
-        amm.mintWithValidatorToken(address(userToken), address(validatorToken), 5000e18, alice);
+        amm.mint(address(userToken), address(validatorToken), 5000e18, alice);
 
         // Seed userToken reserve so rebalance has tokens to give out
         bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
-        uint256 poolsSlot = isTempo ? 5 : 0;
+        uint256 poolsSlot = isTempo ? 3 : 0;
         bytes32 slot = keccak256(abi.encode(poolId, poolsSlot));
         bytes32 packedValue = bytes32((uint256(5000e18) << 128) | uint256(5000e18));
         vm.store(address(amm), slot, packedValue);

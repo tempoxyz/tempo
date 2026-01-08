@@ -278,17 +278,17 @@ contract FeeManagerTest is BaseTest {
         vm.stopPrank();
 
         uint256 expectedFees = (actualUsed * 9970) / 10_000;
-        assertEq(amm.collectedFeesByValidator(validator), expectedFees);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), expectedFees);
 
         uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
 
         vm.expectEmit(true, true, true, true);
         emit IFeeManager.FeesDistributed(validator, address(validatorToken), expectedFees);
 
-        amm.distributeFees(validator);
+        amm.distributeFees(validator, address(validatorToken));
 
         assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + expectedFees);
-        assertEq(amm.collectedFeesByValidator(validator), 0);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), 0);
     }
 
     function test_distributeFees_ZeroBalance() public {
@@ -299,19 +299,19 @@ contract FeeManagerTest is BaseTest {
 
         uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
 
-        amm.distributeFees(validator);
+        amm.distributeFees(validator, address(validatorToken));
 
         assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore);
-        assertEq(amm.collectedFeesByValidator(validator), 0);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), 0);
     }
 
-    function test_collectedFeesByValidator() public {
+    function test_collectedFees() public {
         if (isTempo) return;
 
         vm.prank(validator, validator);
         amm.setValidatorToken(address(userToken));
 
-        assertEq(amm.collectedFeesByValidator(validator), 0);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), 0);
 
         uint256 maxAmount = 100e18;
 
@@ -321,7 +321,7 @@ contract FeeManagerTest is BaseTest {
         amm.collectFeePostTx(user, maxAmount, maxAmount, address(userToken));
         vm.stopPrank();
 
-        assertEq(amm.collectedFeesByValidator(validator), maxAmount);
+        assertEq(amm.collectedFees(validator, address(userToken)), maxAmount);
     }
 
     function test_defaultValidatorTokenIsPathUSD() public {
@@ -375,7 +375,7 @@ contract FeeManagerTest is BaseTest {
         uint256 amountOut = (actualUsed * 9970) / 10_000;
 
         // Rate invariant
-        assertEq(amm.collectedFeesByValidator(validator), amountOut);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), amountOut);
 
         // Reserve conservation
         (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
@@ -405,7 +405,7 @@ contract FeeManagerTest is BaseTest {
         assertEq(reserveUAfter, reserveUBefore);
         assertEq(reserveVAfter, reserveVBefore);
 
-        assertEq(amm.collectedFeesByValidator(validator), actualUsed);
+        assertEq(amm.collectedFees(validator, address(userToken)), actualUsed);
     }
 
     function testFuzz_DistributeFees_ClearsBalance(uint256 actualUsed) public {
@@ -422,14 +422,14 @@ contract FeeManagerTest is BaseTest {
         amm.collectFeePostTx(user, actualUsed, actualUsed, address(userToken));
         vm.stopPrank();
 
-        uint256 collectedBefore = amm.collectedFeesByValidator(validator);
+        uint256 collectedBefore = amm.collectedFees(validator, address(validatorToken));
         assertGt(collectedBefore, 0);
 
         uint256 validatorBalanceBefore = validatorToken.balanceOf(validator);
 
-        amm.distributeFees(validator);
+        amm.distributeFees(validator, address(validatorToken));
 
-        assertEq(amm.collectedFeesByValidator(validator), 0);
+        assertEq(amm.collectedFees(validator, address(validatorToken)), 0);
 
         assertEq(validatorToken.balanceOf(validator), validatorBalanceBefore + collectedBefore);
     }
