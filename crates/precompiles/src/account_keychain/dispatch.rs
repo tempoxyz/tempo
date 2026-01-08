@@ -41,13 +41,8 @@ impl Precompile for AccountKeychain {
 mod tests {
     use super::*;
     use crate::{
-        Precompile, expect_precompile_revert,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
-        tip_fee_manager::{
-            FeeManagerError,
-            amm::{M, MIN_LIQUIDITY, N, PoolKey, SCALE},
-        },
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
     };
 
     #[test]
