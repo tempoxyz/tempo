@@ -59,12 +59,12 @@ fn test_fee_manager_layout() {
 }
 
 #[test]
-fn test_stablecoin_exchange_layout() {
-    use tempo_precompiles::stablecoin_exchange::{
+fn test_stablecoin_dex_layout() {
+    use tempo_precompiles::stablecoin_dex::{
         order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
     };
 
-    let sol_path = testdata("stablecoin_exchange.sol");
+    let sol_path = testdata("stablecoin_dex.sol");
     let solc_layout = load_solc_layout(&sol_path);
 
     // Verify top-level fields
@@ -233,9 +233,9 @@ fn export_all_storage_constants() {
         );
     }
 
-    // Stablecoin Exchange
+    // Stablecoin DEX
     {
-        use tempo_precompiles::stablecoin_exchange::{
+        use tempo_precompiles::stablecoin_dex::{
             order::__packing_order::*, orderbook::__packing_orderbook::*, slots,
         };
 
@@ -271,7 +271,7 @@ fn export_all_storage_constants() {
         );
 
         all_constants.insert(
-            "stablecoin_exchange".to_string(),
+            "stablecoin_dex".to_string(),
             json!({
                 "fields": fields.iter().map(field_to_json).collect::<Vec<_>>(),
                 "structs": {

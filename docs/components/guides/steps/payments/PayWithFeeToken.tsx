@@ -1,11 +1,11 @@
 import * as React from 'react'
-import { Hooks } from 'wagmi/tempo'
 import type { Address } from 'viem'
 import { formatUnits, isAddress, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { TokenSelector } from '../../../TokenSelector'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd, betaUsd, thetaUsd, pathUsd } from '../../tokens'
+import { alphaUsd, betaUsd, pathUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 // Current validator token on testnet

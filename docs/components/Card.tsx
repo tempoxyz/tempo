@@ -14,7 +14,8 @@ export function Link(props: {
 }) {
   const { description, href, icon: Icon, title, sampleHref } = props
   const [sampleHovering, setSampleHovering] = useState(false)
-  const { trackInternalLinkClick, trackExternalLinkClick } = usePostHogTracking()
+  const { trackInternalLinkClick, trackExternalLinkClick } =
+    usePostHogTracking()
 
   return (
     <RouterLink
@@ -51,7 +52,7 @@ export function Link(props: {
       <Icon className="text-accent size-4.5" />
       <div className="flex flex-col gap-1">
         <div className="flex items-center gap-1 leading-normal text-gray12 font-[510] text-[15px]">
-          {title} 
+          {title}
           {href.startsWith('http') && (
             <LucideExternalLink className="text-gray10 size-3" />
           )}
