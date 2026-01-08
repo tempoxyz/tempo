@@ -9,9 +9,9 @@ use rand::SeedableRng as _;
 
 use crate::{SigningKey, SigningShare};
 
-fn key(rng: &mut impl CryptoRngCore) -> super::EncryptionKey {
-    let bytes = super::EncryptionKey::random(rng);
-    super::EncryptionKey::from_bytes(&bytes).unwrap()
+fn key(rng: &mut impl CryptoRngCore) -> super::Cipher {
+    let bytes = super::Cipher::random(rng);
+    super::Cipher::from_bytes(&bytes).unwrap()
 }
 
 #[test]

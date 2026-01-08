@@ -5,7 +5,7 @@ use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use eyre::Context;
 use rand::rngs::OsRng;
-use tempo_commonware_node_config::{EncryptionKey, SigningKey};
+use tempo_commonware_node_config::{Cipher, SigningKey};
 
 #[derive(Debug, Parser)]
 #[command(name = "tempo")]
@@ -46,7 +46,7 @@ impl GenerateEncryptionKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output } = self;
 
-        let key = EncryptionKey::random(&mut OsRng);
+        let key = Cipher::random(&mut OsRng);
         std::fs::write(&output, key)
             .wrap_err_with(|| format!("failed writing encryption key to `{}`", output.display()))?;
         println!("wrote private key to: {}", output.display());

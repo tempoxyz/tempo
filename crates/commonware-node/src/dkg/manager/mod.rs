@@ -7,7 +7,7 @@ use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
-use tempo_commonware_node_config::EncryptionKey;
+use tempo_commonware_node_config::Cipher;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -75,5 +75,5 @@ pub(crate) struct Config<TPeerManager> {
     pub(crate) peer_manager: TPeerManager,
 
     /// The secret to encrypt and descrypt signing shares.
-    pub(crate) share_key: EncryptionKey,
+    pub(crate) share_key: Cipher,
 }

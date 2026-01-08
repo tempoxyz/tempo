@@ -103,7 +103,10 @@ impl GenerateLocalnet {
                 validator.clone(),
                 ConfigOutput {
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+                    consensus_on_disk_signing_share: validator.signing_share.to_hex(
+                        &validator.signing_share_encryption_key.to_cipher(),
+                        &mut rng,
+                    ),
 
                     consensus_p2p_port,
                     execution_p2p_port,

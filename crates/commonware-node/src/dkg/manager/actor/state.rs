@@ -28,7 +28,7 @@ use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use rand_core::CryptoRngCore;
-use tempo_commonware_node_config::EncryptionKey;
+use tempo_commonware_node_config::Cipher;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
@@ -62,7 +62,7 @@ where
     current: State,
     cache: BTreeMap<Epoch, Events>,
 
-    share_secret: EncryptionKey,
+    share_secret: Cipher,
 }
 
 impl<TContext> Storage<TContext>
@@ -497,7 +497,7 @@ where
 pub(super) struct Builder {
     initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
-    share_secret: Option<EncryptionKey>,
+    share_secret: Option<Cipher>,
 }
 
 impl Builder {
@@ -518,7 +518,7 @@ impl Builder {
         }
     }
 
-    pub(super) fn share_key(self, share_secret: EncryptionKey) -> Self {
+    pub(super) fn share_key(self, share_secret: Cipher) -> Self {
         Self {
             share_secret: Some(share_secret),
             ..self
@@ -667,7 +667,7 @@ impl State {
         )
     }
 
-    fn encrypt(&self, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> AtRest {
+    fn encrypt(&self, secret: &Cipher, rng: &mut impl CryptoRngCore) -> AtRest {
         let Self {
             epoch,
             seed,
@@ -709,7 +709,7 @@ pub(super) struct AtRest {
 }
 
 impl AtRest {
-    fn decrypt(&self, secret: &EncryptionKey) -> eyre::Result<State> {
+    fn decrypt(&self, secret: &Cipher) -> eyre::Result<State> {
         let Self {
             epoch,
             seed,
@@ -807,7 +807,7 @@ struct Events {
 }
 
 impl Events {
-    fn insert(&mut self, event: Event, secret: &EncryptionKey) -> eyre::Result<()> {
+    fn insert(&mut self, event: Event, secret: &Cipher) -> eyre::Result<()> {
         match event {
             Event::Dealing {
                 dealer: public_key,
@@ -1279,7 +1279,7 @@ impl<T> Encrypted<T> {
 }
 
 impl<T: Write + EncodeSize> Encrypted<T> {
-    fn encrypt(value: &T, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> Self {
+    fn encrypt(value: &T, secret: &Cipher, rng: &mut impl CryptoRngCore) -> Self {
         let bytes = secret.encrypt_encodable(value, rng).into();
         Self {
             bytes,
@@ -1289,7 +1289,7 @@ impl<T: Write + EncodeSize> Encrypted<T> {
 }
 
 impl<T: Read<Cfg = ()>> Encrypted<T> {
-    pub(super) fn decrypt_decode(&self, secret: &EncryptionKey) -> eyre::Result<T> {
+    pub(super) fn decrypt_decode(&self, secret: &Cipher) -> eyre::Result<T> {
         secret
             .decrypt_decodable(self.bytes.as_ref())
             .wrap_err("failed decrypting encrypted secret")

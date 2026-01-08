@@ -30,7 +30,7 @@ use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_config::EncryptionKey;
+use tempo_commonware_node_config::Cipher;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -81,7 +81,7 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub raw_share: Option<Bytes>,
-    pub share_key: EncryptionKey,
+    pub share_key: Cipher,
 
     pub mailbox_size: usize,
     pub deque_size: usize,

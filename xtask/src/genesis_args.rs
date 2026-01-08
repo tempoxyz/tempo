@@ -809,7 +809,7 @@ fn generate_consensus_config(
                 addr,
                 signing_key: SigningKey::from(signing_key),
                 signing_share: SigningShare::from(signing_share),
-                signing_share_encryption_key: 
+                signing_share_encryption_key: EncryptionKey::random(&mut rng),
             }
         })
         .collect();
