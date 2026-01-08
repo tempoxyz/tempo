@@ -67,7 +67,7 @@ function ApproveSpend(props: { orderType: 'buy' | 'sell' }) {
     <button type="button" onClick={() => {
       approve({ // [!code hl]
         amount: parseUnits('100', 6), // [!code hl]
-        spender: Addresses.stablecoinExchange, // [!code hl]
+        spender: Addresses.stablecoinDex, // [!code hl]
         token: spendToken, // [!code hl]
       }) // [!code hl]
   }}>
@@ -119,7 +119,7 @@ function PlaceOrder(props: { orderType: 'buy' | 'sell' }) {
     <button type="button" onClick={() => {
       const calls = [ // [!code hl]
         Actions.token.approve.call({ // [!code hl]
-          spender: Addresses.stablecoinExchange, // [!code hl]
+          spender: Addresses.stablecoinDex, // [!code hl]
           amount: parseUnits('100', 6), // [!code hl]
           token: spendToken, // [!code hl]
         }), // [!code hl]
@@ -218,7 +218,7 @@ function ManageOrder() {
   const placeOrder = () => {
     const calls = [
       Actions.token.approve.call({
-        spender: Addresses.stablecoinExchange,
+        spender: Addresses.stablecoinDex,
         amount: parseUnits('100', 6),
         token: pathUsd,
       }),
@@ -325,7 +325,7 @@ function PlaceFlipOrder(props: { orderType: 'buy' | 'sell' }) {
     <button type="button" onClick={() => {
       const calls = [
         Actions.token.approve.call({
-          spender: Addresses.stablecoinExchange,
+          spender: Addresses.stablecoinDex,
           amount: parseUnits('100', 6),
           token: spendToken,
         }),
@@ -398,7 +398,7 @@ You can batch the calls to approve spend and place the order in a single transac
 <Card.Container>
   <Card.Link
     description="Learn how to execute swaps and trade stablecoins on the DEX"
-    href="/guide/stablecoin-exchange/executing-swaps"
+    href="/guide/stablecoin-dex/executing-swaps"
     icon={LucideArrowLeftRight}
     title="Executing Swaps"
   />

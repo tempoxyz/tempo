@@ -224,7 +224,7 @@ token.transfer(recipient, 100_000_000);
 
 ```rust [Rust]
 use alloy::{
-    primitives::{U256, address},
+    primitives::{address, U256},
     providers::ProviderBuilder,
 };
 use tempo_alloy::{
@@ -245,7 +245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fee_amm = ITIPFeeAMM::new( // [!code focus]
         TIP_FEE_MANAGER_ADDRESS, // [!code focus]
-        provider,                // [!code focus]
+        &provider, // [!code focus]
     ); // [!code focus]
 
     let recipient = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // [!code focus]
@@ -253,13 +253,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add 100 AlphaUSD of liquidity to the fee pool
     fee_amm // [!code focus]
         .mint( // [!code focus]
-            your_token,              // [!code focus]
-            validator_token,         // [!code focus]
+            your_token, // [!code focus]
+            validator_token, // [!code focus]
             U256::from(100_000_000), // [!code focus]
-            recipient,               // [!code focus]
+            recipient, // [!code focus]
         ) // [!code focus]
         .send() // [!code focus]
+        .await? // [!code focus]
+        .get_receipt() // [!code focus]
         .await?; // [!code focus]
+
+    println!("Fee liquidity added successfully"); // [!code focus]
 
     Ok(())
 }
@@ -317,7 +321,7 @@ Before promoting fee payments with your token, thoroughly test the flow on testn
   />
   <Card.Link
     description="Add and remove liquidity to enable fee conversions"
-    href="/guide/stablecoin-exchange/managing-fee-liquidity"
+    href="/guide/stablecoin-dex/managing-fee-liquidity"
     icon={LucideDroplet}
     title="Managing Fee Liquidity"
   />

@@ -232,25 +232,6 @@ impl TipFeeManager {
             Ok(token)
         }
     }
-
-    pub fn get_fee_token_balance(
-        &self,
-        call: IFeeManager::getFeeTokenBalanceCall,
-    ) -> Result<IFeeManager::getFeeTokenBalanceReturn> {
-        let mut token = self.user_tokens[call.sender].read()?;
-        if token.is_zero() {
-            token = DEFAULT_FEE_TOKEN;
-        }
-
-        let token_balance = TIP20Token::from_address(token)?.balance_of(ITIP20::balanceOfCall {
-            account: call.sender,
-        })?;
-
-        Ok(IFeeManager::getFeeTokenBalanceReturn {
-            _0: token,
-            _1: token_balance,
-        })
-    }
 }
 
 #[cfg(test)]
@@ -779,34 +760,6 @@ mod tests {
             let fee_manager = TipFeeManager::new();
             let remaining = fee_manager.collected_fees[validator][token.address()].read()?;
             assert_eq!(remaining, U256::ZERO);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_get_fee_token_balance_fallback() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let user = Address::random();
-        let validator = Address::random();
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let balance = U256::from(1000);
-            let _path_usd = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .with_mint(user, balance)
-                .apply()?;
-
-            let fee_manager = TipFeeManager::new();
-            let call = IFeeManager::getFeeTokenBalanceCall {
-                sender: user,
-                validator,
-            };
-            let result = fee_manager.get_fee_token_balance(call)?;
-
-            assert_eq!(result._0, DEFAULT_FEE_TOKEN);
-            assert_eq!(result._1, balance);
 
             Ok(())
         })

@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use commonware_consensus::types::{Epocher, FixedEpocher};
+use commonware_consensus::types::{Epocher, FixedEpocher, Height};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
@@ -424,21 +424,25 @@ enum ShutdownAfterFinalizing {
 }
 
 impl ShutdownAfterFinalizing {
-    fn is_target_height(&self, epoch_length: u64, block_height: u64) -> bool {
+    fn is_target_height(&self, epoch_length: u64, block_height: Height) -> bool {
         let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         match self {
             // NOTE: ceremonies are finalized on the pre-to-last block, so
             // block + 1 needs to be the boundary / last block.
             Self::Ceremony => {
-                block_height + 1 == epoch_strategy.containing(block_height + 1).unwrap().last()
+                block_height.next()
+                    == epoch_strategy
+                        .containing(block_height.next())
+                        .unwrap()
+                        .last()
             }
             Self::Boundary => {
                 block_height == epoch_strategy.containing(block_height).unwrap().last()
             }
             Self::BeforeMiddleOfEpoch => {
-                (block_height + 1).rem_euclid(epoch_length) == epoch_length / 2
+                block_height.next().get().rem_euclid(epoch_length) == epoch_length / 2
             }
-            Self::MiddleOfEpoch => block_height.rem_euclid(epoch_length) == epoch_length / 2,
+            Self::MiddleOfEpoch => block_height.get().rem_euclid(epoch_length) == epoch_length / 2,
         }
     }
 }
@@ -499,9 +503,11 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     let value = parts.next().unwrap();
 
                     if metric.ends_with("_marshal_processed_height") {
-                        let height = value.parse::<u64>().unwrap();
-                        if shutdown_after_finalizing.is_target_height(setup.epoch_length, height) {
-                            break 'wait_to_boundary (metric.to_string(), height);
+                        let value = value.parse::<u64>().unwrap();
+                        if shutdown_after_finalizing
+                            .is_target_height(setup.epoch_length, Height::new(value))
+                        {
+                            break 'wait_to_boundary (metric.to_string(), value);
                         }
                     }
                 }

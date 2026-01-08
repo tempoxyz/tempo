@@ -1,10 +1,10 @@
 use crate::{
-    Precompile, fill_precompile_output, input_cost, mutate, mutate_void, unknown_selector, view,
+    Precompile, dispatch_call, input_cost, mutate, mutate_void, tip403_registry::TIP403Registry,
+    view,
 };
-use alloy::{primitives::Address, sol_types::SolCall};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
-
-use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
+use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
 impl Precompile for TIP403Registry {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -12,66 +12,35 @@ impl Precompile for TIP403Registry {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
-
-        let result = match selector {
-            ITIP403Registry::policyIdCounterCall::SELECTOR => {
-                view::<ITIP403Registry::policyIdCounterCall>(calldata, |_call| {
-                    self.policy_id_counter()
-                })
-            }
-            ITIP403Registry::policyExistsCall::SELECTOR => {
-                view::<ITIP403Registry::policyExistsCall>(calldata, |call| self.policy_exists(call))
-            }
-            ITIP403Registry::policyDataCall::SELECTOR => {
-                view::<ITIP403Registry::policyDataCall>(calldata, |call| self.policy_data(call))
-            }
-            ITIP403Registry::isAuthorizedCall::SELECTOR => {
-                view::<ITIP403Registry::isAuthorizedCall>(calldata, |call| self.is_authorized(call))
-            }
-            ITIP403Registry::createPolicyCall::SELECTOR => {
-                mutate::<ITIP403Registry::createPolicyCall>(calldata, msg_sender, |s, call| {
-                    self.create_policy(s, call)
-                })
-            }
-            ITIP403Registry::createPolicyWithAccountsCall::SELECTOR => {
-                mutate::<ITIP403Registry::createPolicyWithAccountsCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.create_policy_with_accounts(s, call),
-                )
-            }
-            ITIP403Registry::setPolicyAdminCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::setPolicyAdminCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.set_policy_admin(s, call),
-                )
-            }
-            ITIP403Registry::modifyPolicyWhitelistCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::modifyPolicyWhitelistCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.modify_policy_whitelist(s, call),
-                )
-            }
-            ITIP403Registry::modifyPolicyBlacklistCall::SELECTOR => {
-                mutate_void::<ITIP403Registry::modifyPolicyBlacklistCall>(
-                    calldata,
-                    msg_sender,
-                    |s, call| self.modify_policy_blacklist(s, call),
-                )
-            }
-            _ => unknown_selector(selector, self.storage.gas_used()),
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+        dispatch_call(
+            calldata,
+            ITIP403RegistryCalls::abi_decode,
+            |call| match call {
+                ITIP403RegistryCalls::policyIdCounter(call) => {
+                    view(call, |_| self.policy_id_counter())
+                }
+                ITIP403RegistryCalls::policyExists(call) => view(call, |c| self.policy_exists(c)),
+                ITIP403RegistryCalls::policyData(call) => view(call, |c| self.policy_data(c)),
+                ITIP403RegistryCalls::isAuthorized(call) => view(call, |c| self.is_authorized(c)),
+                ITIP403RegistryCalls::createPolicy(call) => {
+                    mutate(call, msg_sender, |s, c| self.create_policy(s, c))
+                }
+                ITIP403RegistryCalls::createPolicyWithAccounts(call) => {
+                    mutate(call, msg_sender, |s, c| {
+                        self.create_policy_with_accounts(s, c)
+                    })
+                }
+                ITIP403RegistryCalls::setPolicyAdmin(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_policy_admin(s, c))
+                }
+                ITIP403RegistryCalls::modifyPolicyWhitelist(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.modify_policy_whitelist(s, c))
+                }
+                ITIP403RegistryCalls::modifyPolicyBlacklist(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.modify_policy_blacklist(s, c))
+                }
+            },
+        )
     }
 }
 
@@ -81,8 +50,9 @@ mod tests {
     use crate::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
+        tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::SolValue;
+    use alloy::sol_types::{SolCall, SolValue};
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]

@@ -16,7 +16,7 @@ use commonware_p2p::Blocker;
 use commonware_runtime::{Clock, Metrics, Network, Spawner, Storage, buffer::PoolRef};
 use rand::{CryptoRng, Rng};
 
-use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider, subblocks};
+use crate::{consensus::block::Block, epoch::scheme_provider::SchemeProvider, feed, subblocks};
 
 pub(crate) struct Config<TBlocker> {
     pub(crate) application: crate::consensus::application::Mailbox,
@@ -28,6 +28,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) mailbox_size: usize,
     pub(crate) subblocks: subblocks::Mailbox,
     pub(crate) marshal: marshal::Mailbox<Scheme<PublicKey, MinSig>, Block>,
+    pub(crate) feed: feed::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
