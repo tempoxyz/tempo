@@ -13,8 +13,10 @@ export default defineConfig({
         content="width=device-width, initial-scale=1, maximum-scale=1"
         name="viewport"
       />
-      {process.env['NODE_ENV'] === 'production' && (
+      {process.env['VERCEL_ENV'] === 'production' ? (
         <meta name="robot content" content="index, follow" />
+      ) : (
+        <meta name="robot content" content="noindex, nofollow" />
       )}
       <meta content="/og-docs.png" property="og:image" />
       <meta content="image/png" property="og:image:type" />
@@ -76,7 +78,7 @@ export default defineConfig({
         href="/favicon-dark.png"
         media="(prefers-color-scheme: dark)"
       />
-      {process.env.NODE_ENV === 'production' && (
+      {process.env['VERCEL_ENV'] === 'production' && (
         <script src="./ph.js" type="text/javascript"></script>
       )}
     </>
