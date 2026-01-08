@@ -175,8 +175,10 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::TempoSignature;
-    use crate::transaction::tt_authorization::tests::{generate_secp256k1_keypair, sign_hash};
+    use crate::transaction::{
+        TempoSignature,
+        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+    };
 
     fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
         KeyAuthorization {
