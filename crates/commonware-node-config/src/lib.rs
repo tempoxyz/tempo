@@ -5,15 +5,110 @@
 
 use std::{fmt::Display, path::Path};
 
-use commonware_codec::{DecodeExt as _, Encode as _};
+use chacha20poly1305::{AeadCore, ChaCha20Poly1305, KeyInit, Nonce, aead::Aead};
+use commonware_codec::{DecodeExt as _, Encode, ReadExt};
 use commonware_cryptography::{
     Signer,
     bls12381::primitives::group::Share,
     ed25519::{PrivateKey, PublicKey},
 };
+use crypto_common::generic_array::typenum::Unsigned as _;
+use crypto_common::rand_core::CryptoRngCore;
 
 #[cfg(test)]
 mod tests;
+
+const SIGNING_SHARE_ENV: &str = "TEMPO_SIGNING_SHARE_SECRET";
+
+/// The share used to encrypt the signing share at rest.
+#[derive(Clone)]
+pub struct SigningShareSecret(ChaCha20Poly1305);
+
+impl SigningShareSecret {
+    /// Generates a random secret.
+    pub fn random(rng: &mut impl CryptoRngCore) -> Self {
+        Self(ChaCha20Poly1305::new(&ChaCha20Poly1305::generate_key(rng)))
+    }
+
+    pub fn from_env() -> Result<Self, SigningShareSecretError> {
+        let hex = std::env::var(SIGNING_SHARE_ENV).map_err(SigningShareSecretErrorKind::EnvVar)?;
+        let bytes = const_hex::decode(&hex).map_err(SigningShareSecretErrorKind::Hex)?;
+        let key = ChaCha20Poly1305::new_from_slice(&bytes)
+            .map_err(SigningShareSecretErrorKind::Invalid)?;
+        Ok(Self(key))
+    }
+
+    pub fn encrypt_encodable(
+        &self,
+        encodable: &impl Encode,
+        rng: &mut impl CryptoRngCore,
+    ) -> Vec<u8> {
+        let nonce = ChaCha20Poly1305::generate_nonce(rng);
+        let ciphertext = self
+            .0
+            .encrypt(&nonce, encodable.encode().as_ref())
+            .expect("an encoded share should always fit into the maximum AEAD blocks");
+        let mut buf = Vec::with_capacity(nonce.len() + ciphertext.len());
+        buf.extend_from_slice(&nonce);
+        buf.extend_from_slice(&ciphertext);
+        buf
+    }
+
+    pub fn decrypt(&self, encoded: &[u8]) -> Result<Vec<u8>, DecryptError> {
+        let Some((nonce, ciphertext)) =
+            encoded.split_at_checked(<ChaCha20Poly1305 as AeadCore>::NonceSize::USIZE)
+        else {
+            return Err(DecryptErrorKind::InvalidLength.into());
+        };
+        let nonce = Nonce::from_slice(&nonce);
+        let plaintext = self.0.decrypt(&nonce, ciphertext).unwrap();
+        Ok(plaintext)
+    }
+
+    pub fn decrypt_decodable<T: ReadExt>(&self, encoded: &[u8]) -> Result<T, DecryptError> {
+        let plaintext = self.decrypt(encoded)?;
+        let this = ReadExt::read(&mut &plaintext[..]).map_err(DecryptErrorKind::Decode)?;
+        Ok(this)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct DecryptError(DecryptErrorKind);
+
+impl From<DecryptErrorKind> for DecryptError {
+    fn from(value: DecryptErrorKind) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DecryptErrorKind {
+    #[error("the encoded input lenght was invalid")]
+    InvalidLength,
+    #[error("failed decoding decrypted bytes into target type")]
+    Decode(commonware_codec::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct SigningShareSecretError(SigningShareSecretErrorKind);
+
+impl From<SigningShareSecretErrorKind> for SigningShareSecretError {
+    fn from(value: SigningShareSecretErrorKind) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SigningShareSecretErrorKind {
+    #[error("failed reading env var `{SIGNING_SHARE_ENV}`")]
+    EnvVar(#[source] std::env::VarError),
+    #[error("env var `{SIGNING_SHARE_ENV}` was not hex encoded")]
+    Hex(#[source] const_hex::FromHexError),
+    #[error("key contained in env var `{SIGNING_SHARE_ENV}` was invalid")]
+    Invalid(#[source] crypto_common::InvalidLength),
+}
 
 #[derive(Clone, PartialEq, Eq, derive_more::Debug)]
 pub struct SigningKey {

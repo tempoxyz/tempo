@@ -48,9 +48,9 @@ jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
 prometheus-client.workspace = true
 rand.workspace = true
+rand_core.workspace = true
 
 reth-consensus-common.workspace = true
-rand_core.workspace = true
 reth-ethereum.workspace = true
 reth-evm.workspace = true
 reth-node-builder.workspace = true

@@ -11657,10 +11657,12 @@ dependencies = [
 name = "tempo-commonware-node-config"
 version = "0.8.0"
 dependencies = [
+ "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
+ "crypto-common",
  "derive_more",
  "rand 0.8.5",
  "thiserror 2.0.17",
@@ -11740,6 +11742,7 @@ dependencies = [
  "tempfile",
  "tempo-chainspec",
  "tempo-commonware-node",
+ "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-eyre",
  "tempo-node",
