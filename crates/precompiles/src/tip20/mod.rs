@@ -2,7 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
+use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -277,7 +277,7 @@ impl TIP20Token {
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (PathUSD)
+        // Loop through quote tokens until we reach the root (pathUSD)
         let mut current = next_quote_token;
         while current != PATH_USD_ADDRESS {
             if current == self.address {
@@ -402,11 +402,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
-        if matches!(
-            call.from,
-            TIP_FEE_MANAGER_ADDRESS | STABLECOIN_EXCHANGE_ADDRESS
-        ) {
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -604,6 +601,7 @@ impl TIP20Token {
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -629,7 +627,7 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
@@ -857,6 +855,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
@@ -940,6 +939,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
@@ -1511,7 +1511,7 @@ pub(crate) mod tests {
                 "from_address should use the provided address directly"
             );
 
-            // Test with reserved token (PathUSD)
+            // Test with reserved token (pathUSD)
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
             let via_from_address_reserved = TIP20Token::from_address(PATH_USD_ADDRESS)?.address;
 
@@ -1684,8 +1684,8 @@ pub(crate) mod tests {
                 .with_role(burner, *BURN_BLOCKED_ROLE)
                 // Simulate collected fees
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                // Mint tokens to StablecoinExchange
-                .with_mint(STABLECOIN_EXCHANGE_ADDRESS, amount)
+                // Mint tokens to StablecoinDEX
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .apply()?;
 
             // Attempt to burn from FeeManager
@@ -1708,11 +1708,11 @@ pub(crate) mod tests {
             })?;
             assert_eq!(balance, amount);
 
-            // Attempt to burn from StablecoinExchange
+            // Attempt to burn from StablecoinDEX
             let result = token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: STABLECOIN_EXCHANGE_ADDRESS,
+                    from: STABLECOIN_DEX_ADDRESS,
                     amount: amount / U256::from(2),
                 },
             );
@@ -1722,9 +1722,9 @@ pub(crate) mod tests {
                 Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
             ));
 
-            // Verify StablecoinExchange balance is unchanged
+            // Verify StablecoinDEX balance is unchanged
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_EXCHANGE_ADDRESS,
+                account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
 
@@ -1761,12 +1761,12 @@ pub(crate) mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            // PathUSD is at a reserved address, so we initialize it directly (not via factory)
+            // pathUSD is at a reserved address, so we initialize it directly (not via factory)
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
+            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
 
             assert_eq!(path_usd.currency()?, "USD");
-            // PathUSD uses itself as quote token
+            // pathUSD uses itself as quote token
             assert_eq!(path_usd.quote_token()?, PATH_USD_ADDRESS);
             Ok(())
         })

@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { Hooks } from 'wagmi/tempo'
 import { useConnection, useConnectionEffect } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { cx } from '../../../../cva.config'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Login, Step } from '../../Demo'

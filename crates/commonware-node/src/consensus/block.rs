@@ -7,6 +7,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::B256;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, Read, Write};
+use commonware_consensus::{Heightable, types::Height};
 use commonware_cryptography::{Committable, Digestible};
 use reth_node_core::primitives::SealedBlock;
 
@@ -120,13 +121,15 @@ impl Digestible for Block {
     }
 }
 
+impl Heightable for Block {
+    fn height(&self) -> Height {
+        Height::new(self.0.number())
+    }
+}
+
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
-    }
-
-    fn height(&self) -> u64 {
-        self.0.number()
     }
 }
 

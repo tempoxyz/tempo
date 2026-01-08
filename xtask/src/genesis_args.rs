@@ -49,7 +49,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    stablecoin_exchange::StablecoinExchange,
+    stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
@@ -116,7 +116,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pub(crate) seed: Option<u64>,
 
-    /// Custom admin address for PathUSD token.
+    /// Custom admin address for pathUSD token.
     /// If not set, uses the first generated account.
     #[arg(long)]
     pathusd_admin: Option<Address>,
@@ -218,7 +218,7 @@ impl GenesisArgs {
         println!("Initializing TIP20Factory");
         initialize_tip20_factory(&mut evm)?;
 
-        println!("Creating PathUSD through factory");
+        println!("Creating pathUSD through factory");
         create_path_usd_token(pathusd_admin, &addresses, &mut evm)?;
 
         let (alpha_token_address, beta_token_address, theta_token_address) =
@@ -300,7 +300,7 @@ impl GenesisArgs {
         );
 
         println!("Initializing stablecoin exchange");
-        initialize_stablecoin_exchange(&mut evm)?;
+        initialize_stablecoin_dex(&mut evm)?;
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
@@ -424,7 +424,6 @@ impl GenesisArgs {
                 extra_data = consensus_config
                     .to_genesis_dkg_outcome()
                     .encode()
-                    .freeze()
                     .to_vec()
                     .into();
             }
@@ -503,8 +502,8 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Creates PathUSD as the first TIP20 token at a reserved address.
-/// PathUSD is not created via factory since it's at a reserved address.
+/// Creates pathUSD as the first TIP20 token at a reserved address.
+/// pathUSD is not created via factory since it's at a reserved address.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -514,16 +513,16 @@ fn create_path_usd_token(
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         TIP20Factory::new().create_token_reserved_address(
             PATH_USD_ADDRESS,
-            "PathUSD",
-            "PathUSD",
+            "pathUSD",
+            "pathUSD",
             "USD",
             Address::ZERO,
             admin,
         )?;
 
-        // Initialize PathUSD directly (not via factory) since it's at a reserved address.
+        // Initialize pathUSD directly (not via factory) since it's at a reserved address.
         let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
-            .expect("Could not create PathUSD token instance");
+            .expect("Could not create pathUSD token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint to all recipients
@@ -631,7 +630,7 @@ fn initialize_fee_manager(
                 .expect("Could not set fee token");
         }
 
-        // Set validator fee tokens to PathUSD
+        // Set validator fee tokens to pathUSD
         for validator in validators {
             fee_manager
                 .set_validator_token(
@@ -657,10 +656,10 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
     Ok(())
 }
 
-fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        StablecoinExchange::new().initialize()
+        StablecoinDEX::new().initialize()
     })?;
 
     Ok(())
@@ -732,7 +731,7 @@ fn initialize_validator_config(
                         admin,
                         IValidatorConfig::addValidatorCall {
                             newValidatorAddress,
-                            publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
+                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
                             active: true,
                             inboundAddress: addr.to_string(),
                             outboundAddress: addr.to_string(),
