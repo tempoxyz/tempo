@@ -38,10 +38,10 @@ export function getConfig(options: getConfig.Options = {}) {
     }),
     transports: {
       [tempoTestnet.id]: withFeePayer(
-        webSocket('wss://rpc.testnet.tempo.xyz', {
+        webSocket('wss://rpc.moderato.tempo.xyz', {
           keepAlive: { interval: 1_000 },
         }),
-        http('https://sponsor.testnet.tempo.xyz'),
+        http('https://sponsor.moderato.tempo.xyz'),
         { policy: 'sign-only' },
       ),
       [tempoDevnet.id]: withFeePayer(
