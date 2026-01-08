@@ -361,13 +361,13 @@ where
 
                 // Include gas from all previous successful calls + failed call
                 let gas_spent_by_failed_call = frame_result.gas().spent();
-                let total_gas_used = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
+                let total_gas_spent = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
 
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
                 // (the frame_result has the limit from just the last call)
                 let mut corrected_gas = Gas::new(gas_limit);
                 if instruction_result.is_revert() {
-                    corrected_gas.set_spent(total_gas_used);
+                    corrected_gas.set_spent(total_gas_spent);
                 } else {
                     corrected_gas.spend_all();
                 }
@@ -395,12 +395,12 @@ where
         let mut result =
             final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
 
-        let total_gas_used = gas_limit - remaining_gas;
+        let total_gas_spent = gas_limit - remaining_gas;
 
         // Create new Gas with correct limit, because Gas does not have a set_limit method
         // (the frame_result has the limit from just the last call)
         let mut corrected_gas = Gas::new(gas_limit);
-        corrected_gas.set_spent(total_gas_used);
+        corrected_gas.set_spent(total_gas_spent);
         corrected_gas.set_refund(accumulated_gas_refund);
         *result.gas_mut() = corrected_gas;
 
