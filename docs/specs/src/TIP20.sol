@@ -113,6 +113,13 @@ contract TIP20 is ITIP20, TIP20RolesAuth {
     function setNextQuoteToken(ITIP20 newQuoteToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
         // sets next quote token, to put the DEX for that pair into place-only mode
         // does not check for loops; that is checked in completeQuoteTokenUpdate
+
+        // pathUSD is the root of the quote token tree in the FeeAMM.
+        // Thus, it must always have address(0) as its quote token.
+        if (address(this) == TempoUtilities._PATH_USD && address(newQuoteToken) != address(0)) {
+            revert InvalidQuoteToken();
+        }
+
         if (!TempoUtilities.isTIP20(address(newQuoteToken))) {
             revert InvalidQuoteToken();
         }
