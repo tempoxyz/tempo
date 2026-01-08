@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU32, NonZeroUsize},
 };
 
 use alloy_consensus::BlockHeader as _;
@@ -23,14 +23,14 @@ use commonware_p2p::Address;
 use commonware_parallel::Strategy;
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
-use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
+use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
-const PAGE_SIZE: NonZeroUsize = NZUsize!(1 << 12);
+const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
 const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 20);
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1 << 12);
 const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
