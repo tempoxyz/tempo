@@ -9,7 +9,6 @@
     "check:types": "tsc --noEmit",
     "dev": "vocs dev",
     "gen:specs": "node scripts/gen-specs.ts",
-    "prepare": "simple-git-hooks",
     "preview": "vocs preview"
   },
   "dependencies": {
