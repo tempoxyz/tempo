@@ -80,6 +80,28 @@ fn test_arrays_layout() {
 }
 
 #[test]
+fn test_fixed_bytes_layout() {
+    #[contract]
+    struct FixedBytesStruct {
+        field_a: U256,
+        bytes4_field: FixedBytes<4>,
+        bytes16_field: FixedBytes<16>,
+        bytes10_field: FixedBytes<10>,
+        field_b: U256,
+    }
+
+    let rust_layout = layout_fields!(field_a, bytes4_field, bytes16_field, bytes10_field, field_b);
+
+    // Compare against expected layout from Solidity
+    let sol_path = testdata("fixed_bytes.sol");
+    let solc_layout = load_solc_layout(&sol_path);
+
+    if let Err(errors) = compare_layouts(&solc_layout, &rust_layout) {
+        panic_layout_mismatch("Layout", errors, &sol_path);
+    }
+}
+
+#[test]
 fn test_mappings_layout() {
     #[contract]
     struct Mappings {

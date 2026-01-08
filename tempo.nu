@@ -400,6 +400,7 @@ def "main bench" [
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
+    --max-concurrent-requests: int = 100            # Max concurrent requests
     --nodes: int = 3                                # Number of consensus nodes (consensus mode only)
     --genesis: string = ""                          # Custom genesis file path (skips generation)
     --samply                                        # Profile nodes with samply
@@ -491,6 +492,7 @@ def "main bench" [
         "--tps" $"($tps)"
         "--duration" $"($duration)"
         "--accounts" $"($accounts)"
+        "--max-concurrent-requests" $"($max_concurrent_requests)"
         "--target-urls" ($rpc_urls | str join ",")
         "--faucet"
         "--clear-txpool"
@@ -587,6 +589,7 @@ def main [] {
     print "  --tps <N>                Target TPS (default: 10000)"
     print "  --duration <N>           Duration in seconds (default: 30)"
     print "  --accounts <N>           Number of accounts (default: 1000)"
+    print "  --max-concurrent-requests <N>  Max concurrent requests (default: 100)"
     print "  --nodes <N>              Number of consensus nodes (default: 3, consensus mode only)"
     print "  --samply                 Profile nodes with samply"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"

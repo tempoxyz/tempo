@@ -1,0 +1,73 @@
+{
+  "contracts": {
+    "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout": {
+      "storage-layout": {
+        "storage": [
+          {
+            "astId": 3,
+            "contract": "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout",
+            "label": "fieldA",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_uint256"
+          },
+          {
+            "astId": 5,
+            "contract": "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout",
+            "label": "bytes4Field",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_bytes4"
+          },
+          {
+            "astId": 7,
+            "contract": "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout",
+            "label": "bytes16Field",
+            "offset": 4,
+            "slot": "1",
+            "type": "t_bytes16"
+          },
+          {
+            "astId": 9,
+            "contract": "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout",
+            "label": "bytes10Field",
+            "offset": 20,
+            "slot": "1",
+            "type": "t_bytes10"
+          },
+          {
+            "astId": 11,
+            "contract": "tests/storage_tests/solidity/testdata/fixed_bytes.sol:FixedBytesLayout",
+            "label": "fieldB",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_uint256"
+          }
+        ],
+        "types": {
+          "t_bytes10": {
+            "encoding": "inplace",
+            "label": "bytes10",
+            "numberOfBytes": "10"
+          },
+          "t_bytes16": {
+            "encoding": "inplace",
+            "label": "bytes16",
+            "numberOfBytes": "16"
+          },
+          "t_bytes4": {
+            "encoding": "inplace",
+            "label": "bytes4",
+            "numberOfBytes": "4"
+          },
+          "t_uint256": {
+            "encoding": "inplace",
+            "label": "uint256",
+            "numberOfBytes": "32"
+          }
+        }
+      }
+    }
+  },
+  "version": "0.8.30+commit.73712a01.Linux.g++"
+}
