@@ -360,8 +360,8 @@ where
                 }
 
                 // Include gas from all previous successful calls + failed call
-                let gas_used_by_failed_call = frame_result.gas().spent();
-                let total_gas_used = (gas_limit - remaining_gas) + gas_used_by_failed_call;
+                let gas_spent_by_failed_call = frame_result.gas().spent();
+                let total_gas_used = (gas_limit - remaining_gas) + gas_spent_by_failed_call;
 
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
                 // (the frame_result has the limit from just the last call)
@@ -378,12 +378,12 @@ where
             }
 
             // Call succeeded - accumulate gas usage and refunds
-            let gas_used = frame_result.gas().spent();
+            let gas_spent = frame_result.gas().spent();
             let gas_refunded = frame_result.gas().refunded();
 
             accumulated_gas_refund = accumulated_gas_refund.saturating_add(gas_refunded);
             // Subtract only execution gas (intrinsic gas already deducted upfront)
-            remaining_gas = remaining_gas.saturating_sub(gas_used);
+            remaining_gas = remaining_gas.saturating_sub(gas_spent);
 
             final_result = Some(frame_result);
         }
