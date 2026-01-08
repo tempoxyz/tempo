@@ -10,13 +10,13 @@ This enables you to subsidize gas costs for your users by signing transactions w
 ```ts twoslash [server.ts]
 // @noErrors
 import { Handler } from 'tempo.ts/server'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 const handler = Handler.feePayer({
   account: privateKeyToAccount('0x...'),
-  chain: tempoTestnet.extend({ feeToken: '0x20c0...0001' }),
+  chain: tempoModerato.extend({ feeToken: '0x20c0...0001' }),
   path: '/fee-payer',
   transport: http(),
 })
@@ -25,11 +25,11 @@ const handler = Handler.feePayer({
 ```ts twoslash [example.client.ts]
 // @noErrors
 import { createClient, http, walletActions } from 'viem'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { tempoActions, withFeePayer } from 'viem/tempo'
 
 const client = createClient({
-  chain: tempoTestnet,
+  chain: tempoModerato,
   transport: withFeePayer(
     http(), // Default transport
     http('http://localhost:3000/fee-payer'), // Fee payer transport (your server)

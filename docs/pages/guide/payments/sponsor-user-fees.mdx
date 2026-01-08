@@ -127,10 +127,10 @@ The example above uses a fee payer server to sign and sponsor transactions. If y
 // @noErrors
 import { createClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 
 const client = createClient({
-  chain: tempoTestnet,
+  chain: tempoModerato,
   transport: http(),
 })
 
