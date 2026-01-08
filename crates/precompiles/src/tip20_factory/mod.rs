@@ -474,7 +474,6 @@ mod tests {
             factory.initialize()?;
 
             // Try to create PATH_USD with a non-deployed TIP20 as quote_token
-            // This address has TIP20 prefix but hasn't been deployed
             let result = factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
                 "pathUSD",
