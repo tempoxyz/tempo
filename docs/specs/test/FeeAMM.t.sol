@@ -259,6 +259,126 @@ contract FeeAMMTest is BaseTest {
         assertEq(pool.reserveValidatorToken, 5000e18);
     }
 
+    function testFuzz_Mint(uint256 initialV, uint256 additionalV) public {
+        uint256 minLiq = amm.MIN_LIQUIDITY();
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+
+        // First mint
+        initialV = bound(initialV, 2 * minLiq + 2, 5000e18);
+        vm.prank(alice);
+        uint256 liquidity1 = amm.mint(address(userToken), address(validatorToken), initialV, alice);
+
+        assertEq(liquidity1, initialV / 2 - minLiq);
+        (uint128 reserveU, uint128 reserveV) = amm.pools(poolId);
+        assertEq(reserveU, 0);
+        assertEq(reserveV, initialV);
+
+        // Subsequent mint
+        uint256 supplyBefore = amm.totalSupply(poolId);
+        additionalV = bound(additionalV, 1e15, 5000e18);
+
+        vm.prank(alice);
+        uint256 liquidity2 =
+            amm.mint(address(userToken), address(validatorToken), additionalV, alice);
+
+        uint256 denom = uint256(reserveV) + (amm.N() * uint256(reserveU)) / amm.SCALE();
+        assertEq(liquidity2, (additionalV * supplyBefore) / denom);
+
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+        assertEq(reserveUAfter, reserveU);
+        assertEq(reserveVAfter, reserveV + uint128(additionalV));
+    }
+
+    function testFuzz_Burn(uint256 mintAmount, uint256 burnFraction) public {
+        uint256 minLiq = amm.MIN_LIQUIDITY();
+
+        mintAmount = bound(mintAmount, 2 * minLiq + 2, 10_000e18);
+        vm.prank(alice);
+        uint256 liquidity = amm.mint(address(userToken), address(validatorToken), mintAmount, alice);
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+        uint256 totalSupply = amm.totalSupply(poolId);
+
+        burnFraction = bound(burnFraction, 1, 100);
+        uint256 burnAmount = (liquidity * burnFraction) / 100;
+        if (burnAmount == 0) burnAmount = 1;
+
+        vm.prank(alice);
+        (uint256 amountU, uint256 amountV) =
+            amm.burn(address(userToken), address(validatorToken), burnAmount, alice);
+
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+
+        // Pro-rata invariant
+        uint256 expectedU = (burnAmount * uint256(reserveUBefore)) / totalSupply;
+        uint256 expectedV = (burnAmount * uint256(reserveVBefore)) / totalSupply;
+        assertEq(amountU, expectedU);
+        assertEq(amountV, expectedV);
+
+        // Reserve conservation
+        assertEq(uint256(reserveUAfter), uint256(reserveUBefore) - amountU);
+        assertEq(uint256(reserveVAfter), uint256(reserveVBefore) - amountV);
+    }
+
+    function testFuzz_Solvency(uint256 mintAmount, uint256 burnFraction) public {
+        uint256 minLiq = amm.MIN_LIQUIDITY();
+        mintAmount = bound(mintAmount, 2 * minLiq + 2, 10_000e18);
+
+        vm.prank(alice);
+        uint256 liquidity = amm.mint(address(userToken), address(validatorToken), mintAmount, alice);
+
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+
+        // Check solvency after mint
+        (uint128 reserveU, uint128 reserveV) = amm.pools(poolId);
+        assertGe(userToken.balanceOf(address(amm)), uint256(reserveU));
+        assertGe(validatorToken.balanceOf(address(amm)), uint256(reserveV));
+
+        // Burn some and check solvency again
+        burnFraction = bound(burnFraction, 1, 100);
+        uint256 burnAmount = (liquidity * burnFraction) / 100;
+        if (burnAmount == 0) burnAmount = 1;
+
+        vm.prank(alice);
+        amm.burn(address(userToken), address(validatorToken), burnAmount, alice);
+
+        (reserveU, reserveV) = amm.pools(poolId);
+        assertGe(userToken.balanceOf(address(amm)), uint256(reserveU));
+        assertGe(validatorToken.balanceOf(address(amm)), uint256(reserveV));
+    }
+
+    function testFuzz_RebalanceSwap(uint256 amountOut) public {
+        vm.prank(alice);
+        amm.mint(address(userToken), address(validatorToken), 5000e18, alice);
+
+        // Seed userToken reserve so rebalance has tokens to give out
+        bytes32 poolId = amm.getPoolId(address(userToken), address(validatorToken));
+        uint256 poolsSlot = isTempo ? 3 : 0;
+        bytes32 slot = keccak256(abi.encode(poolId, poolsSlot));
+        bytes32 packedValue = bytes32((uint256(5000e18) << 128) | uint256(5000e18));
+        vm.store(address(amm), slot, packedValue);
+        userToken.mint(address(amm), 5000e18);
+
+        (uint128 reserveUBefore, uint128 reserveVBefore) = amm.pools(poolId);
+
+        amountOut = bound(amountOut, 1, 4000e18);
+
+        vm.prank(alice);
+        uint256 amountIn =
+            amm.rebalanceSwap(address(userToken), address(validatorToken), amountOut, alice);
+
+        (uint128 reserveUAfter, uint128 reserveVAfter) = amm.pools(poolId);
+
+        // Rate invariant: amountIn = ceil(amountOut * N / SCALE)
+        uint256 expectedAmountIn = (amountOut * amm.N()) / amm.SCALE() + 1;
+        assertEq(amountIn, expectedAmountIn);
+
+        // Reserve conservation: reserveV increases by amountIn, reserveU decreases by amountOut
+        assertEq(uint256(reserveVAfter), uint256(reserveVBefore) + amountIn);
+        assertEq(uint256(reserveUAfter), uint256(reserveUBefore) - amountOut);
+    }
+
     /*//////////////////////////////////////////////////////////////
                             HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
