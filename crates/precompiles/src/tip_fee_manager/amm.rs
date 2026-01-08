@@ -115,10 +115,6 @@ impl TipFeeManager {
         amount_out: U256,
         to: Address,
     ) -> Result<U256> {
-        if user_token == validator_token {
-            return Err(TIPFeeAMMError::identical_addresses().into());
-        }
-
         if amount_out.is_zero() {
             return Err(TIPFeeAMMError::invalid_amount().into());
         }

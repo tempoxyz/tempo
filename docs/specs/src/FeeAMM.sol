@@ -80,8 +80,6 @@ contract FeeAMM is IFeeAMM {
         external
         returns (uint256 amountIn)
     {
-        if (userToken == validatorToken) revert IdenticalAddresses();
-
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         // Rebalancing swaps are always from validatorToken to userToken
