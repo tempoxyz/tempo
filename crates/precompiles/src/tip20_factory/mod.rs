@@ -224,8 +224,9 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::TIP20Error,
     };
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, address};
 
     #[test]
     fn test_create_token() -> eyre::Result<()> {
@@ -461,5 +462,45 @@ mod tests {
         assert!(is_tip20_prefix(addr3));
         assert!(is_tip20_prefix(addr4));
         assert!(is_tip20_prefix(addr5));
+    }
+
+    #[test]
+    fn test_create_token_reserved_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Try to create PATH_USD with a non-deployed TIP20 as quote_token
+            // This address has TIP20 prefix but hasn't been deployed
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                address!("20C0000000000000000000000000000000000001"),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // Only possible to deploy PATH_USD (the first token) without a quote token
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            Ok(())
+        })
     }
 }
