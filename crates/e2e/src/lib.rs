@@ -36,7 +36,7 @@ pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
-use tempo_commonware_node_config::EncryptionSecret;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
 
@@ -225,10 +225,9 @@ pub async fn setup_validators(
         );
         execution_config.feed_state = Some(feed_state.clone());
 
-        let share_secret = EncryptionSecret::random(&mut context);
+        let share_key = EncryptionKey::from_bytes(&EncryptionKey::random(&mut context)).unwrap();
 
-        let raw_share =
-            share.map(|share| share_secret.encrypt_encodable(&share, &mut context).into());
+        let raw_share = share.map(|share| share_key.encrypt_encodable(&share, &mut context).into());
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
@@ -251,7 +250,7 @@ pub async fn setup_validators(
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             feed_state,
-            share_secret,
+            share_key,
         };
 
         nodes.push(TestingNode::new(

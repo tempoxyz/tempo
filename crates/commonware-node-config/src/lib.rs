@@ -30,17 +30,22 @@ pub struct EncryptionKey(ChaCha20Poly1305);
 
 impl EncryptionKey {
     /// Generates a random secret.
-    pub fn random(rng: &mut impl CryptoRngCore) -> Self {
-        Self(ChaCha20Poly1305::new(&ChaCha20Poly1305::generate_key(rng)))
+    pub fn random(rng: &mut impl CryptoRngCore) -> Vec<u8> {
+        let key = ChaCha20Poly1305::generate_key(rng);
+        const_hex::encode(&key).into_bytes()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncryptionKeyError> {
+        let bytes = const_hex::decode(bytes).map_err(EncryptionKeyErrorKind::Hex)?;
+        let key =
+            ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
+        Ok(Self(key))
     }
 
     pub fn from_env(name: &'static str) -> Result<Self, EncryptionKeyError> {
         let hex = std::env::var(name)
             .map_err(|source| EncryptionKeyErrorKind::EnvVar { source, name })?;
-        let bytes = const_hex::decode(&hex).map_err(EncryptionKeyErrorKind::Hex)?;
-        let key =
-            ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
-        Ok(Self(key))
+        Self::from_bytes(hex.as_bytes())
     }
 
     pub fn encrypt_encodable(
