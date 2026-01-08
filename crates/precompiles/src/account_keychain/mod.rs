@@ -791,10 +791,14 @@ mod tests {
             })?;
             assert_eq!(limit_after_contract, U256::from(40)); // unchanged
 
-            // Ensure exceeding the limit fails
+            // Assert that exceeding remaining limit fails
             let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
-            assert!(exceed_result.is_err());
-            // TODO: assert exact err
+            assert!(matches!(
+                exceed_result,
+                Err(TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                ))
+            ));
 
             // Assert that the main key bypasses spending limits, does not affect exisitng limits
             keychain.set_transaction_key(Address::ZERO)?;
