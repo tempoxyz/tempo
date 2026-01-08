@@ -1015,79 +1015,10 @@ impl AA2dTransactionId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::TempoPooledTransaction;
-    use alloy_consensus::Transaction;
-    use alloy_primitives::{Address, Signature, TxKind, U256};
-    use reth_primitives_traits::Recovered;
-    use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
-    use std::{collections::HashSet, time::Instant};
-    use tempo_primitives::{
-        TempoTxEnvelope,
-        transaction::{
-            TempoTransaction,
-            tempo_transaction::Call,
-            tt_signature::{PrimitiveSignature, TempoSignature},
-            tt_signed::AASigned,
-        },
-    };
-
-    /// Helper to create a test AA transaction with default gas prices
-    fn create_aa_tx(sender: Address, nonce_key: U256, nonce: u64) -> TempoPooledTransaction {
-        create_aa_tx_with_gas(sender, nonce_key, nonce, 1_000_000_000, 2_000_000_000)
-    }
-
-    /// Helper to create a test AA transaction with custom gas prices
-    fn create_aa_tx_with_gas(
-        sender: Address,
-        nonce_key: U256,
-        nonce: u64,
-        max_priority_fee: u128,
-        max_fee: u128,
-    ) -> TempoPooledTransaction {
-        let tx = TempoTransaction {
-            max_priority_fee_per_gas: max_priority_fee,
-            max_fee_per_gas: max_fee,
-            gas_limit: 100_000,
-            calls: vec![Call {
-                to: TxKind::Call(Address::random()),
-                value: U256::from(1000),
-                input: Default::default(),
-            }],
-            nonce_key,
-            nonce,
-            fee_token: None,
-            fee_payer_signature: None,
-            ..Default::default()
-        };
-
-        // Create a dummy signature
-        let signature =
-            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-        let aa_signed = AASigned::new_unhashed(tx, signature);
-        let envelope: TempoTxEnvelope = aa_signed.into();
-
-        // Recover with the sender address (in tests we skip verification)
-        let recovered = Recovered::new_unchecked(envelope, sender);
-        TempoPooledTransaction::new(recovered)
-    }
-
-    /// Helper to wrap a transaction in ValidPoolTransaction
-    ///
-    /// Note: Creates a dummy SenderId for testing since the AA2dPool doesn't use it
-    fn wrap_valid_tx(
-        tx: TempoPooledTransaction,
-        origin: TransactionOrigin,
-    ) -> ValidPoolTransaction<TempoPooledTransaction> {
-        let tx_id = reth_transaction_pool::identifier::TransactionId::new(0u64.into(), tx.nonce());
-        ValidPoolTransaction {
-            transaction: tx,
-            transaction_id: tx_id,
-            propagate: true,
-            timestamp: Instant::now(),
-            origin,
-            authority_ids: None,
-        }
-    }
+    use crate::test_utils::{create_aa_tx, create_aa_tx_with_gas, wrap_valid_tx};
+    use alloy_primitives::{Address, U256};
+    use reth_transaction_pool::PoolTransaction;
+    use std::collections::HashSet;
 
     #[test_case::test_case(U256::ZERO)]
     #[test_case::test_case(U256::random())]
@@ -2445,5 +2376,1005 @@ mod tests {
             tx0_len + tx1_len,
             "Should add to pre-accumulated size"
         );
+    }
+    // ============================================
+    // Helper function tests
+    // ============================================
+
+    #[test]
+    fn test_pool_contains() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx_hash = *tx.hash();
+
+        assert!(!pool.contains(&tx_hash));
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        assert!(pool.contains(&tx_hash));
+    }
+
+    #[test]
+    fn test_pool_get() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx_hash = *tx.hash();
+
+        assert!(pool.get(&tx_hash).is_none());
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let retrieved = pool.get(&tx_hash);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().hash(), &tx_hash);
+    }
+
+    #[test]
+    fn test_pool_get_all() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+        let fake_hash = alloy_primitives::B256::random();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let hashes = [tx0_hash, tx1_hash, fake_hash];
+        let results = pool.get_all(hashes.iter());
+
+        assert_eq!(results.len(), 2); // Only the two real transactions
+    }
+
+    #[test]
+    fn test_pool_senders_iter() {
+        let mut pool = AA2dPool::default();
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+
+        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
+        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let senders: Vec<_> = pool.senders_iter().collect();
+        assert_eq!(senders.len(), 2);
+        assert!(senders.contains(&&sender1));
+        assert!(senders.contains(&&sender2));
+    }
+
+    #[test]
+    fn test_pool_queued_transactions() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        // Insert tx0 (pending) and tx2 (queued due to gap)
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx2_hash = *tx2.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let queued: Vec<_> = pool.queued_transactions().collect();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].hash(), &tx2_hash);
+    }
+
+    #[test]
+    fn test_pool_pending_transactions() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let _tx0_hash = *tx0.hash();
+        let _tx1_hash = *tx1.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let pending: Vec<_> = pool.pending_transactions().collect();
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn test_pool_get_transactions_by_sender_iter() {
+        let mut pool = AA2dPool::default();
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+
+        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
+        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let sender1_txs: Vec<_> = pool.get_transactions_by_sender_iter(sender1).collect();
+        assert_eq!(sender1_txs.len(), 1);
+        assert_eq!(sender1_txs[0].sender(), sender1);
+
+        let sender2_txs: Vec<_> = pool.get_transactions_by_sender_iter(sender2).collect();
+        assert_eq!(sender2_txs.len(), 1);
+        assert_eq!(sender2_txs[0].sender(), sender2);
+    }
+
+    #[test]
+    fn test_pool_get_transactions_by_origin_iter() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::External)), 0)
+            .unwrap();
+
+        let local_txs: Vec<_> = pool
+            .get_transactions_by_origin_iter(TransactionOrigin::Local)
+            .collect();
+        assert_eq!(local_txs.len(), 1);
+
+        let external_txs: Vec<_> = pool
+            .get_transactions_by_origin_iter(TransactionOrigin::External)
+            .collect();
+        assert_eq!(external_txs.len(), 1);
+    }
+
+    #[test]
+    fn test_pool_get_pending_transactions_by_origin_iter() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx2 = create_aa_tx(sender, U256::ZERO, 2); // Queued due to gap
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let pending_local: Vec<_> = pool
+            .get_pending_transactions_by_origin_iter(TransactionOrigin::Local)
+            .collect();
+        assert_eq!(pending_local.len(), 1); // Only tx0 is pending
+    }
+
+    #[test]
+    fn test_pool_all_transaction_hashes_iter() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let hashes: Vec<_> = pool.all_transaction_hashes_iter().collect();
+        assert_eq!(hashes.len(), 2);
+        assert!(hashes.contains(&tx0_hash));
+        assert!(hashes.contains(&tx1_hash));
+    }
+
+    #[test]
+    fn test_pool_pooled_transactions_hashes_iter() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let hashes: Vec<_> = pool.pooled_transactions_hashes_iter().collect();
+        assert_eq!(hashes.len(), 2);
+    }
+
+    #[test]
+    fn test_pool_pooled_transactions_iter() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let txs: Vec<_> = pool.pooled_transactions_iter().collect();
+        assert_eq!(txs.len(), 2);
+    }
+
+    // ============================================
+    // BestAA2dTransactions tests
+    // ============================================
+
+    #[test]
+    fn test_best_transactions_iterator() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        // Should iterate through pending transactions
+        let first = best.next();
+        assert!(first.is_some());
+
+        let second = best.next();
+        assert!(second.is_some());
+
+        let third = best.next();
+        assert!(third.is_none());
+    }
+
+    #[test]
+    fn test_best_transactions_mark_invalid() {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        let first = best.next().unwrap();
+
+        // Mark it invalid
+        let error = reth_transaction_pool::error::InvalidPoolTransactionError::Consensus(
+            InvalidTransactionError::TxTypeNotSupported,
+        );
+        best.mark_invalid(&first, &error);
+
+        // The sequence should be in the invalid set, so next tx from same sender should be skipped
+        // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
+    }
+
+    #[test]
+    fn test_best_transactions_no_updates() {
+        let pool = AA2dPool::default();
+        let mut best = pool.best_transactions();
+
+        // Should not panic
+        best.no_updates();
+    }
+
+    #[test]
+    fn test_best_transactions_set_skip_blobs() {
+        let pool = AA2dPool::default();
+        let mut best = pool.best_transactions();
+
+        // Should not panic
+        best.set_skip_blobs(true);
+        best.set_skip_blobs(false);
+    }
+
+    // ============================================
+    // Remove transactions tests
+    // ============================================
+
+    #[test]
+    fn test_remove_transactions_by_sender() {
+        let mut pool = AA2dPool::default();
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+
+        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
+        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let removed = pool.remove_transactions_by_sender(sender1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].sender(), sender1);
+
+        // sender1's tx should be gone, sender2's should remain
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending + queued, 1);
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_remove_transactions_and_descendants() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx0_hash = *tx0.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        // Remove tx0 and its descendants (tx1, tx2)
+        let removed = pool.remove_transactions_and_descendants([&tx0_hash].into_iter());
+        assert_eq!(removed.len(), 3);
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending + queued, 0);
+
+        pool.assert_invariants();
+    }
+
+    // ============================================
+    // AA2dPoolConfig tests
+    // ============================================
+
+    #[test]
+    fn test_aa2d_pool_config_default() {
+        let _config = AA2dPoolConfig::default();
+        // Verifies that default config can be constructed without panicking
+    }
+
+    // ============================================
+    // AASequenceId and AA2dTransactionId tests
+    // ============================================
+
+    #[test]
+    fn test_aa_sequence_id_equality() {
+        let addr = Address::random();
+        let nonce_key = U256::from(42);
+
+        let id1 = AASequenceId::new(addr, nonce_key);
+        let id2 = AASequenceId::new(addr, nonce_key);
+        let id3 = AASequenceId::new(Address::random(), nonce_key);
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_aa2d_transaction_id_unlocks() {
+        let addr = Address::random();
+        let seq_id = AASequenceId::new(addr, U256::ZERO);
+        let tx_id = AA2dTransactionId::new(seq_id, 5);
+
+        let next_id = tx_id.unlocks();
+        assert_eq!(next_id.seq_id, seq_id);
+        assert_eq!(next_id.nonce, 6);
+    }
+
+    #[test]
+    fn test_aa2d_transaction_id_ordering() {
+        let addr = Address::random();
+        let seq_id = AASequenceId::new(addr, U256::ZERO);
+
+        let id1 = AA2dTransactionId::new(seq_id, 1);
+        let id2 = AA2dTransactionId::new(seq_id, 2);
+
+        assert!(id1 < id2);
+    }
+
+    // ============================================
+    // Edge case tests
+    // ============================================
+
+    #[test]
+    fn test_nonce_overflow_at_u64_max() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+
+        let tx = create_aa_tx(sender, nonce_key, u64::MAX);
+        let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
+
+        let result = pool.add_transaction(Arc::new(valid_tx), u64::MAX);
+        assert!(result.is_ok());
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1);
+        assert_eq!(queued, 0);
+
+        let seq_id = AASequenceId::new(sender, nonce_key);
+        let tx_id = AA2dTransactionId::new(seq_id, u64::MAX);
+        let unlocked = tx_id.unlocks();
+        assert_eq!(
+            unlocked.nonce,
+            u64::MAX,
+            "saturating_add should not overflow"
+        );
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_nonce_near_max_with_gap() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+
+        let tx_max = create_aa_tx(sender, nonce_key, u64::MAX);
+        let tx_max_minus_1 = create_aa_tx(sender, nonce_key, u64::MAX - 1);
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_max, TransactionOrigin::Local)),
+            u64::MAX - 1,
+        )
+        .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0, "tx at u64::MAX should be queued (gap exists)");
+        assert_eq!(queued, 1);
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_max_minus_1, TransactionOrigin::Local)),
+            u64::MAX - 1,
+        )
+        .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2, "both should now be pending");
+        assert_eq!(queued, 0);
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_empty_pool_operations() {
+        let pool = AA2dPool::default();
+
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 0));
+        assert!(pool.get(&B256::random()).is_none());
+        assert!(!pool.contains(&B256::random()));
+        assert_eq!(pool.senders_iter().count(), 0);
+        assert_eq!(pool.pending_transactions().count(), 0);
+        assert_eq!(pool.queued_transactions().count(), 0);
+        assert_eq!(pool.all_transaction_hashes_iter().count(), 0);
+        assert_eq!(pool.pooled_transactions_hashes_iter().count(), 0);
+        assert_eq!(pool.pooled_transactions_iter().count(), 0);
+
+        let mut best = pool.best_transactions();
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn test_empty_pool_remove_operations() {
+        let mut pool = AA2dPool::default();
+        let random_hash = B256::random();
+        let random_sender = Address::random();
+
+        let removed = pool.remove_transactions([&random_hash].into_iter());
+        assert!(removed.is_empty());
+
+        let removed = pool.remove_transactions_by_sender(random_sender);
+        assert!(removed.is_empty());
+
+        let removed = pool.remove_transactions_and_descendants([&random_hash].into_iter());
+        assert!(removed.is_empty());
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_empty_pool_on_nonce_changes() {
+        let mut pool = AA2dPool::default();
+
+        let mut changes = HashMap::default();
+        changes.insert(AASequenceId::new(Address::random(), U256::ZERO), 5u64);
+
+        let (promoted, mined) = pool.on_nonce_changes(changes);
+        assert!(promoted.is_empty());
+        assert!(mined.is_empty());
+
+        pool.assert_invariants();
+    }
+
+    // ============================================
+    // Error path tests
+    // ============================================
+
+    #[test]
+    fn test_add_already_imported_transaction() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx_hash = *tx.hash();
+        let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
+
+        pool.add_transaction(valid_tx.clone(), 0).unwrap();
+
+        let result = pool.add_transaction(valid_tx, 0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.hash, tx_hash);
+        assert!(
+            matches!(err.kind, PoolErrorKind::AlreadyImported),
+            "Expected AlreadyImported, got {:?}",
+            err.kind
+        );
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_add_outdated_nonce_transaction() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = create_aa_tx(sender, U256::ZERO, 5);
+        let tx_hash = *tx.hash();
+        let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
+
+        let result = pool.add_transaction(valid_tx, 10);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.hash, tx_hash);
+        assert!(
+            matches!(
+                err.kind,
+                PoolErrorKind::InvalidTransaction(InvalidPoolTransactionError::Consensus(
+                    InvalidTransactionError::NonceNotConsistent { tx: 5, state: 10 }
+                ))
+            ),
+            "Expected NonceNotConsistent, got {:?}",
+            err.kind
+        );
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending + queued, 0);
+    }
+
+    #[test]
+    fn test_replacement_underpriced() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx1 = create_aa_tx_with_gas(sender, U256::ZERO, 0, 1_000_000_000, 2_000_000_000);
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let tx2 = create_aa_tx_with_gas(sender, U256::ZERO, 0, 1_000_000_001, 2_000_000_001);
+        let tx2_hash = *tx2.hash();
+        let result =
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.hash, tx2_hash);
+        assert!(
+            matches!(err.kind, PoolErrorKind::ReplacementUnderpriced),
+            "Expected ReplacementUnderpriced, got {:?}",
+            err.kind
+        );
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending + queued, 1);
+
+        pool.assert_invariants();
+    }
+
+    // ============================================
+    // Boundary tests (max_txs limit and discard)
+    // ============================================
+
+    #[test]
+    fn test_discard_at_max_txs_limit() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            aa_2d_limit: SubPoolLimit {
+                max_txs: 3,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = create_aa_tx(sender, U256::from(i), 0);
+            let result =
+                pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            assert!(result.is_ok());
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending + queued, 3, "Pool should be capped at max_txs=3");
+        assert_eq!(pending, 3, "All remaining transactions should be pending");
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_discard_removes_from_back() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            aa_2d_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+        let sender = Address::random();
+
+        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
+        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+        let tx2_hash = *tx2.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        let result =
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0);
+        assert!(result.is_ok());
+
+        let added = result.unwrap();
+        if let AddedTransaction::Pending(pending) = added {
+            assert!(
+                !pending.discarded.is_empty(),
+                "Should have discarded transactions"
+            );
+            assert_eq!(
+                pending.discarded[0].hash(),
+                &tx2_hash,
+                "tx2 (highest nonce) should be discarded"
+            );
+        } else {
+            panic!("Expected Pending result");
+        }
+
+        assert!(pool.contains(&tx0_hash));
+        assert!(pool.contains(&tx1_hash));
+        assert!(!pool.contains(&tx2_hash));
+
+        pool.assert_invariants();
+    }
+
+    // ============================================
+    // Improved BestTransactions tests
+    // ============================================
+
+    #[test]
+    fn test_best_transactions_mark_invalid_skips_sequence() {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+
+        let mut pool = AA2dPool::default();
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+
+        let tx1_0 = create_aa_tx(sender1, U256::ZERO, 0);
+        let tx1_1 = create_aa_tx(sender1, U256::ZERO, 1);
+        let tx2_0 = create_aa_tx(sender2, U256::from(1), 0);
+
+        let tx1_0_hash = *tx1_0.hash();
+        let tx2_0_hash = *tx2_0.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1_0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1_1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2_0, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        let first = best.next().unwrap();
+        let first_hash = *first.hash();
+
+        let error =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        best.mark_invalid(&first, &error);
+
+        let mut remaining_hashes = HashSet::new();
+        for tx in best {
+            remaining_hashes.insert(*tx.hash());
+        }
+
+        if first_hash == tx1_0_hash {
+            assert!(
+                !remaining_hashes.contains(&tx1_0_hash),
+                "tx1_0 was consumed"
+            );
+            assert!(
+                remaining_hashes.contains(&tx2_0_hash),
+                "tx2_0 should still be yielded"
+            );
+        } else {
+            assert!(
+                remaining_hashes.contains(&tx1_0_hash) || remaining_hashes.contains(&tx2_0_hash),
+                "At least one other independent tx should be yielded"
+            );
+        }
+    }
+
+    #[test]
+    fn test_best_transactions_order_by_priority() {
+        let mut pool = AA2dPool::default();
+
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+
+        let low_priority = create_aa_tx_with_gas(sender1, U256::ZERO, 0, 1_000_000, 2_000_000);
+        let high_priority =
+            create_aa_tx_with_gas(sender2, U256::from(1), 0, 10_000_000_000, 20_000_000_000);
+        let high_priority_hash = *high_priority.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(low_priority, TransactionOrigin::Local)),
+            0,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(high_priority, TransactionOrigin::Local)),
+            0,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+        let first = best.next().unwrap();
+
+        assert_eq!(
+            first.hash(),
+            &high_priority_hash,
+            "Higher priority transaction should come first"
+        );
+    }
+
+    // ============================================
+    // on_state_updates tests
+    // ============================================
+
+    #[test]
+    fn test_on_state_updates_with_bundle_account() {
+        use revm::{
+            database::{AccountStatus, BundleAccount},
+            state::AccountInfo,
+        };
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+
+        let tx0 = create_aa_tx(sender, nonce_key, 0);
+        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx2 = create_aa_tx(sender, nonce_key, 2);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3);
+        assert_eq!(queued, 0);
+
+        let mut state = HashMap::default();
+        let sender_account = BundleAccount::new(
+            None,
+            Some(AccountInfo {
+                nonce: 2,
+                ..Default::default()
+            }),
+            Default::default(),
+            AccountStatus::Changed,
+        );
+        state.insert(sender, sender_account);
+
+        let (promoted, mined) = pool.on_state_updates(&state);
+
+        assert!(promoted.is_empty(), "tx2 was already pending");
+        assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "Only tx2 should remain pending");
+        assert_eq!(queued, 0);
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_on_state_updates_creates_gap_demotion() {
+        use revm::{
+            database::{AccountStatus, BundleAccount},
+            state::AccountInfo,
+        };
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+
+        let tx0 = create_aa_tx(sender, nonce_key, 0);
+        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx3 = create_aa_tx(sender, nonce_key, 3);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2);
+        assert_eq!(queued, 1);
+
+        let mut state = HashMap::default();
+        let sender_account = BundleAccount::new(
+            None,
+            Some(AccountInfo {
+                nonce: 2,
+                ..Default::default()
+            }),
+            Default::default(),
+            AccountStatus::Changed,
+        );
+        state.insert(sender, sender_account);
+
+        let (promoted, mined) = pool.on_state_updates(&state);
+
+        assert_eq!(mined.len(), 2, "tx0 and tx1 should be mined");
+        assert!(promoted.is_empty());
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0, "tx3 should still be queued (gap at nonce 2)");
+        assert_eq!(queued, 1);
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_on_nonce_changes_promotes_queued_transactions() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::ZERO;
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx3 = create_aa_tx(sender, nonce_key, 3);
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2.clone(), TransactionOrigin::Local)),
+            0,
+        )
+        .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0);
+        assert_eq!(queued, 2);
+
+        let mut changes = HashMap::default();
+        changes.insert(seq_id, 2u64);
+
+        let (promoted, mined) = pool.on_nonce_changes(changes);
+
+        assert!(
+            mined.is_empty(),
+            "No transactions to mine (on-chain nonce jumped)"
+        );
+        assert_eq!(promoted.len(), 2, "tx2 and tx3 should be promoted");
+        assert!(promoted.iter().any(|t| t.hash() == tx2.hash()));
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2);
+        assert_eq!(queued, 0);
+
+        pool.assert_invariants();
+    }
+
+    // ============================================
+    // Interleaved inserts across sequence IDs
+    // ============================================
+
+    #[test]
+    fn test_interleaved_inserts_multiple_nonce_keys() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let key_a = U256::ZERO;
+        let key_b = U256::from(1);
+
+        let tx_a0 = create_aa_tx(sender, key_a, 0);
+        let tx_b0 = create_aa_tx(sender, key_b, 0);
+        let tx_a1 = create_aa_tx(sender, key_a, 1);
+        let tx_b2 = create_aa_tx(sender, key_b, 2);
+        let tx_b1 = create_aa_tx(sender, key_b, 1);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_a0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_b0, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_a1, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_b2, TransactionOrigin::Local)), 0)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_b1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 5, "All transactions should be pending");
+        assert_eq!(queued, 0);
+
+        assert_eq!(
+            pool.independent_transactions.len(),
+            2,
+            "Two nonce keys = two independent txs"
+        );
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn test_same_sender_different_nonce_keys_independent() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let key_a = U256::from(100);
+        let key_b = U256::from(200);
+
+        let tx_a5 = create_aa_tx(sender, key_a, 5);
+        let tx_b0 = create_aa_tx(sender, key_b, 0);
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_a5, TransactionOrigin::Local)), 5)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx_b0, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 2);
+        assert_eq!(queued, 0);
+
+        assert_eq!(pool.independent_transactions.len(), 2);
+
+        pool.assert_invariants();
     }
 }

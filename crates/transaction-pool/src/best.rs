@@ -271,4 +271,123 @@ mod tests {
         assert_eq!(merged.next(), Some("tx_d"));
         assert_eq!(merged.next(), None);
     }
+
+    // ============================================
+    // BestTransactions trait method tests
+    // ============================================
+
+    #[test]
+    fn test_merge_best_transactions_mark_invalid() {
+        use reth_primitives_traits::transaction::error::InvalidTransactionError;
+
+        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
+        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        // Should not panic - just delegates to both sides
+        let error =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&"tx_a", &error);
+    }
+
+    #[test]
+    fn test_merge_best_transactions_no_updates() {
+        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
+        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        // Should not panic - just delegates to both sides
+        merged.no_updates();
+    }
+
+    #[test]
+    fn test_merge_best_transactions_set_skip_blobs() {
+        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
+        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        // Should not panic - just delegates to both sides
+        merged.set_skip_blobs(true);
+        merged.set_skip_blobs(false);
+    }
+
+    // ============================================
+    // Single item tests
+    // ============================================
+
+    #[test]
+    fn test_merge_best_transactions_single_left() {
+        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
+        let right: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        assert_eq!(merged.next(), Some("tx_a"));
+        assert_eq!(merged.next(), None);
+    }
+
+    #[test]
+    fn test_merge_best_transactions_single_right() {
+        let left: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
+        let right = MockBestTransactions::new(vec![("tx_a", 10)]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        assert_eq!(merged.next(), Some("tx_a"));
+        assert_eq!(merged.next(), None);
+    }
+
+    // ============================================
+    // Interleaved priority tests
+    // ============================================
+
+    #[test]
+    fn test_merge_best_transactions_interleaved() {
+        // Left has higher odd positions, right has higher even positions
+        let left = MockBestTransactions::new(vec![("L1", 9), ("L2", 7), ("L3", 5)]);
+        let right = MockBestTransactions::new(vec![("R1", 10), ("R2", 6), ("R3", 4)]);
+
+        let mut merged = MergeBestTransactions::new(left, right);
+
+        assert_eq!(merged.next(), Some("R1")); // 10
+        assert_eq!(merged.next(), Some("L1")); // 9
+        assert_eq!(merged.next(), Some("L2")); // 7
+        assert_eq!(merged.next(), Some("R2")); // 6
+        assert_eq!(merged.next(), Some("L3")); // 5
+        assert_eq!(merged.next(), Some("R3")); // 4
+        assert_eq!(merged.next(), None);
+    }
+
+    // ============================================
+    // MockBestTransactions direct tests
+    // ============================================
+
+    #[test]
+    fn test_mock_best_transactions_iterator() {
+        let mut mock = MockBestTransactions::new(vec![("a", 1), ("b", 2), ("c", 3)]);
+
+        assert_eq!(mock.next(), Some("a"));
+        assert_eq!(mock.next(), Some("b"));
+        assert_eq!(mock.next(), Some("c"));
+        assert_eq!(mock.next(), None);
+        assert_eq!(mock.next(), None); // Repeated call should still return None
+    }
+
+    #[test]
+    fn test_mock_best_transactions_next_tx_and_priority() {
+        let mut mock = MockBestTransactions::new(vec![("a", 100), ("b", 200)]);
+
+        let (item1, priority1) = mock.next_tx_and_priority().unwrap();
+        assert_eq!(item1, "a");
+        assert_eq!(priority1, Priority::Value(100));
+
+        let (item2, priority2) = mock.next_tx_and_priority().unwrap();
+        assert_eq!(item2, "b");
+        assert_eq!(priority2, Priority::Value(200));
+
+        assert!(mock.next_tx_and_priority().is_none());
+    }
 }
