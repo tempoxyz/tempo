@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { Hooks } from 'wagmi/tempo'
 import { useConnectionEffect } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
