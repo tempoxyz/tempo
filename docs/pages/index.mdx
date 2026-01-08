@@ -6,7 +6,7 @@ import * as Card from "../components/Card.tsx"
 import { Callout } from 'vocs/components'
 
 <Callout type="warning">
-  **Andantino testnet deprecation:** We're launching a new testnet **Moderato** on January 8th. Andantino will be deprecated on March 8th. You'll need to update your chain config (chain ID: `42431`, RPC: `rpc.moderato.tempo.xyz`) and redeploy any contracts. See [Connection Details](/quickstart/connection-details) for the new configuration.
+  **Testnet migration:** We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th. [See details below](#testnet-migration).
 </Callout>
 
 # Tempo [Documentation, integration guides, and protocol specifications]
@@ -45,3 +45,16 @@ Whether you're new to stablecoins, ready to start building, or looking for partn
     title="Get In Touch"
   />
 </Card.Container>
+
+## Testnet Migration
+
+We've launched a new testnet to better align with our mainnet release candidate and provide faster feature release cycles. The old testnet will be deprecated on **March 8th, 2025**.
+
+**What you need to do:**
+
+1. **Update your RPC URL** to `https://rpc.moderato.tempo.xyz`
+2. **Update your chain ID** to `42431`
+3. **Redeploy any contracts** to the new testnet
+4. **Reset any databases or indexers** that depend on old testnet data
+
+See [Connection Details](/quickstart/connection-details#direct-connection-details) for the full configuration. If you need assistance migrating, reach out to us at [partners@tempo.xyz](mailto:partners@tempo.xyz).
