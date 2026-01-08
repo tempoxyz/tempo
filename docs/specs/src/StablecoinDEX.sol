@@ -91,6 +91,13 @@ contract StablecoinDEX is IStablecoinDEX {
         return int16(int32(price) - int32(PRICE_SCALE));
     }
 
+    /// @notice Convert base amount to quote amount at a given tick, rounding UP
+    /// @dev Used for escrow calculations to favor the protocol
+    function baseToQuoteCeil(uint128 baseAmount, int16 tick) internal pure returns (uint128) {
+        uint256 price = tickToPrice(tick);
+        return uint128((uint256(baseAmount) * price + PRICE_SCALE - 1) / PRICE_SCALE);
+    }
+
     /// @notice Set bit in bitmap to mark tick as active
     function _setTickBit(bytes32 bookKey, int16 tick, bool isBid) internal {
         Orderbook storage book = books[bookKey];
@@ -228,10 +235,9 @@ contract StablecoinDEX is IStablecoinDEX {
             uint128 escrowAmount;
             address escrowToken;
             if (isBid) {
-                // For bids, escrow quote tokens based on price
+                // For bids, escrow quote tokens based on price - round UP to favor protocol
                 escrowToken = quote;
-                uint32 price = tickToPrice(tick);
-                escrowAmount = uint128((uint256(amount) * uint256(price)) / uint256(PRICE_SCALE));
+                escrowAmount = baseToQuoteCeil(amount, tick);
             } else {
                 // For asks, escrow base tokens
                 escrowToken = base;
@@ -417,13 +423,11 @@ contract StablecoinDEX is IStablecoinDEX {
             _clearTickBit(order.bookKey, order.tick, isBid);
         }
 
-        // Credit escrow amount to user's withdrawable balance
+        // Credit escrow amount to user's withdrawable balance - must match the escrow calculation
         uint128 escrowAmount;
         if (order.isBid) {
-            // For bids, escrow quote tokens based on price
-            uint32 price = tickToPrice(order.tick);
-            escrowAmount =
-                uint128((uint256(order.remaining) * uint256(price)) / uint256(PRICE_SCALE));
+            // For bids, escrow quote tokens based on price - round UP to match escrow
+            escrowAmount = baseToQuoteCeil(order.remaining, order.tick);
         } else {
             // For asks, escrow base tokens
             escrowAmount = order.remaining;
