@@ -297,7 +297,7 @@ impl Deref for RecoveredTempoAuthorization {
 pub mod tests {
     use super::*;
     use crate::TempoSignature;
-    use alloy_primitives::{Signature, U256, address};
+    use alloy_primitives::{U256, address};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
@@ -350,7 +350,7 @@ pub mod tests {
 
     pub fn sign_hash(signer: &PrivateKeySigner, hash: &B256) -> TempoSignature {
         let signature = signer.sign_hash_sync(hash).expect("signing failed");
-        TempoSignature::from(Signature::from(signature))
+        TempoSignature::from(signature)
     }
 
     #[test]
@@ -377,7 +377,7 @@ pub mod tests {
         // Sign a different hash
         let wrong_hash = B256::random();
         let signature = sign_hash(&signing_key, &wrong_hash);
-        let signed = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
+        let signed = TempoSignedAuthorization::new_unchecked(auth, signature);
 
         // Recovery succeeds but yields wrong address
         let recovered = signed.recover_authority();

@@ -919,10 +919,11 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::{
+        TempoSignedAuthorization,
+        tt_signature::{PrimitiveSignature, TempoSignature, derive_p256_address},
+    };
     use alloy_eips::eip7702::Authorization;
-    use crate::transaction::{TempoSignedAuthorization, tt_signature::{
-        PrimitiveSignature, TempoSignature, derive_p256_address,
-    }};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -1742,8 +1743,8 @@ mod tests {
     fn test_call_decode_rejects_malformed_rlp() {
         // Test that Call decoding rejects RLP with mismatched header length
         let call = Call {
-            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
-            value: U256::from(1000),
+            to: TxKind::Call(Address::random()),
+            value: U256::random(),
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
@@ -1772,14 +1773,14 @@ mod tests {
     fn test_tempo_transaction_decode_rejects_malformed_rlp() {
         // Test that TempoTransaction decoding rejects RLP with mismatched header length
         let call = Call {
-            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
-            value: U256::from(1000),
+            to: TxKind::Call(Address::random()),
+            value: U256::random(),
             input: Bytes::from(vec![1, 2, 3, 4]),
         };
 
         let tx = TempoTransaction {
             chain_id: 1,
-            fee_token: Some(address!("0000000000000000000000000000000000000001")),
+            fee_token: Some(Address::random()),
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
@@ -1893,7 +1894,7 @@ mod tests {
             input: Bytes::new(),
         };
         let call_call = Call {
-            to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+            to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::new(),
         };
@@ -1943,46 +1944,46 @@ mod tests {
         );
     }
 
-        #[test]
-        fn test_create_forbidden_with_auth_list() {
-            let create_call = Call {
-                to: TxKind::Create,
-                value: U256::ZERO,
-                input: Bytes::new(),
-            };
+    #[test]
+    fn test_create_forbidden_with_auth_list() {
+        let create_call = Call {
+            to: TxKind::Create,
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
 
-            let signed_auth = TempoSignedAuthorization::new_unchecked(
-                Authorization {
-                    chain_id: U256::from(1),
-                    address: address!("0000000000000000000000000000000000000001"),
-                    nonce: 1,
-                },
-                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
-            );
+        let signed_auth = TempoSignedAuthorization::new_unchecked(
+            Authorization {
+                chain_id: U256::ONE,
+                address: Address::random(),
+                nonce: 1,
+            },
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
 
-            // Invalid: CREATE call with auth list
-            let tx = TempoTransaction {
-                calls: vec![create_call],
-                tempo_authorization_list: vec![signed_auth],
-                ..Default::default()
-            };
+        // Invalid: CREATE call with auth list
+        let tx = TempoTransaction {
+            calls: vec![create_call],
+            tempo_authorization_list: vec![signed_auth],
+            ..Default::default()
+        };
 
-            let result = tx.validate();
-            assert!(result.is_err());
-            assert!(result.unwrap_err().contains("aa_authorization_list"));
-        }
+        let result = tx.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("aa_authorization_list"));
+    }
 
     #[test]
     fn test_create_validation_allows_call_only_batch() {
         // A batch with only CALL operations should be valid
         let call1 = Call {
-            to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+            to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::new(),
         };
         let call2 = Call {
-            to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
-            value: U256::from(100),
+            to: TxKind::Call(Address::random()),
+            value: U256::random(),
             input: Bytes::from(vec![1, 2, 3]),
         };
 

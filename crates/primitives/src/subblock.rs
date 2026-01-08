@@ -317,20 +317,20 @@ mod tests {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
         ];
         assert!(
-            partial.matches(&matching_key),
+            partial.matches(matching_key),
             "Should match when validator starts with partial"
         );
 
         // Exactly the partial key length
         let exact_match: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        assert!(partial.matches(&exact_match), "Should match exact length");
+        assert!(partial.matches(exact_match), "Should match exact length");
 
         // Different first byte
         let non_matching = [
             0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
         ];
         assert!(
-            !partial.matches(&non_matching),
+            !partial.matches(non_matching),
             "Should not match with different first byte"
         );
 
@@ -339,26 +339,26 @@ mod tests {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 99, 16, 17, 18,
         ];
         assert!(
-            !partial.matches(&partial_mismatch),
+            !partial.matches(partial_mismatch),
             "Should not match with different byte in partial range"
         );
 
         // Shorter than partial (should not match)
         let too_short: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
         assert!(
-            !partial.matches(&too_short),
+            !partial.matches(too_short),
             "Should not match if validator is shorter than partial"
         );
 
         // Empty key
         let empty: [u8; 0] = [];
-        assert!(!partial.matches(&empty), "Should not match empty validator");
+        assert!(!partial.matches(empty), "Should not match empty validator");
 
         // Zero partial key matches any key starting with zeros
         let zero_partial = PartialValidatorKey::ZERO;
         let zeros = [0u8; 20];
         assert!(
-            zero_partial.matches(&zeros),
+            zero_partial.matches(zeros),
             "Zero partial should match zeros"
         );
     }

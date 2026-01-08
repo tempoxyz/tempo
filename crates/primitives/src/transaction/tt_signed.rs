@@ -487,7 +487,8 @@ mod tests {
     #[test]
     fn test_hash_computation() {
         let tx = make_tx();
-        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 
         // new_unhashed: hash not computed yet
         let signed = AASigned::new_unhashed(tx.clone(), sig.clone());
@@ -502,7 +503,11 @@ mod tests {
         // new_unchecked: hash provided directly
         let known_hash = B256::random();
         let signed_unchecked = AASigned::new_unchecked(tx.clone(), sig.clone(), known_hash);
-        assert_eq!(*signed_unchecked.hash(), known_hash, "new_unchecked should use provided hash");
+        assert_eq!(
+            *signed_unchecked.hash(),
+            known_hash,
+            "new_unchecked should use provided hash"
+        );
 
         // into_parts returns the hash
         let (returned_tx, returned_sig, returned_hash) = signed.into_parts();
@@ -514,7 +519,8 @@ mod tests {
     #[test]
     fn test_rlp_encode_decode_roundtrip() {
         let tx = make_tx();
-        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let signed = AASigned::new_unhashed(tx, sig);
 
         // Encode
@@ -531,7 +537,8 @@ mod tests {
         signed.eip2718_encode(&mut eip_buf);
         assert_eq!(eip_buf[0], TEMPO_TX_TYPE_ID);
 
-        let decoded_2718 = AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
+        let decoded_2718 =
+            AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
         assert_eq!(decoded_2718.tx(), signed.tx());
     }
 
@@ -561,7 +568,8 @@ mod tests {
         let tx = make_tx();
 
         // Create signed transaction with placeholder sig to get sig_hash
-        let placeholder = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let placeholder =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
         let temp_signed = AASigned::new_unhashed(tx.clone(), placeholder);
         let sig_hash = temp_signed.signature_hash();
 

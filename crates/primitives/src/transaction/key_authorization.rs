@@ -210,7 +210,7 @@ mod tests {
             TempoSignature::Primitive(p) => p,
             _ => panic!("Expected primitive signature"),
         };
-        let signed = auth.clone().into_signed(inner_sig.clone());
+        let signed = auth.clone().into_signed(inner_sig);
 
         // Recovery should succeed with correct address
         let recovered = signed.recover_signer();

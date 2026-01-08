@@ -11827,6 +11827,7 @@ dependencies = [
  "reth-node-api",
  "reth-primitives-traits",
  "serde",
+ "serde_json",
  "tempo-primitives",
 ]
 
