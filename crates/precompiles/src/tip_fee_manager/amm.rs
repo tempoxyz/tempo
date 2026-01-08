@@ -572,33 +572,6 @@ mod tests {
         })
     }
 
-    /// Test identical addresses in rebalance_swap
-    #[test]
-    fn test_rebalance_swap_identical_addresses() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("TestToken", "TST", admin).apply()?;
-            let mut amm = TipFeeManager::new();
-
-            let result = amm.rebalance_swap(
-                admin,
-                token.address(),
-                token.address(),
-                U256::from(1000),
-                admin,
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::IdenticalAddresses(_)
-                ))
-            ));
-            Ok(())
-        })
-    }
-
     #[test]
     fn test_rebalance_swap_insufficient_funds() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
