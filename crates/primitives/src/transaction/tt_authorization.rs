@@ -416,8 +416,7 @@ pub mod tests {
         assert_eq!(eager_recovered.signature(), &signature);
 
         // into_recovered_authorization()
-        let signed_for_convert =
-            TempoSignedAuthorization::new_unchecked(auth.clone(), signature.clone());
+        let signed_for_convert = TempoSignedAuthorization::new_unchecked(auth.clone(), signature);
         let converted = RecoveredTempoAuthorization::new(signed_for_convert);
         let std_auth = converted.into_recovered_authorization();
         assert_eq!(std_auth.authority(), Some(expected_address));

@@ -486,8 +486,6 @@ mod tests {
 
     #[test]
     fn test_hash_and_transaction_trait() {
-        use alloy_consensus::Transaction;
-
         let tx = make_tx();
         let sig =
             TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
