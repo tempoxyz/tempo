@@ -244,6 +244,12 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
+        // pathUSD is the root of the quote token tree in the FeeAMM.
+        // Thus, it must always have `address(0)` as its quote token.
+        if self.address == PATH_USD_ADDRESS && !call.newQuoteToken.is_zero() {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
         // Verify the new quote token is a valid TIP20 token that has been deployed
         // use factory's `is_tip20()` which checks both prefix and counter
         if !TIP20Factory::new().is_tip20(call.newQuoteToken)? {
@@ -1763,7 +1769,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             // pathUSD is at a reserved address, so we initialize it directly (not via factory)
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
+            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", Address::ZERO, admin)?;
 
             assert_eq!(path_usd.currency()?, "USD");
             // pathUSD uses itself as quote token
