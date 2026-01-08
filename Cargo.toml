@@ -295,6 +295,8 @@ rayon = "1.10"
 vergen = "9"
 vergen-git2 = "1"
 
+zeroize = "1.8.2"
+
 # [patch."https://github.com/paradigmxyz/reth"]
 # reth-basic-payload-builder = { path = "../reth/crates/payload/basic" }
 # reth-chain-state = { path = "../reth/crates/chain-state" }

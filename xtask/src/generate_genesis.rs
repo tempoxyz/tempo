@@ -77,7 +77,7 @@ impl GenerateGenesis {
                     .signing_share
                     .write_to_file(
                         &signing_share_dst,
-                        &validator.signing_share_encryption_key.to_cipher(),
+                        &&validator.signing_share_encryption_key,
                         &mut consensus_config.rng,
                     )
                     .wrap_err_with(|| {

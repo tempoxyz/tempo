@@ -186,7 +186,7 @@ impl Validator {
     }
 
     pub(crate) fn dst_signing_share_encryption_key(&self, path: impl AsRef<Path>) -> PathBuf {
-        self.dst_dir(path).join("signing.encryption")
+        self.dst_dir(path).join("signing.encryption.env")
     }
 }
 

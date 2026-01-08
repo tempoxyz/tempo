@@ -13,36 +13,63 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use crypto_common::{KeySizeUser, generic_array::typenum::Unsigned as _, rand_core::CryptoRngCore};
+use zeroize::{Zeroize as _, ZeroizeOnDrop};
 
 #[cfg(test)]
 mod tests;
 
-const SIGNING_SHARE_KEY_ENV: &str = "TEMPO_SIGNING_SHARE_KEY";
+pub const SIGNING_SHARE_KEY_ENV: &str = "TEMPO_SIGNING_SHARE_KEY";
 
-pub fn sining_share_key_from_env() -> Result<Cipher, EncryptionKeyError> {
-    Cipher::from_env(SIGNING_SHARE_KEY_ENV)
+pub fn sining_share_key_from_env() -> Result<EncryptionKey, EncryptionKeyError> {
+    EncryptionKey::from_env(SIGNING_SHARE_KEY_ENV)
 }
 
 #[derive(Clone)]
-pub struct EncryptionKey(Key);
+pub struct EncryptionKey {
+    // The cipher used for encryption/decryption.
+    cipher: ChaCha20Poly1305,
+
+    // The key to construct the cipher. This is actually included in
+    // ChaCha20Poly1305, but not exposed in any way. We put the key next to the
+    // cipher for ux reasons.
+    key: Key,
+}
+
+impl Drop for EncryptionKey {
+    fn drop(&mut self) {
+        // self.cipher already implements ZeroizeOnDrop
+        self.key.as_mut_slice().zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for EncryptionKey {}
 
 impl std::fmt::Debug for EncryptionKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("EncryptionKey").field(&"<REDACTED>").finish()
+        f.debug_struct("EncryptionKey")
+            .field("cipher", &"<CIPHER>")
+            .field("key", &"<KEY>")
+            .finish()
     }
 }
 
 impl EncryptionKey {
     /// Generates a random secret.
     pub fn random(rng: &mut impl CryptoRngCore) -> Self {
-        EncryptionKey(ChaCha20Poly1305::generate_key(rng))
+        let key = ChaCha20Poly1305::generate_key(rng);
+        Self {
+            cipher: ChaCha20Poly1305::new(&key),
+            key,
+        }
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncryptionKeyError> {
         if bytes.len() != ChaCha20Poly1305::key_size() {
             return Err(EncryptionKeyErrorKind::Invalid(crypto_common::InvalidLength).into());
         }
-        Ok(Self(Key::clone_from_slice(bytes)))
+        let key = Key::clone_from_slice(bytes);
+        let cipher = ChaCha20Poly1305::new(&key);
+        Ok(Self { cipher, key })
     }
 
     pub fn from_hex(hex: &[u8]) -> Result<Self, EncryptionKeyError> {
@@ -52,39 +79,12 @@ impl EncryptionKey {
 
     /// Generates a random secret.
     pub fn to_hex(&self) -> String {
-        const_hex::encode(self.0.as_slice())
-    }
-
-    pub fn to_cipher(&self) -> Cipher {
-        Cipher::from_key(self)
+        const_hex::encode(self.key.as_slice())
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), EncryptionKeyError> {
         std::fs::write(path, self.to_hex()).map_err(EncryptionKeyErrorKind::Write)?;
         Ok(())
-    }
-}
-
-/// The share used to encrypt the signing share at rest.
-#[derive(Clone)]
-pub struct Cipher(ChaCha20Poly1305);
-
-impl Cipher {
-    pub fn from_key(key: &EncryptionKey) -> Self {
-        Self(ChaCha20Poly1305::new(&key.0))
-    }
-
-    /// Convenience method to construct a cipher directly from `bytes`.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, EncryptionKeyError> {
-        let key =
-            ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
-        Ok(Self(key))
-    }
-
-    /// Convenience method to construct a cipher directly from `[hex]`.
-    pub fn from_hex(hex: &[u8]) -> Result<Self, EncryptionKeyError> {
-        let bytes = const_hex::decode(hex).map_err(EncryptionKeyErrorKind::Hex)?;
-        Self::from_bytes(&bytes)
     }
 
     pub fn from_env(name: &'static str) -> Result<Self, EncryptionKeyError> {
@@ -100,7 +100,7 @@ impl Cipher {
     ) -> Vec<u8> {
         let nonce = ChaCha20Poly1305::generate_nonce(rng);
         let ciphertext = self
-            .0
+            .cipher
             .encrypt(&nonce, encodable.encode().as_ref())
             .expect("an encoded share should always fit into the maximum AEAD blocks");
         let mut buf = Vec::with_capacity(nonce.len() + ciphertext.len());
@@ -116,7 +116,7 @@ impl Cipher {
             return Err(DecryptErrorKind::InvalidLength.into());
         };
         let nonce = Nonce::from_slice(&nonce);
-        let plaintext = self.0.decrypt(&nonce, ciphertext).unwrap();
+        let plaintext = self.cipher.decrypt(&nonce, ciphertext).unwrap();
         Ok(plaintext)
     }
 
@@ -245,13 +245,13 @@ impl SigningShare {
 
     pub fn read_from_file<P: AsRef<Path>>(
         path: P,
-        key: &Cipher,
+        key: &EncryptionKey,
     ) -> Result<Self, SigningShareError> {
         let bytes = std::fs::read(path).map_err(SigningShareErrorKind::Read)?;
         Self::try_from_hex(&bytes, key)
     }
 
-    pub fn try_from_hex(hex: &[u8], key: &Cipher) -> Result<Self, SigningShareError> {
+    pub fn try_from_hex(hex: &[u8], key: &EncryptionKey) -> Result<Self, SigningShareError> {
         let bytes = const_hex::decode(hex).map_err(SigningShareErrorKind::Hex)?;
         let inner = key
             .decrypt_decodable::<Share>(&bytes)
@@ -262,14 +262,14 @@ impl SigningShare {
     pub fn write_to_file<P: AsRef<Path>>(
         &self,
         path: P,
-        key: &Cipher,
+        key: &EncryptionKey,
         rng: &mut impl CryptoRngCore,
     ) -> Result<(), SigningShareError> {
         std::fs::write(path, self.to_hex(key, rng)).map_err(SigningShareErrorKind::Write)?;
         Ok(())
     }
 
-    pub fn to_hex(&self, key: &Cipher, rng: &mut impl CryptoRngCore) -> String {
+    pub fn to_hex(&self, key: &EncryptionKey, rng: &mut impl CryptoRngCore) -> String {
         const_hex::encode(key.encrypt_encodable(&self.inner, rng))
     }
 }

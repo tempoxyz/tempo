@@ -17,8 +17,8 @@ commonware-cryptography.workspace = true
 const-hex.workspace = true
 crypto-common.workspace = true
 derive_more = { workspace = true, features = ["debug"] }
-rand.workspace = true
 thiserror.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 commonware-utils.workspace = true

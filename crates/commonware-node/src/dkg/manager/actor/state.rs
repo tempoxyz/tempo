@@ -28,7 +28,7 @@ use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use rand_core::CryptoRngCore;
-use tempo_commonware_node_config::Cipher;
+use tempo_commonware_node_config::EncryptionKey;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
@@ -62,7 +62,7 @@ where
     current: State,
     cache: BTreeMap<Epoch, Events>,
 
-    share_secret: Cipher,
+    encryption_key: EncryptionKey,
 }
 
 impl<TContext> Storage<TContext>
@@ -71,7 +71,7 @@ where
 {
     /// Appends the outcome of a DKG ceremony to state
     pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
-        let state_at_rest = state.encrypt(&self.share_secret, &mut self.context);
+        let state_at_rest = state.encrypt(&self.encryption_key, &mut self.context);
         self.states
             .append(state_at_rest)
             .await
@@ -115,7 +115,7 @@ where
                     public_msg: pub_msg.clone(),
                     private_msg: Encrypted::encrypt(
                         &priv_msg,
-                        &self.share_secret,
+                        &self.encryption_key,
                         &mut self.context,
                     ),
                 },
@@ -186,7 +186,7 @@ where
 
         let segment = self.states.size().checked_sub(2)?;
         let previous = self.states.read(segment).await.ok()?;
-        let previous = previous.decrypt(&self.share_secret).ok()?;
+        let previous = previous.decrypt(&self.encryption_key).ok()?;
         (previous_epoch == previous.epoch).then_some(previous)
     }
 
@@ -497,7 +497,7 @@ where
 pub(super) struct Builder {
     initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
-    share_secret: Option<Cipher>,
+    encryption_key: Option<EncryptionKey>,
 }
 
 impl Builder {
@@ -518,9 +518,9 @@ impl Builder {
         }
     }
 
-    pub(super) fn share_key(self, share_secret: Cipher) -> Self {
+    pub(super) fn encryption_key(self, encryption_key: EncryptionKey) -> Self {
         Self {
-            share_secret: Some(share_secret),
+            encryption_key: Some(encryption_key),
             ..self
         }
     }
@@ -536,11 +536,11 @@ impl Builder {
         let Self {
             initial_state,
             partition_prefix,
-            share_secret,
+            encryption_key,
         } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
-        let share_secret = share_secret
+        let encryption_key = encryption_key
             .ok_or_eyre("DKG actor must have a secret set to encrypt and decrypt their shares")?;
 
         let buffer_pool = PoolRef::new(PAGE_SIZE, POOL_CAPACITY);
@@ -587,7 +587,7 @@ impl Builder {
                     .await
                     .wrap_err("failed constructing initial state to populate storage")?,
             };
-            let at_rest = initial_state.encrypt(&share_secret, &mut context);
+            let at_rest = initial_state.encrypt(&encryption_key, &mut context);
             states
                 .append(at_rest)
                 .await
@@ -606,7 +606,7 @@ impl Builder {
                 .await
                 .wrap_err("unable to read states journal to determine current epoch state")?;
             at_rest
-                .decrypt(&share_secret)
+                .decrypt(&encryption_key)
                 .wrap_err("failed decrypting most recent stored strate")?
         };
 
@@ -625,7 +625,7 @@ impl Builder {
                 let epoch = Epoch::new(section);
                 let events = cache.entry(epoch).or_default();
                 events
-                    .insert(event, &share_secret)
+                    .insert(event, &encryption_key)
                     .wrap_err("failed to insert event into cache")?;
             }
         }
@@ -636,7 +636,7 @@ impl Builder {
             events,
             current,
             cache,
-            share_secret,
+            encryption_key,
         })
     }
 }
@@ -667,7 +667,7 @@ impl State {
         )
     }
 
-    fn encrypt(&self, secret: &Cipher, rng: &mut impl CryptoRngCore) -> AtRest {
+    fn encrypt(&self, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> AtRest {
         let Self {
             epoch,
             seed,
@@ -709,7 +709,7 @@ pub(super) struct AtRest {
 }
 
 impl AtRest {
-    fn decrypt(&self, secret: &Cipher) -> eyre::Result<State> {
+    fn decrypt(&self, secret: &EncryptionKey) -> eyre::Result<State> {
         let Self {
             epoch,
             seed,
@@ -807,7 +807,7 @@ struct Events {
 }
 
 impl Events {
-    fn insert(&mut self, event: Event, secret: &Cipher) -> eyre::Result<()> {
+    fn insert(&mut self, event: Event, secret: &EncryptionKey) -> eyre::Result<()> {
         match event {
             Event::Dealing {
                 dealer: public_key,
@@ -1279,7 +1279,7 @@ impl<T> Encrypted<T> {
 }
 
 impl<T: Write + EncodeSize> Encrypted<T> {
-    fn encrypt(value: &T, secret: &Cipher, rng: &mut impl CryptoRngCore) -> Self {
+    fn encrypt(value: &T, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> Self {
         let bytes = secret.encrypt_encodable(value, rng).into();
         Self {
             bytes,
@@ -1289,7 +1289,7 @@ impl<T: Write + EncodeSize> Encrypted<T> {
 }
 
 impl<T: Read<Cfg = ()>> Encrypted<T> {
-    pub(super) fn decrypt_decode(&self, secret: &Cipher) -> eyre::Result<T> {
+    pub(super) fn decrypt_decode(&self, secret: &EncryptionKey) -> eyre::Result<T> {
         secret
             .decrypt_decodable(self.bytes.as_ref())
             .wrap_err("failed decrypting encrypted secret")

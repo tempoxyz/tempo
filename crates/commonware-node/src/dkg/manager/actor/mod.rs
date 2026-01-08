@@ -34,7 +34,7 @@ use futures::{
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use reth_provider::{BlockNumReader, HeaderProvider};
-use tempo_commonware_node_config::Cipher;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, debug, error, info, info_span, instrument, warn, warn_span};
@@ -185,7 +185,7 @@ where
                     .await
                 }
             })
-            .share_key(self.config.share_key.clone())
+            .encryption_key(self.config.share_key.clone())
             .init(self.context.with_label("state"))
             .await
         else {
@@ -1227,7 +1227,7 @@ async fn read_initial_state_and_set_floor<TContext>(
     raw_share: Option<Bytes>,
     epoch_strategy: &FixedEpocher,
     marshal: &mut crate::alias::marshal::Mailbox,
-    key: &Cipher,
+    key: &EncryptionKey,
 ) -> eyre::Result<State>
 where
     TContext: CryptoRngCore,
