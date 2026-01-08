@@ -3,10 +3,10 @@ import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import { NuqsAdapter } from 'nuqs/adapters/react-router/v7'
 import { Json } from 'ox'
+import { PostHogProvider as PostHogProviderBase } from 'posthog-js/react'
 import type React from 'react'
 import { Toaster } from 'sonner'
 import { WagmiProvider } from 'wagmi'
-import { PostHogProvider as PostHogProviderBase } from 'posthog-js/react'
 import { DemoContextProvider } from './components/DemoContext'
 import { PageViewTracker } from './components/PageViewTracker'
 import { PostHogSiteIdentifier } from './components/PostHogSiteIdentifier'
@@ -47,7 +47,10 @@ function PostHogProvider({ children }: React.PropsWithChildren) {
 }
 
 export default function Layout(
-  props: React.PropsWithChildren<{ path: string; frontmatter?: { mipd?: boolean } }>,
+  props: React.PropsWithChildren<{
+    path: string
+    frontmatter?: { mipd?: boolean }
+  }>,
 ) {
   const posthogKey = import.meta.env.VITE_PUBLIC_POSTHOG_KEY
   const posthogHost = import.meta.env.VITE_PUBLIC_POSTHOG_HOST

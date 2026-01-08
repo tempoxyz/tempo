@@ -5,6 +5,7 @@
   "scripts": {
     "build": "NODE_OPTIONS=\"--max-old-space-size=16384\" vocs build --searchIndex",
     "check": "biome check . --write --unsafe",
+    "check:ci": "biome check . --diagnostic-level=error",
     "check:types": "tsc --noEmit",
     "dev": "vocs dev",
     "gen:specs": "node scripts/gen-specs.ts",
@@ -34,7 +35,7 @@
     "tailwindcss": "^4.1.14",
     "tempo.ts": "~0.13.0",
     "viem": "^2.43.5",
-    "vocs": "^1.4.0",
+    "vocs": "^1.4.1",
     "wagmi": "^3.2.0",
     "zod": "^4.1.12"
   },

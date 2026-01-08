@@ -1,7 +1,7 @@
 use super::*;
 use alloy::providers::DynProvider;
 use indicatif::ProgressIterator;
-use tempo_contracts::precompiles::{IStablecoinExchange, PATH_USD_ADDRESS};
+use tempo_contracts::precompiles::{IStablecoinDEX, PATH_USD_ADDRESS};
 use tempo_precompiles::tip20::U128_MAX;
 
 /// This method performs a one-time setup for sending a lot of transactions:
@@ -49,7 +49,7 @@ pub(super) async fn setup(
 
     // Create exchange pairs for each user token
     info!("Creating exchange pairs");
-    let exchange = IStablecoinExchange::new(STABLECOIN_EXCHANGE_ADDRESS, provider.clone());
+    let exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, provider.clone());
     join_all(
         user_token_addresses
             .iter()
@@ -100,7 +100,7 @@ pub(super) async fn setup(
                 all_token_addresses.iter().copied().map(move |token| {
                     let token = ITIP20Instance::new(token, provider.clone());
                     Box::pin(async move {
-                        let tx = token.approve(STABLECOIN_EXCHANGE_ADDRESS, U256::MAX);
+                        let tx = token.approve(STABLECOIN_DEX_ADDRESS, U256::MAX);
                         tx.send().await
                     }) as BoxFuture<'static, _>
                 })
@@ -122,10 +122,8 @@ pub(super) async fn setup(
             .iter()
             .flat_map(|(_, provider)| {
                 user_token_addresses.iter().copied().map(move |token| {
-                    let exchange = IStablecoinExchangeInstance::new(
-                        STABLECOIN_EXCHANGE_ADDRESS,
-                        provider.clone(),
-                    );
+                    let exchange =
+                        IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
                     Box::pin(async move {
                         let tx =
                             exchange.placeFlip(token, order_amount, true, tick_under, tick_over);
