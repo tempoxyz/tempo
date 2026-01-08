@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
 import { usePostHog } from 'posthog-js/react'
+import { useEffect } from 'react'
 
 /**
  * Component to set site identifier for PostHog

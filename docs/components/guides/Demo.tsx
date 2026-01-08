@@ -1,10 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import type { VariantProps } from 'cva'
 import * as React from 'react'
-import { tempoTestnet } from 'viem/chains'
-import { Hooks } from 'wagmi/tempo'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
+import { tempoTestnet } from 'viem/chains'
 import {
   useAccount,
   useConnect,
@@ -12,6 +11,7 @@ import {
   useConnectors,
   useDisconnect,
 } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import LucideCheck from '~icons/lucide/check'
 import LucideCopy from '~icons/lucide/copy'
 import LucideExternalLink from '~icons/lucide/external-link'
@@ -19,10 +19,11 @@ import LucidePictureInPicture2 from '~icons/lucide/picture-in-picture-2'
 import LucideRotateCcw from '~icons/lucide/rotate-ccw'
 import LucideWalletCards from '~icons/lucide/wallet-cards'
 import { cva, cx } from '../../cva.config'
-import { Container as ParentContainer } from '../Container'
 import { usePostHogTracking } from '../../lib/posthog'
+import { Container as ParentContainer } from '../Container'
 import { alphaUsd } from './tokens'
-export { alphaUsd, betaUsd, thetaUsd, pathUsd } from './tokens'
+
+export { alphaUsd, betaUsd, pathUsd, thetaUsd } from './tokens'
 
 export const FAKE_RECIPIENT = '0xbeefcafe54750903ac1c8909323af7beb21ea2cb'
 export const FAKE_RECIPIENT_2 = '0xdeadbeef54750903ac1c8909323af7beb21ea2cb'
@@ -273,7 +274,8 @@ export namespace Container {
   export function SourceFooter(props: { src: string }) {
     const { src } = props
     const [isCopied, copy] = useCopyToClipboard()
-    const { trackCopy, trackDemo, trackExternalLinkClick } = usePostHogTracking()
+    const { trackCopy, trackDemo, trackExternalLinkClick } =
+      usePostHogTracking()
     const command = `pnpx gitpick ${src}`
 
     return (
@@ -304,7 +306,13 @@ export namespace Container {
             rel="noreferrer"
             target="_blank"
             onClick={() => {
-              trackDemo('source_click', undefined, undefined, undefined, `https://github.com/${src}`)
+              trackDemo(
+                'source_click',
+                undefined,
+                undefined,
+                undefined,
+                `https://github.com/${src}`,
+              )
               trackExternalLinkClick(`https://github.com/${src}`, 'Source')
             }}
           >
