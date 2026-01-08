@@ -243,23 +243,23 @@ export default defineConfig({
             items: [
               {
                 text: 'Overview',
-                link: '/guide/stablecoin-dex',
+                link: '/guide/stablecoin-exchange',
               },
               {
                 text: 'Managing fee liquidity',
-                link: '/guide/stablecoin-dex/managing-fee-liquidity',
+                link: '/guide/stablecoin-exchange/managing-fee-liquidity',
               },
               {
                 text: 'Executing swaps',
-                link: '/guide/stablecoin-dex/executing-swaps',
+                link: '/guide/stablecoin-exchange/executing-swaps',
               },
               {
                 text: 'View the orderbook',
-                link: '/guide/stablecoin-dex/view-the-orderbook',
+                link: '/guide/stablecoin-exchange/view-the-orderbook',
               },
               {
                 text: 'Providing liquidity',
-                link: '/guide/stablecoin-dex/providing-liquidity',
+                link: '/guide/stablecoin-exchange/providing-liquidity',
               },
             ],
           },
@@ -436,11 +436,11 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinDEX.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol',
               },
               {
                 text: 'Rust Implementation',
-                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_dex',
+                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
               },
             ],
           },
@@ -468,8 +468,8 @@ export default defineConfig({
                 link: 'https://viem.sh/tempo',
               },
               {
-                text: 'Viem Reference',
-                link: 'https://viem.sh/tempo',
+                text: 'Wagmi Reference',
+                link: 'https://wagmi.sh/tempo',
               },
               {
                 text: 'Server Reference',

@@ -2,6 +2,7 @@
 // biome-ignore-all lint: snippet
 // biome-ignore-all format: snippet
 
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 // [!region setup]
 import { tempoTestnet } from 'viem/chains'
 import { createConfig, http } from 'wagmi'
@@ -22,6 +23,7 @@ export const config = createConfig({
 
 // [!endregion setup]
 
+import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 // [!region withFeePayer]
 import { tempoTestnet } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
@@ -39,7 +41,7 @@ export const config = createConfig({
   transports: {
     [tempoTestnet.id]: withFeePayer(
       http(),
-      http('https://sponsor.testnet.tempo.xyz'),
+      http('https://sponsor.moderato.tempo.xyz'),
     ),
   },
 })
