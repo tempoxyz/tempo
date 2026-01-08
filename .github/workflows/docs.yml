@@ -40,10 +40,14 @@ jobs:
         working-directory: docs
         run: bun install
 
-      - name: Check
-        continue-on-error: true
+      - name: Check and fix formatting
         working-directory: docs
-        run: bun run check:ci
+        run: bun run check
+
+      - name: Commit formatting fixes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: auto-fix formatting with biome"
 
       - name: Check types
         working-directory: docs
