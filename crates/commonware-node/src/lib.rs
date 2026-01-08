@@ -62,8 +62,8 @@ pub async fn run_consensus_stack(
         );
     }
 
-    let share_secret = tempo_commonware_node_config::SigningShareSecret::from_env()
-        .wrap_err("failed readaing signing share secret from the environment")?;
+    let share_key = tempo_commonware_node_config::sining_share_key_from_env()
+        .wrap_err("failed reading signing share key from the environment")?;
 
     let signing_key = config
         .signing_key()?
@@ -110,7 +110,7 @@ pub async fn run_consensus_stack(
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
         raw_share,
-        share_secret,
+        share_key,
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,

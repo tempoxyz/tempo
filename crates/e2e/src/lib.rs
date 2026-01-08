@@ -36,7 +36,7 @@ pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
-use tempo_commonware_node_config::SigningShareSecret;
+use tempo_commonware_node_config::EncryptionSecret;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
 
@@ -225,7 +225,7 @@ pub async fn setup_validators(
         );
         execution_config.feed_state = Some(feed_state.clone());
 
-        let share_secret = SigningShareSecret::random(&mut context);
+        let share_secret = EncryptionSecret::random(&mut context);
 
         let raw_share =
             share.map(|share| share_secret.encrypt_encodable(&share, &mut context).into());

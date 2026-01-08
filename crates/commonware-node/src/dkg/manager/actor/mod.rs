@@ -34,7 +34,7 @@ use futures::{
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use reth_provider::{BlockNumReader, HeaderProvider};
-use tempo_commonware_node_config::SigningShareSecret;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Span, debug, error, info, info_span, instrument, warn, warn_span};
@@ -172,7 +172,7 @@ where
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
                 let mut marshal = self.config.marshal.clone();
-                let share_secret = self.config.share_secret.clone();
+                let share_key = self.config.share_key.clone();
                 async move {
                     read_initial_state_and_set_floor(
                         &mut context,
@@ -180,12 +180,12 @@ where
                         initial_share.clone(),
                         &epoch_strategy,
                         &mut marshal,
-                        &share_secret,
+                        &share_key,
                     )
                     .await
                 }
             })
-            .share_secret(self.config.share_secret.clone())
+            .share_key(self.config.share_key.clone())
             .init(self.context.with_label("state"))
             .await
         else {
@@ -1227,7 +1227,7 @@ async fn read_initial_state_and_set_floor<TContext>(
     raw_share: Option<Bytes>,
     epoch_strategy: &FixedEpocher,
     marshal: &mut crate::alias::marshal::Mailbox,
-    key: &SigningShareSecret,
+    key: &EncryptionKey,
 ) -> eyre::Result<State>
 where
     TContext: CryptoRngCore,

@@ -18,23 +18,28 @@ use crypto_common::rand_core::CryptoRngCore;
 #[cfg(test)]
 mod tests;
 
-const SIGNING_SHARE_ENV: &str = "TEMPO_SIGNING_SHARE_SECRET";
+const SIGNING_SHARE_KEY_ENV: &str = "TEMPO_SIGNING_SHARE_KEY";
+
+pub fn sining_share_key_from_env() -> Result<EncryptionKey, EncryptionKeyError> {
+    EncryptionKey::from_env(SIGNING_SHARE_KEY_ENV)
+}
 
 /// The share used to encrypt the signing share at rest.
 #[derive(Clone)]
-pub struct SigningShareSecret(ChaCha20Poly1305);
+pub struct EncryptionKey(ChaCha20Poly1305);
 
-impl SigningShareSecret {
+impl EncryptionKey {
     /// Generates a random secret.
     pub fn random(rng: &mut impl CryptoRngCore) -> Self {
         Self(ChaCha20Poly1305::new(&ChaCha20Poly1305::generate_key(rng)))
     }
 
-    pub fn from_env() -> Result<Self, SigningShareSecretError> {
-        let hex = std::env::var(SIGNING_SHARE_ENV).map_err(SigningShareSecretErrorKind::EnvVar)?;
-        let bytes = const_hex::decode(&hex).map_err(SigningShareSecretErrorKind::Hex)?;
-        let key = ChaCha20Poly1305::new_from_slice(&bytes)
-            .map_err(SigningShareSecretErrorKind::Invalid)?;
+    pub fn from_env(name: &'static str) -> Result<Self, EncryptionKeyError> {
+        let hex = std::env::var(name)
+            .map_err(|source| EncryptionKeyErrorKind::EnvVar { source, name })?;
+        let bytes = const_hex::decode(&hex).map_err(EncryptionKeyErrorKind::Hex)?;
+        let key =
+            ChaCha20Poly1305::new_from_slice(&bytes).map_err(EncryptionKeyErrorKind::Invalid)?;
         Ok(Self(key))
     }
 
@@ -92,21 +97,24 @@ enum DecryptErrorKind {
 
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
-pub struct SigningShareSecretError(SigningShareSecretErrorKind);
+pub struct EncryptionKeyError(EncryptionKeyErrorKind);
 
-impl From<SigningShareSecretErrorKind> for SigningShareSecretError {
-    fn from(value: SigningShareSecretErrorKind) -> Self {
+impl From<EncryptionKeyErrorKind> for EncryptionKeyError {
+    fn from(value: EncryptionKeyErrorKind) -> Self {
         Self(value)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-enum SigningShareSecretErrorKind {
-    #[error("failed reading env var `{SIGNING_SHARE_ENV}`")]
-    EnvVar(#[source] std::env::VarError),
-    #[error("env var `{SIGNING_SHARE_ENV}` was not hex encoded")]
+enum EncryptionKeyErrorKind {
+    #[error("failed reading env var `{name}`")]
+    EnvVar {
+        name: &'static str,
+        source: std::env::VarError,
+    },
+    #[error("env var was not hex encoded")]
     Hex(#[source] const_hex::FromHexError),
-    #[error("key contained in env var `{SIGNING_SHARE_ENV}` was invalid")]
+    #[error("key contained in env var was invalid")]
     Invalid(#[source] crypto_common::InvalidLength),
 }
 

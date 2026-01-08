@@ -30,7 +30,7 @@ use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_config::SigningShareSecret;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -81,7 +81,7 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub partition_prefix: String,
     pub signer: PrivateKey,
     pub raw_share: Option<Bytes>,
-    pub share_secret: SigningShareSecret,
+    pub share_key: EncryptionKey,
 
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -354,7 +354,7 @@ where
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
                 peer_manager: self.peer_manager.clone(),
-                share_secret: self.share_secret,
+                share_key: self.share_key,
             },
         )
         .await
