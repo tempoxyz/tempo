@@ -13,10 +13,15 @@ tempo download
 
 # Run node
 tempo node \
+  --chain testnet \
   --follow \
   --http --http.port 8545 \
   --http.api eth,net,web3,txpool,trace
 ```
+
+:::info
+When using testnet snapshots, you must specify `--chain testnet`. Without this flag, the node defaults to a different chain specification and will fail with a genesis hash mismatch error.
+:::
 
 ## Manually downloading snapshots
 
@@ -39,6 +44,7 @@ Group=$USER
 Environment=RUST_LOG=info
 WorkingDirectory=$HOME/tempo
 ExecStart=/usr/local/bin/tempo node \\
+  --chain testnet \\
   --datadir <datadir> \\
   --follow \\
   --port 30303 \\

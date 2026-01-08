@@ -39,7 +39,8 @@ The process for running a validator node is very similar to [running a full node
 You should start by downloading the latest snapshot using `tempo download` and then running the validator node as such:
 
 ```bash
-tempo node --datadir <datadir> \
+tempo node --chain testnet \
+    --datadir <datadir> \
     --port 30303 \
     --discovery.addr 0.0.0.0 \
     --discovery.port 30303 \
