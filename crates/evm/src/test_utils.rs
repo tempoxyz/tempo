@@ -5,7 +5,7 @@ use alloy_primitives::{Address, B256, Bytes};
 use reth_chainspec::EthChainSpec;
 use reth_revm::{State, context::BlockEnv};
 use revm::{database::EmptyDB, inspector::NoOpInspector};
-use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
+use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_revm::TempoBlockEnv;
 
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
@@ -14,7 +14,7 @@ use alloy_primitives::U256;
 use tempo_primitives::subblock::PartialValidatorKey;
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
-    Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()))
+    Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
 }
 
 pub(crate) fn test_evm<DB: Database>(db: DB) -> TempoEvm<DB, NoOpInspector> {
