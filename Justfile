@@ -22,7 +22,7 @@ build binary extra_args="":
 [group('localnet')]
 [doc('Generates a genesis file')]
 genesis accounts="1000" output="./" profile="maxperf":
-    cargo run -p tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}}
+    cargo run -p tempo-xtask --profile {{profile}} -- generate-genesis --output {{output}} -a {{accounts}} --no-dkg-in-genesis
 
 [group('localnet')]
 [doc('Deletes local network data and launches a new localnet')]
