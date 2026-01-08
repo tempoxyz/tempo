@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { tempoDevnet, tempoLocalnet, tempoTestnet } from 'viem/chains'
+import { tempoDevnet, tempoLocalnet, tempoModerato } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
 import {
   type CreateConfigParameters,
@@ -23,7 +23,7 @@ export function getConfig(options: getConfig.Options = {}) {
         ? tempoLocalnet.extend({ feeToken })
         : import.meta.env.VITE_ENVIRONMENT === 'devnet'
           ? tempoDevnet.extend({ feeToken })
-          : tempoTestnet.extend({ feeToken }),
+          : tempoModerato.extend({ feeToken }),
     ],
     connectors: [
       webAuthn({
@@ -37,7 +37,7 @@ export function getConfig(options: getConfig.Options = {}) {
       key: 'tempo-docs',
     }),
     transports: {
-      [tempoTestnet.id]: withFeePayer(
+      [tempoModerato.id]: withFeePayer(
         webSocket('wss://rpc.moderato.tempo.xyz', {
           keepAlive: { interval: 1_000 },
         }),
