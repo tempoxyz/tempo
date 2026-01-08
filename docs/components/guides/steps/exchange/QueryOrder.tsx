@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 import { Tick } from 'viem/tempo'
 import { useDemoContext } from '../../../DemoContext'
