@@ -56,7 +56,9 @@ export function HomePage() {
                 href="https://tempo.xyz"
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => trackExternalLinkClick('https://tempo.xyz', 'Website')}
+                onClick={() =>
+                  trackExternalLinkClick('https://tempo.xyz', 'Website')
+                }
               />
             }
           >

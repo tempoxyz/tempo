@@ -5,6 +5,7 @@
   "scripts": {
     "build": "NODE_OPTIONS=\"--max-old-space-size=16384\" vocs build --searchIndex",
     "check": "biome check . --write --unsafe",
+    "check:ci": "biome check . --diagnostic-level=error",
     "check:types": "tsc --noEmit",
     "dev": "vocs dev",
     "gen:specs": "node scripts/gen-specs.ts",
