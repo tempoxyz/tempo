@@ -1016,9 +1016,9 @@ mod tests {
         })
     }
 
-    /// Test zero liquidity mint
+    /// Test zero amount validator token
     #[test]
-    fn test_mint_zero_liquidity() -> eyre::Result<()> {
+    fn test_mint_zero_amount_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1047,7 +1047,7 @@ mod tests {
 
     // Test zero amount rebalance swap
     #[test]
-    fn test_rebalance_swap_zero_amount() -> eyre::Result<()> {
+    fn test_rebalance_swap_zero_amount_out() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let to = Address::random();
