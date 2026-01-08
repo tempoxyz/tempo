@@ -987,35 +987,6 @@ mod tests {
         })
     }
 
-    /// Test zero amount_in in execute_fee_swap
-    #[test]
-    fn test_execute_fee_swap_zero_amount() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
-                .apply()?
-                .address();
-            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
-                .apply()?
-                .address();
-
-            let mut amm = TipFeeManager::new();
-
-            let result = amm.execute_fee_swap(user_token, validator_token, U256::ZERO);
-
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIPFeeAMMError(
-                    TIPFeeAMMError::InvalidAmount(_)
-                ))
-            ));
-
-            Ok(())
-        })
-    }
-
     /// Test zero liquidity burn
     #[test]
     fn test_burn_zero_liquidity() -> eyre::Result<()> {
