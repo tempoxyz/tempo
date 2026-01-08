@@ -26,6 +26,10 @@ struct ConsensusCommand {
     command: ConsensusSubcommand,
 }
 
+#[expect(
+    clippy::enum_variant_names,
+    reason = "these map to descriptive cli subcommands"
+)]
 #[derive(Debug, Subcommand)]
 enum ConsensusSubcommand {
     /// Generates an encryption/decryption key.
