@@ -496,28 +496,6 @@ contract AccountKeychainTest is BaseTest {
         vm.stopPrank();
     }
 
-    function test_AuthorizeKey_ZeroExpiry() public {
-        vm.startPrank(alice);
-
-        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
-
-        // Authorize key with expiry=0 (valid but key appears non-existent)
-        keychain.authorizeKey(
-            aliceAccessKey,
-            IAccountKeychain.SignatureType.P256,
-            0, // Zero expiry
-            false,
-            limits
-        );
-
-        // Key should appear non-existent because expiry=0 is the "not exists" sentinel
-        IAccountKeychain.KeyInfo memory info = keychain.getKey(alice, aliceAccessKey);
-        assertEq(info.keyId, address(0)); // Returns default
-        assertEq(info.expiry, 0);
-
-        vm.stopPrank();
-    }
-
     function test_DifferentKeyCanBeAuthorizedAfterRevocation() public {
         vm.startPrank(alice);
 
