@@ -224,6 +224,132 @@ mod tests {
     use alloy::primitives::{Address, address};
 
     #[test]
+    fn test_is_initialized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+
+            // Factory should not be initialized before initialize() call
+            assert!(!factory.is_initialized()?);
+
+            // After initialize(), factory should be initialized
+            factory.initialize()?;
+            assert!(factory.is_initialized()?);
+
+            // Creating a new handle should still see initialized state
+            let factory2 = TIP20Factory::new();
+            assert!(factory2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20_prefix() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            // PATH_USD has correct prefix
+            assert!(is_tip20_prefix(PATH_USD_ADDRESS));
+
+            // Address with TIP20 prefix (0x20C0...)
+            let tip20_addr = Address::from(alloy::hex!("20C0000000000000000000000000000000001234"));
+            assert!(is_tip20_prefix(tip20_addr));
+
+            // Random address does not have TIP20 prefix
+            let random = Address::random();
+            assert!(!is_tip20_prefix(random));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_tip20() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Initialize pathUSD
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
+
+            let factory = TIP20Factory::new();
+
+            // PATH_USD should be valid (has code deployed)
+            assert!(factory.is_tip20(PATH_USD_ADDRESS)?);
+
+            // Address with TIP20 prefix but no code should be invalid
+            let no_code_tip20 = address!("20C0000000000000000000000000000000000002");
+            assert!(!factory.is_tip20(no_code_tip20)?);
+
+            // Random address (wrong prefix) should be invalid
+            assert!(!factory.is_tip20(Address::random())?);
+
+            // Create a token via factory and verify it's valid
+            let token = TIP20Setup::create("Test", "TST", sender).apply()?;
+            assert!(factory.is_tip20(token.address())?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_token_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+            let sender = Address::random();
+            let salt = B256::random();
+
+            // get_token_address should return same address as compute_tip20_address
+            let call = ITIP20Factory::getTokenAddressCall { sender, salt };
+            let address = factory.get_token_address(call)?;
+            let (expected, _) = compute_tip20_address(sender, salt);
+            assert_eq!(address, expected);
+
+            // Calling with same params should be deterministic
+            let call2 = ITIP20Factory::getTokenAddressCall { sender, salt };
+            assert_eq!(factory.get_token_address(call2)?, address);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compute_tip20_address_deterministic() {
+        let sender1 = Address::random();
+        let sender2 = Address::random();
+        let salt1 = B256::random();
+        let salt2 = B256::random();
+
+        let (addr0, lower0) = compute_tip20_address(sender1, salt1);
+        let (addr1, lower1) = compute_tip20_address(sender1, salt1);
+        assert_eq!(addr0, addr1);
+        assert_eq!(lower0, lower1);
+
+        // Same salt with different senders should produce different addresses
+        let (addr2, lower2) = compute_tip20_address(sender1, salt1);
+        let (addr3, lower3) = compute_tip20_address(sender2, salt1);
+        assert_ne!(addr2, addr3);
+        assert_ne!(lower2, lower3);
+
+        // Same sender with different salts should produce different addresses
+        let (addr4, lower4) = compute_tip20_address(sender1, salt1);
+        let (addr5, lower5) = compute_tip20_address(sender1, salt2);
+        assert_ne!(addr4, addr5);
+        assert_ne!(lower4, lower5);
+
+        // All addresses should have TIP20 prefix
+        assert!(is_tip20_prefix(addr1));
+        assert!(is_tip20_prefix(addr2));
+        assert!(is_tip20_prefix(addr3));
+        assert!(is_tip20_prefix(addr4));
+        assert!(is_tip20_prefix(addr5));
+    }
+
+    #[test]
     fn test_create_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
@@ -407,133 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_tip20() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let sender = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            // Initialize pathUSD
-            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
-
-            let factory = TIP20Factory::new();
-
-            // PATH_USD should be valid (has code deployed)
-            assert!(factory.is_tip20(PATH_USD_ADDRESS)?);
-
-            // Address with TIP20 prefix but no code should be invalid
-            let no_code_tip20 =
-                Address::from(alloy::hex!("20C0000000000000000000000000000000009999"));
-            assert!(!factory.is_tip20(no_code_tip20)?);
-
-            // Random address (wrong prefix) should be invalid
-            assert!(!factory.is_tip20(Address::random())?);
-
-            // Create a token via factory and verify it's valid
-            let token = TIP20Setup::create("Test", "TST", sender).apply()?;
-            assert!(factory.is_tip20(token.address())?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_initialized() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-
-            // Factory should not be initialized before initialize() call
-            assert!(!factory.is_initialized()?);
-
-            // After initialize(), factory should be initialized
-            factory.initialize()?;
-            assert!(factory.is_initialized()?);
-
-            // Creating a new handle should still see initialized state
-            let factory2 = TIP20Factory::new();
-            assert!(factory2.is_initialized()?);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_is_tip20_prefix() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            // PATH_USD has correct prefix
-            assert!(is_tip20_prefix(PATH_USD_ADDRESS));
-
-            // Address with TIP20 prefix (0x20C0...)
-            let tip20_addr = Address::from(alloy::hex!("20C0000000000000000000000000000000001234"));
-            assert!(is_tip20_prefix(tip20_addr));
-
-            // Random address does not have TIP20 prefix
-            let random = Address::random();
-            assert!(!is_tip20_prefix(random));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_get_token_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-
-        StorageCtx::enter(&mut storage, || {
-            let factory = TIP20Factory::new();
-            let sender = Address::random();
-            let salt = B256::random();
-
-            // get_token_address should return same address as compute_tip20_address
-            let call = ITIP20Factory::getTokenAddressCall { sender, salt };
-            let address = factory.get_token_address(call)?;
-            let (expected, _) = compute_tip20_address(sender, salt);
-            assert_eq!(address, expected);
-
-            // Calling with same params should be deterministic
-            let call2 = ITIP20Factory::getTokenAddressCall { sender, salt };
-            assert_eq!(factory.get_token_address(call2)?, address);
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_compute_tip20_address_deterministic() {
-        let sender1 = Address::random();
-        let sender2 = Address::random();
-        let salt1 = B256::random();
-        let salt2 = B256::random();
-
-        let (addr0, lower0) = compute_tip20_address(sender1, salt1);
-        let (addr1, lower1) = compute_tip20_address(sender1, salt1);
-        assert_eq!(addr0, addr1);
-        assert_eq!(lower0, lower1);
-
-        // Same salt with different senders should produce different addresses
-        let (addr2, lower2) = compute_tip20_address(sender1, salt1);
-        let (addr3, lower3) = compute_tip20_address(sender2, salt1);
-        assert_ne!(addr2, addr3);
-        assert_ne!(lower2, lower3);
-
-        // Same sender with different salts should produce different addresses
-        let (addr4, lower4) = compute_tip20_address(sender1, salt1);
-        let (addr5, lower5) = compute_tip20_address(sender1, salt2);
-        assert_ne!(addr4, addr5);
-        assert_ne!(lower4, lower5);
-
-        // All addresses should have TIP20 prefix
-        assert!(is_tip20_prefix(addr1));
-        assert!(is_tip20_prefix(addr2));
-        assert!(is_tip20_prefix(addr3));
-        assert!(is_tip20_prefix(addr4));
-        assert!(is_tip20_prefix(addr5));
-    }
-
-    #[test]
     fn test_create_token_reserved_address_rejects_invalid_prefix() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -605,16 +604,14 @@ mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
             let eur_token = TIP20Setup::create("EUR Token", "EUR", admin)
                 .currency("EUR")
                 .apply()?;
 
             let mut factory = TIP20Factory::new();
-            let reserved_addr = address!("20C0000000000000000000000000000000000002");
 
             let result = factory.create_token_reserved_address(
-                reserved_addr,
+                address!("20C0000000000000000000000000000000000001"), // reserved address
                 "Test USD",
                 "TUSD",
                 "USD",
