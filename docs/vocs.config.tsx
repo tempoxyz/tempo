@@ -89,6 +89,15 @@ export default defineConfig({
     dark: '/icon-dark.png',
   },
   rootDir: '.',
+  banner: {
+    content: (
+        <div>
+          <strong>Testnet migration:</strong> We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th.{' '}
+          <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>Learn more →</a>
+        </div>
+      ),
+    dismissable: true,
+  },
   socials: [
     {
       icon: 'github',
@@ -111,6 +120,10 @@ export default defineConfig({
           {
             text: 'Overview',
             link: '/quickstart/integrate-tempo',
+          },
+          {
+            text: 'Network Upgrades',
+            link: '/network-upgrades',
           },
           {
             text: 'Connect to the Network',
@@ -436,11 +449,11 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinDEX.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol',
               },
               {
                 text: 'Rust Implementation',
-                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_dex',
+                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
               },
             ],
           },
@@ -468,8 +481,8 @@ export default defineConfig({
                 link: 'https://viem.sh/tempo',
               },
               {
-                text: 'Viem Reference',
-                link: 'https://viem.sh/tempo',
+                text: 'Wagmi Reference',
+                link: 'https://wagmi.sh/tempo',
               },
               {
                 text: 'Server Reference',

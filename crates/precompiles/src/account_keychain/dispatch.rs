@@ -36,3 +36,31 @@ impl Precompile for AccountKeychain {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
+
+    #[test]
+    fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = AccountKeychain::new();
+
+            let unsupported = check_selector_coverage(
+                &mut fee_manager,
+                IAccountKeychainCalls::SELECTORS,
+                "IAccountKeychain",
+                IAccountKeychainCalls::name_by_selector,
+            );
+
+            assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+}

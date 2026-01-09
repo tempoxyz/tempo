@@ -640,6 +640,8 @@ mod tests {
 
         assert!(!envelope.is_fee_token());
         assert_eq!(envelope.fee_token(), None);
+        assert!(!envelope.is_aa());
+        assert!(envelope.as_aa().is_none());
     }
 
     #[test]
@@ -738,5 +740,213 @@ mod tests {
         };
         let envelope = create_aa_envelope(call);
         assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_is_payment_eip2930_eip1559_eip7702() {
+        use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
+
+        // Eip2930 payment
+        let tx = TxEip2930 {
+            to: TxKind::Call(PAYMENT_TKN),
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(envelope.is_payment());
+
+        // Eip2930 non-payment
+        let tx = TxEip2930 {
+            to: TxKind::Call(address!("1234567890123456789012345678901234567890")),
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip2930(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(!envelope.is_payment());
+
+        // Eip1559 payment
+        let tx = TxEip1559 {
+            to: TxKind::Call(PAYMENT_TKN),
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(envelope.is_payment());
+
+        // Eip1559 non-payment
+        let tx = TxEip1559 {
+            to: TxKind::Call(address!("1234567890123456789012345678901234567890")),
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip1559(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(!envelope.is_payment());
+
+        // Eip7702 payment (note: Eip7702 has direct `to` address, not TxKind)
+        let tx = TxEip7702 {
+            to: PAYMENT_TKN,
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(envelope.is_payment());
+
+        // Eip7702 non-payment
+        let tx = TxEip7702 {
+            to: address!("1234567890123456789012345678901234567890"),
+            ..Default::default()
+        };
+        let envelope =
+            TempoTxEnvelope::Eip7702(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(!envelope.is_payment());
+    }
+
+    #[test]
+    fn test_system_tx_validation_and_recovery() {
+        use alloy_consensus::transaction::SignerRecoverable;
+
+        let chain_id = 1u64;
+
+        // Valid system tx: all fields zero, correct chain_id, system signature
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        let system_tx =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+
+        assert!(system_tx.is_system_tx(), "Should detect system signature");
+        assert!(
+            system_tx.is_valid_system_tx(chain_id),
+            "Should be valid system tx"
+        );
+
+        // recover_signer returns ZERO for system tx
+        let signer = system_tx.recover_signer().unwrap();
+        assert_eq!(
+            signer,
+            Address::ZERO,
+            "System tx signer should be Address::ZERO"
+        );
+
+        // Invalid: wrong chain_id
+        assert!(
+            !system_tx.is_valid_system_tx(2),
+            "Wrong chain_id should fail"
+        );
+
+        // Invalid: non-zero gas_limit
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            gas_limit: 1, // non-zero
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        assert!(
+            !envelope.is_valid_system_tx(chain_id),
+            "Non-zero gas_limit should fail"
+        );
+
+        // Invalid: non-zero value
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            value: U256::from(1),
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        assert!(
+            !envelope.is_valid_system_tx(chain_id),
+            "Non-zero value should fail"
+        );
+
+        // Invalid: non-zero nonce
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 1,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        assert!(
+            !envelope.is_valid_system_tx(chain_id),
+            "Non-zero nonce should fail"
+        );
+
+        // Non-system tx with regular signature should recover normally
+        let tx = TxLegacy::default();
+        let regular_tx =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        assert!(
+            !regular_tx.is_system_tx(),
+            "Regular tx should not be system tx"
+        );
+
+        // fee_payer() for non-AA returns sender
+        let sender = Address::random();
+        assert_eq!(system_tx.fee_payer(sender).unwrap(), sender);
+
+        // calls() iterator for non-AA returns single item
+        let calls: Vec<_> = system_tx.calls().collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, TxKind::Call(Address::ZERO));
+
+        // subblock_proposer() returns None for non-subblock tx
+        assert!(system_tx.subblock_proposer().is_none());
+
+        // AA-specific methods
+        let aa_envelope = create_aa_envelope(Call {
+            to: TxKind::Call(PAYMENT_TKN),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        });
+        assert!(aa_envelope.is_aa());
+        assert!(aa_envelope.as_aa().is_some());
+        assert_eq!(aa_envelope.fee_token(), Some(PAYMENT_TKN));
+
+        // calls() for AA tx
+        let aa_calls: Vec<_> = aa_envelope.calls().collect();
+        assert_eq!(aa_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_try_from_ethereum_envelope_eip4844_rejected() {
+        use alloy_consensus::TxEip4844;
+
+        // EIP-4844 should be rejected
+        let eip4844_tx = TxEip4844::default();
+        let eth_envelope: EthereumTxEnvelope<TxEip4844> = EthereumTxEnvelope::Eip4844(
+            Signed::new_unhashed(eip4844_tx, Signature::test_signature()),
+        );
+
+        let result = TempoTxEnvelope::try_from(eth_envelope);
+        assert!(result.is_err(), "EIP-4844 should be rejected");
+
+        // Other types should be accepted
+        let legacy_tx = TxLegacy::default();
+        let eth_envelope: EthereumTxEnvelope<TxEip4844> = EthereumTxEnvelope::Legacy(
+            Signed::new_unhashed(legacy_tx, Signature::test_signature()),
+        );
+        assert!(TempoTxEnvelope::try_from(eth_envelope).is_ok());
+    }
+
+    #[test]
+    fn test_tx_type_conversions() {
+        // TxType -> TempoTxType: EIP-4844 rejected
+        assert!(TempoTxType::try_from(TxType::Legacy).is_ok());
+        assert!(TempoTxType::try_from(TxType::Eip2930).is_ok());
+        assert!(TempoTxType::try_from(TxType::Eip1559).is_ok());
+        assert!(TempoTxType::try_from(TxType::Eip7702).is_ok());
+        assert!(TempoTxType::try_from(TxType::Eip4844).is_err());
+
+        // TempoTxType -> TxType: AA rejected
+        assert!(TxType::try_from(TempoTxType::Legacy).is_ok());
+        assert!(TxType::try_from(TempoTxType::Eip2930).is_ok());
+        assert!(TxType::try_from(TempoTxType::Eip1559).is_ok());
+        assert!(TxType::try_from(TempoTxType::Eip7702).is_ok());
+        assert!(TxType::try_from(TempoTxType::AA).is_err());
     }
 }

@@ -33,7 +33,7 @@ import (
 )
 
 func main() {
-    c, err := client.New("https://rpc.testnet.tempo.xyz") // [!code focus]
+    c, err := client.New("https://rpc.moderato.tempo.xyz") // [!code focus]
     if err != nil { // [!code focus]
         panic(err) // [!code focus]
     } // [!code focus]
@@ -57,7 +57,7 @@ import (
 )
 
 func main() {
-    c, _ := client.New("https://rpc.testnet.tempo.xyz")
+    c, _ := client.New("https://rpc.moderato.tempo.xyz")
 
     s, err := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80") // [!code focus]
     if err != nil { // [!code focus]
@@ -86,7 +86,7 @@ import (
 )
 
 func main() {
-    c, _ := client.New("https://rpc.testnet.tempo.xyz")
+    c, _ := client.New("https://rpc.moderato.tempo.xyz")
     s, _ := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
 
     recipient := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
@@ -95,7 +95,7 @@ func main() {
 
     // [!code focus:13]
     tx := transaction.New()
-    tx.ChainID = big.NewInt(42429) // Tempo testnet
+    tx.ChainID = big.NewInt(42431) // Tempo testnet
     tx.MaxFeePerGas = big.NewInt(2000000000)
     tx.MaxPriorityFeePerGas = big.NewInt(1000000000)
     tx.Gas = 100000
@@ -128,7 +128,7 @@ func buildERC20TransferData(to common.Address, amount *big.Int) []byte {
 Tempo transactions can batch multiple calls into a single transaction:
 
 ```go [batch.go]
-tx := transaction.NewDefault(42429) // Tempo testnet
+tx := transaction.NewDefault(42431) // Tempo testnet
 tx.Gas = 150000
 tx.Calls = []transaction.Call{
     {To: &addr1, Value: big.NewInt(0), Data: transfer1Data},
@@ -145,7 +145,7 @@ client.SendTransaction(tx)
 Have another account pay for transaction fees using a fee payer:
 
 ```go [feepayer.go]
-tx := transaction.NewDefault(42429)
+tx := transaction.NewDefault(42431)
 transaction.SignTransaction(tx, userSigner)
 
 transaction.AddFeePayerSignature(tx, feePayerSigner)
@@ -160,7 +160,7 @@ Set a time window during which the transaction is valid:
 ```go [validity.go]
 import "time"
 
-tx := transaction.NewDefault(42429)
+tx := transaction.NewDefault(42431)
 tx.ValidAfter = uint64(time.Now().Unix())
 tx.ValidBefore = uint64(time.Now().Add(1 * time.Hour).Unix())
 

@@ -80,6 +80,8 @@ contract FeeAMM is IFeeAMM {
         external
         returns (uint256 amountIn)
     {
+        if (amountOut == 0) revert InvalidAmount();
+
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
         // Rebalancing swaps are always from validatorToken to userToken
@@ -117,6 +119,7 @@ contract FeeAMM is IFeeAMM {
         address to
     ) external returns (uint256 liquidity) {
         if (userToken == validatorToken) revert IdenticalAddresses();
+        if (amountValidatorToken == 0) revert InvalidAmount();
 
         _requireUSDTIP20(userToken);
         _requireUSDTIP20(validatorToken);
@@ -167,6 +170,7 @@ contract FeeAMM is IFeeAMM {
         returns (uint256 amountUserToken, uint256 amountValidatorToken)
     {
         if (userToken == validatorToken) revert IdenticalAddresses();
+        if (liquidity == 0) revert InvalidAmount();
 
         bytes32 poolId = getPoolId(userToken, validatorToken);
 
