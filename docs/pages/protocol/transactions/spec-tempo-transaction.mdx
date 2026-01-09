@@ -424,15 +424,19 @@ The transaction is RLP encoded as follows:
 rlp([to, value, input])
 ```
 
-**Key Authorization Encoding:**
+**Signed Key Authorization Encoding:**
+
+`SignedKeyAuthorization` is encoded as a nested RLP list containing the `KeyAuthorization` followed by the signature:
 ```
 rlp([
-    chain_id,
-    key_type,
-    key_id,
-    expiry?,         // Optional trailing field (omitted or 0x80 if None)
-    limits?,         // Optional trailing field (omitted or 0x80 if None)
-    signature        // PrimitiveSignature bytes
+    rlp([                // KeyAuthorization (nested list)
+        chain_id,
+        key_type,
+        key_id,
+        expiry?,         // Optional trailing field (omitted or 0x80 if None)
+        limits?          // Optional trailing field (omitted or 0x80 if None)
+    ]),
+    signature            // PrimitiveSignature bytes (secp256k1, P256, or WebAuthn)
 ])
 ```
 
@@ -442,6 +446,8 @@ rlp([
 - The `calls` field is a list that must contain at least one Call (empty calls list is invalid)
 - The `sender_signature` field is the final field and contains the TempoSignature bytes (secp256k1, P256, WebAuthn, or Keychain)
 - KeyAuthorization uses RLP trailing field semantics for optional `expiry` and `limits`
+
+> **Reference Implementation:** See [`test_backwards_compatibility_key_authorization`](https://github.com/tempoxyz/tempo/blob/main/crates/primitives/src/transaction/tempo_transaction.rs#L1559) for a complete Rust example of RLP encoding/decoding with `SignedKeyAuthorization`.
 
 ### WebAuthn Signature Verification
 
@@ -571,13 +577,16 @@ limits = Option<Vec<[token, limit]>> (None = unlimited spending)
 
 **Signed Format:**
 
-The signed format (`SignedKeyAuthorization`) includes all fields with the `signature` appended:
+The signed format (`SignedKeyAuthorization`) wraps the `KeyAuthorization` in a nested RLP list with the signature:
 
 ```
-signed_key_authorization = rlp([chain_id, key_type, key_id, expiry?, limits?, signature])
+signed_key_authorization = rlp([
+    rlp([chain_id, key_type, key_id, expiry?, limits?]),  // KeyAuthorization (nested)
+    signature                                              // PrimitiveSignature bytes
+])
 ```
 
-The `signature` is a `PrimitiveSignature` (secp256k1, P256, or WebAuthn) signed by the root key.
+The `signature` is a `PrimitiveSignature` (secp256k1, P256, or WebAuthn) signed by the root key over the `key_authorization_digest`.
 
 Note: `expiry` and `limits` use RLP trailing field semantics - they can be omitted entirely when None.
 
@@ -684,16 +693,17 @@ The protocol tracks and enforces spending limits for TIP20 token transfers:
    ```typescript
    // Define key parameters
    const keyAuth = {
+     chain_id: 42431,                   // Tempo chain ID (0 = valid on any chain)
      key_type: SignatureType.P256,      // 1
      key_id: keyId,                     // address derived from public key
-     expiry: timestamp + 86400,         // 24 hours from now (or 0 for never)
+     expiry: timestamp + 86400,         // 24 hours from now (or null for never)
      limits: [
-       { token: USDC_ADDRESS, amount: 1000000000 }, // 1000 USDC (6 decimals)
-       { token: DAI_ADDRESS, amount: 500000000000000000000 }  // 500 DAI (18 decimals)
+       { token: USDC_ADDRESS, limit: 1000000000 }, // 1000 USDC (6 decimals)
+       { token: DAI_ADDRESS, limit: 500000000000000000000n }  // 500 DAI (18 decimals)
      ]
    };
 
-   // Compute digest: keccak256(rlp([key_type, key_id, expiry, limits]))
+   // Compute digest: keccak256(rlp([chain_id, key_type, key_id, expiry?, limits?]))
    const authDigest = computeAuthorizationDigest(keyAuth);
    ```
 
@@ -706,21 +716,29 @@ The protocol tracks and enforces spending limits for TIP20 token transfers:
 4. **Build TempoTransaction**
    ```typescript
    const tx = {
-     chain_id: 1,
+     chain_id: 42431,  // Tempo chain ID
      nonce: await getNonce(account),
      nonce_key: 0,
      calls: [{ to: recipient, value: 0, input: "0x" }],
      gas_limit: 200000,
      max_fee_per_gas: 1000000000,
      max_priority_fee_per_gas: 1000000000,
+     valid_before: null,           // Optional: transaction expiry
+     valid_after: null,            // Optional: transaction validity start
+     fee_token: null,              // Optional: fee token address
+     fee_payer_signature: null,    // Optional: for sponsored transactions
+     aa_authorization_list: [],    // EIP-7702 style authorizations
      key_authorization: {
-       key_type: keyAuth.key_type,
-       expiry: keyAuth.expiry,
-       limits: keyAuth.limits,
-       key_id: keyAuth.key_id,
-       signature: rootSignature  // Root Key's signature on authDigest
+       // SignedKeyAuthorization structure
+       authorization: {
+         chain_id: 42431,
+         key_type: keyAuth.key_type,
+         key_id: keyAuth.key_id,
+         expiry: keyAuth.expiry,
+         limits: keyAuth.limits,
+       },
+       signature: rootSignature    // Root Key's signature on authDigest
      },
-     // ... other fields
    };
    ```
 
