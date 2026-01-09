@@ -108,9 +108,7 @@ pub trait ContractStorage {
 
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
-        let address = self.address();
-
         self.storage()
-            .with_account_info(address, |info| Ok(!info.is_empty_code_hash()))
+            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
     }
 }
