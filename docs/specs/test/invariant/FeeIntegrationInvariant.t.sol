@@ -115,17 +115,36 @@ contract FeeIntegrationInvariantTest is StdInvariant, BaseTest {
             INVARIANT I3: SYSTEM SOLVENCY
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice The system must always have enough tokens to cover all obligations
+    /// @notice The system must always have enough tokens to cover the sum of all pool reserves
+    /// @dev Checks both directional pools: (userToken, validatorToken) and (validatorToken, userToken)
     function invariant_systemSolvency() public view {
-        IFeeAMM.Pool memory pool = amm.getPool(address(userToken), address(validatorToken));
+        // Get both directional pools
+        IFeeAMM.Pool memory poolUV = amm.getPool(address(userToken), address(validatorToken));
+        IFeeAMM.Pool memory poolVU = amm.getPool(address(validatorToken), address(userToken));
 
-        // FeeManager must hold at least the reserve amounts
+        // Sum reserves for userToken across both pools
+        // In poolUV: userToken is the "user" token (reserveUserToken)
+        // In poolVU: userToken is the "validator" token (reserveValidatorToken)
+        uint256 totalUserTokenReserves =
+            uint256(poolUV.reserveUserToken) + uint256(poolVU.reserveValidatorToken);
+
+        // Sum reserves for validatorToken across both pools
+        // In poolUV: validatorToken is the "validator" token (reserveValidatorToken)
+        // In poolVU: validatorToken is the "user" token (reserveUserToken)
+        uint256 totalValidatorTokenReserves =
+            uint256(poolUV.reserveValidatorToken) + uint256(poolVU.reserveUserToken);
+
+        // AMM must hold at least the sum of all reserves for each token
         uint256 userBalance = userToken.balanceOf(address(amm));
         uint256 validatorBalance = validatorToken.balanceOf(address(amm));
 
-        assertGe(userBalance, pool.reserveUserToken, "Insufficient userToken for reserves");
         assertGe(
-            validatorBalance, pool.reserveValidatorToken, "Insufficient validatorToken for reserves"
+            userBalance, totalUserTokenReserves, "Insufficient userToken for sum of pool reserves"
+        );
+        assertGe(
+            validatorBalance,
+            totalValidatorTokenReserves,
+            "Insufficient validatorToken for sum of pool reserves"
         );
     }
 

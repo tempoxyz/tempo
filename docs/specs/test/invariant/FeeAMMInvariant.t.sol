@@ -224,30 +224,7 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-            INVARIANT A6: EACH POOL INDIVIDUALLY BACKED
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice For every tracked pool, the AMM must hold at least the pool's reserves
-    function invariant_eachPoolIsIndividuallyBacked() public view {
-        for (uint256 i = 0; i < handler.poolCount(); i++) {
-            bytes32 pid = handler.getPoolId(i);
-
-            // Resolve token pair for this poolId within our token universe
-            (address userToken, address validatorToken) = _resolvePoolTokens(pid);
-            if (userToken == address(0)) continue; // Skip if unresolvable
-
-            IFeeAMM.Pool memory p = amm.getPool(userToken, validatorToken);
-
-            uint256 balU = TIP20(userToken).balanceOf(address(amm));
-            uint256 balV = TIP20(validatorToken).balanceOf(address(amm));
-
-            assertGe(balU, uint256(p.reserveUserToken), "pool user reserve not backed");
-            assertGe(balV, uint256(p.reserveValidatorToken), "pool validator reserve not backed");
-        }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-            INVARIANT A7: TRACKED POOL IDS ARE MARKED SEEN
+            INVARIANT A6: TRACKED POOL IDS ARE MARKED SEEN
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Tracked poolIds must correspond to a "seen" pool
@@ -260,7 +237,7 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-            INVARIANT A8: NO VALUE CREATION FROM ROUNDING
+            INVARIANT A7: NO VALUE CREATION FROM ROUNDING
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Users cannot extract more LP tokens than minted through rounding
@@ -271,7 +248,7 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-            INVARIANT A9: REBALANCE SWAP RATE CORRECTNESS
+            INVARIANT A8: REBALANCE SWAP RATE CORRECTNESS
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Rebalance swap input must be >= (output * N) / SCALE + 1
@@ -288,7 +265,7 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-            INVARIANT A10: FEE SWAP RATE CORRECTNESS
+            INVARIANT A9: FEE SWAP RATE CORRECTNESS
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Fee swap output must be exactly (input * M) / SCALE
@@ -310,7 +287,7 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     }
 
     /*//////////////////////////////////////////////////////////////
-            INVARIANT A11: RESERVES BOUNDED BY UINT128
+            INVARIANT A10: RESERVES BOUNDED BY UINT128
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Pool reserves must always fit in uint128
@@ -322,30 +299,6 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
             assertLe(uint256(ru), type(uint128).max, "reserveUserToken > u128");
             assertLe(uint256(rv), type(uint128).max, "reserveValidatorToken > u128");
         }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Resolve a poolId to its unique ordered token pair within this test's token universe
-    function _resolvePoolTokens(bytes32 pid)
-        internal
-        view
-        returns (address userToken, address validatorToken)
-    {
-        for (uint256 a = 0; a < tokens.length; a++) {
-            for (uint256 b = 0; b < tokens.length; b++) {
-                if (a == b) continue;
-                address u = address(tokens[a]);
-                address v = address(tokens[b]);
-                if (amm.getPoolId(u, v) == pid) {
-                    return (u, v);
-                }
-            }
-        }
-        // Return zero addresses if not found
-        return (address(0), address(0));
     }
 
     /*//////////////////////////////////////////////////////////////
