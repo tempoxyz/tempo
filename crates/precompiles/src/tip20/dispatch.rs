@@ -115,9 +115,7 @@ impl Precompile for TIP20Token {
                 mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
             }
             TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.complete_quote_token_update(s, c)
-                })
+                mutate_void(call, msg_sender, |s, _| self.complete_quote_token_update(s))
             }
             TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.mint(s, c))
