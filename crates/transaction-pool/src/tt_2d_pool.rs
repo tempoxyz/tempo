@@ -1015,7 +1015,7 @@ impl AA2dTransactionId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{create_aa_tx, create_aa_tx_with_gas, wrap_valid_tx};
+    use crate::test_utils::{TxBuilder, wrap_valid_tx};
     use alloy_primitives::{Address, U256};
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
@@ -1029,7 +1029,7 @@ mod tests {
         let sender = Address::random();
 
         // Create a transaction with nonce_key=1, nonce=0 (should be pending)
-        let tx = create_aa_tx(sender, nonce_key, 0);
+        let tx = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         // Add the transaction to the pool
@@ -1060,7 +1060,7 @@ mod tests {
         let sender = Address::random();
 
         // Step 1: Insert transaction with nonce=1 (creates a gap, should be queued)
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
         let tx1_hash = *valid_tx1.hash();
 
@@ -1099,7 +1099,7 @@ mod tests {
         pool.assert_invariants();
 
         // Step 2: Insert transaction with nonce=0 (fills the gap)
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let tx0_hash = *valid_tx0.hash();
 
@@ -1172,7 +1172,11 @@ mod tests {
         let sender = Address::random();
 
         // Step 1: Insert initial pending transaction with lower gas price
-        let tx_low = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
+        let tx_low = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
         let tx_low_hash = *valid_tx_low.hash();
 
@@ -1214,7 +1218,11 @@ mod tests {
 
         // Step 2: Replace with higher gas price transaction
         // Price bump needs to be at least 10% higher (default price bump config)
-        let tx_high = create_aa_tx_with_gas(sender, nonce_key, 0, 1_200_000_000, 2_400_000_000);
+        let tx_high = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_200_000_000)
+            .max_fee(2_400_000_000)
+            .build();
         let valid_tx_high = wrap_valid_tx(tx_high, TransactionOrigin::Local);
         let tx_high_hash = *valid_tx_high.hash();
 
@@ -1305,11 +1313,11 @@ mod tests {
         // Expected initial state:
         // - 0, 1: pending (consecutive from on-chain nonce 0)
         // - 3, 4, 6: queued (gaps at nonce 2 and 5)
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
-        let tx4 = create_aa_tx(sender, nonce_key, 4);
-        let tx6 = create_aa_tx(sender, nonce_key, 6);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
+        let tx6 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build();
 
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
@@ -1499,7 +1507,7 @@ mod tests {
         let sender = Address::random();
 
         // Create a transaction with nonce 3 (outdated)
-        let tx = create_aa_tx(sender, nonce_key, 3);
+        let tx = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         // Try to insert it and specify the on-chain nonce 5, making it outdated
@@ -1537,14 +1545,21 @@ mod tests {
         let sender = Address::random();
 
         // Insert initial transaction
-        let tx_low = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
+        let tx_low = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
 
         pool.add_transaction(Arc::new(valid_tx_low), 0).unwrap();
 
         // Try to replace with only 5% price bump (default requires 10%)
-        let tx_insufficient =
-            create_aa_tx_with_gas(sender, nonce_key, 0, 1_050_000_000, 2_100_000_000);
+        let tx_insufficient = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_050_000_000)
+            .max_fee(2_100_000_000)
+            .build();
         let valid_tx_insufficient = wrap_valid_tx(tx_insufficient, TransactionOrigin::Local);
 
         let result = pool.add_transaction(Arc::new(valid_tx_insufficient), 0);
@@ -1572,10 +1587,10 @@ mod tests {
         let sender = Address::random();
 
         // Insert transactions: 0, 1, 3, 4 (gap at 2)
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
-        let tx4 = create_aa_tx(sender, nonce_key, 4);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -1592,7 +1607,7 @@ mod tests {
         assert_eq!(queued_count, 2, "Should have 2 queued (3, 4)");
 
         // Fill the gap with nonce 2
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
         let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
 
         let result = pool.add_transaction(Arc::new(valid_tx2), 0);
@@ -1630,9 +1645,9 @@ mod tests {
         let sender = Address::random();
 
         // Insert consecutive transactions: 0, 1, 2
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
 
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
@@ -1691,12 +1706,18 @@ mod tests {
 
         // Insert transactions for both senders
         // Sender A: [0, 1]
-        let tx_a0 = create_aa_tx(sender_a, nonce_key_a, 0);
-        let tx_a1 = create_aa_tx(sender_a, nonce_key_a, 1);
+        let tx_a0 = TxBuilder::aa(sender_a).nonce_key(nonce_key_a).build();
+        let tx_a1 = TxBuilder::aa(sender_a)
+            .nonce_key(nonce_key_a)
+            .nonce(1)
+            .build();
 
         // Sender B: [0, 1]
-        let tx_b0 = create_aa_tx(sender_b, nonce_key_b, 0);
-        let tx_b1 = create_aa_tx(sender_b, nonce_key_b, 1);
+        let tx_b0 = TxBuilder::aa(sender_b).nonce_key(nonce_key_b).build();
+        let tx_b1 = TxBuilder::aa(sender_b)
+            .nonce_key(nonce_key_b)
+            .nonce(1)
+            .build();
 
         let valid_tx_a0 = wrap_valid_tx(tx_a0, TransactionOrigin::Local);
         let valid_tx_a1 = wrap_valid_tx(tx_a1, TransactionOrigin::Local);
@@ -1782,7 +1803,11 @@ mod tests {
         };
 
         // Insert initial transaction at nonce 0 with gas prices 1_000_000_000, 2_000_000_000
-        let tx0 = create_aa_tx_with_gas(sender, nonce_key, 0, 1_000_000_000, 2_000_000_000);
+        let tx0 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
         let tx0_hash = *tx0.hash();
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let result = pool.add_transaction(Arc::new(valid_tx0), 0);
@@ -1791,8 +1816,11 @@ mod tests {
         assert_eq!(pending_count + queued_count, 1);
 
         // Try to replace with slightly higher gas (1_050_000_000, 2_100_000_000 = ~5% bump) - should fail (< 10% bump)
-        let tx0_replacement1 =
-            create_aa_tx_with_gas(sender, nonce_key, 0, 1_050_000_000, 2_100_000_000);
+        let tx0_replacement1 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_050_000_000)
+            .max_fee(2_100_000_000)
+            .build();
         let valid_tx1 = wrap_valid_tx(tx0_replacement1, TransactionOrigin::Local);
         let result = pool.add_transaction(Arc::new(valid_tx1), 0);
         assert!(result.is_err(), "Should reject insufficient price bump");
@@ -1804,8 +1832,11 @@ mod tests {
         );
 
         // Replace with sufficient bump (1_100_000_000, 2_200_000_000 = 10% bump)
-        let tx0_replacement2 =
-            create_aa_tx_with_gas(sender, nonce_key, 0, 1_100_000_000, 2_200_000_000);
+        let tx0_replacement2 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_100_000_000)
+            .max_fee(2_200_000_000)
+            .build();
         let tx0_replacement2_hash = *tx0_replacement2.hash();
         let valid_tx2 = wrap_valid_tx(tx0_replacement2, TransactionOrigin::Local);
         let result = pool.add_transaction(Arc::new(valid_tx2), 0);
@@ -1819,8 +1850,11 @@ mod tests {
         );
 
         // Try to replace with even higher gas (1_500_000_000, 3_000_000_000 = ~36% bump over original)
-        let tx0_replacement3 =
-            create_aa_tx_with_gas(sender, nonce_key, 0, 1_500_000_000, 3_000_000_000);
+        let tx0_replacement3 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .max_priority_fee(1_500_000_000)
+            .max_fee(3_000_000_000)
+            .build();
         let tx0_replacement3_hash = *tx0_replacement3.hash();
         let valid_tx3 = wrap_valid_tx(tx0_replacement3, TransactionOrigin::Local);
         let result = pool.add_transaction(Arc::new(valid_tx3), 0);
@@ -1854,10 +1888,10 @@ mod tests {
         };
 
         // Insert transactions with large gaps: [0, 5, 10, 15]
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx5 = create_aa_tx(sender, nonce_key, 5);
-        let tx10 = create_aa_tx(sender, nonce_key, 10);
-        let tx15 = create_aa_tx(sender, nonce_key, 15);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx10 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(10).build();
+        let tx15 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(15).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -1899,7 +1933,10 @@ mod tests {
 
         // Fill gap [1,2,3,4]
         for nonce in 1..=4 {
-            let tx = create_aa_tx(sender, nonce_key, nonce);
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
             pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
@@ -1933,7 +1970,10 @@ mod tests {
 
         // Fill gap [6,7,8,9]
         for nonce in 6..=9 {
-            let tx = create_aa_tx(sender, nonce_key, nonce);
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
             pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
@@ -1960,7 +2000,10 @@ mod tests {
 
         // Fill final gap [11,12,13,14]
         for nonce in 11..=14 {
-            let tx = create_aa_tx(sender, nonce_key, nonce);
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
             pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
@@ -1992,7 +2035,10 @@ mod tests {
 
         // Insert continuous sequence [0,1,2,3,4]
         for nonce in 0..=4 {
-            let tx = create_aa_tx(sender, nonce_key, nonce);
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .build();
             pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                 .unwrap();
         }
@@ -2040,9 +2086,9 @@ mod tests {
         };
 
         // Start with gaps: insert [0, 2, 4]
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
-        let tx4 = create_aa_tx(sender, nonce_key, 4);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2061,7 +2107,7 @@ mod tests {
         assert_eq!(queued_count, 2);
 
         // Fill first gap: insert [1]
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
@@ -2075,7 +2121,7 @@ mod tests {
         assert!(pool.independent_transactions.contains_key(&seq_id));
 
         // Fill second gap: insert [3]
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 0)
             .unwrap();
 
@@ -2119,7 +2165,10 @@ mod tests {
 
             // Insert transactions [0,1,2,3,4] for each sender
             for nonce in 0..TXS_PER_SENDER {
-                let tx = create_aa_tx(sender, nonce_key, nonce);
+                let tx = TxBuilder::aa(sender)
+                    .nonce_key(nonce_key)
+                    .nonce(nonce)
+                    .build();
                 pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
                     .unwrap();
             }
@@ -2211,9 +2260,9 @@ mod tests {
 
         // Start with gaps: insert [0, 3, 5]
         // This creates: tx0 (pending), tx3 (queued), tx5 (queued)
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
-        let tx5 = create_aa_tx(sender, nonce_key, 5);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2232,11 +2281,11 @@ mod tests {
         assert_eq!(queued_count, 2, "tx3 and tx5 should be queued");
 
         // Fill gaps to get [0, 1, 2, 3, 5]
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
             .unwrap();
 
@@ -2277,7 +2326,7 @@ mod tests {
 
         // Now insert tx4 to fill the gap between tx3 and tx5
         // This is where the original test failure occurred
-        let tx4 = create_aa_tx(sender, nonce_key, 4);
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 3)
             .unwrap();
 
@@ -2293,19 +2342,19 @@ mod tests {
         let nonce_key = U256::from(1);
 
         // Add 3 transactions with consecutive nonces
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let tx0_hash = *tx0.hash();
         let tx0_len = tx0.encoded_length();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
 
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         let tx1_hash = *tx1.hash();
         let tx1_len = tx1.encoded_length();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
         let tx2_hash = *tx2.hash();
         let tx2_len = tx2.encoded_length();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
@@ -2385,7 +2434,7 @@ mod tests {
     fn test_pool_contains() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let tx_hash = *tx.hash();
 
         assert!(!pool.contains(&tx_hash));
@@ -2400,7 +2449,7 @@ mod tests {
     fn test_pool_get() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let tx_hash = *tx.hash();
 
         assert!(pool.get(&tx_hash).is_none());
@@ -2418,8 +2467,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).build();
+        let tx1 = TxBuilder::aa(sender).nonce(1).build();
         let tx0_hash = *tx0.hash();
         let tx1_hash = *tx1.hash();
         let fake_hash = alloy_primitives::B256::random();
@@ -2441,8 +2490,8 @@ mod tests {
         let sender1 = Address::random();
         let sender2 = Address::random();
 
-        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
-        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+        let tx1 = TxBuilder::aa(sender1).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2461,8 +2510,8 @@ mod tests {
         let sender = Address::random();
 
         // Insert tx0 (pending) and tx2 (queued due to gap)
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx0 = TxBuilder::aa(sender).build();
+        let tx2 = TxBuilder::aa(sender).nonce(2).build();
         let tx2_hash = *tx2.hash();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
@@ -2480,8 +2529,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).build();
+        let tx1 = TxBuilder::aa(sender).nonce(1).build();
         let _tx0_hash = *tx0.hash();
         let _tx1_hash = *tx1.hash();
 
@@ -2500,8 +2549,8 @@ mod tests {
         let sender1 = Address::random();
         let sender2 = Address::random();
 
-        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
-        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+        let tx1 = TxBuilder::aa(sender1).nonce_key(U256::ZERO).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2522,8 +2571,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2546,8 +2595,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx2 = create_aa_tx(sender, U256::ZERO, 2); // Queued due to gap
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(2).build(); // Queued due to gap
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2565,8 +2614,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
         let tx0_hash = *tx0.hash();
         let tx1_hash = *tx1.hash();
 
@@ -2586,8 +2635,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2603,8 +2652,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2624,8 +2673,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2652,8 +2701,8 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2703,8 +2752,8 @@ mod tests {
         let sender1 = Address::random();
         let sender2 = Address::random();
 
-        let tx1 = create_aa_tx(sender1, U256::ZERO, 0);
-        let tx2 = create_aa_tx(sender2, U256::from(1), 0);
+        let tx1 = TxBuilder::aa(sender1).nonce_key(U256::ZERO).build();
+        let tx2 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -2727,9 +2776,9 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
-        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(2).build();
         let tx0_hash = *tx0.hash();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
@@ -2808,7 +2857,10 @@ mod tests {
         let sender = Address::random();
         let nonce_key = U256::ZERO;
 
-        let tx = create_aa_tx(sender, nonce_key, u64::MAX);
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(u64::MAX)
+            .build();
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         let result = pool.add_transaction(Arc::new(valid_tx), u64::MAX);
@@ -2836,8 +2888,14 @@ mod tests {
         let sender = Address::random();
         let nonce_key = U256::ZERO;
 
-        let tx_max = create_aa_tx(sender, nonce_key, u64::MAX);
-        let tx_max_minus_1 = create_aa_tx(sender, nonce_key, u64::MAX - 1);
+        let tx_max = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(u64::MAX)
+            .build();
+        let tx_max_minus_1 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(u64::MAX - 1)
+            .build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_max, TransactionOrigin::Local)),
@@ -2921,7 +2979,7 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
         let tx_hash = *tx.hash();
         let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
 
@@ -2945,7 +3003,7 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx = create_aa_tx(sender, U256::ZERO, 5);
+        let tx = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(5).build();
         let tx_hash = *tx.hash();
         let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
 
@@ -2973,11 +3031,19 @@ mod tests {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        let tx1 = create_aa_tx_with_gas(sender, U256::ZERO, 0, 1_000_000_000, 2_000_000_000);
+        let tx1 = TxBuilder::aa(sender)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_000)
+            .max_fee(2_000_000_000)
+            .build();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
             .unwrap();
 
-        let tx2 = create_aa_tx_with_gas(sender, U256::ZERO, 0, 1_000_000_001, 2_000_000_001);
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000_001)
+            .max_fee(2_000_000_001)
+            .build();
         let tx2_hash = *tx2.hash();
         let result =
             pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0);
@@ -3014,7 +3080,7 @@ mod tests {
 
         for i in 0..5usize {
             let sender = Address::from_word(B256::from(U256::from(i)));
-            let tx = create_aa_tx(sender, U256::from(i), 0);
+            let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
             let result =
                 pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
             assert!(result.is_ok());
@@ -3039,9 +3105,9 @@ mod tests {
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
 
-        let tx0 = create_aa_tx(sender, U256::ZERO, 0);
-        let tx1 = create_aa_tx(sender, U256::ZERO, 1);
-        let tx2 = create_aa_tx(sender, U256::ZERO, 2);
+        let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(2).build();
         let tx0_hash = *tx0.hash();
         let tx1_hash = *tx1.hash();
         let tx2_hash = *tx2.hash();
@@ -3088,9 +3154,12 @@ mod tests {
         let sender1 = Address::random();
         let sender2 = Address::random();
 
-        let tx1_0 = create_aa_tx(sender1, U256::ZERO, 0);
-        let tx1_1 = create_aa_tx(sender1, U256::ZERO, 1);
-        let tx2_0 = create_aa_tx(sender2, U256::from(1), 0);
+        let tx1_0 = TxBuilder::aa(sender1).nonce_key(U256::ZERO).build();
+        let tx1_1 = TxBuilder::aa(sender1)
+            .nonce_key(U256::ZERO)
+            .nonce(1)
+            .build();
+        let tx2_0 = TxBuilder::aa(sender2).nonce_key(U256::from(1)).build();
 
         let tx1_0_hash = *tx1_0.hash();
         let tx2_0_hash = *tx2_0.hash();
@@ -3140,9 +3209,16 @@ mod tests {
         let sender1 = Address::random();
         let sender2 = Address::random();
 
-        let low_priority = create_aa_tx_with_gas(sender1, U256::ZERO, 0, 1_000_000, 2_000_000);
-        let high_priority =
-            create_aa_tx_with_gas(sender2, U256::from(1), 0, 10_000_000_000, 20_000_000_000);
+        let low_priority = TxBuilder::aa(sender1)
+            .nonce_key(U256::ZERO)
+            .max_priority_fee(1_000_000)
+            .max_fee(2_000_000)
+            .build();
+        let high_priority = TxBuilder::aa(sender2)
+            .nonce_key(U256::from(1))
+            .max_priority_fee(10_000_000_000)
+            .max_fee(20_000_000_000)
+            .build();
         let high_priority_hash = *high_priority.hash();
 
         pool.add_transaction(
@@ -3181,9 +3257,9 @@ mod tests {
         let sender = Address::random();
         let nonce_key = U256::ZERO;
 
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -3231,9 +3307,9 @@ mod tests {
         let sender = Address::random();
         let nonce_key = U256::ZERO;
 
-        let tx0 = create_aa_tx(sender, nonce_key, 0);
-        let tx1 = create_aa_tx(sender, nonce_key, 1);
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
+        let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+        let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -3277,8 +3353,8 @@ mod tests {
         let nonce_key = U256::ZERO;
         let seq_id = AASequenceId::new(sender, nonce_key);
 
-        let tx2 = create_aa_tx(sender, nonce_key, 2);
-        let tx3 = create_aa_tx(sender, nonce_key, 3);
+        let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2.clone(), TransactionOrigin::Local)),
@@ -3323,11 +3399,11 @@ mod tests {
         let key_a = U256::ZERO;
         let key_b = U256::from(1);
 
-        let tx_a0 = create_aa_tx(sender, key_a, 0);
-        let tx_b0 = create_aa_tx(sender, key_b, 0);
-        let tx_a1 = create_aa_tx(sender, key_a, 1);
-        let tx_b2 = create_aa_tx(sender, key_b, 2);
-        let tx_b1 = create_aa_tx(sender, key_b, 1);
+        let tx_a0 = TxBuilder::aa(sender).nonce_key(key_a).build();
+        let tx_b0 = TxBuilder::aa(sender).nonce_key(key_b).build();
+        let tx_a1 = TxBuilder::aa(sender).nonce_key(key_a).nonce(1).build();
+        let tx_b2 = TxBuilder::aa(sender).nonce_key(key_b).nonce(2).build();
+        let tx_b1 = TxBuilder::aa(sender).nonce_key(key_b).nonce(1).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx_a0, TransactionOrigin::Local)), 0)
             .unwrap();
@@ -3361,8 +3437,8 @@ mod tests {
         let key_a = U256::from(100);
         let key_b = U256::from(200);
 
-        let tx_a5 = create_aa_tx(sender, key_a, 5);
-        let tx_b0 = create_aa_tx(sender, key_b, 0);
+        let tx_a5 = TxBuilder::aa(sender).nonce_key(key_a).nonce(5).build();
+        let tx_b0 = TxBuilder::aa(sender).nonce_key(key_b).build();
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx_a5, TransactionOrigin::Local)), 5)
             .unwrap();

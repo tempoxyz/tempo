@@ -405,7 +405,7 @@ impl EthPoolTransaction for TempoPooledTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{create_aa_tx, create_aa_tx_with_values, create_eip1559_tx};
+    use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
     use alloy_primitives::{Address, Signature, TxKind, address};
     use tempo_precompiles::nonce::NonceManager;
@@ -449,7 +449,9 @@ mod tests {
     fn test_payment_classification_negative() {
         // Test that non-TIP20 address is NOT classified as payment
         let non_payment_addr = address!("1234567890123456789012345678901234567890");
-        let pooled_tx = create_eip1559_tx(non_payment_addr, 21000, U256::ZERO);
+        let pooled_tx = TxBuilder::eip1559(non_payment_addr)
+            .gas_limit(21000)
+            .build_eip1559();
         assert!(!pooled_tx.is_payment());
     }
 
@@ -461,7 +463,10 @@ mod tests {
     fn test_fee_token_cost() {
         let sender = Address::random();
         let value = U256::from(1000);
-        let tx = create_aa_tx_with_values(sender, U256::ZERO, 0, 100_000, value);
+        let tx = TxBuilder::aa(sender)
+            .gas_limit(100_000)
+            .value(value)
+            .build();
 
         // fee_token_cost should be cost - value
         let fee_cost = tx.fee_token_cost();
@@ -478,7 +483,9 @@ mod tests {
 
     #[test]
     fn test_non_aa_transaction_helpers() {
-        let tx = create_eip1559_tx(Address::random(), 21000, U256::ZERO);
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
 
         // Non-AA transactions should return None/false for AA-specific helpers
         assert!(!tx.is_aa(), "Non-AA tx should not be AA");
@@ -505,7 +512,7 @@ mod tests {
     fn test_aa_transaction_with_zero_nonce_key() {
         let sender = Address::random();
         let nonce = 5u64;
-        let tx = create_aa_tx(sender, U256::ZERO, nonce);
+        let tx = TxBuilder::aa(sender).nonce(nonce).build();
 
         assert!(tx.is_aa(), "AA tx should be AA");
         assert_eq!(
@@ -533,7 +540,10 @@ mod tests {
         let sender = Address::random();
         let nonce_key = U256::from(42);
         let nonce = 10u64;
-        let tx = create_aa_tx(sender, nonce_key, nonce);
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .build();
 
         assert!(tx.is_aa(), "AA tx should be AA");
         assert_eq!(
@@ -560,7 +570,7 @@ mod tests {
     fn test_nonce_key_slot_caching_for_2d_tx() {
         let sender = Address::random();
         let nonce_key = U256::from(123);
-        let tx = create_aa_tx(sender, nonce_key, 0);
+        let tx = TxBuilder::aa(sender).nonce_key(nonce_key).build();
 
         // Compute expected slot
         let expected_slot = NonceManager::new().nonces[sender][nonce_key].slot();
@@ -577,7 +587,9 @@ mod tests {
 
     #[test]
     fn test_nonce_key_slot_returns_none_for_non_aa() {
-        let tx = create_eip1559_tx(Address::random(), 21000, U256::ZERO);
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
         assert!(tx.nonce_key_slot().is_none());
     }
 
@@ -588,7 +600,7 @@ mod tests {
     #[test]
     fn test_prepare_tx_env_and_into_with_tx_env() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let hash = *tx.hash();
 
         // Pre-compute tx_env
@@ -604,7 +616,7 @@ mod tests {
     #[test]
     fn test_into_with_tx_env_without_prepare() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let hash = *tx.hash();
 
         // Don't call prepare_tx_env, should still work (compute on demand)
@@ -673,7 +685,9 @@ mod tests {
 
     #[test]
     fn test_requires_nonce_check_non_aa() {
-        let tx = create_eip1559_tx(Address::random(), 21000, U256::ZERO);
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
         assert!(
             tx.requires_nonce_check(),
             "Non-AA should require nonce check"
@@ -682,7 +696,7 @@ mod tests {
 
     #[test]
     fn test_requires_nonce_check_aa_with_zero_nonce_key() {
-        let tx = create_aa_tx(Address::random(), U256::ZERO, 0);
+        let tx = TxBuilder::aa(Address::random()).build();
         assert!(
             tx.requires_nonce_check(),
             "AA with nonce_key=0 should require nonce check"
@@ -691,7 +705,9 @@ mod tests {
 
     #[test]
     fn test_requires_nonce_check_aa_with_nonzero_nonce_key() {
-        let tx = create_aa_tx(Address::random(), U256::from(1), 0);
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
         assert!(
             !tx.requires_nonce_check(),
             "AA with nonce_key > 0 should NOT require nonce check"
@@ -706,7 +722,9 @@ mod tests {
     fn test_validate_blob_returns_not_blob_transaction() {
         use alloy_eips::eip7594::BlobTransactionSidecarVariant;
 
-        let tx = create_eip1559_tx(Address::random(), 21000, U256::ZERO);
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
 
         // Create a minimal sidecar (empty blobs)
         let sidecar = BlobTransactionSidecarVariant::Eip4844(Default::default());
@@ -731,7 +749,9 @@ mod tests {
 
     #[test]
     fn test_take_blob_returns_none() {
-        let mut tx = create_eip1559_tx(Address::random(), 21000, U256::ZERO);
+        let mut tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
         let blob = tx.take_blob();
         assert!(matches!(blob, EthBlobTransactionSidecar::None));
     }
@@ -743,7 +763,7 @@ mod tests {
     #[test]
     fn test_inner_returns_correct_reference() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 5);
+        let tx = TxBuilder::aa(sender).nonce(5).build();
 
         let inner = tx.inner();
         assert_eq!(inner.signer(), sender);
@@ -757,7 +777,7 @@ mod tests {
     #[test]
     fn test_pool_transaction_hash_and_sender() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
 
         assert!(!tx.hash().is_zero(), "Hash should not be zero");
         assert_eq!(tx.sender(), sender);
@@ -767,7 +787,7 @@ mod tests {
     #[test]
     fn test_pool_transaction_clone_into_consensus() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let hash = *tx.hash();
 
         let cloned = tx.clone_into_consensus();
@@ -778,7 +798,7 @@ mod tests {
     #[test]
     fn test_pool_transaction_into_consensus() {
         let sender = Address::random();
-        let tx = create_aa_tx(sender, U256::ZERO, 0);
+        let tx = TxBuilder::aa(sender).build();
         let hash = *tx.hash();
 
         let consensus = tx.into_consensus();
@@ -823,7 +843,10 @@ mod tests {
     #[test]
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
-        let tx = create_aa_tx_with_values(sender, U256::ZERO, 0, 100_000, U256::from(500));
+        let tx = TxBuilder::aa(sender)
+            .gas_limit(100_000)
+            .value(U256::from(500))
+            .build();
 
         // Test various Transaction trait methods
         assert_eq!(tx.chain_id(), Some(1));
@@ -841,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_encodable_2718() {
-        let tx = create_aa_tx(Address::random(), U256::ZERO, 0);
+        let tx = TxBuilder::aa(Address::random()).build();
 
         // Test encoded length is non-zero
         assert!(tx.encode_2718_len() > 0);
@@ -857,7 +880,7 @@ mod tests {
 
     #[test]
     fn test_in_memory_size() {
-        let tx = create_aa_tx(Address::random(), U256::ZERO, 0);
+        let tx = TxBuilder::aa(Address::random()).build();
 
         // Size should be positive
         assert!(tx.size() > 0);
@@ -869,8 +892,10 @@ mod tests {
 
     #[test]
     fn test_cost_returns_zero() {
-        let tx =
-            create_aa_tx_with_values(Address::random(), U256::ZERO, 0, 100_000, U256::from(1000));
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(100_000)
+            .value(U256::from(1000))
+            .build();
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);

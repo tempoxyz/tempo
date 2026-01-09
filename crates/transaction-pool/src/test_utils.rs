@@ -21,90 +21,28 @@ use tempo_primitives::{
     },
 };
 
-/// Helper to create a non-AA (EIP-1559) transaction.
-pub(crate) fn create_eip1559_tx(
-    to: Address,
-    gas_limit: u64,
-    value: U256,
-) -> TempoPooledTransaction {
-    let tx = TxEip1559 {
-        to: TxKind::Call(to),
-        gas_limit,
-        value,
-        max_fee_per_gas: 2_000_000_000,
-        max_priority_fee_per_gas: 1_000_000_000,
-        ..Default::default()
-    };
-
-    let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
-        tx,
-        Signature::test_signature(),
-        B256::ZERO,
-    ));
-
-    let recovered = Recovered::new_unchecked(envelope, Address::random());
-    TempoPooledTransaction::new(recovered)
-}
-
-/// Helper to create an AA transaction with custom nonce_key and nonce.
+/// Builder for creating test transactions.
 ///
-/// Uses default gas parameters (gas_limit=100_000, value=0).
-pub(crate) fn create_aa_tx(sender: Address, nonce_key: U256, nonce: u64) -> TempoPooledTransaction {
-    create_aa_tx_full(
-        sender,
-        nonce_key,
-        nonce,
-        100_000,
-        U256::ZERO,
-        1_000_000_000,
-        2_000_000_000,
-    )
-}
-
-/// Helper to create an AA transaction with custom gas limit and value.
+/// Supports building both EIP-1559 and AA transactions with a fluent API.
 ///
-/// Uses default fee parameters.
-pub(crate) fn create_aa_tx_with_values(
-    sender: Address,
-    nonce_key: U256,
-    nonce: u64,
-    gas_limit: u64,
-    value: U256,
-) -> TempoPooledTransaction {
-    create_aa_tx_full(
-        sender,
-        nonce_key,
-        nonce,
-        gas_limit,
-        value,
-        1_000_000_000,
-        2_000_000_000,
-    )
-}
-
-/// Helper to create an AA transaction with custom gas prices.
+/// # Examples
 ///
-/// Uses default gas_limit=100_000 and value=1000.
-pub(crate) fn create_aa_tx_with_gas(
-    sender: Address,
-    nonce_key: U256,
-    nonce: u64,
-    max_priority_fee: u128,
-    max_fee: u128,
-) -> TempoPooledTransaction {
-    create_aa_tx_full(
-        sender,
-        nonce_key,
-        nonce,
-        100_000,
-        U256::from(1000),
-        max_priority_fee,
-        max_fee,
-    )
-}
-
-/// Full helper to create an AA transaction with all customizable parameters.
-pub(crate) fn create_aa_tx_full(
+/// ```ignore
+/// // Create a simple AA transaction
+/// let tx = TxBuilder::aa(sender).build();
+///
+/// // Create an AA transaction with custom nonce key and nonce
+/// let tx = TxBuilder::aa(sender)
+///     .nonce_key(U256::from(1))
+///     .nonce(5)
+///     .build();
+///
+/// // Create an EIP-1559 transaction
+/// let tx = TxBuilder::eip1559(to_address).build();
+/// ```
+#[derive(Debug, Clone)]
+pub(crate) struct TxBuilder {
+    kind: TxKind,
     sender: Address,
     nonce_key: U256,
     nonce: u64,
@@ -112,35 +50,128 @@ pub(crate) fn create_aa_tx_full(
     value: U256,
     max_priority_fee_per_gas: u128,
     max_fee_per_gas: u128,
-) -> TempoPooledTransaction {
-    let tx = TempoTransaction {
-        chain_id: 1,
-        max_priority_fee_per_gas,
-        max_fee_per_gas,
-        gas_limit,
-        calls: vec![Call {
-            to: TxKind::Call(Address::random()),
-            value,
-            input: Default::default(),
-        }],
-        nonce_key,
-        nonce,
-        fee_token: None,
-        fee_payer_signature: None,
-        valid_after: None,
-        valid_before: None,
-        access_list: Default::default(),
-        tempo_authorization_list: vec![],
-        key_authorization: None,
-    };
+}
 
-    let signature =
-        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
-    let aa_signed = AASigned::new_unhashed(tx, signature);
-    let envelope: TempoTxEnvelope = aa_signed.into();
+impl Default for TxBuilder {
+    fn default() -> Self {
+        Self {
+            kind: TxKind::Call(Address::random()),
+            sender: Address::random(),
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            gas_limit: 100_000,
+            value: U256::ZERO,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+        }
+    }
+}
 
-    let recovered = Recovered::new_unchecked(envelope, sender);
-    TempoPooledTransaction::new(recovered)
+impl TxBuilder {
+    /// Create a builder for an AA transaction with the given sender.
+    pub(crate) fn aa(sender: Address) -> Self {
+        Self {
+            sender,
+            ..Default::default()
+        }
+    }
+
+    /// Create a builder for an EIP-1559 transaction to the given address.
+    pub(crate) fn eip1559(to: Address) -> Self {
+        Self {
+            kind: TxKind::Call(to),
+            ..Default::default()
+        }
+    }
+
+    /// Set the nonce key (AA transactions only).
+    pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
+        self.nonce_key = nonce_key;
+        self
+    }
+
+    /// Set the transaction nonce.
+    pub(crate) fn nonce(mut self, nonce: u64) -> Self {
+        self.nonce = nonce;
+        self
+    }
+
+    /// Set the gas limit.
+    pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
+        self.gas_limit = gas_limit;
+        self
+    }
+
+    /// Set the transaction value.
+    pub(crate) fn value(mut self, value: U256) -> Self {
+        self.value = value;
+        self
+    }
+
+    /// Set the max priority fee per gas.
+    pub(crate) fn max_priority_fee(mut self, fee: u128) -> Self {
+        self.max_priority_fee_per_gas = fee;
+        self
+    }
+
+    /// Set the max fee per gas.
+    pub(crate) fn max_fee(mut self, fee: u128) -> Self {
+        self.max_fee_per_gas = fee;
+        self
+    }
+
+    /// Build an AA transaction.
+    pub(crate) fn build(self) -> TempoPooledTransaction {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            gas_limit: self.gas_limit,
+            calls: vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }],
+            nonce_key: self.nonce_key,
+            nonce: self.nonce,
+            fee_token: None,
+            fee_payer_signature: None,
+            valid_after: None,
+            valid_before: None,
+            access_list: Default::default(),
+            tempo_authorization_list: vec![],
+            key_authorization: None,
+        };
+
+        let signature =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let aa_signed = AASigned::new_unhashed(tx, signature);
+        let envelope: TempoTxEnvelope = aa_signed.into();
+
+        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        TempoPooledTransaction::new(recovered)
+    }
+
+    /// Build an EIP-1559 transaction.
+    pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: self.kind,
+            gas_limit: self.gas_limit,
+            value: self.value,
+            max_fee_per_gas: self.max_fee_per_gas,
+            max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+
+        let recovered = Recovered::new_unchecked(envelope, self.sender);
+        TempoPooledTransaction::new(recovered)
+    }
 }
 
 /// Helper to wrap a transaction in ValidPoolTransaction.
