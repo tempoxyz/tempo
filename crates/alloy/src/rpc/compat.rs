@@ -41,6 +41,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -57,6 +58,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            fee_payer,
                         }));
                     }
                 };
@@ -73,6 +75,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            fee_payer,
                         })
                     },
                 )?)
@@ -98,11 +101,29 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            fee_payer,
         } = self;
+
+        // Resolve fee_payer for gas estimation:
+        // - FeePayer::Address(addr) -> use that address
+        // - FeePayer::Bool(true) -> use a dummy address different from caller to trigger cold access
+        // - None or FeePayer::Bool(false) -> no fee payer (caller pays)
+        let caller_addr = inner.from.unwrap_or_default();
+        let resolved_fee_payer = fee_payer.as_ref().and_then(|fp| match fp {
+            crate::rpc::FeePayer::Address(addr) => Some(Some(*addr)),
+            crate::rpc::FeePayer::Account(account) => Some(Some(account.address)),
+            crate::rpc::FeePayer::Bool(true) => {
+                // Use a dummy address different from caller to trigger cold account access
+                // Address(1) is a common dummy/precompile address
+                Some(Some(Address::with_last_byte(1)))
+            }
+            crate::rpc::FeePayer::Bool(false) => None,
+        });
+
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            fee_payer: None,
+            fee_payer: resolved_fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
@@ -112,7 +133,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
-                let caller_addr = inner.from.unwrap_or_default();
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
                 let mock_signature =
                     create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);
