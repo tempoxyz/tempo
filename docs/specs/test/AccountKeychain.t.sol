@@ -628,7 +628,9 @@ contract AccountKeychainTest is BaseTest {
         uint64 expiry2 = uint64(block.timestamp + 200);
 
         vm.prank(alice);
-        keychain.authorizeKey(sharedKeyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
+        keychain.authorizeKey(
+            sharedKeyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1
+        );
 
         vm.prank(bob);
         keychain.authorizeKey(
@@ -928,7 +930,9 @@ contract AccountKeychainTest is BaseTest {
         keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
 
         vm.prank(account2);
-        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2);
+        keychain.authorizeKey(
+            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
+        );
 
         // Verify keys are isolated per account
         IAccountKeychain.KeyInfo memory info1 = keychain.getKey(account1, keyId);

@@ -691,7 +691,10 @@ mod tests {
                 limits: vec![],
             };
             let result = keychain.authorize_key(account, auth_call);
-            assert!(result.is_err(), "Authorizing with expiry in past should fail");
+            assert!(
+                result.is_err(),
+                "Authorizing with expiry in past should fail"
+            );
 
             // Verify it's the correct error
             match result.unwrap_err() {
@@ -713,7 +716,10 @@ mod tests {
                 limits: vec![],
             };
             let result_past = keychain.authorize_key(account, auth_call_past);
-            assert!(result_past.is_err(), "Authorizing with past expiry should fail");
+            assert!(
+                result_past.is_err(),
+                "Authorizing with past expiry should fail"
+            );
 
             Ok(())
         })
