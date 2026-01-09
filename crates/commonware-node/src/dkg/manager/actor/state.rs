@@ -456,10 +456,24 @@ where
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-        self.states
-            .prune(up_to_epoch.get())
-            .await
-            .wrap_err("unable to prune outcomes journal")?;
+
+        // Figure out the *previous* state and determine whether we can prune.
+        if let Some(previous_segment) = self.states.size().checked_sub(2)
+            && let Ok(previous_state) = self.states.read(previous_segment).await
+        {
+            let to_prune = if previous_state.epoch >= up_to_epoch {
+                previous_segment
+            } else {
+                self.states
+                    .size()
+                    .checked_sub(1)
+                    .expect("there must be at least one segment")
+            };
+            self.states
+                .prune(to_prune)
+                .await
+                .wrap_err("unable to prune state journal")?;
+        }
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
         Ok(())
     }
