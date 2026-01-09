@@ -11914,6 +11914,7 @@ dependencies = [
  "reth-node-api",
  "reth-primitives-traits",
  "serde",
+ "serde_json",
  "tempo-primitives",
 ]
 
@@ -11964,6 +11965,8 @@ dependencies = [
  "alloy-rlp",
  "alloy-rpc-types-eth",
  "alloy-serde",
+ "alloy-signer",
+ "alloy-signer-local",
  "arbitrary",
  "base64 0.22.1",
  "derive_more",
