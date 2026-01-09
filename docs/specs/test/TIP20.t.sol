@@ -33,11 +33,19 @@ contract TIP20Test is BaseTest {
     function setUp() public override {
         super.setUp();
 
-        linkedToken =
-            TIP20(factory.createToken("Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin));
-        anotherToken =
-            TIP20(factory.createToken("Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin));
-        token = TIP20(factory.createToken("Test Token", "TST", "USD", linkedToken, admin));
+        linkedToken = TIP20(
+            factory.createToken(
+                "Linked Token", "LINK", "USD", TIP20(_PATH_USD), admin, bytes32("linked")
+            )
+        );
+        anotherToken = TIP20(
+            factory.createToken(
+                "Another Token", "OTHER", "USD", TIP20(_PATH_USD), admin, bytes32("another")
+            )
+        );
+        token = TIP20(
+            factory.createToken("Test Token", "TST", "USD", linkedToken, admin, bytes32("token"))
+        );
 
         // Setup roles and mint tokens
         vm.startPrank(admin);
@@ -54,13 +62,11 @@ contract TIP20Test is BaseTest {
         vm.startPrank(alice);
 
         // Expect both Transfer and TransferWithMemo events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(alice, bob, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, bob, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, bob, amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, bob, amount, TEST_MEMO);
 
         token.transferWithMemo(bob, amount, TEST_MEMO);
 
@@ -78,17 +84,15 @@ contract TIP20Test is BaseTest {
         vm.startPrank(alice);
 
         // First transfer with TEST_MEMO
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, bob, amount1, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, bob, amount1, TEST_MEMO);
+
         token.transferWithMemo(bob, amount1, TEST_MEMO);
 
         // Second transfer with ANOTHER_MEMO
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, charlie, amount2, ANOTHER_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, charlie, amount2, ANOTHER_MEMO);
+
         token.transferWithMemo(charlie, amount2, ANOTHER_MEMO);
 
         vm.stopPrank();
@@ -109,13 +113,11 @@ contract TIP20Test is BaseTest {
         vm.startPrank(bob);
 
         // Expect both Transfer and TransferWithMemo events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(alice, charlie, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(alice, charlie, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(alice, charlie, amount, TEST_MEMO);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(alice, charlie, amount, TEST_MEMO);
 
         bool success = token.transferFromWithMemo(alice, charlie, amount, TEST_MEMO);
         assertTrue(success);
@@ -378,16 +380,14 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Expect Transfer, TransferWithMemo, and Mint events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(address(0), recipient, amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(address(0), recipient, amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(address(0), recipient, amount, TEST_MEMO);
 
-            vm.expectEmit(true, true, true, true);
-            emit Mint(recipient, amount);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit Mint(recipient, amount);
 
         token.mintWithMemo(recipient, amount, TEST_MEMO);
 
@@ -407,16 +407,14 @@ contract TIP20Test is BaseTest {
         token.mint(admin, amount);
 
         // Expect Transfer, TransferWithMemo, and Burn events
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit Transfer(admin, address(0), amount);
+        vm.expectEmit(true, true, true, true);
+        emit Transfer(admin, address(0), amount);
 
-            vm.expectEmit(true, true, true, true);
-            emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
+        vm.expectEmit(true, true, true, true);
+        emit TransferWithMemo(admin, address(0), amount, TEST_MEMO);
 
-            vm.expectEmit(true, true, true, true);
-            emit Burn(admin, amount);
-        }
+        vm.expectEmit(true, true, true, true);
+        emit Burn(admin, amount);
 
         token.burnWithMemo(amount, TEST_MEMO);
 
@@ -681,10 +679,8 @@ contract TIP20Test is BaseTest {
         vm.startPrank(admin);
 
         // Expect the NextQuoteTokenSet event
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit NextQuoteTokenSet(admin, anotherToken);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit NextQuoteTokenSet(admin, anotherToken);
 
         token.setNextQuoteToken(anotherToken);
 
@@ -693,10 +689,8 @@ contract TIP20Test is BaseTest {
         assertEq(address(token.quoteToken()), address(linkedToken));
 
         // Expect the QuoteTokenUpdate event
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, false);
-            emit QuoteTokenUpdate(admin, anotherToken);
-        }
+        vm.expectEmit(true, true, false, false);
+        emit QuoteTokenUpdate(admin, anotherToken);
 
         token.completeQuoteTokenUpdate();
 
@@ -746,11 +740,17 @@ contract TIP20Test is BaseTest {
     }
 
     function testSetNextQuoteTokenUsdRequiresUsdQuote() public {
-        TIP20 usdToken =
-            TIP20(factory.createToken("USD Token", "USD", "USD", TIP20(_PATH_USD), admin));
+        TIP20 usdToken = TIP20(
+            factory.createToken(
+                "USD Token", "USD", "USD", TIP20(_PATH_USD), admin, bytes32("usdtoken")
+            )
+        );
 
-        TIP20 nonUsdToken =
-            TIP20(factory.createToken("Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin));
+        TIP20 nonUsdToken = TIP20(
+            factory.createToken(
+                "Euro Token", "EUR", "EUR", TIP20(_PATH_USD), admin, bytes32("eurotok")
+            )
+        );
 
         vm.prank(admin);
         try usdToken.setNextQuoteToken(nonUsdToken) {
@@ -1052,7 +1052,9 @@ contract TIP20Test is BaseTest {
     }
 
     function testCompleteQuoteTokenUpdateCannotCreateIndirectLoop() public {
-        TIP20 newToken = TIP20(factory.createToken("New Token", "NEW", "USD", token, admin));
+        TIP20 newToken = TIP20(
+            factory.createToken("New Token", "NEW", "USD", token, admin, bytes32("newtoken"))
+        );
 
         // Try to set token's quote token to newToken (which would create a loop)
         vm.startPrank(admin);
@@ -1073,8 +1075,8 @@ contract TIP20Test is BaseTest {
     function testCompleteQuoteTokenUpdateCannotCreateLongerLoop() public {
         // Create a longer chain: pathUSD -> linkedToken -> token -> token2 -> token3
 
-        TIP20 token2 = TIP20(factory.createToken("Token 2", "TK2", "USD", token, admin));
-        TIP20 token3 = TIP20(factory.createToken("Token 3", "TK3", "USD", token2, admin));
+        TIP20 token3 =
+            TIP20(factory.createToken("Token 3", "TK2", "USD", token, admin, bytes32("token3")));
 
         // Try to set linkedToken's quote token to token3 (would create loop)
         vm.startPrank(admin);
@@ -2071,7 +2073,7 @@ contract TIP20Test is BaseTest {
             assertEq(err, abi.encodeWithSelector(ITIP20.ProtectedAddress.selector));
         }
 
-        // Test burning from STABLECOIN_EXCHANGE_ADDRESS
+        // Test burning from STABLECOIN_DEX_ADDRESS
         try token.burnBlocked(0xDEc0000000000000000000000000000000000000, 100e18) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {

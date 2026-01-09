@@ -32,6 +32,10 @@ After the execution of each transaction:
 * Credit the `fee_payer`'s address with `refund_amount` of `fee_token`.
 * Log a `Transfer` event from the user to the [fee manager contract](/protocol/fees/spec-fee-amm) for the net amount of the fee payment.
 
+:::info[Atomic fee handling]
+The protocol executes the max fee deduction and refund atomically. If insufficient liquidity is encountered at any point during fee calculation (for example, if a previous transaction by the same sender in the same block exhausted the fee token reserves), the entire transaction reverts.
+:::
+
 ## Fee payer
 
 Tempo supports *sponsored transactions* in which the `fee_payer` is a different address from the `tx.origin` of the transaction. This is supported by Tempo's [new transaction type](/protocol/transactions/spec-tempo-transaction.mdx), which has a `fee_payer_signature` field.
@@ -75,7 +79,7 @@ The protocol checks for token preferences in five ways, with this order of prece
 1. Transaction (set by the `fee_token` field of the transaction)
 2. Account (set on the FeeManager contract by the `fee_payer` of the transaction)
 3. TIP-20 contract (if the transaction is calling `transfer`, `transferWithMemo`, or `startReward` on a TIP-20 token contract, the transaction uses that token as its fee token)
-4. Stablecoin Exchange (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
+4. Stablecoin DEX (for certain swap calls, the transaction uses the `tokenIn` argument as its fee token)
 5. PathUSD (as a fallback)
 
 The protocol checks preferences at each of these levels, stopping at the first one at which a preference is specified. At that level, the protocol performs the following checks. If any of the checks fail, the transaction is invalid (without looking at any further levels):
@@ -117,9 +121,9 @@ then that TIP-20 token is used as the user's fee token for that transaction (unl
 For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if _all_ top-level calls are to the same TIP-20 contract, and each such call is to one of the functions listed above, with `fee_payer == tx.origin`.
 
 
-### Stablecoin Exchange contract
+### Stablecoin DEX contract
 
-If the top-level call of a transaction is to the [Stablecoin Exchange](/protocol/exchange/spec.mdx) contract, the function being called is either `swapExactAmountIn` or `swapExactAmountOut`, and the `tokenIn` argument to that function is the address of a TIP-20 token for which the currency is USD, then the `tokenIn` argument is used as the user's fee token for the transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
+If the top-level call of a transaction is to the [Stablecoin DEX](/protocol/exchange/spec.mdx) contract, the function being called is either `swapExactAmountIn` or `swapExactAmountOut`, and the `tokenIn` argument to that function is the address of a TIP-20 token for which the currency is USD, then the `tokenIn` argument is used as the user's fee token for the transaction (unless there is a preference specified at the [transaction](#transaction-level) or [account](#account-level) level).
 
 For [Tempo transactions](/protocol/transactions/spec-tempo-transaction.mdx), this rule applies only if there is only one top-level call in the transaction.
 
@@ -142,7 +146,7 @@ feeManager.setValidatorToken(preferredTokenAddress);
 
 After setting a validator token preference, all fees collected in blocks the validator proposes will be automatically converted to the chosen token (if needed) and transferred to the validator's account.
 
-On the Andantino testnet, validators currently expect alphaUSD (one of the tokens distributed by the faucet) as their fee token.
+On the Moderato testnet, validators currently expect alphaUSD (one of the tokens distributed by the faucet) as their fee token.
 
 If validators have not specified a fee token preference, the protocol falls back to expecting pathUSD as their fee token.
 

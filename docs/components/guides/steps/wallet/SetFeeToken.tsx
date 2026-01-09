@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
 import { type Address, isAddress } from 'viem'
 import { useChainId, useConfig, useConnection } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, Step, StringFormatter } from '../../Demo'
 import { alphaUsd, betaUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'

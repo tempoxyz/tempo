@@ -41,7 +41,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfig},
+    precompiles::IValidatorConfig,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -49,10 +49,10 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
-    stablecoin_exchange::StablecoinExchange,
+    stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20, TIP20Token, address_to_token_id_unchecked},
+    tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,
@@ -116,7 +116,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pub(crate) seed: Option<u64>,
 
-    /// Custom admin address for PathUSD token.
+    /// Custom admin address for pathUSD token.
     /// If not set, uses the first generated account.
     #[arg(long)]
     pathusd_admin: Option<Address>,
@@ -219,13 +219,13 @@ impl GenesisArgs {
         println!("Initializing TIP20Factory");
         initialize_tip20_factory(&mut evm)?;
 
-        println!("Creating PathUSD through factory");
+        println!("Creating pathUSD through factory");
         create_path_usd_token(pathusd_admin, &addresses, &mut evm)?;
 
         let (alpha_token_address, beta_token_address, theta_token_address) =
             if !self.no_extra_tokens {
                 println!("Initializing TIP20 tokens");
-                let (_, alpha) = create_and_mint_token(
+                let alpha = create_and_mint_token(
                     "AlphaUSD",
                     "AlphaUSD",
                     "USD",
@@ -233,10 +233,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000001"),
                     &mut evm,
                 )?;
 
-                let (_, beta) = create_and_mint_token(
+                let beta = create_and_mint_token(
                     "BetaUSD",
                     "BetaUSD",
                     "USD",
@@ -244,10 +245,11 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000002"),
                     &mut evm,
                 )?;
 
-                let (_, theta) = create_and_mint_token(
+                let theta = create_and_mint_token(
                     "ThetaUSD",
                     "ThetaUSD",
                     "USD",
@@ -255,6 +257,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
+                    address!("20C0000000000000000000000000000000000003"),
                     &mut evm,
                 )?;
 
@@ -297,7 +300,7 @@ impl GenesisArgs {
         );
 
         println!("Initializing stablecoin exchange");
-        initialize_stablecoin_exchange(&mut evm)?;
+        initialize_stablecoin_dex(&mut evm)?;
 
         println!("Initializing nonce manager");
         initialize_nonce_manager(&mut evm)?;
@@ -421,7 +424,6 @@ impl GenesisArgs {
                 extra_data = consensus_config
                     .to_genesis_dkg_outcome()
                     .encode()
-                    .freeze()
                     .to_vec()
                     .into();
             }
@@ -500,8 +502,8 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
     Ok(())
 }
 
-/// Creates PathUSD as the first TIP20 token (token_id=0) through the factory.
-/// The first token must have address(0) as quote token.
+/// Creates pathUSD as the first TIP20 token at a reserved address.
+/// pathUSD is not created via factory since it's at a reserved address.
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
@@ -509,27 +511,18 @@ fn create_path_usd_token(
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        // Create PathUSD through factory with address(0) as quote token (required for first token)
-        let token_address = TIP20Factory::new()
-            .create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: "pathUSD".into(),
-                    symbol: "pathUSD".into(),
-                    currency: "USD".into(),
-                    quoteToken: Address::ZERO, // First token must use address(0) as quote token
-                    admin,
-                },
-            )
-            .expect("Could not create PathUSD token");
+        TIP20Factory::new().create_token_reserved_address(
+            PATH_USD_ADDRESS,
+            "pathUSD",
+            "pathUSD",
+            "USD",
+            Address::ZERO,
+            admin,
+        )?;
 
-        // Verify it was created at the expected address (token_id=0)
-        assert_eq!(
-            token_address, PATH_USD_ADDRESS,
-            "PathUSD should be created at token_id=0 address"
-        );
-
-        let mut token = TIP20Token::new(0);
+        // Initialize pathUSD directly (not via factory) since it's at a reserved address.
+        let mut token = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("Could not create pathUSD token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         // Mint to all recipients
@@ -559,8 +552,9 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
+    address: Address,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
-) -> eyre::Result<(u64, Address)> {
+) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
         let mut factory = TIP20Factory::new();
@@ -571,21 +565,11 @@ fn create_and_mint_token(
             "TIP20Factory must be initialized before creating tokens"
         );
         let token_address = factory
-            .create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: name.into(),
-                    symbol: symbol.into(),
-                    currency: currency.into(),
-                    quoteToken: quote_token,
-                    admin,
-                },
-            )
+            .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
             .expect("Could not create token");
 
-        let token_id = address_to_token_id_unchecked(token_address);
-
-        let mut token = TIP20Token::new(token_id);
+        let mut token =
+            TIP20Token::from_address(token_address).expect("Could not create token instance");
         token.grant_role_internal(admin, *ISSUER_ROLE)?;
 
         let result = token.set_supply_cap(
@@ -618,7 +602,7 @@ fn create_and_mint_token(
                 .expect("Could not mint fee token");
         }
 
-        Ok((token_id, token.address()))
+        Ok(token.address())
     })
 }
 
@@ -646,7 +630,7 @@ fn initialize_fee_manager(
                 .expect("Could not set fee token");
         }
 
-        // Set validator fee tokens to PathUSD
+        // Set validator fee tokens to pathUSD
         for validator in validators {
             fee_manager
                 .set_validator_token(
@@ -672,10 +656,10 @@ fn initialize_registry(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()>
     Ok(())
 }
 
-fn initialize_stablecoin_exchange(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+fn initialize_stablecoin_dex(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        StablecoinExchange::new().initialize()
+        StablecoinDEX::new().initialize()
     })?;
 
     Ok(())
@@ -745,7 +729,7 @@ fn initialize_validator_config(
                         admin,
                         IValidatorConfig::addValidatorCall {
                             newValidatorAddress,
-                            publicKey: public_key.encode().freeze().as_ref().try_into().unwrap(),
+                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
                             active: true,
                             inboundAddress: addr.to_string(),
                             outboundAddress: addr.to_string(),

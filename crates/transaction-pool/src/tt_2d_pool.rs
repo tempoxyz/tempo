@@ -4,8 +4,9 @@ use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, Priority,
-    SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit, PoolResult, PoolTransaction,
+    PriceBumpConfig, Priority, SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin,
+    ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -355,17 +356,37 @@ impl AA2dPool {
         ret
     }
 
-    /// Returns an iterator over all the matching transactions.
-    pub(crate) fn get_all_iter<'a, I>(
-        &'a self,
-        tx_hashes: I,
-    ) -> impl Iterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>> + 'a
-    where
-        I: IntoIterator<Item = &'a TxHash> + 'a,
-    {
-        tx_hashes
-            .into_iter()
-            .filter_map(|tx_hash| self.by_hash.get(tx_hash))
+    /// Returns pooled transaction elements for the given hashes while respecting the size limit.
+    ///
+    /// This method collects transactions from the pool, converts them to pooled format,
+    /// and tracks the accumulated size. It stops collecting when the limit is exceeded.
+    ///
+    /// The `accumulated_size` is updated with the total encoded size of returned transactions.
+    pub(crate) fn get_pooled_transaction_elements<'a>(
+        &self,
+        tx_hashes: impl IntoIterator<Item = &'a TxHash>,
+        limit: GetPooledTransactionLimit,
+        accumulated_size: &mut usize,
+    ) -> Vec<<TempoPooledTransaction as PoolTransaction>::Pooled> {
+        let mut elements = Vec::new();
+        for tx_hash in tx_hashes {
+            let Some(tx) = self.by_hash.get(tx_hash) else {
+                continue;
+            };
+
+            let encoded_len = tx.transaction.encoded_length();
+            let Some(pooled) = tx.transaction.clone_into_pooled().ok() else {
+                continue;
+            };
+
+            *accumulated_size += encoded_len;
+            elements.push(pooled.into_inner());
+
+            if limit.exceeds(*accumulated_size) {
+                break;
+            }
+        }
+        elements
     }
 
     /// Returns an iterator over all senders in this pool.
@@ -2332,5 +2353,97 @@ mod tests {
         // After inserting tx4, we should have [3, 4, 5] all in the pool
         let (_pending_count_after, _queued_count_after) = pool.pending_and_queued_txn_count();
         pool.assert_invariants();
+    }
+
+    #[test]
+    fn get_pooled_transaction_elements_respects_limit() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        // Add 3 transactions with consecutive nonces
+        let tx0 = create_aa_tx(sender, nonce_key, 0);
+        let tx0_hash = *tx0.hash();
+        let tx0_len = tx0.encoded_length();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let tx1 = create_aa_tx(sender, nonce_key, 1);
+        let tx1_hash = *tx1.hash();
+        let tx1_len = tx1.encoded_length();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        let tx2 = create_aa_tx(sender, nonce_key, 2);
+        let tx2_hash = *tx2.hash();
+        let tx2_len = tx2.encoded_length();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
+            .unwrap();
+
+        // Test with no limit - should return all 3 transactions
+        let mut accumulated = 0;
+        let elements = pool.get_pooled_transaction_elements(
+            &[tx0_hash, tx1_hash, tx2_hash],
+            GetPooledTransactionLimit::None,
+            &mut accumulated,
+        );
+        assert_eq!(elements.len(), 3, "Should return all 3 transactions");
+        assert_eq!(
+            accumulated,
+            tx0_len + tx1_len + tx2_len,
+            "Should accumulate all sizes"
+        );
+
+        // Test with a soft limit - stops after exceeding (not at) the limit
+        // A limit of tx0_len - 1 means we stop after tx0 is added (since tx0_len > limit)
+        let mut accumulated = 0;
+        let elements = pool.get_pooled_transaction_elements(
+            &[tx0_hash, tx1_hash, tx2_hash],
+            GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len - 1),
+            &mut accumulated,
+        );
+        assert_eq!(
+            elements.len(),
+            1,
+            "Should stop after first tx exceeds limit"
+        );
+        assert_eq!(accumulated, tx0_len, "Should accumulate first tx size");
+
+        // Test with limit that allows exactly 2 transactions before exceeding
+        // A limit of tx0_len + tx1_len - 1 means we stop after tx1 is added
+        let mut accumulated = 0;
+        let elements = pool.get_pooled_transaction_elements(
+            &[tx0_hash, tx1_hash, tx2_hash],
+            GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len + tx1_len - 1),
+            &mut accumulated,
+        );
+        assert_eq!(
+            elements.len(),
+            2,
+            "Should stop after second tx exceeds limit"
+        );
+        assert_eq!(
+            accumulated,
+            tx0_len + tx1_len,
+            "Should accumulate first two tx sizes"
+        );
+
+        // Test with pre-accumulated size that causes immediate stop after first tx
+        let mut accumulated = tx0_len;
+        let elements = pool.get_pooled_transaction_elements(
+            &[tx1_hash, tx2_hash],
+            GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len + tx1_len - 1),
+            &mut accumulated,
+        );
+        assert_eq!(
+            elements.len(),
+            1,
+            "Should return 1 transaction when pre-accumulated size causes early stop"
+        );
+        assert_eq!(
+            accumulated,
+            tx0_len + tx1_len,
+            "Should add to pre-accumulated size"
+        );
     }
 }

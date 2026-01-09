@@ -1,5 +1,5 @@
 use crate::{
-    bootnodes::andantino_nodes,
+    bootnodes::{andantino_nodes, moderato_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -50,7 +50,7 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &["moderato", "testnet"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -60,6 +60,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["testnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "testnet" => ANDANTINO.clone(),
+        "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
     })
@@ -79,7 +80,17 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
 pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
         .expect("`./genesis/andantino.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis).into()
+    TempoChainSpec::from_genesis(genesis)
+        .with_default_follow_url("wss://rpc.testnet.tempo.xyz")
+        .into()
+});
+
+pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
+        .expect("`./genesis/moderato.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis)
+        .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
+        .into()
 });
 
 /// Development chainspec with funded dev accounts and activated tempo hardforks
@@ -97,9 +108,16 @@ pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
     pub info: TempoGenesisInfo,
+    /// Default RPC URL for following this chain.
+    pub default_follow_url: Option<&'static str>,
 }
 
 impl TempoChainSpec {
+    /// Returns the default RPC URL for following this chain.
+    pub fn default_follow_url(&self) -> Option<&'static str> {
+        self.default_follow_url
+    }
+
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
@@ -121,7 +139,14 @@ impl TempoChainSpec {
                 inner,
             }),
             info,
+            default_follow_url: None,
         }
+    }
+
+    /// Sets the default follow URL for this chain spec.
+    pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
+        self.default_follow_url = Some(url);
+        self
     }
 }
 
@@ -137,6 +162,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 shared_gas_limit: 0,
             }),
             info: TempoGenesisInfo::default(),
+            default_follow_url: None,
         }
     }
 }
@@ -212,6 +238,7 @@ impl EthChainSpec for TempoChainSpec {
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
         match self.inner.chain_id() {
             42429 => Some(andantino_nodes()),
+            42431 => Some(moderato_nodes()),
             _ => self.inner.bootnodes(),
         }
     }

@@ -201,7 +201,7 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --no-dkg-in-genesis
         }
         $default_genesis
     }
@@ -239,6 +239,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, htt
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
         "--faucet.amount" "1000000000000"
+        "--faucet.address" "0x20c0000000000000000000000000000000000000"
         "--faucet.address" "0x20c0000000000000000000000000000000000001"
     ]
 }
@@ -399,6 +400,7 @@ def "main bench" [
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
+    --max-concurrent-requests: int = 100            # Max concurrent requests
     --nodes: int = 3                                # Number of consensus nodes (consensus mode only)
     --genesis: string = ""                          # Custom genesis file path (skips generation)
     --samply                                        # Profile nodes with samply
@@ -490,6 +492,7 @@ def "main bench" [
         "--tps" $"($tps)"
         "--duration" $"($duration)"
         "--accounts" $"($accounts)"
+        "--max-concurrent-requests" $"($max_concurrent_requests)"
         "--target-urls" ($rpc_urls | str join ",")
         "--faucet"
         "--clear-txpool"
@@ -586,6 +589,7 @@ def main [] {
     print "  --tps <N>                Target TPS (default: 10000)"
     print "  --duration <N>           Duration in seconds (default: 30)"
     print "  --accounts <N>           Number of accounts (default: 1000)"
+    print "  --max-concurrent-requests <N>  Max concurrent requests (default: 100)"
     print "  --nodes <N>              Number of consensus nodes (default: 3, consensus mode only)"
     print "  --samply                 Profile nodes with samply"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"

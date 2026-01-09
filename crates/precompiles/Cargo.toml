@@ -48,3 +48,4 @@ required-features = ["test-utils"]
 [[bench]]
 name = "tempo_precompiles"
 harness = false
+required-features = ["test-utils"]

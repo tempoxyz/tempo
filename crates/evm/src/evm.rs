@@ -234,26 +234,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use reth_revm::context::BlockEnv;
-    use revm::{context::TxEnv, database::EmptyDB};
+    use crate::test_utils::{test_evm, test_evm_with_basefee};
+    use revm::{
+        context::TxEnv,
+        database::{EmptyDB, in_memory_db::CacheDB},
+    };
 
     use super::*;
 
     #[test]
     fn can_execute_system_tx() {
-        let mut evm = TempoEvm::new(
-            EmptyDB::default(),
-            EvmEnv {
-                block_env: TempoBlockEnv {
-                    inner: BlockEnv {
-                        basefee: 1,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-        );
+        let mut evm = test_evm(EmptyDB::default());
         let result = evm
             .transact(TempoTxEnv {
                 inner: TxEnv {
@@ -268,5 +259,166 @@ mod tests {
             .unwrap();
 
         assert!(result.result.is_success());
+    }
+
+    #[test]
+    fn test_transact_raw() {
+        let mut evm = test_evm_with_basefee(EmptyDB::default(), 0);
+
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::repeat_byte(0x01),
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Call(Address::repeat_byte(0x02)),
+                ..Default::default()
+            },
+            is_system_tx: false,
+            fee_token: None,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(result.result.gas_used(), 21000);
+    }
+
+    #[test]
+    fn test_transact_raw_system_tx() {
+        let mut evm = test_evm(EmptyDB::default());
+
+        // System transaction
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Call(Address::repeat_byte(0x01)),
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+        // System transactions should not consume gas
+        assert_eq!(result.result.gas_used(), 0);
+    }
+
+    #[test]
+    fn test_transact_raw_system_tx_must_be_call() {
+        let mut evm = test_evm(EmptyDB::default());
+
+        // System transaction with Create kind
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 21000,
+                kind: TxKind::Create,
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            EVMError::Transaction(TempoInvalidTransaction::SystemTransactionMustBeCall)
+        ));
+    }
+
+    #[test]
+    fn test_transact_raw_system_tx_failed() {
+        let mut cache_db = CacheDB::new(EmptyDB::default());
+        // Deploy a contract that always reverts: PUSH1 0x00 PUSH1 0x00 REVERT (0x60006000fd)
+        let revert_code = Bytes::from_static(&[0x60, 0x00, 0x60, 0x00, 0xfd]);
+        let contract_addr = Address::repeat_byte(0xaa);
+
+        cache_db.insert_account_info(
+            contract_addr,
+            revm::state::AccountInfo {
+                code_hash: alloy_primitives::keccak256(&revert_code),
+                code: Some(revm::bytecode::Bytecode::new_raw(revert_code)),
+                ..Default::default()
+            },
+        );
+
+        let mut evm = test_evm(cache_db);
+
+        // System transaction that will fail with call to contract that reverts
+        let tx = TempoTxEnv {
+            inner: TxEnv {
+                caller: Address::ZERO,
+                gas_price: 0,
+                gas_limit: 100000,
+                kind: TxKind::Call(contract_addr),
+                ..Default::default()
+            },
+            is_system_tx: true,
+            ..Default::default()
+        };
+
+        let result = evm.transact_raw(tx);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            EVMError::Transaction(TempoInvalidTransaction::SystemTransactionFailed(_))
+        ));
+    }
+
+    #[test]
+    fn test_transact_system_call() {
+        let mut evm = test_evm(EmptyDB::default());
+
+        let caller = Address::repeat_byte(0x01);
+        let contract = Address::repeat_byte(0x02);
+        let data = Bytes::from_static(&[0x01, 0x02, 0x03]);
+
+        let result = evm.transact_system_call(caller, contract, data);
+        assert!(result.is_ok());
+
+        let result = result.unwrap();
+        assert!(result.result.is_success());
+    }
+
+    #[test]
+    fn test_take_revert_logs() {
+        let mut evm = test_evm(EmptyDB::default());
+
+        assert!(evm.take_revert_logs().is_empty());
+
+        let log1 = Log::new_unchecked(
+            Address::repeat_byte(0x01),
+            vec![alloy_primitives::B256::repeat_byte(0xaa)],
+            Bytes::from_static(&[0x01, 0x02]),
+        );
+        let log2 = Log::new_unchecked(
+            Address::repeat_byte(0x02),
+            vec![],
+            Bytes::from_static(&[0x03, 0x04]),
+        );
+        evm.inner.logs.push(log1);
+        evm.inner.logs.push(log2);
+
+        let logs = evm.take_revert_logs();
+        assert_eq!(logs.len(), 2);
+        assert_eq!(logs[0].address, Address::repeat_byte(0x01));
+        assert_eq!(logs[1].address, Address::repeat_byte(0x02));
+
+        assert!(evm.take_revert_logs().is_empty());
     }
 }

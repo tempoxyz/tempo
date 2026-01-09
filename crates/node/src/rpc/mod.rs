@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod amm;
+pub mod consensus;
 pub mod dex;
 pub mod error;
 pub mod eth_ext;
@@ -10,6 +11,7 @@ pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use amm::{TempoAmm, TempoAmmApiServer};
+pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 use futures::{TryFutureExt, future::Either};
@@ -316,11 +318,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
             && request.nonce.is_none()
             && !nonce_key.is_zero()
         {
-            let slot = NonceManager::new()
-                .nonces
-                .at(request.from.unwrap_or_default())
-                .at(nonce_key)
-                .slot();
+            let slot =
+                NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
             request.nonce = Some(
                 db.storage(NONCE_PRECOMPILE_ADDRESS, slot)
                     .map_err(Into::into)?
@@ -382,11 +381,8 @@ impl<N: FullNodeTypes<Types = TempoNode>> EthTransactions for TempoEthApi<N> {
             && request.nonce.is_none()
             && !nonce_key.is_zero()
         {
-            let slot = NonceManager::new()
-                .nonces
-                .at(request.from.unwrap_or_default())
-                .at(nonce_key)
-                .slot();
+            let slot =
+                NonceManager::new().nonces[request.from.unwrap_or_default()][nonce_key].slot();
             request.nonce = Some(
                 self.spawn_blocking_io(move |this| {
                     this.latest_state()?

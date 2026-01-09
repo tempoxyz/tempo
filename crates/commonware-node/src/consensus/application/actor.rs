@@ -17,8 +17,8 @@ use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::{
-    Block as _,
-    types::{Epoch, Epocher as _, FixedEpocher, Round, View},
+    Heightable as _,
+    types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
 use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
 use commonware_macros::select;
@@ -46,9 +46,8 @@ use tracing::{Level, debug, error, error_span, info, info_span, instrument, warn
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 
 use super::{
-    Mailbox, executor,
-    executor::ExecutorMailbox,
-    ingress::{Broadcast, Finalized, Genesis, Message, Propose, Verify},
+    Mailbox,
+    ingress::{Broadcast, Genesis, Message, Propose, Verify},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -84,7 +83,6 @@ where
             inner: Inner {
                 fee_recipient: config.fee_recipient,
                 epoch_strategy: config.epoch_strategy,
-                last_finalized_height: config.last_finalized_height,
 
                 new_payload_wait_time: config.new_payload_wait_time,
 
@@ -92,6 +90,8 @@ where
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
+                executor: config.executor,
+
                 subblocks: config.subblocks,
 
                 scheme_provider: config.scheme_provider,
@@ -110,7 +110,7 @@ where
         } = self;
         // TODO(janis): should be placed under a shutdown signal so we don't
         // just stall on startup.
-        let Ok(initialized) = inner.into_initialized(context.clone(), dkg_manager).await else {
+        let Ok(initialized) = inner.into_initialized(dkg_manager).await else {
             // Drop the error because into_initialized generates an error event.
             return;
         };
@@ -158,13 +158,6 @@ where
                     move |_| inner.handle_broadcast(broadcast)
                 });
             }
-            Message::Finalized(finalized) => {
-                // XXX: being able to finalize is the only stop condition.
-                // There is no point continuing if this doesn't work.
-                self.inner
-                    .handle_finalized(*finalized)
-                    .wrap_err("failed finalizing block")?;
-            }
             Message::Genesis(genesis) => {
                 self.context.with_label("genesis").spawn({
                     let inner = self.inner.clone();
@@ -192,7 +185,6 @@ where
 struct Inner<TState> {
     fee_recipient: alloy_primitives::Address,
     epoch_strategy: FixedEpocher,
-    last_finalized_height: u64,
     new_payload_wait_time: Duration,
 
     my_mailbox: Mailbox,
@@ -200,6 +192,7 @@ struct Inner<TState> {
     marshal: crate::alias::marshal::Mailbox,
 
     execution_node: TempoFullNode,
+    executor: crate::executor::Mailbox,
     subblocks: subblocks::Mailbox,
     scheme_provider: SchemeProvider,
 
@@ -228,12 +221,6 @@ impl Inner<Init> {
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    /// Pushes a `finalized` request to the back of the finalization queue.
-    fn handle_finalized(&self, finalized: Finalized) -> eyre::Result<()> {
-        self.state.executor_mailbox.forward_finalized(finalized)
-    }
-
     #[instrument(
         skip_all,
         fields(
@@ -251,7 +238,7 @@ impl Inner<Init> {
         // epoch. Only epoch 0/height 0 is special cased because first height
         // of epoch 0 == genesis of epoch 0.
         let boundary = match genesis.epoch.previous() {
-            None => 0,
+            None => Height::zero(),
             Some(previous_epoch) => self
                 .epoch_strategy
                 .last(previous_epoch)
@@ -261,14 +248,14 @@ impl Inner<Init> {
         let mut attempts = 0;
         let epoch_genesis = loop {
             attempts += 1;
-            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary) {
+            if let Ok(Some(hash)) = self.execution_node.provider.block_hash(boundary.get()) {
                 break Digest(hash);
             } else if let Some((_, digest)) = self.marshal.get_info(boundary).await {
                 break digest;
             } else {
                 info_span!("fetch_genesis_digest").in_scope(|| {
                     info!(
-                        boundary,
+                        boundary.height = %boundary,
                         attempts,
                         "neither marshal actor nor execution layer had the \
                         boundary block of the previous epoch available; \
@@ -436,7 +423,7 @@ impl Inner<Init> {
             if parent.1 != payload
                 && let Err(error) = self
                     .state
-                    .executor_mailbox
+                    .executor
                     .canonicalize_head(block.height(), block.digest())
             {
                 tracing::warn!(
@@ -463,7 +450,7 @@ impl Inner<Init> {
             &mut self.marshal,
         )
         .await?;
-        debug!(height = parent.height(), "retrieved parent block",);
+        debug!(height = %parent.height(), "retrieved parent block",);
 
         let parent_epoch_info = self
             .epoch_strategy
@@ -500,7 +487,7 @@ impl Inner<Init> {
 
         ready(
             self.state
-                .executor_mailbox
+                .executor
                 .canonicalize_head(parent.height(), parent.digest()),
         )
         .and_then(|ack| ack.map_err(eyre::Report::new))
@@ -509,7 +496,7 @@ impl Inner<Init> {
 
         // Query DKG manager for ceremony data before building payload
         // This data will be passed to the payload builder via attributes
-        let extra_data = if parent_epoch_info.last() == parent.height() + 1
+        let extra_data = if parent_epoch_info.last() == parent.height().next()
             && parent_epoch_info.epoch() == round.epoch()
         {
             // At epoch boundary: include public ceremony outcome
@@ -530,7 +517,7 @@ impl Inner<Init> {
                 %outcome.epoch,
                 "received DKG outcome; will include in payload builder attributes",
             );
-            outcome.encode().freeze().into()
+            outcome.encode().into()
         } else {
             // Regular block: try to include DKG dealer log.
             match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
@@ -548,7 +535,7 @@ impl Inner<Init> {
                         "received signed dealer log; will include in payload \
                         builder attributes"
                     );
-                    log.encode().freeze().into()
+                    log.encode().into()
                 }
             }
         };
@@ -673,12 +660,12 @@ impl Inner<Init> {
 
         if let Err(error) = self
             .state
-            .executor_mailbox
+            .executor
             .canonicalize_head(parent.height(), parent.digest())
         {
             tracing::warn!(
                 %error,
-                parent.height = parent.height(),
+                parent.height = %parent.height(),
                 parent.digest = %parent.digest(),
                 "failed updating canonical head to parent",
             );
@@ -711,35 +698,22 @@ impl Inner<Uninit> {
     /// 1. reading the last finalized digest from the consensus marshaller.
     /// 2. starting the canonical chain engine and storing its handle.
     #[instrument(skip_all, err)]
-    async fn into_initialized<TContext: Metrics + Spawner + Pacer>(
+    async fn into_initialized(
         self,
-        context: TContext,
         dkg_manager: crate::dkg::manager::Mailbox,
     ) -> eyre::Result<Inner<Init>> {
-        let executor = executor::Builder {
-            execution_node: self.execution_node.clone(),
-            last_finalized_height: self.last_finalized_height,
-            marshal: self.marshal.clone(),
-        }
-        .build(context.with_label("executor"))
-        .wrap_err("unable to instantiate executor actor")?;
-
-        let executor_mailbox = executor.mailbox().clone();
-        let executor_handle = executor.start();
-
         let initialized = Inner {
             fee_recipient: self.fee_recipient,
             epoch_strategy: self.epoch_strategy,
-            last_finalized_height: self.last_finalized_height,
             new_payload_wait_time: self.new_payload_wait_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
+            executor: self.executor.clone(),
             state: Init {
                 latest_proposed_block: Arc::new(RwLock::new(None)),
                 dkg_manager,
-                executor_mailbox,
-                _executor_handle: AbortOnDrop(executor_handle).into(),
+                executor: self.executor.clone(),
             },
             subblocks: self.subblocks,
             scheme_provider: self.scheme_provider,
@@ -758,13 +732,8 @@ pub(in crate::consensus) struct Uninit(());
 struct Init {
     latest_proposed_block: Arc<RwLock<Option<(Round, Block)>>>,
     dkg_manager: crate::dkg::manager::Mailbox,
-    /// The communication channel to the [`executor::Executor`] task.
-    executor_mailbox: ExecutorMailbox,
-    /// The handle to the spawned executor task.
-    ///
-    /// If the last instance of this is dropped (the application task is aborted),
-    /// this ensures that the task is aborted as well.
-    _executor_handle: Arc<AbortOnDrop>,
+    /// The communication channel to the executor agent.
+    executor: crate::executor::Mailbox,
 }
 
 /// Verifies `block` given its `parent` against the execution layer.
@@ -778,11 +747,11 @@ struct Init {
 #[instrument(
     skip_all,
     fields(
-        epoch,
+        %epoch,
         epoch_length,
         block.parent_digest = %block.parent_digest(),
         block.digest = %block.digest(),
-        block.height = block.height(),
+        block.height = %block.height(),
         block.timestamp = block.timestamp(),
         parent.digest = %parent_digest,
     )
@@ -868,7 +837,7 @@ async fn verify_header_extra_data(
             contains the correct DKG outcome",
         );
         let our_outcome = dkg_manager
-            .get_dkg_outcome(parent.1, block.height() - 1)
+            .get_dkg_outcome(parent.1, block.height().saturating_sub(HeightDelta::new(1)))
             .await
             .wrap_err(
                 "failed getting public dkg ceremony outcome; cannot verify end \
@@ -955,21 +924,6 @@ fn report_verification_result(
         }
     }
     Ok(())
-}
-
-/// Ensures the task associated with the [`Handle`] is aborted [`Handle::abort`] when this instance is dropped.
-struct AbortOnDrop(Handle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl std::fmt::Debug for AbortOnDrop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AbortOnDrop").finish_non_exhaustive()
-    }
 }
 
 async fn get_parent(

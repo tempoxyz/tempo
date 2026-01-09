@@ -10,13 +10,13 @@ Each USD TIP-20 on Tempo can choose any other USD TIP-20 as its [quote token](/p
 
 While on other chains, most liquidity accrues to a few stablecoins, or even one, Tempo offers a USD-denominated stablecoin, pathUSD, that other stablecoins can choose as their quote token. PathUSD is not meant to compete as a consumer-facing stablecoin. Use of pathUSD is optional, and tokens are able to list any other token as their quote token if they choose.
 
-PathUSD can also be accepted as a fee token by validators.
+pathUSD can also be accepted as a fee token by validators.
 
 ## Specification
 
 ### Contract
 
-PathUSD is a predeployed [TIP-20](/protocol/tip20/spec.mdx) at genesis. Note that since it is the first TIP-20 contract deployed, its quote token is the zero address.
+pathUSD is a predeployed [TIP-20](/protocol/tip20/spec.mdx) at genesis. Note that since it is the first TIP-20 contract deployed, its quote token is the zero address.
 
 | Property      | Value                                                                 |
 | ------------- | --------------------------------------------------------------------- |
@@ -37,7 +37,8 @@ TIP20 token = factory.createToken(
   "MCUSD",
   "USD",
   TIP20(0x20c0000000000000000000000000000000000000), // pathUSD
-  msg.sender
+  msg.sender,
+  bytes32("my-unique-salt") // salt for deterministic address
 );
 ```
 

@@ -575,10 +575,11 @@ where
             .then_some(execution_result.requests);
 
         let sealed_block = Arc::new(block.sealed_block().clone());
+        let rlp_length = sealed_block.rlp_length();
 
-        if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
+        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length: sealed_block.rlp_length(),
+                rlp_length,
                 max_rlp_length: MAX_RLP_BLOCK_SIZE,
             }));
         }
@@ -588,6 +589,10 @@ where
         let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
+        self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
+        self.metrics
+            .rlp_block_size_bytes_last
+            .set(rlp_length as f64);
 
         info!(
             parent_hash = ?sealed_block.parent_hash(),
@@ -644,8 +649,106 @@ pub fn is_more_subblocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{Address, B256, Bytes};
+    use alloy_consensus::BlockBody;
+    use alloy_primitives::{Address, B256, Bytes, Signature};
     use reth_payload_builder::PayloadId;
+    use reth_primitives_traits::SealedBlock;
+    use tempo_primitives::{Block, SignedSubBlock, SubBlock, SubBlockVersion};
+
+    trait TestExt {
+        fn random() -> Self;
+    }
+
+    impl TestExt for SubBlockMetadata {
+        fn random() -> Self {
+            Self {
+                version: SubBlockVersion::V1,
+                validator: B256::random(),
+                fee_recipient: Address::random(),
+                signature: Bytes::new(),
+            }
+        }
+    }
+
+    impl TestExt for RecoveredSubBlock {
+        fn random() -> Self {
+            let subblock = SubBlock {
+                version: SubBlockVersion::V1,
+                parent_hash: B256::random(),
+                fee_recipient: Address::random(),
+                transactions: vec![],
+            };
+            let signed = SignedSubBlock {
+                inner: subblock,
+                signature: Bytes::new(),
+            };
+            Self::new_unchecked(signed, vec![], B256::ZERO)
+        }
+    }
+
+    fn payload_with_metadata(count: usize) -> EthBuiltPayload<TempoPrimitives> {
+        let metadata: Vec<_> = (0..count).map(|_| SubBlockMetadata::random()).collect();
+        let input: Bytes = alloy_rlp::encode(&metadata).into();
+        let tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(
+            TxLegacy {
+                chain_id: None,
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 0,
+                to: Address::random().into(),
+                value: U256::ZERO,
+                input,
+            },
+            Signature::test_signature(),
+        ));
+        let block = Block {
+            header: TempoHeader::default(),
+            body: BlockBody {
+                transactions: vec![tx],
+                ommers: vec![],
+                withdrawals: None,
+            },
+        };
+        let sealed = Arc::new(SealedBlock::seal_slow(block));
+        EthBuiltPayload::new(PayloadId::default(), sealed, U256::ZERO, None)
+    }
+
+    #[test]
+    fn test_is_more_subblocks() {
+        // None payload always returns false
+        assert!(!is_more_subblocks(None, &[]));
+        assert!(!is_more_subblocks(None, &[RecoveredSubBlock::random()]));
+
+        // Equal count returns false (1 == 1)
+        let payload = payload_with_metadata(1);
+        assert!(!is_more_subblocks(
+            Some(&payload),
+            &[RecoveredSubBlock::random()]
+        ));
+
+        // More subblocks returns true (2 > 1)
+        assert!(is_more_subblocks(
+            Some(&payload),
+            &[RecoveredSubBlock::random(), RecoveredSubBlock::random()]
+        ));
+
+        // Fewer subblocks returns false (1 < 2)
+        let payload = payload_with_metadata(2);
+        assert!(!is_more_subblocks(
+            Some(&payload),
+            &[RecoveredSubBlock::random()]
+        ));
+
+        // Empty metadata, empty subblocks returns false (0 > 0 is false)
+        let payload = payload_with_metadata(0);
+        assert!(!is_more_subblocks(Some(&payload), &[]));
+
+        // Empty metadata, one subblock returns true (1 > 0)
+        assert!(is_more_subblocks(
+            Some(&payload),
+            &[RecoveredSubBlock::random()]
+        ));
+    }
 
     #[test]
     fn test_extra_data_flow_in_attributes() {

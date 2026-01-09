@@ -3,9 +3,13 @@ pragma solidity ^0.8.13;
 
 interface IFeeAMM {
 
-    error InsufficientLiquidity();
     error IdenticalAddresses();
     error InvalidToken();
+    error InsufficientLiquidity();
+    error InsufficientReserves();
+    error InvalidAmount();
+    error DivisionByZero();
+    error InvalidSwapCalculation();
     error InvalidCurrency();
 
     event Burn(
@@ -16,12 +20,6 @@ interface IFeeAMM {
         uint256 amountValidatorToken,
         uint256 liquidity,
         address to
-    );
-    event FeeSwap(
-        address indexed userToken,
-        address indexed validatorToken,
-        uint256 amountIn,
-        uint256 amountOut
     );
     event Mint(
         address sender,

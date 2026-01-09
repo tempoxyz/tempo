@@ -1,7 +1,7 @@
 use alloy::{
     consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
     network::{EthereumWallet, TransactionBuilder},
-    primitives::{Address, U256},
+    primitives::{Address, B256, U256},
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
     sol_types::SolEvent,
@@ -13,10 +13,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip20::{ISSUER_ROLE, token_id_to_address},
-};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 use tempo_primitives::TempoTxEnvelope;
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
@@ -53,12 +50,14 @@ where
     };
 
     // Create token
+    let salt = B256::random();
     let create_tx = factory.createToken(
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
         PATH_USD_ADDRESS,
         sender_address,
+        salt,
     );
     let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
     node.rpc.inject_tx(create_bytes).await?;
@@ -75,8 +74,8 @@ where
         .find(|r| !r.inner.logs().is_empty())
         .ok_or_else(|| eyre::eyre!("No receipt with logs found"))?;
     let event =
-        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[0].inner)?;
-    let token_addr = token_id_to_address(event.tokenId.to());
+        ITIP20Factory::TokenCreated::decode_log(&token_create_receipt.inner.logs()[1].inner)?;
+    let token_addr = event.token;
 
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());

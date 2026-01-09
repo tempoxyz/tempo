@@ -2,13 +2,13 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
+use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
 
 use crate::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
@@ -33,7 +33,8 @@ const TIP20_DECIMALS: u8 = 6;
 /// USD currency string constant
 pub const USD_CURRENCY: &str = "USD";
 
-/// TIP20 token address prefix (12 bytes for token ID encoding)
+/// TIP20 token address prefix (12 bytes)
+/// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
 /// Returns true if the address has the TIP20 prefix.
@@ -42,19 +43,6 @@ const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 /// Use `TIP20Factory::is_tip20()` for full validation.
 pub fn is_tip20_prefix(token: Address) -> bool {
     token.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
-}
-
-/// Converts a token ID to its corresponding contract address
-/// Uses the pattern: TIP20_TOKEN_PREFIX ++ token_id
-pub fn token_id_to_address(token_id: u64) -> Address {
-    let mut address_bytes = [0u8; 20];
-    address_bytes[..12].copy_from_slice(&TIP20_TOKEN_PREFIX);
-    address_bytes[12..20].copy_from_slice(&token_id.to_be_bytes());
-    Address::from(address_bytes)
-}
-
-pub fn address_to_token_id_unchecked(address: Address) -> u64 {
-    u64::from_be_bytes(address.as_slice()[12..20].try_into().unwrap())
 }
 
 /// Validates that a token has USD currency
@@ -175,11 +163,11 @@ impl TIP20Token {
 
     // View functions
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances.at(call.account).read()
+        self.balances[call.account].read()
     }
 
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
-        self.allowances.at(call.owner).at(call.spender).read()
+        self.allowances[call.owner][call.spender].read()
     }
 
     // Admin functions
@@ -279,19 +267,15 @@ impl TIP20Token {
         }))
     }
 
-    pub fn complete_quote_token_update(
-        &mut self,
-        msg_sender: Address,
-        _call: ITIP20::completeQuoteTokenUpdateCall,
-    ) -> Result<()> {
+    pub fn complete_quote_token_update(&mut self, msg_sender: Address) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (PathUSD)
+        // Loop through quote tokens until we reach the root
         let mut current = next_quote_token;
-        while current != PATH_USD_ADDRESS {
+        while current != Address::ZERO {
             if current == self.address {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -414,11 +398,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
-        if matches!(
-            call.from,
-            TIP_FEE_MANAGER_ADDRESS | STABLECOIN_EXCHANGE_ADDRESS
-        ) {
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -598,19 +579,13 @@ impl TIP20Token {
 
 // Utility functions
 impl TIP20Token {
-    pub fn new(token_id: u64) -> Self {
-        let token_address = token_id_to_address(token_id);
-        Self::__new(token_address)
-    }
-
     /// Create a TIP20Token from an address.
     /// Returns an error if the address is not a valid TIP20 token.
     pub fn from_address(address: Address) -> Result<Self> {
         if !is_tip20_prefix(address) {
             return Err(TIP20Error::invalid_token().into());
         }
-        let token_id = address_to_token_id_unchecked(address);
-        Ok(Self::new(token_id))
+        Ok(Self::__new(address))
     }
 
     /// Returns true if the token has been initialized (has bytecode deployed).
@@ -622,6 +597,7 @@ impl TIP20Token {
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -637,15 +613,6 @@ impl TIP20Token {
         self.symbol.write(symbol.to_string())?;
         self.currency.write(currency.to_string())?;
 
-        // If the currency is USD, the quote token must also be USD.
-        // Skip this check when quote_token is Address::ZERO (first token case).
-        if currency == USD_CURRENCY && !quote_token.is_zero() {
-            let quote_token_currency = Self::from_address(quote_token)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
-                return Err(TIP20Error::invalid_quote_token().into());
-            }
-        }
-
         self.quote_token.write(quote_token)?;
         // Initialize nextQuoteToken to the same value as quoteToken
         self.next_quote_token.write(quote_token)?;
@@ -656,23 +623,23 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances.at(account).read()
+        self.balances[account].read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances.at(account).write(amount)
+        self.balances[account].write(amount)
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
-        self.allowances.at(owner).at(spender).read()
+        self.allowances[owner][spender].read()
     }
 
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
-        self.allowances.at(owner).at(spender).write(amount)
+        self.allowances[owner][spender].write(amount)
     }
 
     fn set_total_supply(&mut self, amount: U256) -> Result<()> {
@@ -884,6 +851,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
@@ -967,6 +935,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
@@ -1257,25 +1226,31 @@ pub(crate) mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
-            let quote_token_address = token.quote_token()?;
 
-            // Set next quote token
+            // Create a new USD token to use as the new quote token
+            let new_quote_token = TIP20Setup::create("New Quote", "NQ", admin).apply()?;
+            let new_quote_token_address = new_quote_token.address;
+
+            // Verify initial quote token is PATH_USD
+            assert_eq!(token.quote_token()?, PATH_USD_ADDRESS);
+
+            // Set next quote token to the new token
             token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: quote_token_address,
+                    newQuoteToken: new_quote_token_address,
                 },
             )?;
 
-            // Verify next quote token was set
-            assert_eq!(token.next_quote_token()?, quote_token_address);
+            // Verify next quote token was set to the new token
+            assert_eq!(token.next_quote_token()?, new_quote_token_address);
 
             // Verify event was emitted
             assert_eq!(
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::NextQuoteTokenSet(ITIP20::NextQuoteTokenSet {
                     updater: admin,
-                    nextQuoteToken: quote_token_address,
+                    nextQuoteToken: new_quote_token_address,
                 })
                 .into_log_data()
             );
@@ -1293,7 +1268,8 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-            let quote_token_address = token_id_to_address(2);
+            // Use the token's own quote token for the test
+            let quote_token_address = token.quote_token()?;
 
             // Try to set next quote token as non-admin
             let result = token.set_next_quote_token(
@@ -1350,9 +1326,10 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
-            // Try to set a TIP20 address that hasn't been deployed yet (token_id = 999)
+            // Try to set a TIP20 address that hasn't been deployed yet
             // This has the correct TIP20 address pattern but hasn't been created
-            let undeployed_token_address = token_id_to_address(999);
+            let undeployed_token_address =
+                Address::from(hex!("20C0000000000000000000000000000000000999"));
             let result = token.set_next_quote_token(
                 admin,
                 ITIP20::setNextQuoteTokenCall {
@@ -1372,7 +1349,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update() -> eyre::Result<()> {
+    fn test_complete_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1389,7 +1366,7 @@ pub(crate) mod tests {
             )?;
 
             // Complete the update
-            token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            token.complete_quote_token_update(admin)?;
 
             // Verify quote token was updated
             assert_eq!(token.quote_token()?, quote_token_address);
@@ -1409,7 +1386,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
+    fn test_complete_quote_token_update_detects_cycle() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1430,8 +1407,7 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete the update - should fail due to loop detection
-            let result =
-                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+            let result = token_b.complete_quote_token_update(admin);
 
             assert!(matches!(
                 result,
@@ -1445,7 +1421,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
+    fn test_complete_quote_token_update_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1463,8 +1439,7 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete update as non-admin
-            let result = token
-                .complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
+            let result = token.complete_quote_token_update(non_admin);
 
             assert!(matches!(
                 result,
@@ -1472,6 +1447,48 @@ pub(crate) mod tests {
                     RolesAuthError::Unauthorized(_)
                 ))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_complete_quote_token_update_detects_path_usd_cycle() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            // Create PATH_USD with quote_token = Address::ZERO (root)
+            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
+
+            // Create USDToken with quote_token = PATH_USD (default for USD tokens)
+            let usd_token = TIP20Setup::create("USDToken", "USDT", admin).apply()?;
+
+            // Verify initial state
+            assert_eq!(path_usd.quote_token()?, Address::ZERO);
+            assert_eq!(usd_token.quote_token()?, PATH_USD_ADDRESS);
+
+            // Set next quote token creating a cycle (PATH_USD → USDToken → PATH_USD)
+            // Succeeds as it only stages the change.
+            path_usd.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: usd_token.address,
+                },
+            )?;
+
+            // Completing the update fails due to cycle detection
+            let result = path_usd.complete_quote_token_update(admin);
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // Verify quote token was NOT updated
+            assert_eq!(path_usd.quote_token()?, Address::ZERO);
 
             Ok(())
         })
@@ -1521,19 +1538,22 @@ pub(crate) mod tests {
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let (token_id, token) = TIP20Setup::create("Test", "TST", admin).apply_with_id()?;
-
-            // Test `from_address()` creates same instance as `new()`
-            let via_new = TIP20Token::new(token_id).address;
+            // Test with factory-created token (hash-derived address)
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let via_from_address = TIP20Token::from_address(token.address)?.address;
 
             assert_eq!(
-                via_new, via_from_address,
-                "Both methods should create token with same address"
-            );
-            assert_eq!(
                 via_from_address, token.address,
-                "from_address should use the provided address"
+                "from_address should use the provided address directly"
+            );
+
+            // Test with reserved token (pathUSD)
+            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let via_from_address_reserved = TIP20Token::from_address(PATH_USD_ADDRESS)?.address;
+
+            assert_eq!(
+                via_from_address_reserved, PATH_USD_ADDRESS,
+                "from_address should work for reserved addresses too"
             );
 
             Ok(())
@@ -1659,6 +1679,7 @@ pub(crate) mod tests {
                     currency: "USD".to_string(),
                     quoteToken: crate::PATH_USD_ADDRESS,
                     admin: sender,
+                    salt: B256::random(),
                 },
             )?;
             let non_tip20 = Address::random();
@@ -1699,8 +1720,8 @@ pub(crate) mod tests {
                 .with_role(burner, *BURN_BLOCKED_ROLE)
                 // Simulate collected fees
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                // Mint tokens to StablecoinExchange
-                .with_mint(STABLECOIN_EXCHANGE_ADDRESS, amount)
+                // Mint tokens to StablecoinDEX
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .apply()?;
 
             // Attempt to burn from FeeManager
@@ -1723,11 +1744,11 @@ pub(crate) mod tests {
             })?;
             assert_eq!(balance, amount);
 
-            // Attempt to burn from StablecoinExchange
+            // Attempt to burn from StablecoinDEX
             let result = token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: STABLECOIN_EXCHANGE_ADDRESS,
+                    from: STABLECOIN_DEX_ADDRESS,
                     amount: amount / U256::from(2),
                 },
             );
@@ -1737,9 +1758,9 @@ pub(crate) mod tests {
                 Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
             ));
 
-            // Verify StablecoinExchange balance is unchanged
+            // Verify StablecoinDEX balance is unchanged
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_EXCHANGE_ADDRESS,
+                account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
 
@@ -1766,66 +1787,6 @@ pub(crate) mod tests {
                 .quote_token(eur_token.address)
                 .expect_tip20_err(TIP20Error::invalid_quote_token());
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_deploy_path_usd_via_factory() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut factory = TIP20Factory::new();
-            factory.initialize()?;
-
-            let token_id = factory.token_id_counter()?;
-            assert!(
-                token_id.is_zero(),
-                "PathUSD is not the first deployed token"
-            );
-
-            let path_usd_address = factory.create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: "PathUSD".to_string(),
-                    symbol: "PUSD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: Address::ZERO,
-                    admin,
-                },
-            )?;
-            assert_eq!(path_usd_address, PATH_USD_ADDRESS);
-
-            let path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            assert_eq!(path_usd.currency()?, "USD");
-            assert_eq!(path_usd.quote_token()?, Address::ZERO);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_deploy_path_usd_fails_if_token_already_deployed() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
-
-            let result = TIP20Factory::new().create_token(
-                admin,
-                ITIP20Factory::createTokenCall {
-                    name: "PathUSD".to_string(),
-                    symbol: "PUSD".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: Address::ZERO,
-                    admin,
-                },
-            );
-            assert!(
-                result.is_err(),
-                "deploying pathUSD should fail if a token has already been deployed"
-            );
             Ok(())
         })
     }

@@ -130,11 +130,7 @@ where
         }
 
         // Compute storage slot using helper function
-        let storage_slot = AccountKeychain::new()
-            .keys
-            .at(transaction.sender())
-            .at(key_id)
-            .base_slot();
+        let storage_slot = AccountKeychain::new().keys[transaction.sender()][key_id].base_slot();
 
         // Read storage slot from state provider
         let slot_value = state_provider
@@ -577,7 +573,7 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::spec::MODERATO;
     use tempo_precompiles::tip403_registry::TIP403Registry;
     use tempo_primitives::TempoTxEnvelope;
 
@@ -671,7 +667,7 @@ mod tests {
         MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
     > {
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_account(
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
@@ -862,7 +858,7 @@ mod tests {
 
         // Setup provider with storage
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_block(B256::random(), Block::default());
 
         // Add sender account
@@ -891,12 +887,8 @@ mod tests {
             policy_type: ITIP403Registry::PolicyType::BLACKLIST as u8,
             admin: Address::ZERO,
         };
-        let policy_data_slot = TIP403Registry::new().policy_data.at(policy_id).base_slot();
-        let policy_set_slot = TIP403Registry::new()
-            .policy_set
-            .at(policy_id)
-            .at(fee_payer)
-            .slot();
+        let policy_data_slot = TIP403Registry::new().policy_data[policy_id].base_slot();
+        let policy_set_slot = TIP403Registry::new().policy_set[policy_id][fee_payer].slot();
 
         provider.add_account(
             TIP403_REGISTRY_ADDRESS,

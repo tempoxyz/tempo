@@ -402,8 +402,8 @@ transactions thereafter can be signed by the access key.
     
     ```tsx twoslash [example.ts]
     // @noErrors
-    import { tempoTestnet } from 'viem/chains'
-    import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+    import { tempoModerato } from 'viem/chains'
+    import { KeyManager, webAuthn } from 'wagmi/tempo'
     import { createConfig, http } from 'wagmi'
     
     export const config = createConfig({
@@ -413,10 +413,10 @@ transactions thereafter can be signed by the access key.
           keyManager: KeyManager.localStorage(),
         }),
       ],
-      chains: [tempoTestnet],
+      chains: [tempoModerato],
       multiInjectedProviderDiscovery: false,
       transports: {
-        [tempoTestnet.id]: http(),
+        [tempoModerato.id]: http(),
       },
     })
     ```

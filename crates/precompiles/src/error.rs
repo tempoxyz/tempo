@@ -10,8 +10,9 @@ use alloy::{
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinExchangeError,
-    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -19,13 +20,17 @@ use tempo_contracts::precompiles::{
     Debug, Clone, PartialEq, Eq, thiserror::Error, derive_more::From, derive_more::TryInto,
 )]
 pub enum TempoPrecompileError {
-    /// Error from stablecoin exchange
-    #[error("Stablecoin exchange error: {0:?}")]
-    StablecoinExchange(StablecoinExchangeError),
+    /// Stablecoin DEX error
+    #[error("Stablecoin DEX error: {0:?}")]
+    StablecoinDEX(StablecoinDEXError),
 
     /// Error from TIP20 token
     #[error("TIP20 token error: {0:?}")]
     TIP20(TIP20Error),
+
+    /// Error from TIP20 factory
+    #[error("TIP20 factory error: {0:?}")]
+    TIP20Factory(TIP20FactoryError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -77,10 +82,15 @@ impl TempoPrecompileError {
         Self::Panic(PanicKind::UnderOverflow)
     }
 
+    pub fn array_oob() -> Self {
+        Self::Panic(PanicKind::ArrayOutOfBounds)
+    }
+
     pub fn into_precompile_result(self, gas: u64) -> PrecompileResult {
         let bytes = match self {
-            Self::StablecoinExchange(e) => e.abi_encode().into(),
+            Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
+            Self::TIP20Factory(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
@@ -147,8 +157,9 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
-    add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinExchange);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);

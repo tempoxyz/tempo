@@ -10,15 +10,14 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinExchange, ITIP403Registry,
-    STABLECOIN_EXCHANGE_ADDRESS,
+    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, ITIP403Registry, STABLECOIN_DEX_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{self, ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -37,7 +36,7 @@ fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
 }
 
 /// Helper trait to abstract over different representations of Tempo transactions.
-#[auto_impl::auto_impl(&)]
+#[auto_impl::auto_impl(&, Arc)]
 pub trait TempoTx {
     /// Returns the transaction's `feeToken` field, if configured.
     fn fee_token(&self) -> Option<Address>;
@@ -145,7 +144,7 @@ pub trait TempoStateAccess<M = ()> {
         // Check stored user token preference
         let user_token = self.with_read_only_storage_ctx(spec, || {
             // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens.at(fee_payer).read()
+            TipFeeManager::new().user_tokens[fee_payer].read()
         })?;
 
         if !user_token.is_zero() {
@@ -172,19 +171,19 @@ pub trait TempoStateAccess<M = ()> {
             }
         }
 
-        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin Exchange,
+        // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
         // use the input token as the fee token (the token that will be pulled from the user).
         // For AA transactions, this only applies if there's exactly one call.
         let mut calls = tx.calls();
         if let Some((kind, input)) = calls.next()
-            && kind.to() == Some(&STABLECOIN_EXCHANGE_ADDRESS)
+            && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
             && (!tx.is_aa() || calls.next().is_none())
         {
-            if let Ok(call) = IStablecoinExchange::swapExactAmountInCall::abi_decode(input)
+            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinExchange::swapExactAmountOutCall::abi_decode(input)
+            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
@@ -208,7 +207,8 @@ pub trait TempoStateAccess<M = ()> {
         // Ensure the currency is USD
         // load fee token account to ensure that we can load storage for it.
         self.with_read_only_storage_ctx(spec, || {
-            let token = TIP20Token::new(tip20::address_to_token_id_unchecked(fee_token));
+            // SAFETY: prefix already checked above
+            let token = TIP20Token::from_address(fee_token)?;
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
         })
     }
@@ -249,7 +249,7 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances.at(account).read()
+            TIP20Token::from_address(token)?.balances[account].read()
         })
     }
 }
@@ -412,7 +412,7 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
-    use tempo_precompiles::tip20;
+    use tempo_precompiles::PATH_USD_ADDRESS;
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
@@ -466,7 +466,7 @@ mod tests {
 
         // Set user stored token preference in the FeeManager
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let user_slot = TipFeeManager::new().user_tokens.at(caller).slot();
+        let user_slot = TipFeeManager::new().user_tokens[caller].slot();
         db.insert_account_storage(TIP_FEE_MANAGER_ADDRESS, user_slot, user_token.into_u256())
             .unwrap();
 
@@ -518,14 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn test_get_fee_token_stablecoin_exchange() -> eyre::Result<()> {
+    fn test_get_fee_token_stablecoin_dex() -> eyre::Result<()> {
         let caller = Address::random();
-        // Use PathUSD as token_in since it's a known valid USD fee token
+        // Use pathUSD as token_in since it's a known valid USD fee token
         let token_in = DEFAULT_FEE_TOKEN;
         let token_out = address!("0x20C0000000000000000000000000000000000001");
 
         // Test swapExactAmountIn
-        let call = IStablecoinExchange::swapExactAmountInCall {
+        let call = IStablecoinDEX::swapExactAmountInCall {
             tokenIn: token_in,
             tokenOut: token_out,
             amountIn: 1000,
@@ -534,7 +534,7 @@ mod tests {
 
         let tx_env = TxEnv {
             data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
             caller,
             ..Default::default()
         };
@@ -548,7 +548,7 @@ mod tests {
         assert_eq!(token, token_in);
 
         // Test swapExactAmountOut
-        let call = IStablecoinExchange::swapExactAmountOutCall {
+        let call = IStablecoinDEX::swapExactAmountOutCall {
             tokenIn: token_in,
             tokenOut: token_out,
             amountOut: 900,
@@ -557,7 +557,7 @@ mod tests {
 
         let tx_env = TxEnv {
             data: call.abi_encode().into(),
-            kind: TxKind::Call(STABLECOIN_EXCHANGE_ADDRESS),
+            kind: TxKind::Call(STABLECOIN_DEX_ADDRESS),
             caller,
             ..Default::default()
         };
@@ -575,15 +575,13 @@ mod tests {
 
     #[test]
     fn test_read_token_balance_typed_storage() -> eyre::Result<()> {
-        // Create a TIP-20 token address
-        let token_id = 1u64;
-        let token_address = tip20::token_id_to_address(token_id);
+        let token_address = PATH_USD_ADDRESS;
         let account = Address::random();
         let expected_balance = U256::from(1000u64);
 
         // Set up CacheDB with balance
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-        let balance_slot = TIP20Token::new(token_id).balances.at(account).slot();
+        let balance_slot = TIP20Token::from_address(token_address)?.balances[account].slot();
         db.insert_account_storage(token_address, balance_slot, expected_balance)?;
 
         // Read balance using typed storage

@@ -64,3 +64,46 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reth_primitives_traits::SealedHeader;
+    use reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv;
+    use tempo_primitives::TempoHeader;
+
+    #[test]
+    fn test_build_pending_env() {
+        let gas_limit = 30_000_000u64;
+        let timestamp_millis_part = 500u64;
+
+        let parent_header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 10,
+                timestamp: 1000,
+                gas_limit,
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part,
+            shared_gas_limit: 3_000_000,
+        };
+        let parent = SealedHeader::seal_slow(parent_header);
+        let pending_env = TempoNextBlockEnvAttributes::build_pending_env(&parent);
+
+        // Verify gas limits are computed correctly
+        let expected_shared_gas_limit = gas_limit / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
+        assert_eq!(pending_env.shared_gas_limit, expected_shared_gas_limit);
+
+        // general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        let expected_general_gas_limit =
+            (gas_limit - expected_shared_gas_limit) / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
+        assert_eq!(pending_env.general_gas_limit, expected_general_gas_limit);
+
+        // Verify timestamp_millis_part is carried from parent
+        assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
+
+        // Verify subblock_fee_recipients is empty by default
+        assert!(pending_env.subblock_fee_recipients.is_empty());
+    }
+}
