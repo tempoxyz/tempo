@@ -166,15 +166,23 @@ pub fn delete_from_word(current: U256, offset: usize, bytes: usize) -> Result<U2
 }
 
 /// Calculate which slot an array element at index `idx` starts in.
+///
+/// Elements cannot span slot boundaries, so we compute how many elements fit
+/// per slot and use that to determine the slot index.
 #[inline]
 pub const fn calc_element_slot(idx: usize, elem_bytes: usize) -> usize {
-    (idx * elem_bytes) / 32
+    let elems_per_slot = 32 / elem_bytes;
+    idx / elems_per_slot
 }
 
 /// Calculate the byte offset within a slot for an array element at index `idx`.
+///
+/// Elements are packed from offset 0 within each slot, with potential unused
+/// bytes at slot ends when `elem_bytes` doesn't divide 32 evenly.
 #[inline]
 pub const fn calc_element_offset(idx: usize, elem_bytes: usize) -> usize {
-    (idx * elem_bytes) % 32
+    let elems_per_slot = 32 / elem_bytes;
+    (idx % elems_per_slot) * elem_bytes
 }
 
 /// Calculate the element location within a slot for an array element at index `idx`.
@@ -188,9 +196,12 @@ pub const fn calc_element_loc(idx: usize, elem_bytes: usize) -> FieldLocation {
 }
 
 /// Calculate the total number of slots needed for an array.
+///
+/// Accounts for wasted bytes at slot ends when elements don't divide 32 evenly.
 #[inline]
 pub const fn calc_packed_slot_count(n: usize, elem_bytes: usize) -> usize {
-    (n * elem_bytes).div_ceil(32)
+    let elems_per_slot = 32 / elem_bytes;
+    n.div_ceil(elems_per_slot)
 }
 
 /// Test helper function for constructing EVM words from hex string literals.
@@ -272,8 +283,8 @@ mod tests {
 
         // Address array (20 bytes per element)
         assert_eq!(calc_element_slot(0, 20), 0);
-        assert_eq!(calc_element_slot(1, 20), 0);
-        assert_eq!(calc_element_slot(2, 20), 1); // 40 bytes = 2 slots
+        assert_eq!(calc_element_slot(1, 20), 1);
+        assert_eq!(calc_element_slot(2, 20), 2);
     }
 
     #[test]
@@ -290,10 +301,10 @@ mod tests {
         assert_eq!(calc_element_offset(15, 2), 30);
         assert_eq!(calc_element_offset(16, 2), 0);
 
-        // address array
+        // Address array
         assert_eq!(calc_element_offset(0, 20), 0);
-        assert_eq!(calc_element_offset(1, 20), 20);
-        assert_eq!(calc_element_offset(2, 20), 8);
+        assert_eq!(calc_element_offset(1, 20), 0);
+        assert_eq!(calc_element_offset(2, 20), 0);
     }
 
     #[test]
@@ -308,10 +319,49 @@ mod tests {
         assert_eq!(calc_packed_slot_count(16, 2), 1); // [u16; 16] = 32 bytes
         assert_eq!(calc_packed_slot_count(17, 2), 2); // [u16; 17] = 34 bytes
 
-        // address array
-        assert_eq!(calc_packed_slot_count(1, 20), 1); // [Address; 1] = 20 bytes
-        assert_eq!(calc_packed_slot_count(2, 20), 2); // [Address; 2] = 40 bytes
-        assert_eq!(calc_packed_slot_count(3, 20), 2); // [Address; 3] = 60 bytes
+        // Address array
+        assert_eq!(calc_packed_slot_count(1, 20), 1);
+        assert_eq!(calc_packed_slot_count(2, 20), 2);
+        assert_eq!(calc_packed_slot_count(3, 20), 3);
+    }
+
+    #[test]
+    fn test_calc_element_loc_non_divisor_sizes() {
+        // FixedBytes<11>: 32/11 = 2 elements per slot
+        assert_eq!(calc_element_slot(0, 11), 0);
+        assert_eq!(calc_element_slot(1, 11), 0);
+        assert_eq!(calc_element_slot(2, 11), 1);
+        assert_eq!(calc_element_slot(3, 11), 1);
+        assert_eq!(calc_element_slot(4, 11), 2);
+
+        assert_eq!(calc_element_offset(0, 11), 0);
+        assert_eq!(calc_element_offset(1, 11), 11);
+        assert_eq!(calc_element_offset(2, 11), 0);
+        assert_eq!(calc_element_offset(3, 11), 11);
+        assert_eq!(calc_element_offset(4, 11), 0);
+
+        assert_eq!(calc_packed_slot_count(1, 11), 1);
+        assert_eq!(calc_packed_slot_count(2, 11), 1);
+        assert_eq!(calc_packed_slot_count(3, 11), 2);
+        assert_eq!(calc_packed_slot_count(4, 11), 2);
+        assert_eq!(calc_packed_slot_count(5, 11), 3);
+    }
+
+    #[test]
+    fn test_offset_never_exceeds_slot_boundary() {
+        // For any packable size, offset + size must never exceed 32
+        for elem_bytes in 1..=32 {
+            for idx in 0..10 {
+                let offset = calc_element_offset(idx, elem_bytes);
+                assert!(
+                    offset + elem_bytes <= 32,
+                    "elem_bytes={}, idx={}, offset={} would cross slot boundary",
+                    elem_bytes,
+                    idx,
+                    offset
+                );
+            }
+        }
     }
 
     #[test]
@@ -1098,12 +1148,15 @@ mod tests {
         fn proptest_element_slot_offset_consistency_address(
             idx in 0usize..100,
         ) {
-            // For address arrays (20 bytes per element)
+            // Address arrays (20 bytes per element)
             let slot = calc_element_slot(idx, 20);
             let offset = calc_element_offset(idx, 20);
+            let elems_per_slot = 32 / 20; // = 1
 
-            prop_assert_eq!(slot * 32 + offset, idx * 20);
-            prop_assert!(offset < 32);
+            // With 1 address per slot, slot == idx and offset == 0
+            prop_assert_eq!(slot, idx / elems_per_slot);
+            prop_assert_eq!(offset, (idx % elems_per_slot) * 20);
+            prop_assert!(offset + 20 <= 32); // Never spans slot boundary
         }
 
         #[test]
@@ -1112,18 +1165,18 @@ mod tests {
             elem_bytes in 1usize..=32,
         ) {
             let slot_count = calc_packed_slot_count(n, elem_bytes);
-            let total_bytes = n * elem_bytes;
-            let min_slots = total_bytes.div_ceil(32);
+            let elems_per_slot = 32 / elem_bytes;
+            let expected = n.div_ceil(per_slot);
 
             // Verify the calculated slot count is correct
-            prop_assert_eq!(slot_count, min_slots);
+            prop_assert_eq!(slot_count, expected);
 
-            // Verify it's sufficient to hold all bytes
-            prop_assert!(slot_count * 32 >= total_bytes);
+            // Verify it's sufficient to hold all elements
+            prop_assert!(slot_count * elems_per_slot >= n);
 
-            // Verify it's not over-allocated (no more than 31 wasted bytes)
+            // Verify it's not over-allocated (no more than elems_per_slot - 1 wasted elements)
             if slot_count > 0 {
-                prop_assert!(slot_count * 32 - total_bytes < 32);
+                prop_assert!(slot_count * elems_per_slot - n < elems_per_slot);
             }
         }
     }
