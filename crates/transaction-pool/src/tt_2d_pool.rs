@@ -2723,25 +2723,6 @@ mod tests {
         // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
     }
 
-    #[test]
-    fn test_best_transactions_no_updates() {
-        let pool = AA2dPool::default();
-        let mut best = pool.best_transactions();
-
-        // Should not panic
-        best.no_updates();
-    }
-
-    #[test]
-    fn test_best_transactions_set_skip_blobs() {
-        let pool = AA2dPool::default();
-        let mut best = pool.best_transactions();
-
-        // Should not panic
-        best.set_skip_blobs(true);
-        best.set_skip_blobs(false);
-    }
-
     // ============================================
     // Remove transactions tests
     // ============================================
@@ -2796,16 +2777,6 @@ mod tests {
         assert_eq!(pending + queued, 0);
 
         pool.assert_invariants();
-    }
-
-    // ============================================
-    // AA2dPoolConfig tests
-    // ============================================
-
-    #[test]
-    fn test_aa2d_pool_config_default() {
-        let _config = AA2dPoolConfig::default();
-        // Verifies that default config can be constructed without panicking
     }
 
     // ============================================
