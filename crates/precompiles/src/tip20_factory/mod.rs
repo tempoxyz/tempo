@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_token_reserved_address() -> eyre::Result<()> {
+    fn test_first_create_token_reserved_address_required_address_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
