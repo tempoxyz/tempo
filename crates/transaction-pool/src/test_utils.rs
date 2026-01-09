@@ -50,6 +50,9 @@ pub(crate) struct TxBuilder {
     value: U256,
     max_priority_fee_per_gas: u128,
     max_fee_per_gas: u128,
+    fee_token: Option<Address>,
+    valid_after: Option<u64>,
+    valid_before: Option<u64>,
 }
 
 impl Default for TxBuilder {
@@ -63,6 +66,9 @@ impl Default for TxBuilder {
             value: U256::ZERO,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
+            fee_token: None,
+            valid_after: None,
+            valid_before: None,
         }
     }
 }
@@ -120,6 +126,24 @@ impl TxBuilder {
         self
     }
 
+    /// Set the fee token (AA transactions only).
+    pub(crate) fn fee_token(mut self, fee_token: Address) -> Self {
+        self.fee_token = Some(fee_token);
+        self
+    }
+
+    /// Set the valid_after timestamp (AA transactions only).
+    pub(crate) fn valid_after(mut self, valid_after: u64) -> Self {
+        self.valid_after = Some(valid_after);
+        self
+    }
+
+    /// Set the valid_before timestamp (AA transactions only).
+    pub(crate) fn valid_before(mut self, valid_before: u64) -> Self {
+        self.valid_before = Some(valid_before);
+        self
+    }
+
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
         let tx = TempoTransaction {
@@ -134,10 +158,10 @@ impl TxBuilder {
             }],
             nonce_key: self.nonce_key,
             nonce: self.nonce,
-            fee_token: None,
+            fee_token: self.fee_token,
             fee_payer_signature: None,
-            valid_after: None,
-            valid_before: None,
+            valid_after: self.valid_after,
+            valid_before: self.valid_before,
             access_list: Default::default(),
             tempo_authorization_list: vec![],
             key_authorization: None,
