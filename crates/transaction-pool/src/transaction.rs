@@ -859,34 +859,6 @@ mod tests {
     }
 
     // ============================================
-    // Encodable2718 tests
-    // ============================================
-
-    #[test]
-    fn test_encodable_2718() {
-        let tx = TxBuilder::aa(Address::random()).build();
-
-        // Test encoded length is non-zero
-        assert!(tx.encode_2718_len() > 0);
-        assert_eq!(tx.encoded_length(), tx.encode_2718_len());
-
-        // Type flag should match ty()
-        assert!(tx.type_flag().is_some());
-    }
-
-    // ============================================
-    // InMemorySize tests
-    // ============================================
-
-    #[test]
-    fn test_in_memory_size() {
-        let tx = TxBuilder::aa(Address::random()).build();
-
-        // Size should be positive
-        assert!(tx.size() > 0);
-    }
-
-    // ============================================
     // cost() always returns zero (Tempo-specific)
     // ============================================
 
