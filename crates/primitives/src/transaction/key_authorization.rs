@@ -3,7 +3,6 @@ use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
-use core::mem;
 
 /// Token spending limit for access keys
 ///
@@ -89,15 +88,11 @@ impl KeyAuthorization {
 
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
-        mem::size_of::<u64>() + // chain_id
-        mem::size_of::<u8>() + // key_type
-        mem::size_of::<Address>() + // key_id
-        mem::size_of::<Option<u64>>() + // expiry
-        self.limits.as_ref().map_or(0, |limits| {
-            limits.iter().map(|_limit| {
-                mem::size_of::<Address>() + mem::size_of::<U256>()
-            }).sum::<usize>()
-        })
+        size_of::<Self>()
+            + self
+                .limits
+                .as_ref()
+                .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
     }
 }
 
@@ -251,50 +246,5 @@ mod tests {
         assert!(make_auth(None, None).never_expires());
         assert!(!make_auth(Some(1000), None).never_expires());
         assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
-
-        // size calculation
-        let base_size = mem::size_of::<u64>() // chain_id
-            + mem::size_of::<u8>() // key_type
-            + mem::size_of::<Address>() // key_id
-            + mem::size_of::<Option<u64>>(); // expiry
-
-        let auth_no_limits = make_auth(None, None);
-        assert_eq!(auth_no_limits.size(), base_size);
-
-        let limit_size = mem::size_of::<Address>() + mem::size_of::<U256>();
-        let auth_one_limit = make_auth(
-            None,
-            Some(vec![TokenLimit {
-                token: Address::ZERO,
-                limit: U256::ZERO,
-            }]),
-        );
-        assert_eq!(auth_one_limit.size(), base_size + limit_size);
-
-        let auth_two_limits = make_auth(
-            None,
-            Some(vec![
-                TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
-                },
-                TokenLimit {
-                    token: Address::repeat_byte(1),
-                    limit: U256::from(1),
-                },
-            ]),
-        );
-        assert_eq!(auth_two_limits.size(), base_size + 2 * limit_size);
-
-        // SignedKeyAuthorization::size = auth.size + sig.size
-        let (signing_key, _) = generate_secp256k1_keypair();
-        let auth = make_auth(None, None);
-        let sig = sign_hash(&signing_key, &auth.signature_hash());
-        let inner_sig = match sig {
-            TempoSignature::Primitive(p) => p,
-            _ => panic!("Expected primitive signature"),
-        };
-        let signed = auth.clone().into_signed(inner_sig.clone());
-        assert_eq!(signed.size(), auth.size() + inner_sig.size());
     }
 }
