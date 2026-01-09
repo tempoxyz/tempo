@@ -449,7 +449,10 @@ impl<'b> ContractStorage for BookIterator<'b> {
     fn address(&self) -> Address {
         self.exchange_address
     }
-    fn storage(&mut self) -> &mut StorageCtx {
+    fn storage(&self) -> &StorageCtx {
+        &self.storage
+    }
+    fn storage_mut(&mut self) -> &mut StorageCtx {
         &mut self.storage
     }
 }
