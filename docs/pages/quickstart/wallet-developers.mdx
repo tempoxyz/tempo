@@ -10,9 +10,9 @@ import LucideWallet from '~icons/lucide/wallet'
 
 # Wallet Integration Guide
 
-Because there is [no native token on Tempo](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) and transaction fees are paid directly in stablecoins, wallets need specific UI and logic adjustments to support the network. Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
+Because there is [no native token on Tempo](https://docs.tempo.xyz/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) and transaction fees are paid directly in stablecoins, wallets need specific UI and logic adjustments to support the network. Follow this guide if your wallet logic and/or interfaces are dependent on the existence of a native token.
 
-As part of supporting Tempo in your wallet, you can also deliver an enhanced experience for your users by integrating [Tempo Transactions](/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
+As part of supporting Tempo in your wallet, you can also deliver an enhanced experience for your users by integrating [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction). Common use cases include enabling a gasless transactions for your users, letting your users decide what token to use for fees, and more.
 
 ## Steps
 
@@ -23,7 +23,7 @@ As part of supporting Tempo in your wallet, you can also deliver an enhanced exp
 If you use `eth_getBalance` to validate a user's balance, you should instead check the user's account fee token balance on Tempo. Additionally, you should not display any "native balance" in your UI for Tempo users.
 
 :::info
-In testnet, `eth_getBalance` [returns a large placeholder value](/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) for the native token balance to unblock existing assumptions wallets have about the native token balance.
+In testnet, `eth_getBalance` [returns a large placeholder value](https://docs.tempo.xyz/quickstart/evm-compatibility#handling-eth-native-token-balance-checks) for the native token balance to unblock existing assumptions wallets have about the native token balance.
 :::
 
 :::code-group
@@ -57,7 +57,7 @@ On Tempo, users can pay fees in any supported stablecoin. You should quote gas/f
 :::info
 As a wallet developer, you can set the fee token for your user at the account level.
 
-If you don't, Tempo uses a cascading fee token selection algorithm to determine the fee token for a transaction – learn more about [Fee Token Preferences](/protocol/fees/spec-fee#fee-token-preferences).
+If you don't, Tempo uses a cascading fee token selection algorithm to determine the fee token for a transaction – learn more about [Fee Token Preferences](https://docs.tempo.xyz/protocol/fees#fee-token-preferences).
 :::
 
 ### Display token and network assets
@@ -69,13 +69,13 @@ Tempo provides a public tokenlist service that hosts token and network assets. Y
 
 ### Integrate Tempo Transactions
 
-We strongly recommend using [Tempo Transactions](/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](/guide/tempo-transaction#integration-guides) available to get you integrated in less than an hour!
+We strongly recommend using [Tempo Transactions](https://docs.tempo.xyz/guide/tempo-transaction) if you control transaction submission. We have [SDKs and guides](https://docs.tempo.xyz/guide/tempo-transaction#integration-guides) available to get you integrated in less than an hour!
 
 :::tip
 Use Tempo Transactions to
-- Set the fee token used for your users' transactions ([guide](/guide/payments/pay-fees-in-any-stablecoin))
-- Sponsor transaction fees for your users ([guide](/guide/payments/sponsor-user-fees))
-- Send concurrent transactions with independent nonces ([guide](/guide/payments/send-parallel-transactions))
+- Set the fee token used for your users' transactions ([guide](https://docs.tempo.xyz/guide/payments/pay-fees-in-any-stablecoin))
+- Sponsor transaction fees for your users ([guide](https://docs.tempo.xyz/guide/payments/sponsor-user-fees))
+- Send concurrent transactions with independent nonces ([guide](https://docs.tempo.xyz/guide/payments/send-parallel-transactions))
 :::
 ::::
 
