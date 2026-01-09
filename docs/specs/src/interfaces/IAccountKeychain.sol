@@ -75,6 +75,7 @@ interface IAccountKeychain {
     error SpendingLimitExceeded();
     error InvalidSignatureType();
     error ZeroPublicKey();
+    error ExpiryInPast();
     error UnauthorizedCaller();
 
     /*//////////////////////////////////////////////////////////////
@@ -87,7 +88,7 @@ interface IAccountKeychain {
      *      The protocol enforces this restriction by checking transactionKey[msg.sender]
      * @param keyId The key identifier (address) to authorize
      * @param signatureType Signature type of the key (0: Secp256k1, 1: P256, 2: WebAuthn)
-     * @param expiry Unix timestamp when key expires (0 = never expires)
+     * @param expiry Unix timestamp when key expires (use type(uint64).max for never expires)
      * @param enforceLimits Whether to enforce spending limits for this key
      * @param limits Initial spending limits for tokens (only used if enforceLimits is true)
      */

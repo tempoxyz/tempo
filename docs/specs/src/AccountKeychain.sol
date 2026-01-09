@@ -78,6 +78,11 @@ contract AccountKeychain is IAccountKeychain {
             revert ZeroPublicKey();
         }
 
+        // Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
+        if (expiry <= block.timestamp) {
+            revert ExpiryInPast();
+        }
+
         // Check if key already exists (key exists if expiry > 0)
         AuthorizedKey storage existingKey = keys[msg.sender][keyId];
         if (existingKey.expiry > 0) {
