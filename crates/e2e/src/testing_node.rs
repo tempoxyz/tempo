@@ -50,9 +50,16 @@ where
     pub execution_config: ExecutionNodeConfig,
     /// Database instance for the execution node
     pub execution_database: Option<Arc<DatabaseEnv>>,
+    /// The execution node name assigned at initialization. Important when
+    /// constructing the datadir at which to find the node.
+    pub execution_node_name: String,
     /// Last block number in database when stopped (used for restart verification)
     pub last_db_block_on_stop: Option<u64>,
+    /// Network address of the node. Used for execution the validator-config
+    /// addValidator contract call.
     pub network_address: SocketAddr,
+    /// The chain address of the node. Used for executing validator-config smart
+    /// contract calls.
     pub chain_address: Address,
 }
 
@@ -81,6 +88,7 @@ where
             .nodes_dir()
             .join(execution_runtime::execution_node_name(&public_key));
 
+        let execution_node_name = execution_runtime::execution_node_name(&public_key);
         Self {
             uid,
             public_key,
@@ -91,6 +99,7 @@ where
             execution_node_datadir,
             execution_runtime,
             execution_config,
+            execution_node_name,
             execution_database: None,
             last_db_block_on_stop: None,
             network_address,
@@ -167,7 +176,7 @@ where
         let execution_node = self
             .execution_runtime
             .spawn_node(
-                &execution_runtime::execution_node_name(&self.public_key),
+                &self.execution_node_name,
                 self.execution_config.clone(),
                 self.execution_database.as_ref().unwrap().clone(),
             )

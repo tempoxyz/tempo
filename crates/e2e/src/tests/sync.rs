@@ -18,7 +18,6 @@ use reth_ethereum::provider::BlockNumReader as _;
 
 use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 
-#[ignore = "the mechanism to fake an advanced start currently fails with a database inconsistency"]
 #[test_traced]
 fn joins_from_snapshot() {
     let _ = tempo_eyre::install();
@@ -144,24 +143,18 @@ fn joins_from_snapshot() {
         receiver.uid = donor.uid;
         receiver.public_key = donor.public_key;
         receiver.consensus_config = donor.consensus_config;
-        receiver.execution_config = donor.execution_config;
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
-
-        // FIXME: currently fails with a panic:
-        // > thread '<unnamed>' (1596006) panicked at /Users/janis/.cargo/git/checkouts/reth-e231042ee7db3fb7/d76babb/crates/node/builder/src/launch/common.rs:511:13:
-        // > assertion `left != right` failed: A static file <> database inconsistency was found that would trigger an unwind to block 0
-        // >   left: Unwind(0)
-        // >  right: Unwind(0)
-        // > note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
-        // >
-        // > thread 'tests::sync::joins_from_snapshot' (1596002) panicked at crates/e2e/src/testing_node.rs:175:14:
-        // > must be able to spawn execution node: the execution runtime dropped the response channel before sending an execution node
         receiver.start().await;
 
-        tracing::info!("started the validator with a changed identity");
+        tracing::info!(
+            uid = %receiver.uid,
+            "started the validator with a changed identity",
+        );
 
         loop {
+            context.sleep(Duration::from_secs(1)).await;
+
             let metrics = context.encode();
             let mut validators_at_epoch = 0;
 
@@ -177,26 +170,24 @@ fn joins_from_snapshot() {
                 // Check if this is a height metric
                 if metric.ends_with("_epoch_manager_latest_epoch") {
                     let epoch = value.parse::<u64>().unwrap();
-                    if epoch >= last_epoch_before_stop.get() {
+
+                    if epoch > last_epoch_before_stop.get() {
                         validators_at_epoch += 1;
                     }
-                }
 
-                if metrics.ends_with("_epoch_manager_latest_epoch")
-                    && metric.contains(&receiver.uid)
-                {
-                    let epoch = value.parse::<u64>().unwrap();
-                    assert!(
-                        epoch >= last_epoch_before_stop.get(),
-                        "when starting from snapshot, older epochs must never \
-                        had consensus engines running"
-                    );
+                    if metric.contains(&receiver.uid) {
+                        assert!(
+                            epoch >= last_epoch_before_stop.get(),
+                            "when starting from snapshot, older epochs must never \
+                            had consensus engines running"
+                        );
+                    }
                 }
             }
             if validators_at_epoch == 4 {
+                std::fs::write("metrics", metrics).unwrap();
                 break;
             }
-            context.sleep(Duration::from_secs(1)).await;
         }
     });
 }
@@ -215,10 +206,10 @@ async fn wait_for_participants(context: &Context, target: u32) {
             let value = parts.next().unwrap();
 
             // Check if this is a height metric
-            if metric.ends_with("_epoch_manager_latest_participants") {
-                if value.parse::<u32>().unwrap() == target {
-                    return;
-                }
+            if metric.ends_with("_epoch_manager_latest_participants")
+                && value.parse::<u32>().unwrap() == target
+            {
+                return;
             }
         }
         context.sleep(Duration::from_secs(1)).await;
