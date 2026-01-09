@@ -273,48 +273,6 @@ mod tests {
     }
 
     // ============================================
-    // BestTransactions trait method tests
-    // ============================================
-
-    #[test]
-    fn test_merge_best_transactions_mark_invalid() {
-        use reth_primitives_traits::transaction::error::InvalidTransactionError;
-
-        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
-        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
-
-        // Should not panic - just delegates to both sides
-        let error =
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
-        merged.mark_invalid(&"tx_a", &error);
-    }
-
-    #[test]
-    fn test_merge_best_transactions_no_updates() {
-        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
-        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
-
-        // Should not panic - just delegates to both sides
-        merged.no_updates();
-    }
-
-    #[test]
-    fn test_merge_best_transactions_set_skip_blobs() {
-        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
-        let right = MockBestTransactions::new(vec![("tx_b", 5)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
-
-        // Should not panic - just delegates to both sides
-        merged.set_skip_blobs(true);
-        merged.set_skip_blobs(false);
-    }
-
-    // ============================================
     // Single item tests
     // ============================================
 

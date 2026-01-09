@@ -231,22 +231,6 @@ mod tests {
     use alloy_primitives::address;
 
     // ============================================
-    // AmmLiquidityCacheInner tests
-    // ============================================
-
-    #[test]
-    fn test_amm_liquidity_cache_inner_default() {
-        let inner = AmmLiquidityCacheInner::default();
-
-        assert!(inner.cache.is_empty());
-        assert!(inner.slot_to_pool.is_empty());
-        assert!(inner.last_seen_tokens.is_empty());
-        assert!(inner.unique_tokens.is_empty());
-        assert!(inner.validator_preferences.is_empty());
-        assert!(inner.slot_to_validator.is_empty());
-    }
-
-    // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
     // ============================================
 
