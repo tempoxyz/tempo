@@ -239,6 +239,10 @@ pub trait Packable: FromWord + StorableType {}
 
 /// Trait for primitive types that fit into a single EVM storage slot.
 ///
+/// Conversions preserve the byte representation as stored in EVM storage slots
+/// (right-aligned / low bytes). This is not a numeric cast - it matches how
+/// the EVM and Solidity lay out values within storage slots.
+///
 /// # Warning
 ///
 /// Round-trip conversions must preserve data: `from_word(to_word(x)) == x`
