@@ -457,10 +457,16 @@ where
             .await
             .wrap_err("unable to prune events journal")?;
 
-        // Figure out the *previous* state and determine whether we can prune.
+        // Cannot map epochs directly to segments like in the events journal.
+        // Need to first check what the epoch of the state is and go from there.
+        //
+        // size-2 to ensure that there is always something at the tip.
         if let Some(previous_segment) = self.states.size().checked_sub(2)
             && let Ok(previous_state) = self.states.read(previous_segment).await
         {
+            // NOTE: this does not cover the segment at size-3. In theory it
+            // could be state-3.epoch >= up_to_epoch, but that's ok as long
+            // as state-2 does not get pruned.
             let to_prune = if previous_state.epoch >= up_to_epoch {
                 previous_segment
             } else {
