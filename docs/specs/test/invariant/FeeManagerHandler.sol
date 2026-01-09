@@ -14,6 +14,11 @@ import { console } from "forge-std/console.sol";
 /// @dev Simulates fee collection flows manually since collectFeePreTx/PostTx require msg.sender == address(0)
 contract FeeManagerHandler is CommonBase, StdCheats, StdUtils {
 
+    // Storage slot for collectedFees mapping in FeeManager
+    // FeeAMM: slot 0 (pools), slot 1 (totalSupply), slot 2 (liquidityBalances)
+    // FeeManager: slot 3 (validatorTokens), slot 4 (userTokens), slot 5 (collectedFees)
+    uint256 internal constant COLLECTED_FEES_SLOT = 5;
+
     FeeManager public feeManager;
     TIP20 public userToken;
     TIP20 public validatorToken;
@@ -98,12 +103,30 @@ contract FeeManagerHandler is CommonBase, StdCheats, StdUtils {
         }
 
         // Same token scenario: fees go directly to collectedFees
-        // We can't directly update collectedFees mapping, so we track it in ghost state
+        // Use vm.store to write to the actual collectedFees mapping
+        _storeCollectedFees(validator, address(userToken), actualUsed);
+
+        // Track in ghost state for invariant checking
         ghost_totalFeesCollected += actualUsed;
         ghost_validatorFees[validator] += actualUsed;
 
         sameTokenFeeCalls++;
         console.log("sameTokenFeeCalls incremented to:", sameTokenFeeCalls);
+    }
+
+    /// @notice Calculate storage slot for collectedFees[validator][token]
+    /// @dev collectedFees is mapping(address => mapping(address => uint256)) at slot 5
+    function _getCollectedFeesSlot(address validator, address token) internal pure returns (bytes32) {
+        // For nested mapping: keccak256(token . keccak256(validator . slot))
+        bytes32 innerSlot = keccak256(abi.encode(validator, COLLECTED_FEES_SLOT));
+        return keccak256(abi.encode(token, innerSlot));
+    }
+
+    /// @notice Store value in collectedFees[validator][token] using vm.store
+    function _storeCollectedFees(address validator, address token, uint256 amount) internal {
+        bytes32 slot = _getCollectedFeesSlot(validator, token);
+        uint256 currentValue = uint256(vm.load(address(feeManager), slot));
+        vm.store(address(feeManager), slot, bytes32(currentValue + amount));
     }
 
     /// @notice Distribute accumulated fees to a validator
@@ -115,8 +138,10 @@ contract FeeManagerHandler is CommonBase, StdCheats, StdUtils {
         uint256 ghostAmount = ghost_validatorFees[validator];
         if (ghostAmount == 0) return;
 
-        // In real scenario, this would call feeManager.distributeFees
-        // Since we're simulating, we just track the distribution
+        // Call the actual feeManager.distributeFees
+        feeManager.distributeFees(validator, address(userToken));
+
+        // Update ghost state to track distribution
         ghost_totalFeesDistributed += ghostAmount;
         ghost_validatorFees[validator] = 0;
 
