@@ -271,6 +271,40 @@ contract AccountKeychainTest is BaseTest {
         vm.stopPrank();
     }
 
+    function test_AuthorizeKey_RevertExpiryInPast() public {
+        vm.startPrank(alice);
+
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
+
+        // Test with expiry = 0 (in the past)
+        try keychain.authorizeKey(
+            aliceAccessKey,
+            IAccountKeychain.SignatureType.P256,
+            0, // Zero expiry is in the past
+            false,
+            limits
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IAccountKeychain.ExpiryInPast.selector));
+        }
+
+        // Test with expiry = 1 (also in the past)
+        try keychain.authorizeKey(
+            aliceAccessKey,
+            IAccountKeychain.SignatureType.P256,
+            1, // Very old timestamp - also in the past
+            false,
+            limits
+        ) {
+            revert CallShouldHaveReverted();
+        } catch (bytes memory err) {
+            assertEq(err, abi.encodeWithSelector(IAccountKeychain.ExpiryInPast.selector));
+        }
+
+        vm.stopPrank();
+    }
+
     function test_AuthorizeKey_RevertKeyAlreadyExists() public {
         vm.startPrank(alice);
 
@@ -590,13 +624,15 @@ contract AccountKeychainTest is BaseTest {
 
         // Same keyId for two different accounts
         address sharedKeyId = address(0x9999);
+        uint64 expiry1 = uint64(block.timestamp + 100);
+        uint64 expiry2 = uint64(block.timestamp + 200);
 
         vm.prank(alice);
-        keychain.authorizeKey(sharedKeyId, IAccountKeychain.SignatureType.P256, 100, true, limits1);
+        keychain.authorizeKey(sharedKeyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
 
         vm.prank(bob);
         keychain.authorizeKey(
-            sharedKeyId, IAccountKeychain.SignatureType.Secp256k1, 200, true, limits2
+            sharedKeyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2
         );
 
         // Verify keys are isolated per account
@@ -605,8 +641,8 @@ contract AccountKeychainTest is BaseTest {
 
         assertEq(uint8(info1.signatureType), 1); // P256
         assertEq(uint8(info2.signatureType), 0); // Secp256k1
-        assertEq(info1.expiry, 100);
-        assertEq(info2.expiry, 200);
+        assertEq(info1.expiry, expiry1);
+        assertEq(info2.expiry, expiry2);
 
         // Verify spending limits are isolated
         assertEq(keychain.getRemainingLimit(alice, sharedKeyId, USDC), 1000e6);
@@ -884,12 +920,15 @@ contract AccountKeychainTest is BaseTest {
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
         limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6 });
 
+        uint64 expiry1 = uint64(block.timestamp + 100);
+        uint64 expiry2 = uint64(block.timestamp + 200);
+
         // Authorize same keyId for two different accounts
         vm.prank(account1);
-        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, 100, true, limits1);
+        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.P256, expiry1, true, limits1);
 
         vm.prank(account2);
-        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.Secp256k1, 200, true, limits2);
+        keychain.authorizeKey(keyId, IAccountKeychain.SignatureType.Secp256k1, expiry2, true, limits2);
 
         // Verify keys are isolated per account
         IAccountKeychain.KeyInfo memory info1 = keychain.getKey(account1, keyId);
@@ -897,8 +936,8 @@ contract AccountKeychainTest is BaseTest {
 
         assertEq(uint8(info1.signatureType), 1); // P256
         assertEq(uint8(info2.signatureType), 0); // Secp256k1
-        assertEq(info1.expiry, 100);
-        assertEq(info2.expiry, 200);
+        assertEq(info1.expiry, expiry1);
+        assertEq(info2.expiry, expiry2);
 
         // Verify spending limits are isolated
         assertEq(keychain.getRemainingLimit(account1, keyId, USDC), 1000e6);
