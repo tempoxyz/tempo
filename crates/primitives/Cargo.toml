@@ -44,6 +44,9 @@ reth-codecs.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 rand = "0.9"
 serde_json.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

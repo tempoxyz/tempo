@@ -211,37 +211,80 @@ impl PayloadAttributes for TempoPayloadAttributes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy_rpc_types_eth::Withdrawal;
 
-    #[test]
-    fn test_attributes_without_extra_data() {
-        let parent = B256::default();
-        let id = PayloadId::default();
-        let recipient = Address::default();
-        let timestamp_millis = 1000;
+    trait TestExt: Sized {
+        fn random() -> Self;
+        fn with_timestamp(self, millis: u64) -> Self;
+        fn with_subblocks(
+            self,
+            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
+        ) -> Self;
+    }
 
-        let attrs = TempoPayloadBuilderAttributes::new(
-            id,
-            parent,
-            recipient,
-            timestamp_millis,
-            Bytes::default(),
-            Vec::new,
-        );
+    impl TestExt for TempoPayloadBuilderAttributes {
+        fn random() -> Self {
+            Self::new(
+                PayloadId::default(),
+                B256::random(),
+                Address::random(),
+                1000,
+                Bytes::default(),
+                Vec::new,
+            )
+        }
 
-        assert_eq!(attrs.extra_data(), &Bytes::default());
-        assert_eq!(attrs.parent(), parent);
-        assert_eq!(attrs.suggested_fee_recipient(), recipient);
-        assert_eq!(attrs.timestamp(), 1); // 1000 ms / 1000 = 1 second
+        fn with_timestamp(mut self, millis: u64) -> Self {
+            self.inner.timestamp = millis / 1000;
+            self.timestamp_millis_part = millis % 1000;
+            self
+        }
+
+        fn with_subblocks(
+            mut self,
+            f: impl Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static,
+        ) -> Self {
+            self.subblocks = Arc::new(f);
+            self
+        }
     }
 
     #[test]
-    fn test_attributes_with_extra_data() {
-        let parent = B256::default();
-        let id = PayloadId::default();
-        let recipient = Address::default();
-        let timestamp_millis = 1000;
-        let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
+    fn test_interrupt_handle() {
+        // Default state
+        let handle = InterruptHandle::default();
+        assert!(!handle.is_interrupted());
 
+        // Interrupt sets flag
+        handle.interrupt();
+        assert!(handle.is_interrupted());
+
+        // Clone shares state
+        let handle2 = handle.clone();
+        assert!(handle2.is_interrupted());
+
+        // New handle via clone before interrupt
+        let fresh = InterruptHandle::default();
+        let cloned = fresh.clone();
+        assert!(!cloned.is_interrupted());
+        fresh.interrupt();
+        assert!(cloned.is_interrupted()); // shared atomic
+
+        // Multiple interrupts are idempotent
+        handle.interrupt();
+        handle.interrupt();
+        assert!(handle.is_interrupted());
+    }
+
+    #[test]
+    fn test_builder_attributes_construction() {
+        let parent = B256::random();
+        let id = PayloadId::new([1, 2, 3, 4, 5, 6, 7, 8]);
+        let recipient = Address::random();
+        let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
+        let timestamp_millis = 1500; // 1s + 500ms
+
+        // With extra_data
         let attrs = TempoPayloadBuilderAttributes::new(
             id,
             parent,
@@ -250,28 +293,237 @@ mod tests {
             extra_data.clone(),
             Vec::new,
         );
-
         assert_eq!(attrs.extra_data(), &extra_data);
         assert_eq!(attrs.parent(), parent);
         assert_eq!(attrs.suggested_fee_recipient(), recipient);
-    }
+        assert_eq!(attrs.payload_id(), id);
+        assert_eq!(attrs.timestamp(), 1);
+        assert_eq!(attrs.timestamp_millis_part(), 500);
 
-    #[test]
-    fn test_attributes_with_empty_extra_data() {
-        let parent = B256::default();
-        let id = PayloadId::default();
-        let recipient = Address::default();
-        let timestamp_millis = 1000;
+        // Hardcoded in ::new()
+        assert_eq!(attrs.prev_randao(), B256::ZERO);
+        assert_eq!(attrs.parent_beacon_block_root(), Some(B256::ZERO));
+        assert!(attrs.withdrawals().is_empty());
 
-        let attrs = TempoPayloadBuilderAttributes::new(
+        // Without extra_data
+        let attrs2 = TempoPayloadBuilderAttributes::new(
             id,
             parent,
             recipient,
-            timestamp_millis,
+            timestamp_millis + 500, // 1.5 seconds + 500ms
             Bytes::default(),
             Vec::new,
         );
+        assert_eq!(attrs2.extra_data(), &Bytes::default());
+        assert_eq!(attrs2.timestamp(), 2);
+        assert_eq!(attrs2.timestamp_millis_part(), 0);
+    }
 
+    #[test]
+    fn test_builder_attributes_interrupt_integration() {
+        let attrs = TempoPayloadBuilderAttributes::random();
+
+        // Initially not interrupted
+        assert!(!attrs.is_interrupted());
+
+        // Get handle and interrupt
+        let handle = attrs.interrupt_handle().clone();
+        handle.interrupt();
+
+        // Both see interrupted state
+        assert!(attrs.is_interrupted());
+        assert!(handle.is_interrupted());
+
+        // Multiple handle accesses return same underlying state
+        let handle2 = attrs.interrupt_handle();
+        assert!(handle2.is_interrupted());
+    }
+
+    #[test]
+    fn test_builder_attributes_timestamp_handling() {
+        // Exact second boundary
+        let attrs = TempoPayloadBuilderAttributes::random().with_timestamp(3000);
+        assert_eq!(attrs.timestamp(), 3);
+        assert_eq!(attrs.timestamp_millis_part(), 0);
+        assert_eq!(attrs.timestamp_millis(), 3000);
+
+        // With milliseconds remainder
+        let attrs = TempoPayloadBuilderAttributes::random().with_timestamp(3999);
+        assert_eq!(attrs.timestamp(), 3);
+        assert_eq!(attrs.timestamp_millis_part(), 999);
+        assert_eq!(attrs.timestamp_millis(), 3999);
+
+        // Zero timestamp
+        let attrs = TempoPayloadBuilderAttributes::random().with_timestamp(0);
+        assert_eq!(attrs.timestamp(), 0);
+        assert_eq!(attrs.timestamp_millis_part(), 0);
+        assert_eq!(attrs.timestamp_millis(), 0);
+
+        // Large timestamp (no overflow due to saturating ops)
+        let large_ts = u64::MAX / 1000 * 1000;
+        let attrs = TempoPayloadBuilderAttributes::random().with_timestamp(large_ts + 500);
+        assert_eq!(attrs.timestamp_millis_part(), 500);
+        assert!(attrs.timestamp_millis() >= large_ts);
+    }
+
+    #[test]
+    fn test_builder_attributes_subblocks() {
+        use std::sync::atomic::AtomicUsize;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_clone = call_count.clone();
+
+        let attrs = TempoPayloadBuilderAttributes::random().with_subblocks(move || {
+            count_clone.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        });
+
+        // Closure invoked each call
+        assert_eq!(call_count.load(Ordering::SeqCst), 0);
+        let _ = attrs.subblocks();
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        let _ = attrs.subblocks();
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_from_eth_payload_builder_attributes() {
+        let eth_attrs = EthPayloadBuilderAttributes {
+            id: PayloadId::new([9, 8, 7, 6, 5, 4, 3, 2]),
+            parent: B256::random(),
+            timestamp: 1000,
+            suggested_fee_recipient: Address::random(),
+            prev_randao: B256::random(),
+            withdrawals: Withdrawals::new(vec![Withdrawal {
+                index: 1,
+                validator_index: 2,
+                address: Address::random(),
+                amount: 100,
+            }]),
+            parent_beacon_block_root: Some(B256::random()),
+        };
+
+        let tempo_attrs: TempoPayloadBuilderAttributes = eth_attrs.clone().into();
+
+        // Inner fields preserved
+        assert_eq!(tempo_attrs.payload_id(), eth_attrs.id);
+        assert_eq!(tempo_attrs.parent(), eth_attrs.parent);
+        assert_eq!(tempo_attrs.timestamp(), eth_attrs.timestamp);
+        assert_eq!(
+            tempo_attrs.suggested_fee_recipient(),
+            eth_attrs.suggested_fee_recipient
+        );
+        assert_eq!(tempo_attrs.prev_randao(), eth_attrs.prev_randao);
+        assert_eq!(tempo_attrs.withdrawals().len(), 1);
+        assert_eq!(
+            tempo_attrs.parent_beacon_block_root(),
+            eth_attrs.parent_beacon_block_root
+        );
+
+        // Tempo-specific defaults
+        assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
+        assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
+        assert!(!tempo_attrs.is_interrupted());
+        assert!(tempo_attrs.subblocks().is_empty());
+    }
+
+    #[test]
+    fn test_try_new_from_rpc_attributes() {
+        let rpc_attrs = TempoPayloadAttributes {
+            inner: EthPayloadAttributes {
+                timestamp: 100,
+                prev_randao: B256::random(),
+                suggested_fee_recipient: Address::random(),
+                withdrawals: Some(vec![]),
+                parent_beacon_block_root: Some(B256::random()),
+            },
+            timestamp_millis_part: 750,
+        };
+
+        let parent = B256::random();
+        let result = TempoPayloadBuilderAttributes::try_new(parent, rpc_attrs, 3);
+        assert!(result.is_ok());
+
+        let attrs = result.unwrap();
+        assert_eq!(attrs.parent(), parent);
+        assert_eq!(attrs.timestamp(), 100);
+        assert_eq!(attrs.timestamp_millis_part(), 750);
+        assert_eq!(attrs.timestamp_millis(), 100_750);
         assert_eq!(attrs.extra_data(), &Bytes::default());
+        assert!(!attrs.is_interrupted());
+    }
+
+    #[test]
+    fn test_tempo_payload_attributes_serde() {
+        let timestamp = 1234567890;
+        let timestamp_millis_part = 999;
+        let attrs = TempoPayloadAttributes {
+            inner: EthPayloadAttributes {
+                timestamp,
+                prev_randao: B256::ZERO,
+                suggested_fee_recipient: Address::random(),
+                withdrawals: Some(vec![]),
+                parent_beacon_block_root: Some(B256::random()),
+            },
+            timestamp_millis_part,
+        };
+
+        // Roundtrip
+        let json = serde_json::to_string(&attrs).unwrap();
+        assert!(json.contains("timestampMillisPart"));
+
+        let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.inner.timestamp, timestamp);
+        assert_eq!(deserialized.timestamp_millis_part, timestamp_millis_part);
+
+        // Deref works
+        assert_eq!(attrs.timestamp, timestamp);
+
+        // DerefMut works
+        let mut attrs = attrs;
+        attrs.timestamp = 123;
+        assert_eq!(attrs.inner.timestamp, 123);
+    }
+
+    #[test]
+    fn test_tempo_payload_attributes_trait_impl() {
+        let withdrawal_addr = Address::random();
+        let beacon_root = B256::random();
+
+        let attrs = TempoPayloadAttributes {
+            inner: EthPayloadAttributes {
+                timestamp: 9999,
+                prev_randao: B256::ZERO,
+                suggested_fee_recipient: Address::random(),
+                withdrawals: Some(vec![Withdrawal {
+                    index: 0,
+                    validator_index: 1,
+                    address: withdrawal_addr,
+                    amount: 500,
+                }]),
+                parent_beacon_block_root: Some(beacon_root),
+            },
+            timestamp_millis_part: 123,
+        };
+
+        // PayloadAttributes trait methods
+        assert_eq!(PayloadAttributes::timestamp(&attrs), 9999);
+        assert_eq!(attrs.withdrawals().unwrap().len(), 1);
+        assert_eq!(attrs.withdrawals().unwrap()[0].address, withdrawal_addr);
+        assert_eq!(attrs.parent_beacon_block_root(), Some(beacon_root));
+
+        // None cases
+        let attrs_none = TempoPayloadAttributes {
+            inner: EthPayloadAttributes {
+                timestamp: 1,
+                prev_randao: B256::ZERO,
+                suggested_fee_recipient: Address::random(),
+                withdrawals: None,
+                parent_beacon_block_root: None,
+            },
+            timestamp_millis_part: 0,
+        };
+        assert!(attrs_none.withdrawals().is_none());
+        assert!(attrs_none.parent_beacon_block_root().is_none());
     }
 }
