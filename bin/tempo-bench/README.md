@@ -165,19 +165,13 @@ The benchmark will continuously output performance metrics including transaction
 
 ## Quick Start
 
-### 1. Generate genesis.json
-
-```bash
-cargo x generate-genesis --accounts 50000 --output genesis.json
-```
-
-### 2. Start the Node
+### 1. Start the Node
 
 ```bash
 just localnet 50000
 ```
 
-### 3. Run max TPS benchmark
+### 2. Run max TPS benchmark
 
 ```bash
 tempo-bench run-max-tps --duration 15 --tps 20000 --faucet

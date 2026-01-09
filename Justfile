@@ -34,7 +34,18 @@ localnet accounts="1000" reset="true" profile="maxperf" features="asm-keccak" ar
         mkdir ./localnet/
         just genesis {{accounts}} ./localnet {{profile}}
     fi;
-    cargo run --bin tempo --profile {{profile}} --features {{features}} -- \
+    # Build the binary (cargo will only rebuild if source changed)
+    {{cargo_build_binary}} build --bin tempo --profile {{profile}} --features {{features}}
+    # Determine binary path based on profile
+    if [[ "{{profile}}" = "release" ]]; then
+        BINARY_PATH="./target/release/tempo"
+    elif [[ "{{profile}}" = "maxperf" ]]; then
+        BINARY_PATH="./target/maxperf/tempo"
+    else
+        BINARY_PATH="./target/debug/tempo"
+    fi
+    # Run the binary directly
+    ${BINARY_PATH} \
                       node \
                       --chain ./localnet/genesis.json \
                       --dev \
