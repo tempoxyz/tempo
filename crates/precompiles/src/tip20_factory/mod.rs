@@ -66,7 +66,7 @@ impl TIP20Factory {
         // Check if address would be in reserved range
         if lower_bytes < RESERVED_SIZE {
             return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::AddressReserved(ITIP20Factory::AddressReserved {}),
+                TIP20FactoryError::address_reserved(),
             ));
         }
 
@@ -99,9 +99,7 @@ impl TIP20Factory {
 
         if self.is_tip20(token_address)? {
             return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
-                    token: token_address,
-                }),
+                TIP20FactoryError::token_already_exists(token_address),
             ));
         }
 
@@ -120,7 +118,7 @@ impl TIP20Factory {
         // Check if address is in reserved range
         if lower_bytes < RESERVED_SIZE {
             return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::AddressReserved(ITIP20Factory::AddressReserved {}),
+                TIP20FactoryError::address_reserved(),
             ));
         }
 
@@ -167,9 +165,7 @@ impl TIP20Factory {
         // Validate that the address is not already deployed
         if self.is_tip20(address)? {
             return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::TokenAlreadyExists(ITIP20Factory::TokenAlreadyExists {
-                    token: address,
-                }),
+                TIP20FactoryError::token_already_exists(address),
             ));
         }
 
@@ -193,7 +189,7 @@ impl TIP20Factory {
         let lower_bytes = u64::from_be_bytes(padded);
         if lower_bytes >= RESERVED_SIZE {
             return Err(TempoPrecompileError::TIP20Factory(
-                TIP20FactoryError::AddressNotReserved(ITIP20Factory::AddressNotReserved {}),
+                TIP20FactoryError::address_not_reserved(),
             ));
         }
 
