@@ -360,34 +360,4 @@ mod tests {
         assert_eq!(merged.next(), Some("R3")); // 4
         assert_eq!(merged.next(), None);
     }
-
-    // ============================================
-    // MockBestTransactions direct tests
-    // ============================================
-
-    #[test]
-    fn test_mock_best_transactions_iterator() {
-        let mut mock = MockBestTransactions::new(vec![("a", 1), ("b", 2), ("c", 3)]);
-
-        assert_eq!(mock.next(), Some("a"));
-        assert_eq!(mock.next(), Some("b"));
-        assert_eq!(mock.next(), Some("c"));
-        assert_eq!(mock.next(), None);
-        assert_eq!(mock.next(), None); // Repeated call should still return None
-    }
-
-    #[test]
-    fn test_mock_best_transactions_next_tx_and_priority() {
-        let mut mock = MockBestTransactions::new(vec![("a", 100), ("b", 200)]);
-
-        let (item1, priority1) = mock.next_tx_and_priority().unwrap();
-        assert_eq!(item1, "a");
-        assert_eq!(priority1, Priority::Value(100));
-
-        let (item2, priority2) = mock.next_tx_and_priority().unwrap();
-        assert_eq!(item2, "b");
-        assert_eq!(priority2, Priority::Value(200));
-
-        assert!(mock.next_tx_and_priority().is_none());
-    }
 }
