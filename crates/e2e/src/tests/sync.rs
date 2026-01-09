@@ -185,7 +185,6 @@ fn joins_from_snapshot() {
                 }
             }
             if validators_at_epoch == 4 {
-                std::fs::write("metrics", metrics).unwrap();
                 break;
             }
         }
