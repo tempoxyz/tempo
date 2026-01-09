@@ -80,8 +80,8 @@ contract FeeAMMHandler is CommonBase, StdCheats, StdUtils {
         (TIP20 userToken, TIP20 validatorToken) = _pair(seedA, seedB);
         address actor = _actor(actorSeed);
 
-        // Bound amount: must be > 2000 (MIN_LIQUIDITY * 2) for first mint
-        amount = bound(amount, 2002, 10_000_000e6);
+        // Bound amount to reasonable range, let InsufficientLiquidity revert naturally for small amounts
+        amount = bound(amount, 1, 10_000_000e6);
 
         // Mint tokens to actor (handler has ISSUER_ROLE)
         validatorToken.mint(actor, amount);
