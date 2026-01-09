@@ -70,6 +70,8 @@ where
     /// Create a new TestingNode without spawning execution or starting consensus.
     ///
     /// Call `start()` to start both consensus and execution.
+    // FIXME: replace this by a `Config` to make this more digestible.
+    #[expect(clippy::too_many_arguments, reason = "quickly threw this together")]
     pub fn new(
         uid: String,
         public_key: PublicKey,

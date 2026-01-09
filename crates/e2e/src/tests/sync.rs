@@ -80,7 +80,7 @@ fn joins_from_snapshot() {
         // Then wait until the validator has left the committee.
         wait_for_participants(&context, 3).await;
 
-        tracing::info!("validator left the committe");
+        tracing::info!("validator left the committee");
 
         // Then, add the sacrificial validator without starting it(!).
         let receipt = execution_runtime
@@ -98,7 +98,7 @@ fn joins_from_snapshot() {
             "addValidator call returned receipt"
         );
 
-        // Wait until it was added to the commitee
+        // Wait until it was added to the committee
         wait_for_participants(&context, 4).await;
 
         tracing::info!("new validator was added to the committee, but not started");
