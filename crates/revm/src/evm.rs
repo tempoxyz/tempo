@@ -938,7 +938,16 @@ mod tests {
 
             let result = evm.transact(tx_env);
             assert!(result.is_err());
-            assert!(format!("{:?}", result.unwrap_err()).contains("ValidAfter"));
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    revm::context::result::EVMError::Transaction(
+                        TempoInvalidTransaction::ValidAfter { current: 100, valid_after: 200 }
+                    )
+                ),
+                "Expected ValidAfter error, got: {err:?}"
+            );
         }
 
         // Test case 2: Transaction fails when block_timestamp >= valid_before
@@ -949,7 +958,16 @@ mod tests {
 
             let result = evm.transact(tx_env);
             assert!(result.is_err());
-            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    revm::context::result::EVMError::Transaction(
+                        TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }
+                    )
+                ),
+                "Expected ValidBefore error, got: {err:?}"
+            );
         }
 
         // Test case 3: Transaction fails when block_timestamp > valid_before
@@ -960,7 +978,16 @@ mod tests {
 
             let result = evm.transact(tx_env);
             assert!(result.is_err());
-            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    revm::context::result::EVMError::Transaction(
+                        TempoInvalidTransaction::ValidBefore { current: 300, valid_before: 200 }
+                    )
+                ),
+                "Expected ValidBefore error, got: {err:?}"
+            );
         }
 
         // Test case 4: Transaction succeeds when exactly at valid_after boundary
@@ -991,7 +1018,16 @@ mod tests {
 
             let result = evm.transact(tx_env);
             assert!(result.is_err());
-            assert!(format!("{:?}", result.unwrap_err()).contains("ValidAfter"));
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    revm::context::result::EVMError::Transaction(
+                        TempoInvalidTransaction::ValidAfter { current: 50, valid_after: 100 }
+                    )
+                ),
+                "Expected ValidAfter error, got: {err:?}"
+            );
         }
 
         // Test case 7: Transaction fails when block_timestamp >= valid_before in a window
@@ -1002,7 +1038,16 @@ mod tests {
 
             let result = evm.transact(tx_env);
             assert!(result.is_err());
-            assert!(format!("{:?}", result.unwrap_err()).contains("ValidBefore"));
+            let err = result.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    revm::context::result::EVMError::Transaction(
+                        TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }
+                    )
+                ),
+                "Expected ValidBefore error, got: {err:?}"
+            );
         }
 
         Ok(())
