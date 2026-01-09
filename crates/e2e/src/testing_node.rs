@@ -1,6 +1,7 @@
 //! A testing node that can start and stop both consensus and execution layers.
 
 use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
+use alloy_primitives::Address;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, deterministic::Context};
@@ -13,7 +14,7 @@ use reth_ethereum::{
     storage::BlockNumReader,
 };
 use reth_node_builder::NodeTypesWithDBAdapter;
-use std::{path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tempo_commonware_node::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
     MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
@@ -51,6 +52,8 @@ where
     pub execution_database: Option<Arc<DatabaseEnv>>,
     /// Last block number in database when stopped (used for restart verification)
     pub last_db_block_on_stop: Option<u64>,
+    pub network_address: SocketAddr,
+    pub chain_address: Address,
 }
 
 impl<TClock> TestingNode<TClock>
@@ -71,6 +74,8 @@ where
         >,
         execution_runtime: ExecutionRuntimeHandle,
         execution_config: ExecutionNodeConfig,
+        network_address: SocketAddr,
+        chain_address: Address,
     ) -> Self {
         let execution_node_datadir = execution_runtime
             .nodes_dir()
@@ -88,6 +93,8 @@ where
             execution_config,
             execution_database: None,
             last_db_block_on_stop: None,
+            network_address,
+            chain_address,
         }
     }
 
