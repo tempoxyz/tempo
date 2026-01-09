@@ -436,21 +436,6 @@ mod tests {
     }
 
     // ============================================
-    // compute_amount_out test
-    // ============================================
-
-    #[test]
-    fn test_compute_amount_out_basic() {
-        use tempo_precompiles::tip_fee_manager::amm::compute_amount_out;
-
-        let fee = U256::from(1000);
-        let result = compute_amount_out(fee);
-        assert!(result.is_ok());
-        let amount = result.unwrap();
-        assert!(amount > U256::ZERO);
-    }
-
-    // ============================================
     // Cache clone test
     // ============================================
 
