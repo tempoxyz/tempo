@@ -203,8 +203,6 @@ impl GenesisArgs {
 
         // system contracts/precompiles must be initialized bottom up, if an init function (e.g. mint_pairwise_liquidity) uses another system contract/precompiles internally (tip403 registry), the registry must be initialized first.
 
-        // Deploy TestUSD fee token
-        println!("{:?}", self.pathusd_admin);
         let pathusd_admin = self.pathusd_admin.unwrap_or_else(|| addresses[0]);
         let validator_admin = self.validator_admin.unwrap_or_else(|| addresses[0]);
         let mut evm = setup_tempo_evm(self.chain_id);
@@ -275,9 +273,18 @@ impl GenesisArgs {
             generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
 
         println!("Initializing validator config");
+
         let validator_onchain_addresses = if self.validator_addresses.is_empty() {
+            if addresses.len() < self.validators.len() + 1 {
+                return Err(eyre!("not enough accounts created for validators"));
+            }
+
             &addresses[1..self.validators.len() + 1]
         } else {
+            if self.validator_addresses.len() < self.validators.len() {
+                return Err(eyre!("not enough addresses provided for validators"));
+            }
+
             &self.validator_addresses[0..self.validators.len()]
         };
         initialize_validator_config(
