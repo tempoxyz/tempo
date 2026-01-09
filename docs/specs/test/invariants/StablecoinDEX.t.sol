@@ -45,14 +45,15 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         targetContract(address(this));
 
-        // Setup token1 with issuer role and create pair
+        // Setup token1 with issuer role (admin is the token1 admin from BaseTest)
         vm.startPrank(admin);
         token1.grantRole(_ISSUER_ROLE, admin);
-        pathUSD.grantRole(_ISSUER_ROLE, admin);
         vm.stopPrank();
 
+        // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from BaseTest)
         vm.startPrank(pathUSDAdmin);
         pathUSD.grantRole(_ISSUER_ROLE, pathUSDAdmin);
+        pathUSD.grantRole(_ISSUER_ROLE, admin);
         vm.stopPrank();
 
         // Create the trading pair
