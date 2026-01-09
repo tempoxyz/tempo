@@ -55,7 +55,7 @@ impl TIP20Factory {
     /// Returns true if the factory has been initialized (has code set).
     pub fn is_initialized(&self) -> Result<bool> {
         self.storage
-            .with_account_info(TIP20_FACTORY_ADDRESS, |info| Ok(info.code.is_some()))
+            .with_account_info(TIP20_FACTORY_ADDRESS, |info| Ok(!info.is_empty_code_hash()))
     }
 
     /// Computes the deterministic address for a token given sender and salt.
@@ -318,6 +318,35 @@ mod tests {
     }
 
     #[test]
+    fn test_create_token_usd_with_non_usd_quote() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let sender = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Setup::factory()?;
+            let _path_usd = TIP20Setup::path_usd(sender).apply()?;
+            let eur_token = TIP20Setup::create("EUR Token", "EUR", sender)
+                .currency("EUR")
+                .apply()?;
+
+            let invalid_call = ITIP20Factory::createTokenCall {
+                name: "USD Token".to_string(),
+                symbol: "USDT".to_string(),
+                currency: "USD".to_string(),
+                quoteToken: eur_token.address(),
+                admin: sender,
+                salt: B256::random(),
+            };
+
+            let result = factory.create_token(sender, invalid_call);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_create_token_quote_token_not_deployed() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
@@ -408,6 +437,28 @@ mod tests {
     }
 
     #[test]
+    fn test_is_initialized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+
+            // Factory should not be initialized before initialize() call
+            assert!(!factory.is_initialized()?);
+
+            // After initialize(), factory should be initialized
+            factory.initialize()?;
+            assert!(factory.is_initialized()?);
+
+            // Creating a new handle should still see initialized state
+            let factory2 = TIP20Factory::new();
+            assert!(factory2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_is_tip20_prefix() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
 
@@ -422,6 +473,29 @@ mod tests {
             // Random address does not have TIP20 prefix
             let random = Address::random();
             assert!(!is_tip20_prefix(random));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_token_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        StorageCtx::enter(&mut storage, || {
+            let factory = TIP20Factory::new();
+            let sender = Address::random();
+            let salt = B256::random();
+
+            // get_token_address should return same address as compute_tip20_address
+            let call = ITIP20Factory::getTokenAddressCall { sender, salt };
+            let address = factory.get_token_address(call)?;
+            let (expected, _) = compute_tip20_address(sender, salt);
+            assert_eq!(address, expected);
+
+            // Calling with same params should be deterministic
+            let call2 = ITIP20Factory::getTokenAddressCall { sender, salt };
+            assert_eq!(factory.get_token_address(call2)?, address);
 
             Ok(())
         })
