@@ -943,7 +943,10 @@ mod tests {
                 matches!(
                     err,
                     revm::context::result::EVMError::Transaction(
-                        TempoInvalidTransaction::ValidAfter { current: 100, valid_after: 200 }
+                        TempoInvalidTransaction::ValidAfter {
+                            current: 100,
+                            valid_after: 200
+                        }
                     )
                 ),
                 "Expected ValidAfter error, got: {err:?}"
@@ -963,7 +966,10 @@ mod tests {
                 matches!(
                     err,
                     revm::context::result::EVMError::Transaction(
-                        TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }
+                        TempoInvalidTransaction::ValidBefore {
+                            current: 200,
+                            valid_before: 200
+                        }
                     )
                 ),
                 "Expected ValidBefore error, got: {err:?}"
@@ -983,7 +989,10 @@ mod tests {
                 matches!(
                     err,
                     revm::context::result::EVMError::Transaction(
-                        TempoInvalidTransaction::ValidBefore { current: 300, valid_before: 200 }
+                        TempoInvalidTransaction::ValidBefore {
+                            current: 300,
+                            valid_before: 200
+                        }
                     )
                 ),
                 "Expected ValidBefore error, got: {err:?}"
@@ -1023,7 +1032,10 @@ mod tests {
                 matches!(
                     err,
                     revm::context::result::EVMError::Transaction(
-                        TempoInvalidTransaction::ValidAfter { current: 50, valid_after: 100 }
+                        TempoInvalidTransaction::ValidAfter {
+                            current: 50,
+                            valid_after: 100
+                        }
                     )
                 ),
                 "Expected ValidAfter error, got: {err:?}"
@@ -1043,7 +1055,10 @@ mod tests {
                 matches!(
                     err,
                     revm::context::result::EVMError::Transaction(
-                        TempoInvalidTransaction::ValidBefore { current: 200, valid_before: 200 }
+                        TempoInvalidTransaction::ValidBefore {
+                            current: 200,
+                            valid_before: 200
+                        }
                     )
                 ),
                 "Expected ValidBefore error, got: {err:?}"
