@@ -99,15 +99,6 @@ where
         self.current.clone()
     }
 
-    /// Returns the DKG outcome for the previous epoch, if there is one.
-    pub(super) async fn previous(&self) -> Option<State> {
-        let previous_epoch = self.current().epoch.previous()?;
-
-        let segment = self.states.size().checked_sub(2)?;
-        let previous = self.states.read(segment).await.ok()?;
-        (previous_epoch == previous.epoch).then_some(previous)
-    }
-
     /// Appends the outcome of a DKG ceremony to state
     pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
         self.states

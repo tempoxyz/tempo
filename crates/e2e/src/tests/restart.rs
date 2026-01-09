@@ -360,7 +360,7 @@ fn validator_catches_up_with_gap_of_three_epochs() {
 fn single_node_recovers_after_finalizing_ceremony() {
     AssertNodeRecoversAfterFinalizingBlock {
         n_validators: 1,
-        epoch_length: 10,
+        epoch_length: 6,
         shutdown_after_finalizing: ShutdownAfterFinalizing::Ceremony,
     }
     .run()
