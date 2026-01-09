@@ -454,7 +454,11 @@ contract FeeAMMInvariantTest is StdInvariant, BaseTest {
     function invariant_rebalanceSwapRateCorrect() public view {
         // Use tracked sum of individual expected inputs instead of computing from total
         // This avoids floor division rounding discrepancy: sum(floor(x_i)) <= floor(sum(x_i))
-        assertGe(ghost_rebalanceIn, ghost_rebalanceExpectedIn, "Rebalance swap: insufficient input collected");
+        assertGe(
+            ghost_rebalanceIn,
+            ghost_rebalanceExpectedIn,
+            "Rebalance swap: insufficient input collected"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
