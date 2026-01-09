@@ -101,6 +101,12 @@ impl AccountKeychain {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
+        // Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if call.expiry <= current_timestamp {
+            return Err(AccountKeychainError::expiry_in_past().into());
+        }
+
         // Check if key already exists (key exists if expiry > 0)
         let existing_key = self.keys[msg_sender][call.keyId].read()?;
         if existing_key.expiry > 0 {
@@ -665,6 +671,55 @@ mod tests {
     }
 
     #[test]
+    fn test_authorize_key_rejects_expiry_in_past() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Use main key for the operation
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Try to authorize with expiry = 0 (in the past)
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 0, // Zero expiry is in the past - should fail
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result = keychain.authorize_key(account, auth_call);
+            assert!(result.is_err(), "Authorizing with expiry in past should fail");
+
+            // Verify it's the correct error
+            match result.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(e) => {
+                    assert!(
+                        matches!(e, AccountKeychainError::ExpiryInPast(_)),
+                        "Expected ExpiryInPast error, got: {e:?}"
+                    );
+                }
+                e => panic!("Expected AccountKeychainError, got: {e:?}"),
+            }
+
+            // Also test with a non-zero but past expiry
+            let auth_call_past = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 1, // Very old timestamp - should fail
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result_past = keychain.authorize_key(account, auth_call_past);
+            assert!(result_past.is_err(), "Authorizing with past expiry should fail");
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_different_key_id_can_be_authorized_after_revocation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
@@ -694,7 +749,7 @@ mod tests {
             let auth_call_2 = authorizeKeyCall {
                 keyId: key_id_2,
                 signatureType: SignatureType::P256,
-                expiry: 1000,
+                expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
             };
@@ -705,7 +760,7 @@ mod tests {
                 account,
                 keyId: key_id_2,
             })?;
-            assert_eq!(key_info.expiry, 1000);
+            assert_eq!(key_info.expiry, u64::MAX);
             assert!(!key_info.isRevoked);
 
             Ok(())
