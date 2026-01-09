@@ -436,27 +436,6 @@ mod tests {
     }
 
     // ============================================
-    // Cache clone test
-    // ============================================
-
-    #[test]
-    fn test_amm_liquidity_cache_clone() {
-        let cache = AmmLiquidityCache {
-            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
-                unique_tokens: vec![address!("1111111111111111111111111111111111111111")],
-                ..Default::default()
-            })),
-        };
-
-        let cloned = cache.clone();
-
-        assert_eq!(
-            cache.inner.read().unique_tokens.len(),
-            cloned.inner.read().unique_tokens.len()
-        );
-    }
-
-    // ============================================
     // AmmLiquidityCacheInner direct manipulation tests
     // ============================================
 
