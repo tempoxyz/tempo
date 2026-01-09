@@ -4,8 +4,9 @@ use alloy_primitives::{Address, B256, TxHash, U256, map::HashMap};
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, PoolResult, PoolTransaction, PriceBumpConfig, Priority,
-    SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit, PoolResult, PoolTransaction,
+    PriceBumpConfig, Priority, SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin,
+    ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -355,17 +356,37 @@ impl AA2dPool {
         ret
     }
 
-    /// Returns an iterator over all the matching transactions.
-    pub(crate) fn get_all_iter<'a, I>(
-        &'a self,
-        tx_hashes: I,
-    ) -> impl Iterator<Item = &'a Arc<ValidPoolTransaction<TempoPooledTransaction>>> + 'a
-    where
-        I: IntoIterator<Item = &'a TxHash> + 'a,
-    {
-        tx_hashes
-            .into_iter()
-            .filter_map(|tx_hash| self.by_hash.get(tx_hash))
+    /// Returns pooled transaction elements for the given hashes while respecting the size limit.
+    ///
+    /// This method collects transactions from the pool, converts them to pooled format,
+    /// and tracks the accumulated size. It stops collecting when the limit is exceeded.
+    ///
+    /// The `accumulated_size` is updated with the total encoded size of returned transactions.
+    pub(crate) fn get_pooled_transaction_elements<'a>(
+        &self,
+        tx_hashes: impl IntoIterator<Item = &'a TxHash>,
+        limit: GetPooledTransactionLimit,
+        accumulated_size: &mut usize,
+    ) -> Vec<<TempoPooledTransaction as PoolTransaction>::Pooled> {
+        let mut elements = Vec::new();
+        for tx_hash in tx_hashes {
+            let Some(tx) = self.by_hash.get(tx_hash) else {
+                continue;
+            };
+
+            let encoded_len = tx.transaction.encoded_length();
+            let Some(pooled) = tx.transaction.clone_into_pooled().ok() else {
+                continue;
+            };
+
+            *accumulated_size += encoded_len;
+            elements.push(pooled.into_inner());
+
+            if limit.exceeds(*accumulated_size) {
+                break;
+            }
+        }
+        elements
     }
 
     /// Returns an iterator over all senders in this pool.
