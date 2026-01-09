@@ -32,6 +32,10 @@ jobs:
             --no-dkg-in-genesis \
             --output generated \
             --coinbase 0xbba20Bb99dA4E103721B754b25071Fc85e7028A1
+          cargo xtask generate-genesis \
+            --accounts 5 \
+            --no-dkg-in-genesis \
+            --output dev-generated \
       - name: Compare with existing test genesis
         run: |
           # Compare the generated genesis with the existing test-genesis.json
@@ -41,6 +45,13 @@ jobs:
             exit 1
           else
             echo "Generated genesis matches test-genesis.json"
+          fi
+          if ! diff -u crates/chainspec/src/genesis/dev.json dev-generated/genesis.json; then
+            echo "Generated dev genesis differs from existing dev.json"
+            echo "Please update the dev.json file with the generated content"
+            exit 1
+          else
+            echo "Generated dev genesis matches dev.json"
           fi
 
   test:
