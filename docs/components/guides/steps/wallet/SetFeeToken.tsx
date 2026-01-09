@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { type Address, isAddress } from 'viem'
-import { useChainId, useConfig, useConnection } from 'wagmi'
+import { useConfig, useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, Step, StringFormatter } from '../../Demo'
 import { alphaUsd, betaUsd, thetaUsd } from '../../tokens'
@@ -28,8 +28,8 @@ export function SetFeeToken(props: DemoStepProps) {
   const { stepNumber = 1 } = props
   const { address, connector } = useConnection()
   const hasNonWebAuthnWallet = Boolean(address && connector?.id !== 'webAuthn')
-  const chainId = useChainId()
   const config = useConfig()
+  const chainId = config.chains[0]?.id
 
   const [selectedFeeToken, setSelectedFeeToken] =
     React.useState<FeeTokenOption['value']>('none')
@@ -68,7 +68,6 @@ export function SetFeeToken(props: DemoStepProps) {
     selectedOption.value === 'none' ||
     selectedOption.value !== 'other' || 
     isAddress(customFeeToken)
-  const defaultChainId = chainId ?? config?.chains?.[0]?.id
 
   const hasBalance = Boolean(balance && balance > 0n)
   const userTokenAddress = userToken.data?.address
@@ -100,13 +99,13 @@ export function SetFeeToken(props: DemoStepProps) {
 
   const handleSetFeeToken = React.useCallback(() => {
     if (!resolvedFeeToken || !isFeeTokenValid || !address) return
-    if (!defaultChainId) return
+    if (!chainId) return
 
     setTxHash(undefined)
     setUserToken.mutate(
       {
         token: resolvedFeeToken as Address,
-        chainId: defaultChainId,
+        chainId: chainId,
         account: address,
       },
       {
@@ -119,7 +118,7 @@ export function SetFeeToken(props: DemoStepProps) {
         },
       },
     )
-  }, [address, isFeeTokenValid, resolvedFeeToken, setUserToken, defaultChainId])
+  }, [address, isFeeTokenValid, resolvedFeeToken, setUserToken, chainId])
 
   // Sync selected option with current user token
   React.useEffect(() => {
