@@ -11,6 +11,7 @@ mod actor;
 mod ingress;
 mod state;
 
+use commonware_consensus::types::FixedEpocher;
 use commonware_runtime::Spawner;
 use futures::channel::mpsc;
 
@@ -23,10 +24,11 @@ pub use state::FeedStateHandle;
 pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
+    epocher: FixedEpocher,
     state: FeedStateHandle,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, rx, state);
+    let actor = Actor::new(context, marshal, epocher, rx, state);
     (actor, mailbox)
 }

@@ -12,7 +12,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use crate::{CONSENSUS_NODE_PREFIX, TestingNode};
 
 /// Reads the DKG outcome from a block, returns None if block doesn't exist or has no outcome.
-pub(super) fn read_outcome_from_validator(
+pub(crate) fn read_outcome_from_validator(
     validator: &TestingNode<Context>,
     block_num: Height,
 ) -> Option<OnchainDkgOutcome> {
@@ -28,7 +28,7 @@ pub(super) fn read_outcome_from_validator(
 }
 
 /// Parses a metric line, returning (metric_name, value) if valid.
-pub(super) fn parse_metric_line(line: &str) -> Option<(&str, u64)> {
+pub(crate) fn parse_metric_line(line: &str) -> Option<(&str, u64)> {
     if !line.starts_with(CONSENSUS_NODE_PREFIX) {
         return None;
     }
@@ -41,7 +41,7 @@ pub(super) fn parse_metric_line(line: &str) -> Option<(&str, u64)> {
 }
 
 /// Waits for and reads the DKG outcome from the last block of the given epoch.
-pub(super) async fn wait_for_outcome(
+pub(crate) async fn wait_for_outcome(
     context: &Context,
     validators: &[TestingNode<Context>],
     epoch: u64,
@@ -70,7 +70,7 @@ pub(super) async fn wait_for_outcome(
 }
 
 /// Counts how many validators have reached the target epoch.
-pub(super) fn count_validators_at_epoch(context: &Context, target_epoch: u64) -> u32 {
+pub(crate) fn count_validators_at_epoch(context: &Context, target_epoch: u64) -> u32 {
     let metrics = context.encode();
     let mut at_epoch = 0;
 
@@ -88,7 +88,7 @@ pub(super) fn count_validators_at_epoch(context: &Context, target_epoch: u64) ->
 }
 
 /// Waits until at least `min_validators` have reached the target epoch.
-pub(super) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_validators: u32) {
+pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_validators: u32) {
     tracing::info!(target_epoch, min_validators, "Waiting for epoch");
 
     loop {
@@ -102,7 +102,7 @@ pub(super) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_val
 }
 
 /// Asserts that no DKG ceremony failures have occurred.
-pub(super) fn assert_no_dkg_failures(context: &Context) {
+pub(crate) fn assert_no_dkg_failures(context: &Context) {
     let metrics = context.encode();
 
     for line in metrics.lines() {
@@ -117,7 +117,7 @@ pub(super) fn assert_no_dkg_failures(context: &Context) {
 }
 
 /// Asserts that at least one validator has skipped rounds (indicating sync occurred).
-pub(super) fn assert_skipped_rounds(context: &Context) {
+pub(crate) fn assert_skipped_rounds(context: &Context) {
     let metrics = context.encode();
 
     for line in metrics.lines() {
