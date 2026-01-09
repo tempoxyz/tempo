@@ -355,10 +355,7 @@ mod tests {
                 let offset = calc_element_offset(idx, elem_bytes);
                 assert!(
                     offset + elem_bytes <= 32,
-                    "elem_bytes={}, idx={}, offset={} would cross slot boundary",
-                    elem_bytes,
-                    idx,
-                    offset
+                    "elem_bytes={elem_bytes}, idx={idx}, offset={offset} would cross slot boundary"
                 );
             }
         }
@@ -1166,7 +1163,7 @@ mod tests {
         ) {
             let slot_count = calc_packed_slot_count(n, elem_bytes);
             let elems_per_slot = 32 / elem_bytes;
-            let expected = n.div_ceil(per_slot);
+            let expected = n.div_ceil(elems_per_slot);
 
             // Verify the calculated slot count is correct
             prop_assert_eq!(slot_count, expected);
