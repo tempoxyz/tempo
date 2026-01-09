@@ -221,7 +221,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, address};
 
     #[test]
     fn test_create_token() -> eyre::Result<()> {
@@ -457,5 +457,172 @@ mod tests {
         assert!(is_tip20_prefix(addr3));
         assert!(is_tip20_prefix(addr4));
         assert!(is_tip20_prefix(addr5));
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_invalid_prefix() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            let result = factory.create_token_reserved_address(
+                Address::random(), // No TIP20 prefix
+                "Test",
+                "TST",
+                "USD",
+                Address::ZERO,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_token())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_already_deployed() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::token_already_exists(
+                    PATH_USD_ADDRESS
+                ))
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_non_usd_quote_for_usd_token() -> eyre::Result<()>
+    {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let eur_token = TIP20Setup::create("EUR Token", "EUR", admin)
+                .currency("EUR")
+                .apply()?;
+
+            let mut factory = TIP20Factory::new();
+            let reserved_addr = address!("20C0000000000000000000000000000000000002");
+
+            let result = factory.create_token_reserved_address(
+                reserved_addr,
+                "Test USD",
+                "TUSD",
+                "USD",
+                eur_token.address(),
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20(TIP20Error::invalid_quote_token())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_rejects_non_reserved_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let _path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let mut factory = TIP20Factory::new();
+
+            // 0x9999 = 39321 > 1024 (RESERVED_SIZE)
+            let non_reserved = address!("20C0000000000000000000000000000000009999");
+
+            let result = factory.create_token_reserved_address(
+                non_reserved,
+                "Test",
+                "TST",
+                "USD",
+                PATH_USD_ADDRESS,
+                admin,
+            );
+
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::TIP20Factory(TIP20FactoryError::address_not_reserved())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_create_token_reserved_address_requires_zero_addr_as_first_quote() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Try to create PATH_USD with a non-deployed TIP20 as quote_token
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                address!("20C0000000000000000000000000000000000001"),
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // Only possible to deploy PATH_USD (the first token) without a quote token
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            Ok(())
+        })
     }
 }
