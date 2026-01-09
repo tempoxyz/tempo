@@ -39,7 +39,7 @@ impl GenerateGenesis {
             format!("failed writing genesis to file `{}`", genesis_dst.display())
         })?;
 
-        if let Some(consensus_config) = consensus_config {
+        if let Some(mut consensus_config) = consensus_config {
             println!(
                 "consensus config generated for `{}` validators; writing to disk...",
                 consensus_config.validators.len()
@@ -61,10 +61,25 @@ impl GenerateGenesis {
                             signing_key_dst.display()
                         )
                     })?;
+                let signing_share_encryption_dst =
+                    validator.dst_signing_share_encryption_key(&output);
+                validator
+                    .signing_share_encryption_key
+                    .write_to_file(&signing_share_encryption_dst)
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed writing encryption key `{}`",
+                            signing_share_encryption_dst.display(),
+                        )
+                    })?;
                 let signing_share_dst = validator.dst_signing_share(&output);
                 validator
                     .signing_share
-                    .write_to_file(&signing_share_dst)
+                    .write_to_file(
+                        &signing_share_dst,
+                        &validator.signing_share_encryption_key,
+                        &mut consensus_config.rng,
+                    )
                     .wrap_err_with(|| {
                         format!(
                             "failed writing bls12381 signing share to `{}`",
@@ -72,9 +87,10 @@ impl GenerateGenesis {
                         )
                     })?;
                 println!(
-                    "validator keys written to `{}`, `{}`",
+                    "validator keys written to `{}`, `{}`, `{}`",
                     signing_key_dst.display(),
-                    signing_share_dst.display()
+                    signing_share_dst.display(),
+                    signing_share_encryption_dst.display(),
                 );
             }
         } else {

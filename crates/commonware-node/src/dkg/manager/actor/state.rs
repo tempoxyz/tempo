@@ -5,6 +5,7 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader as _;
+use bytes::Bytes;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
@@ -26,6 +27,8 @@ use commonware_storage::journal::{contiguous, segmented};
 use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use rand_core::CryptoRngCore;
+use tempo_commonware_node_config::EncryptionKey;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
@@ -50,11 +53,89 @@ pub(super) struct Storage<TContext>
 where
     TContext: commonware_runtime::Storage + Metrics,
 {
-    states: contiguous::variable::Journal<TContext, State>,
+    // Used as an RNG source.
+    context: TContext,
+
+    states: contiguous::variable::Journal<TContext, AtRest>,
     events: segmented::variable::Journal<TContext, Event>,
 
     current: State,
     cache: BTreeMap<Epoch, Events>,
+
+    encryption_key: EncryptionKey,
+}
+
+impl<TContext> Storage<TContext>
+where
+    TContext: commonware_runtime::Storage + Metrics + CryptoRngCore,
+{
+    /// Appends the outcome of a DKG ceremony to state
+    pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
+        let state_at_rest = state.encrypt(&self.encryption_key, &mut self.context);
+        self.states
+            .append(state_at_rest)
+            .await
+            .wrap_err("failed writing state")?;
+        self.states.sync().await.wrap_err("failed syncing state")?;
+        self.current = state;
+        Ok(())
+    }
+
+    /// Append a dealer's dealing to the journal.
+    #[instrument(
+        skip_all,
+        fields(
+            %epoch,
+            %dealer,
+        ),
+        err,
+    )]
+    async fn append_dealing(
+        &mut self,
+        epoch: Epoch,
+        dealer: PublicKey,
+        pub_msg: DealerPubMsg<MinSig>,
+        priv_msg: DealerPrivMsg,
+    ) -> eyre::Result<()> {
+        if self
+            .cache
+            .get(&epoch)
+            .is_some_and(|events| events.dealings.contains_key(&dealer))
+        {
+            info!(%dealer, %epoch, "dealing of dealer already found in cache, dropping");
+            return Ok(());
+        }
+
+        let section = epoch.get();
+        self.events
+            .append(
+                section,
+                Event::Dealing {
+                    dealer: dealer.clone(),
+                    public_msg: pub_msg.clone(),
+                    private_msg: Encrypted::encrypt(
+                        &priv_msg,
+                        &self.encryption_key,
+                        &mut self.context,
+                    ),
+                },
+            )
+            .await
+            .wrap_err("unable to write event to storage")?;
+
+        self.events
+            .sync(section)
+            .await
+            .wrap_err("unable to sync events journal")?;
+
+        self.cache
+            .entry(epoch)
+            .or_default()
+            .dealings
+            .insert(dealer, (pub_msg, priv_msg));
+
+        Ok(())
+    }
 }
 
 impl<TContext> Storage<TContext>
@@ -105,18 +186,8 @@ where
 
         let segment = self.states.size().checked_sub(2)?;
         let previous = self.states.read(segment).await.ok()?;
+        let previous = previous.decrypt(&self.encryption_key).ok()?;
         (previous_epoch == previous.epoch).then_some(previous)
-    }
-
-    /// Appends the outcome of a DKG ceremony to state
-    pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
-        self.states
-            .append(state.clone())
-            .await
-            .wrap_err("failed writing state")?;
-        self.states.sync().await.wrap_err("failed syncing state")?;
-        self.current = state;
-        Ok(())
     }
 
     /// Append a player ACK to the journal.
@@ -165,58 +236,6 @@ where
             .or_default()
             .acks
             .insert(player, ack);
-
-        Ok(())
-    }
-
-    /// Append a dealer's dealing to the journal.
-    #[instrument(
-        skip_all,
-        fields(
-            %epoch,
-            %dealer,
-        ),
-        err,
-    )]
-    async fn append_dealing(
-        &mut self,
-        epoch: Epoch,
-        dealer: PublicKey,
-        pub_msg: DealerPubMsg<MinSig>,
-        priv_msg: DealerPrivMsg,
-    ) -> eyre::Result<()> {
-        if self
-            .cache
-            .get(&epoch)
-            .is_some_and(|events| events.dealings.contains_key(&dealer))
-        {
-            info!(%dealer, %epoch, "dealing of dealer already found in cache, dropping");
-            return Ok(());
-        }
-
-        let section = epoch.get();
-        self.events
-            .append(
-                section,
-                Event::Dealing {
-                    dealer: dealer.clone(),
-                    public_msg: pub_msg.clone(),
-                    private_msg: priv_msg.clone(),
-                },
-            )
-            .await
-            .wrap_err("unable to write event to storage")?;
-
-        self.events
-            .sync(section)
-            .await
-            .wrap_err("unable to sync events journal")?;
-
-        self.cache
-            .entry(epoch)
-            .or_default()
-            .dealings
-            .insert(dealer, (pub_msg, priv_msg));
 
         Ok(())
     }
@@ -478,6 +497,7 @@ where
 pub(super) struct Builder {
     initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
+    encryption_key: Option<EncryptionKey>,
 }
 
 impl Builder {
@@ -498,17 +518,30 @@ impl Builder {
         }
     }
 
+    pub(super) fn encryption_key(self, encryption_key: EncryptionKey) -> Self {
+        Self {
+            encryption_key: Some(encryption_key),
+            ..self
+        }
+    }
+
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
+    pub(super) async fn init<TContext>(
+        self,
+        mut context: TContext,
+    ) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Metrics + CryptoRngCore,
     {
         let Self {
             initial_state,
             partition_prefix,
+            encryption_key,
         } = self;
         let partition_prefix =
             partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
+        let encryption_key = encryption_key
+            .ok_or_eyre("DKG actor must have a secret set to encrypt and decrypt their shares")?;
 
         let buffer_pool = PoolRef::new(PAGE_SIZE, POOL_CAPACITY);
 
@@ -554,8 +587,9 @@ impl Builder {
                     .await
                     .wrap_err("failed constructing initial state to populate storage")?,
             };
+            let at_rest = initial_state.encrypt(&encryption_key, &mut context);
             states
-                .append(initial_state)
+                .append(at_rest)
                 .await
                 .wrap_err("unable to write initial state to states journal")?;
             states
@@ -567,10 +601,13 @@ impl Builder {
             let segment = states.size().checked_sub(1).expect(
                 "there must be at least one entry in the states journal; just populated it",
             );
-            states
+            let at_rest = states
                 .read(segment)
                 .await
-                .wrap_err("unable to read states journal to determine current epoch state")?
+                .wrap_err("unable to read states journal to determine current epoch state")?;
+            at_rest
+                .decrypt(&encryption_key)
+                .wrap_err("failed decrypting most recent stored strate")?
         };
 
         // Replay msgs to populate epoch caches
@@ -587,15 +624,19 @@ impl Builder {
                     result.wrap_err("unable to read entry in replay stream")?;
                 let epoch = Epoch::new(section);
                 let events = cache.entry(epoch).or_default();
-                events.insert(event);
+                events
+                    .insert(event, &encryption_key)
+                    .wrap_err("failed to insert event into cache")?;
             }
         }
 
         Ok(Storage {
+            context,
             states,
             events,
             current,
             cache,
+            encryption_key,
         })
     }
 }
@@ -606,8 +647,6 @@ pub(super) struct State {
     pub(super) epoch: Epoch,
     pub(super) seed: Summary,
     pub(super) output: Output<MinSig, PublicKey>,
-    // TODO(janis): don't store this un-encryptyed. Maybe don't store it in
-    // state at all?
     pub(super) share: Option<Share>,
     pub(super) dealers: ordered::Map<PublicKey, SocketAddr>,
     pub(super) players: ordered::Map<PublicKey, SocketAddr>,
@@ -627,14 +666,83 @@ impl State {
                 .map(|(key, val)| (key.clone(), Address::Symmetric(*val))),
         )
     }
+
+    fn encrypt(&self, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> AtRest {
+        let Self {
+            epoch,
+            seed,
+            output,
+            share,
+            dealers,
+            players,
+            syncers,
+            is_full_dkg,
+        } = self;
+        AtRest {
+            epoch: *epoch,
+            seed: *seed,
+            output: output.clone(),
+            encrypted_share: share
+                .as_ref()
+                .map(|share| Encrypted::encrypt(share, secret, rng)),
+            dealers: dealers.clone(),
+            players: players.clone(),
+            syncers: syncers.clone(),
+            is_full_dkg: *is_full_dkg,
+        }
+    }
 }
 
-impl EncodeSize for State {
+/// The outcome of a DKG ceremony.
+#[derive(Clone)]
+pub(super) struct AtRest {
+    pub(super) epoch: Epoch,
+    pub(super) seed: Summary,
+    pub(super) output: Output<MinSig, PublicKey>,
+    pub(super) encrypted_share: Option<Encrypted<Share>>,
+    pub(super) dealers: ordered::Map<PublicKey, SocketAddr>,
+    pub(super) players: ordered::Map<PublicKey, SocketAddr>,
+    // TODO: should these be in the per-epoch state?
+    pub(super) syncers: ordered::Map<PublicKey, SocketAddr>,
+    /// Whether this DKG ceremony is a full ceremony (new polynomial) instead of a reshare.
+    pub(super) is_full_dkg: bool,
+}
+
+impl AtRest {
+    fn decrypt(&self, secret: &EncryptionKey) -> eyre::Result<State> {
+        let Self {
+            epoch,
+            seed,
+            output,
+            encrypted_share,
+            dealers,
+            players,
+            syncers,
+            is_full_dkg,
+        } = self;
+        Ok(State {
+            epoch: *epoch,
+            seed: *seed,
+            output: output.clone(),
+            share: encrypted_share
+                .as_ref()
+                .map(|share| share.decrypt_decode(secret))
+                .transpose()
+                .wrap_err("failed to decrypt on-disk share")?,
+            dealers: dealers.clone(),
+            players: players.clone(),
+            syncers: syncers.clone(),
+            is_full_dkg: *is_full_dkg,
+        })
+    }
+}
+
+impl EncodeSize for AtRest {
     fn encode_size(&self) -> usize {
         self.epoch.encode_size()
             + self.seed.encode_size()
             + self.output.encode_size()
-            + self.share.encode_size()
+            + self.encrypted_share.encode_size()
             + self.dealers.encode_size()
             + self.players.encode_size()
             + self.syncers.encode_size()
@@ -642,12 +750,12 @@ impl EncodeSize for State {
     }
 }
 
-impl Write for State {
+impl Write for AtRest {
     fn write(&self, buf: &mut impl bytes::BufMut) {
         self.epoch.write(buf);
         self.seed.write(buf);
         self.output.write(buf);
-        self.share.write(buf);
+        self.encrypted_share.write(buf);
         self.dealers.write(buf);
         self.players.write(buf);
         self.syncers.write(buf);
@@ -655,7 +763,7 @@ impl Write for State {
     }
 }
 
-impl Read for State {
+impl Read for AtRest {
     type Cfg = NonZeroU32;
 
     fn read_cfg(
@@ -666,7 +774,7 @@ impl Read for State {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
             output: Read::read_cfg(buf, cfg)?,
-            share: ReadExt::read(buf)?,
+            encrypted_share: ReadExt::read(buf)?,
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             syncers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
@@ -699,13 +807,16 @@ struct Events {
 }
 
 impl Events {
-    fn insert(&mut self, event: Event) {
+    fn insert(&mut self, event: Event, secret: &EncryptionKey) -> eyre::Result<()> {
         match event {
             Event::Dealing {
                 dealer: public_key,
                 public_msg,
                 private_msg,
             } => {
+                let private_msg = private_msg
+                    .decrypt_decode(secret)
+                    .wrap_err("failed decrypting private dealer message")?;
                 self.dealings.insert(public_key, (public_msg, private_msg));
             }
             Event::Ack {
@@ -732,6 +843,7 @@ impl Events {
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -740,7 +852,7 @@ enum Event {
     Dealing {
         dealer: PublicKey,
         public_msg: DealerPubMsg<MinSig>,
-        private_msg: DealerPrivMsg,
+        private_msg: Encrypted<DealerPrivMsg>,
     },
     /// An ack (of a dealing) received from a player (as a dealer).
     Ack {
@@ -1042,7 +1154,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Metrics + CryptoRngCore,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {
@@ -1148,5 +1260,68 @@ impl ReducedBlock {
             digest: block.digest(),
             log,
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Encrypted<T> {
+    bytes: Bytes,
+    _type: std::marker::PhantomData<T>,
+}
+
+impl<T> Encrypted<T> {
+    pub(super) fn new(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Write + EncodeSize> Encrypted<T> {
+    fn encrypt(value: &T, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> Self {
+        let bytes = secret.encrypt_encodable(value, rng).into();
+        Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Read<Cfg = ()>> Encrypted<T> {
+    pub(super) fn decrypt_decode(&self, secret: &EncryptionKey) -> eyre::Result<T> {
+        secret
+            .decrypt_decodable(self.bytes.as_ref())
+            .wrap_err("failed decrypting encrypted secret")
+    }
+}
+
+impl<T> EncodeSize for Encrypted<T> {
+    fn encode_size(&self) -> usize {
+        self.bytes.encode_size()
+    }
+}
+
+impl<T> Write for Encrypted<T> {
+    fn write(&self, buf: &mut impl bytes::BufMut) {
+        self.bytes.write(buf);
+    }
+}
+
+impl<T> Read for Encrypted<T> {
+    type Cfg = ();
+
+    fn read_cfg(
+        buf: &mut impl bytes::Buf,
+        _cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        // NOTE: this value is only ever written/read by the app so this is safe.
+        // TODO: Technically it is possible to establish a lower and upper bound
+        // for completeness.
+        let bytes = Bytes::read_cfg(buf, &RangeCfg::from(..))?;
+        Ok(Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        })
     }
 }

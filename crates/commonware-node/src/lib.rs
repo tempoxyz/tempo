@@ -18,11 +18,11 @@ pub(crate) mod subblocks;
 
 use std::net::SocketAddr;
 
+use bytes::Bytes;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
-use eyre::{OptionExt, WrapErr as _, eyre};
-use tempo_commonware_node_config::SigningShare;
+use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use tempo_node::TempoFullNode;
 
 use crate::config::PEERSETS_TO_TRACK;
@@ -41,19 +41,29 @@ pub async fn run_consensus_stack(
     execution_node: TempoFullNode,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    let share = config
+    let raw_share = config
         .signing_share
         .as_ref()
         .map(|share| {
-            SigningShare::read_from_file(share).wrap_err_with(|| {
+            std::fs::read(share).wrap_err_with(|| {
                 format!(
-                    "failed reading private bls12-381 key share from file `{}`",
+                    "failed to read the raw encrypted bytes of the private \
+                    bls12-381 key share from file `{}`",
                     share.display()
                 )
             })
         })
         .transpose()?
-        .map(|signing_share| signing_share.into_inner());
+        .map(Bytes::from);
+    if raw_share.as_ref().is_some_and(|share| share.is_empty()) {
+        bail!(
+            "signing share file was empty; do not set it if you want to run \
+            the validator without an initial share"
+        );
+    }
+
+    let share_key = tempo_commonware_node_config::sining_share_key_from_env()
+        .wrap_err("failed reading signing share key from the environment")?;
 
     let signing_key = config
         .signing_key()?
@@ -99,7 +109,8 @@ pub async fn run_consensus_stack(
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
-        share,
+        raw_share,
+        share_key,
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,

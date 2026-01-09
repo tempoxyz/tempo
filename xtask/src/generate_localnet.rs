@@ -6,6 +6,7 @@ use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
+use tempo_commonware_node_config::SIGNING_SHARE_KEY_ENV;
 
 use crate::genesis_args::GenesisArgs;
 
@@ -103,7 +104,12 @@ impl GenerateLocalnet {
                 validator.clone(),
                 ConfigOutput {
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+                    consensus_on_disk_signing_share: validator
+                        .signing_share
+                        .to_hex(&validator.signing_share_encryption_key, &mut rng),
+                    consensus_on_disk_encryption_key: validator
+                        .signing_share_encryption_key
+                        .to_hex(),
 
                     consensus_p2p_port,
                     execution_p2p_port,
@@ -162,7 +168,8 @@ impl GenerateLocalnet {
 
             println!("run the node with the following command:\n");
             let cmd = format!(
-                "cargo run --bin tempo -- node \
+                "{SIGNING_SHARE_KEY_ENV}={encryption_key} \
+                \\\ncargo run --bin tempo -- node \
                 \\\n--consensus.signing-key {signing_key} \
                 \\\n--consensus.signing-share {signing_share} \
                 \\\n--consensus.listen-address 127.0.0.1:{listen_port} \
@@ -175,6 +182,7 @@ impl GenerateLocalnet {
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
                 \\\n--authrpc.port {authrpc_port} \
                 \\\n--consensus.fee-recipient {fee_recipient}",
+                encryption_key = config.consensus_on_disk_encryption_key,
                 signing_key = signing_key_dst.display(),
                 signing_share = signing_share_dst.display(),
                 listen_port = config.consensus_p2p_port,
@@ -197,6 +205,7 @@ impl GenerateLocalnet {
 pub(crate) struct ConfigOutput {
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
+    consensus_on_disk_encryption_key: String,
     consensus_p2p_port: u16,
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,

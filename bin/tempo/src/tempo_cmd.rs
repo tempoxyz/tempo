@@ -4,7 +4,8 @@ use clap::{Parser, Subcommand, error::ErrorKind};
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use eyre::Context;
-use tempo_commonware_node_config::SigningKey;
+use rand::rngs::OsRng;
+use tempo_commonware_node_config::{EncryptionKey, SigningKey};
 
 #[derive(Debug, Parser)]
 #[command(name = "tempo")]
@@ -25,12 +26,36 @@ struct ConsensusCommand {
     command: ConsensusSubcommand,
 }
 
+#[expect(
+    clippy::enum_variant_names,
+    reason = "these map to descriptive cli subcommands"
+)]
 #[derive(Debug, Subcommand)]
 enum ConsensusSubcommand {
+    /// Generates an encryption/decryption key.
+    GenerateEncryptionKey(GenerateEncryptionKey),
     /// Generates an ed25519 signing key pair to be used in consensus.
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
+}
+#[derive(Debug, clap::Args)]
+struct GenerateEncryptionKey {
+    /// Destination of the generated signing key.
+    #[arg(long, short, value_name = "FILE")]
+    output: PathBuf,
+}
+
+impl GenerateEncryptionKey {
+    fn run(self) -> eyre::Result<()> {
+        let Self { output } = self;
+
+        EncryptionKey::random(&mut OsRng)
+            .write_to_file(&output)
+            .wrap_err_with(|| format!("failed writing encryption key to `{}`", output.display()))?;
+        println!("wrote private key to: {}", output.display());
+        Ok(())
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -83,6 +108,7 @@ pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
     match TempoCli::try_parse() {
         Ok(cli) => match cli.command {
             TempoCommand::Consensus(cmd) => match cmd.command {
+                ConsensusSubcommand::GenerateEncryptionKey(args) => Some(args.run()),
                 ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
                 ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
             },
