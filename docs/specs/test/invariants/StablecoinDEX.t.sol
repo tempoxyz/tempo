@@ -365,7 +365,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
                     exchange.cancel(placedOrderId);
 
-                    // TEMPO-DEX3: Verify refund credited to internal balance
+                    // TEMPO-DEX3: Verify refund credited to internal balance and withdraw to ensure actors can exit
                     if (order.isBid) {
                         uint32 price = exchange.tickToPrice(order.tick);
                         uint128 expectedRefund = uint128(
@@ -376,11 +376,13 @@ contract StablecoinDEXInvariantTest is BaseTest {
                             exchange.balanceOf(actor, address(pathUSD)) >= expectedRefund,
                             "TEMPO-DEX3: bid cancel refund not credited"
                         );
+                        exchange.withdraw(address(pathUSD), expectedRefund);
                     } else {
                         assertTrue(
                             exchange.balanceOf(actor, address(token1)) >= order.remaining,
                             "TEMPO-DEX3: ask cancel refund not credited"
                         );
+                        exchange.withdraw(address(token1), order.remaining);
                     }
                 } catch { }
             }
@@ -978,8 +980,12 @@ contract StablecoinDEXInvariantTest is BaseTest {
             .swapExactAmount(
                 68_820_684_459_960_264_687_589_486_638_758_947_665_982_554_552_360_197, 48, false
             );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .invariantStablecoinDEX();
+
+        vm.startPrank(0x9a3D03B8a341C194aE72e271Ff63f2E9cf3EC506);
+        exchange.cancel(1);
+        exchange.withdraw(address(pathUSD), 6_419_205_150);
+        // Assert dust of 2 in exchange
+        assertEq(pathUSD.balanceOf(address(exchange)), 2);
     }
 
 }

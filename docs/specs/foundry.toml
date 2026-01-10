@@ -10,7 +10,6 @@ optimizer = true
 optimizer_runs = 1
 
 [invariant]
-depth = 100
 fail_on_revert = true
 show_solidity = true
 
