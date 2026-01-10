@@ -481,6 +481,7 @@ where
     /// If `their_epoch` is in the future, then a hint is sent to the marshal
     /// actor that a boundary certificate could be fetched.
     #[instrument(
+        level = "debug",
         skip_all,
         fields(msg.epoch = %their_epoch, msg.from = %from),
     )]
