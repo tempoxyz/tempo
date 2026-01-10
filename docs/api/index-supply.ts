@@ -15,46 +15,24 @@ type QueryResponse = {
   rows: Array<Array<string | number | null>>
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const origin = req.headers.origin
-  const allowedOrigins = ['https://docs.tempo.xyz', 'http://localhost:5173']
+type QueryResult =
+  | { success: true; status: number; data: QueryResponse }
+  | { success: false; status: number; error: string }
 
-  // Allow preview deployments
-  if (origin?.includes('vercel.app')) {
-    allowedOrigins.push(origin)
-  }
-
-  if (origin && allowedOrigins.some((allowed) => origin.startsWith(allowed))) {
-    res.setHeader('Access-Control-Allow-Origin', origin)
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token')
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end()
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
-
-  const token = req.headers['x-api-token']
-  if (token !== process.env['VITE_FRONTEND_API_TOKEN']) {
-    return res.status(403).json({ error: 'Forbidden' })
-  }
-
-  const body = req.body as QueryRequest
+/**
+ * Shared business logic for querying Index Supply API.
+ * Can be called from both Vercel serverless functions and dev middleware.
+ */
+export async function executeQuery(
+  body: QueryRequest,
+  apiKey: string,
+): Promise<QueryResult> {
   if (!body || typeof body.query !== 'string') {
-    return res.status(400).json({ error: 'Invalid request: query is required' })
-  }
-
-  const apiKey = process.env['INDEXSUPPLY_API_KEY']
-  if (!apiKey) {
-    console.error('INDEXSUPPLY_API_KEY is not configured')
-    return res
-      .status(500)
-      .json({ error: 'Server configuration error: API key not found' })
+    return {
+      success: false,
+      status: 400,
+      error: 'Invalid request: query is required',
+    }
   }
 
   try {
@@ -84,9 +62,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       json = await response.json()
     } catch {
-      return res
-        .status(502)
-        .json({ error: 'Index Supply API returned invalid JSON' })
+      return {
+        success: false,
+        status: 502,
+        error: 'Index Supply API returned invalid JSON',
+      }
     }
 
     if (!response.ok) {
@@ -98,25 +78,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? (json as { message: string }).message
           : response.statusText
 
-      return res
-        .status(response.status)
-        .json({ error: `Index Supply API error: ${message}` })
+      return {
+        success: false,
+        status: response.status,
+        error: `Index Supply API error: ${message}`,
+      }
     }
 
     const data = json as QueryResponse[]
     const [result] = data
 
     if (!result) {
-      return res
-        .status(500)
-        .json({ error: 'Index Supply returned an empty result set' })
+      return {
+        success: false,
+        status: 500,
+        error: 'Index Supply returned an empty result set',
+      }
     }
 
-    return res.status(200).json(result)
+    return { success: true, status: 200, data: result }
   } catch (error) {
     console.error('Error querying Index Supply:', error)
-    return res.status(500).json({
+    return {
+      success: false,
+      status: 500,
       error: error instanceof Error ? error.message : 'Unknown error occurred',
-    })
+    }
+  }
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const origin = req.headers.origin
+  const allowedOrigins = ['https://docs.tempo.xyz', 'http://localhost:5173']
+
+  // Allow preview deployments
+  if (origin?.includes('vercel.app')) {
+    allowedOrigins.push(origin)
+  }
+
+  if (origin && allowedOrigins.some((allowed) => origin.startsWith(allowed))) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-token')
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end()
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' })
+  }
+
+  const token = req.headers['x-api-token']
+  if (token !== process.env['VITE_FRONTEND_API_TOKEN']) {
+    return res.status(403).json({ error: 'Forbidden' })
+  }
+
+  const apiKey = process.env['INDEXSUPPLY_API_KEY']
+  if (!apiKey) {
+    console.error('INDEXSUPPLY_API_KEY is not configured')
+    return res
+      .status(500)
+      .json({ error: 'Server configuration error: API key not found' })
+  }
+
+  const body = req.body as QueryRequest
+  const result = await executeQuery(body, apiKey)
+
+  if (result.success) {
+    return res.status(result.status).json(result.data)
+  } else {
+    return res.status(result.status).json({ error: result.error })
   }
 }

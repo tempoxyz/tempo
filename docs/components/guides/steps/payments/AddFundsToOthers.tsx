@@ -50,12 +50,12 @@ export function AddFundsToOthers(props: DemoStepProps) {
       let receipts = null
       if (import.meta.env.VITE_ENVIRONMENT !== 'local')
         receipts = await Actions.faucet.fundSync(
-          client as unknown as Client<Transport, Chain>,
+          client as Client<Transport, Chain>,
           { account: targetAddress as Address },
         )
       else {
         const result = await Actions.token.transferSync(
-          client as unknown as Client<Transport, Chain>,
+          client as Client<Transport, Chain>,
           {
             account: mnemonicToAccount(
               'test test test test test test test test test test test junk',
