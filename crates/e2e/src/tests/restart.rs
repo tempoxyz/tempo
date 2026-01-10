@@ -47,11 +47,12 @@ fn run_restart_test(
 ) -> String {
     let _ = tempo_eyre::install();
     let cfg = deterministic::Config::default().with_seed(node_setup.seed);
+    let how_many_signers = node_setup.how_many_signers;
     let executor = Runner::from(cfg);
 
     executor.start(|mut context| async move {
         let (mut validators, _execution_runtime) =
-            setup_validators(context.clone(), node_setup.clone()).await;
+            setup_validators(context.clone(), node_setup).await;
 
         join_all(validators.iter_mut().map(|v| v.start())).await;
 
@@ -59,13 +60,7 @@ fn run_restart_test(
             height = shutdown_height,
             "waiting for network to reach target height before stopping a validator",
         );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers,
-            shutdown_height,
-            false,
-        )
-        .await;
+        wait_for_height(&context, how_many_signers, shutdown_height, false).await;
 
         // Randomly select a validator to kill
         let idx = context.gen_range(0..validators.len());
@@ -77,13 +72,7 @@ fn run_restart_test(
             height = restart_height,
             "waiting for remaining validators to reach target height before restarting validator",
         );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers - 1,
-            restart_height,
-            false,
-        )
-        .await;
+        wait_for_height(&context, how_many_signers - 1, restart_height, false).await;
 
         debug!("target height reached, restarting stopped validator");
         validators[idx].start().await;
@@ -96,13 +85,7 @@ fn run_restart_test(
             height = final_height,
             "waiting for reconstituted validators to reach target height to reach test success",
         );
-        wait_for_height(
-            &context,
-            node_setup.how_many_signers,
-            final_height,
-            assert_skips,
-        )
-        .await;
+        wait_for_height(&context, how_many_signers, final_height, assert_skips).await;
 
         context.auditor().state()
     })
@@ -216,11 +199,12 @@ fn network_resumes_after_restart_with_el_p2p() {
         let final_height = 10;
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let how_many_signers = setup.how_many_signers;
         let executor = Runner::from(cfg);
 
         executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(context.clone(), setup).await;
 
             join_all(validators.iter_mut().map(|v| v.start())).await;
 
@@ -228,7 +212,7 @@ fn network_resumes_after_restart_with_el_p2p() {
                 height = shutdown_height,
                 "waiting for network to reach target height before stopping a validator",
             );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height, false).await;
+            wait_for_height(&context, how_many_signers, shutdown_height, false).await;
 
             let idx = context.gen_range(0..validators.len());
             validators[idx].stop().await;
@@ -270,11 +254,12 @@ fn network_resumes_after_restart_without_el_p2p() {
         let final_height = 10;
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let how_many_signers = setup.how_many_signers;
         let executor = Runner::from(cfg);
 
         executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(context.clone(), setup).await;
 
             join_all(validators.iter_mut().map(|v| v.start())).await;
 
@@ -282,7 +267,7 @@ fn network_resumes_after_restart_without_el_p2p() {
                 height = shutdown_height,
                 "waiting for network to reach target height before stopping a validator",
             );
-            wait_for_height(&context, setup.how_many_signers, shutdown_height, false).await;
+            wait_for_height(&context, how_many_signers, shutdown_height, false).await;
 
             let idx = context.gen_range(0..validators.len());
             validators[idx].stop().await;
@@ -480,11 +465,12 @@ impl AssertNodeRecoversAfterFinalizingBlock {
             .epoch_length(epoch_length);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
+        let epoch_length_val = setup.epoch_length;
         let executor = Runner::from(cfg);
 
         executor.start(|context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(context.clone(), setup).await;
 
             join_all(validators.iter_mut().map(|node| node.start())).await;
 
@@ -505,7 +491,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     if metric.ends_with("_marshal_processed_height") {
                         let value = value.parse::<u64>().unwrap();
                         if shutdown_after_finalizing
-                            .is_target_height(setup.epoch_length, Height::new(value))
+                            .is_target_height(epoch_length_val, Height::new(value))
                         {
                             break 'wait_to_boundary (metric.to_string(), value);
                         }

@@ -22,8 +22,7 @@ fn validator_lost_key_but_gets_key_in_next_epoch() {
         let epoch_length = 30;
         let setup = Setup::new().seed(seed).epoch_length(epoch_length);
 
-        let (mut validators, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut validators, _execution_runtime) = setup_validators(context.clone(), setup).await;
         let last_node = {
             let last_node = validators
                 .last_mut()

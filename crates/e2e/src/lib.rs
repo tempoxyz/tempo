@@ -45,8 +45,10 @@ mod tests;
 pub const CONSENSUS_NODE_PREFIX: &str = "consensus";
 pub const EXECUTION_NODE_PREFIX: &str = "execution";
 
+/// Type alias for genesis state setup callbacks (shared with execution_runtime).
+pub type GenesisStateSetup = execution_runtime::GenesisStateSetup;
+
 /// The test setup run by [`run`].
-#[derive(Clone)]
 pub struct Setup {
     /// How many signing validators to launch.
     pub how_many_signers: u32,
@@ -66,6 +68,9 @@ pub struct Setup {
 
     /// Whether to connect execution layer nodes directly.
     pub connect_execution_layer_nodes: bool,
+
+    /// Optional callback to set up custom genesis state (e.g., blacklist policies).
+    pub genesis_state_setup: Option<GenesisStateSetup>,
 }
 
 impl Setup {
@@ -81,6 +86,21 @@ impl Setup {
             },
             epoch_length: 20,
             connect_execution_layer_nodes: false,
+            genesis_state_setup: None,
+        }
+    }
+
+    /// Add a callback to set up custom genesis state.
+    ///
+    /// The callback is invoked inside a `StorageCtx::enter_evm` context, allowing
+    /// direct manipulation of precompile state (e.g., TIP403 policies, TIP20 tokens).
+    pub fn with_genesis_state_setup<F>(self, setup: F) -> Self
+    where
+        F: FnOnce() -> eyre::Result<()> + Send + 'static,
+    {
+        Self {
+            genesis_state_setup: Some(Box::new(setup)),
+            ..self
         }
     }
 
@@ -127,6 +147,24 @@ impl Default for Setup {
     }
 }
 
+impl Clone for Setup {
+    fn clone(&self) -> Self {
+        assert!(
+            self.genesis_state_setup.is_none(),
+            "Cannot clone Setup with genesis_state_setup callback"
+        );
+        Self {
+            how_many_signers: self.how_many_signers,
+            how_many_verifiers: self.how_many_verifiers,
+            seed: self.seed,
+            linkage: self.linkage.clone(),
+            epoch_length: self.epoch_length,
+            connect_execution_layer_nodes: self.connect_execution_layer_nodes,
+            genesis_state_setup: None,
+        }
+    }
+}
+
 /// Sets up validators and returns the nodes and execution runtime.
 ///
 /// The execution runtime is created internally with a chainspec configured
@@ -141,6 +179,7 @@ pub async fn setup_validators(
         connect_execution_layer_nodes,
         linkage,
         epoch_length,
+        genesis_state_setup,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -196,12 +235,16 @@ pub async fn setup_validators(
     )
     .unwrap();
 
-    let execution_runtime = ExecutionRuntime::builder()
+    let mut builder = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
         .with_initial_dkg_outcome(onchain_dkg_outcome)
-        .with_validators(validators)
-        .launch()
-        .unwrap();
+        .with_validators(validators);
+
+    if let Some(setup) = genesis_state_setup {
+        builder = builder.with_genesis_state_setup(setup);
+    }
+
+    let execution_runtime = builder.launch().unwrap();
 
     let execution_configs = ExecutionNodeConfig::generator()
         .with_count(how_many_signers + how_many_verifiers)
