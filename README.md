@@ -136,6 +136,30 @@ Start a `localnet`:
 just localnet
 ```
 
+## Benchmarking
+
+To run benchmarks on Tempo, use the provided `tempo.nu` script:
+
+### Run a full benchmark (infra + localnet + bench)
+
+```bash
+nu tempo.nu bench --preset tip20 --tps 20000 --duration 60
+```
+
+### Benchmark on macOS
+
+On macOS, you can run the same command as above:
+
+```bash
+nu tempo.nu bench --preset tip20 --tps 20000 --duration 60
+```
+
+For more options and configuration, see the help output:
+
+```bash
+nu tempo.nu
+```
+
 ## Contributing
 
 Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.com/tempoxyz/tempo?tab=contributing-ov-file).
