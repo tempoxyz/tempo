@@ -29,10 +29,12 @@ use reth_ethereum::{
     chainspec::EthChainSpec as _,
     cli::{Cli, Commands},
     evm::revm::primitives::B256,
+    rpc::builder::{RethRpcModule, RpcModuleSelection},
 };
 use reth_ethereum_cli as _;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
-use std::{sync::Arc, thread};
+use reth_rpc_server_types::RpcModuleValidator;
+use std::{str::FromStr, sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
 use tempo_consensus::TempoConsensus;
@@ -48,6 +50,32 @@ use tempo_node::{
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
+
+#[derive(Debug, Clone)]
+struct TempoRpcModuleParser;
+
+impl RpcModuleValidator for TempoRpcModuleParser {
+    fn parse_selection(s: &str) -> Result<RpcModuleSelection, String> {
+        // First try standard parsing
+        let selection = RpcModuleSelection::from_str(s)
+            .map_err(|e| format!("Failed to parse RPC modules: {e}"))?;
+
+        // Validate each module in the selection
+        if let RpcModuleSelection::Selection(modules) = &selection {
+            for module in modules {
+                if let RethRpcModule::Other(name) = module
+                    && !matches!(name.as_str(), "amm" | "dex" | "token" | "policy")
+                {
+                    {
+                        return Err(format!("Unknown RPC module: '{name}'"));
+                    }
+                }
+            }
+        }
+
+        Ok(selection)
+    }
+}
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -117,7 +145,7 @@ fn main() -> eyre::Result<()> {
         return result;
     }
 
-    let cli = Cli::<TempoChainSpecParser, TempoArgs>::parse();
+    let cli = Cli::<TempoChainSpecParser, TempoArgs, TempoRpcModuleParser>::parse();
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =

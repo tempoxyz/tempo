@@ -207,11 +207,23 @@ where
                 let eth_ext = TempoEthExt::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
 
-                modules.merge_configured(dex.into_rpc())?;
-                modules.merge_configured(amm.into_rpc())?;
-                modules.merge_configured(token.into_rpc())?;
-                modules.merge_configured(policy.into_rpc())?;
-                modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("dex".to_string()),
+                    dex.into_rpc(),
+                )?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("amm".to_string()),
+                    amm.into_rpc(),
+                )?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("token".to_string()),
+                    token.into_rpc(),
+                )?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("policy".to_string()),
+                    policy.into_rpc(),
+                )?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 

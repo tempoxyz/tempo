@@ -11523,6 +11523,7 @@ dependencies = [
  "reth-ethereum",
  "reth-ethereum-cli",
  "reth-node-builder",
+ "reth-rpc-server-types",
  "tempo-chainspec",
  "tempo-commonware-node",
  "tempo-commonware-node-config",
