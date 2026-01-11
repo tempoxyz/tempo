@@ -223,7 +223,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> LoadPendingBlock for TempoEthApi<N> {
 
     #[inline]
     fn pending_block_kind(&self) -> PendingBlockKind {
-        // don't build a local pending block
+        // don't build a local pending block because we can't build a block without consensus data (system transaction)
         PendingBlockKind::None
     }
 }
