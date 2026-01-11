@@ -1607,6 +1607,7 @@ mod tests {
             limits: Some(vec![crate::transaction::TokenLimit {
                 token: address!("0000000000000000000000000000000000000003"),
                 limit: U256::from(10000),
+                period: None,
             }]),
             key_id: address!("0000000000000000000000000000000000000004"),
         }

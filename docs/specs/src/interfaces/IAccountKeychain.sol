@@ -35,6 +35,7 @@ interface IAccountKeychain {
     struct TokenLimit {
         address token; // TIP20 token address
         uint256 amount; // Spending limit amount
+        uint64 period; // Period duration in seconds (0 = one-time limit, >0 = periodic limit)
     }
 
     /// @notice Key information structure

@@ -35,7 +35,8 @@ contract AccountKeychainTest is BaseTest {
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
         limits[0] = IAccountKeychain.TokenLimit({
             token: USDC,
-            amount: 1000e6 // 1000 USDC
+            amount: 1000e6, // 1000 USDC
+            period: 0 // One-time limit
         });
 
         keychain.authorizeKey(
@@ -65,11 +66,13 @@ contract AccountKeychainTest is BaseTest {
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
         limits[0] = IAccountKeychain.TokenLimit({
             token: USDC,
-            amount: 1000e6 // 1000 USDC
+            amount: 1000e6, // 1000 USDC
+            period: 0 // One-time limit
         });
         limits[1] = IAccountKeychain.TokenLimit({
             token: USDT,
-            amount: 500e6 // 500 USDT
+            amount: 500e6, // 500 USDT
+            period: 0 // One-time limit
         });
 
         keychain.authorizeKey(
@@ -150,7 +153,7 @@ contract AccountKeychainTest is BaseTest {
 
         // First authorize a key with initial limits
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
@@ -411,7 +414,7 @@ contract AccountKeychainTest is BaseTest {
 
         // Authorize a key with only USDC limit
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
@@ -440,8 +443,8 @@ contract AccountKeychainTest is BaseTest {
 
         // Authorize key with enforceLimits=false but pass limits anyway
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
-        limits[1] = IAccountKeychain.TokenLimit({ token: USDT, amount: 500e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
+        limits[1] = IAccountKeychain.TokenLimit({ token: USDT, amount: 500e6, period: 0 });
 
         keychain.authorizeKey(
             aliceAccessKey,
@@ -583,10 +586,10 @@ contract AccountKeychainTest is BaseTest {
 
     function test_KeyIsolationBetweenAccounts() public {
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6 });
+        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6, period: 0 });
 
         // Same keyId for two different accounts
         address sharedKeyId = address(0x9999);
@@ -710,7 +713,7 @@ contract AccountKeychainTest is BaseTest {
 
         // First authorize
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
         keychain.authorizeKey(
             aliceAccessKey,
             IAccountKeychain.SignatureType.P256,
@@ -774,8 +777,8 @@ contract AccountKeychainTest is BaseTest {
         vm.startPrank(alice);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](2);
-        limits[0] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1 });
-        limits[1] = IAccountKeychain.TokenLimit({ token: token2, amount: amount2 });
+        limits[0] = IAccountKeychain.TokenLimit({ token: token1, amount: amount1, period: 0 });
+        limits[1] = IAccountKeychain.TokenLimit({ token: token2, amount: amount2, period: 0 });
 
         keychain.authorizeKey(
             keyId,
@@ -804,7 +807,7 @@ contract AccountKeychainTest is BaseTest {
 
         // First authorize the key
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](1);
-        limits[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit });
+        limits[0] = IAccountKeychain.TokenLimit({ token: token, amount: initialLimit, period: 0 });
 
         keychain.authorizeKey(
             keyId,
@@ -879,10 +882,10 @@ contract AccountKeychainTest is BaseTest {
         vm.assume(keyId != address(0));
 
         IAccountKeychain.TokenLimit[] memory limits1 = new IAccountKeychain.TokenLimit[](1);
-        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6 });
+        limits1[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 1000e6, period: 0 });
 
         IAccountKeychain.TokenLimit[] memory limits2 = new IAccountKeychain.TokenLimit[](1);
-        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6 });
+        limits2[0] = IAccountKeychain.TokenLimit({ token: USDC, amount: 2000e6, period: 0 });
 
         // Authorize same keyId for two different accounts
         vm.prank(account1);

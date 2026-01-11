@@ -41,6 +41,18 @@ contract AccountKeychain is IAccountKeychain {
 
     /// @dev Mapping from keccak256(account || keyId) -> token -> spending limit
     mapping(bytes32 => mapping(address => uint256)) private spendingLimits;
+    
+    /// @dev Mapping from keccak256(account || keyId) -> token -> period end timestamp
+    /// Stores when the current period ends for periodic limits (0 = one-time limit)
+    mapping(bytes32 => mapping(address => uint64)) private periodEnds;
+    
+    /// @dev Mapping from keccak256(account || keyId) -> token -> period limit amount
+    /// Stores the limit per period for periodic limits (0 = one-time limit)
+    mapping(bytes32 => mapping(address => uint256)) private periodLimits;
+    
+    /// @dev Mapping from keccak256(account || keyId) -> token -> period duration in seconds
+    /// Stores the period duration in seconds for periodic limits (0 = one-time limit)
+    mapping(bytes32 => mapping(address => uint64)) private periodDurations;
 
     /// @dev Transient storage for the transaction key
     /// Set by the protocol during transaction validation to indicate which key signed the tx
@@ -103,8 +115,19 @@ contract AccountKeychain is IAccountKeychain {
         // Set initial spending limits (only if enforce_limits is true)
         if (enforceLimits) {
             bytes32 limitKey = _spendingLimitKey(msg.sender, keyId);
+            uint64 currentTimestamp = uint64(block.timestamp);
             for (uint256 i = 0; i < limits.length; i++) {
-                spendingLimits[limitKey][limits[i].token] = limits[i].amount;
+                if (limits[i].period > 0) {
+                    // Periodic limit: store period_limit, period_duration, and set period_end
+                    periodLimits[limitKey][limits[i].token] = limits[i].amount;
+                    periodDurations[limitKey][limits[i].token] = limits[i].period;
+                    periodEnds[limitKey][limits[i].token] = currentTimestamp + limits[i].period;
+                    // Initialize spending limit to the full period amount
+                    spendingLimits[limitKey][limits[i].token] = limits[i].amount;
+                } else {
+                    // One-time limit: just store the limit
+                    spendingLimits[limitKey][limits[i].token] = limits[i].amount;
+                }
             }
         }
 
@@ -161,9 +184,23 @@ contract AccountKeychain is IAccountKeychain {
             key.enforceLimits = true;
         }
 
-        // Update the spending limit
         bytes32 limitKey = _spendingLimitKey(msg.sender, keyId);
-        spendingLimits[limitKey][token] = newLimit;
+        
+        // Check if this is currently a periodic limit
+        uint64 periodEnd = periodEnds[limitKey][token];
+        bool isPeriodic = periodEnd > 0;
+        
+        if (isPeriodic) {
+            // For periodic limits, update the period_limit and reset the current period
+            uint64 periodDuration = periodDurations[limitKey][token];
+            periodLimits[limitKey][token] = newLimit;
+            periodEnds[limitKey][token] = uint64(block.timestamp) + periodDuration;
+            // Reset spending limit to the new period amount
+            spendingLimits[limitKey][token] = newLimit;
+        } else {
+            // For one-time limits, just update the limit
+            spendingLimits[limitKey][token] = newLimit;
+        }
 
         // Emit event
         emit SpendingLimitUpdated(msg.sender, keyId, token, newLimit);
@@ -214,6 +251,21 @@ contract AccountKeychain is IAccountKeychain {
         returns (uint256)
     {
         bytes32 limitKey = _spendingLimitKey(account, keyId);
+        uint64 currentTimestamp = uint64(block.timestamp);
+        
+        // Check if this is a periodic limit
+        uint64 periodEnd = periodEnds[limitKey][token];
+        uint256 periodLimit = periodLimits[limitKey][token];
+        
+        // If periodEnd > 0, this is a periodic limit
+        if (periodEnd > 0 && periodLimit > 0) {
+            // If period has expired, return the full period limit (will be reset on next use)
+            if (currentTimestamp >= periodEnd) {
+                return periodLimit;
+            }
+        }
+        
+        // Return current remaining limit
         return spendingLimits[limitKey][token];
     }
 
@@ -269,8 +321,26 @@ contract AccountKeychain is IAccountKeychain {
             return;
         }
 
-        // Check and update spending limit
         bytes32 limitKey = _spendingLimitKey(account, keyId);
+        uint64 currentTimestamp = uint64(block.timestamp);
+        
+        // Check if this is a periodic limit
+        uint64 periodEnd = periodEnds[limitKey][token];
+        uint256 periodLimit = periodLimits[limitKey][token];
+        
+        // If periodEnd > 0, this is a periodic limit
+        if (periodEnd > 0 && periodLimit > 0) {
+            // Check if current period has expired
+            if (currentTimestamp >= periodEnd) {
+                // Reset the period: set new period_end and restore limit
+                uint64 periodDuration = periodDurations[limitKey][token];
+                periodEnds[limitKey][token] = currentTimestamp + periodDuration;
+                // Restore spending limit to the full period amount
+                spendingLimits[limitKey][token] = periodLimit;
+            }
+        }
+
+        // Check and update spending limit
         uint256 remaining = spendingLimits[limitKey][token];
 
         if (amount > remaining) {

@@ -248,6 +248,7 @@ fn create_signed_key_authorization(
                 .map(|_| TokenLimit {
                     token: Address::ZERO,
                     limit: U256::ZERO,
+                    period: None,
                 })
                 .collect(),
         )
@@ -688,6 +689,7 @@ fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit
     vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+        period: None,
     }]
 }
 
@@ -3258,6 +3260,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     let spending_limits = vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: spending_limit_amount,
+        period: None,
     }];
 
     println!("\nCreating key authorization:");
@@ -3729,6 +3732,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         Some(vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+            period: None,
         }]),
     )?;
 
@@ -3853,6 +3857,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         Some(vec![TokenLimit {
             token: DEFAULT_FEE_TOKEN,
             limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+            period: None,
         }]),
     )?;
 
@@ -4903,6 +4908,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     let spending_limits = vec![TokenLimit {
         token: DEFAULT_FEE_TOKEN,
         limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)), // 10 tokens
+        period: None,
     }];
 
     let mock_p256_sig =

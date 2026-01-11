@@ -25,6 +25,7 @@ crate::sol! {
         struct TokenLimit {
             address token;
             uint256 amount;
+            uint64 period; // Period duration in seconds (0 = one-time limit, >0 = periodic limit)
         }
 
         /// Key information structure

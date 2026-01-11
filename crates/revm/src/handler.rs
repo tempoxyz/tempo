@@ -826,6 +826,8 @@ where
                             .map(|limit| TokenLimit {
                                 token: limit.token,
                                 amount: limit.limit,
+                                // Convert Option<u64> to u64: None = 0 (one-time limit), Some(x) = x (periodic limit)
+                                period: limit.period.unwrap_or(0),
                             })
                             .collect()
                     })
@@ -1799,10 +1801,12 @@ mod tests {
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(100),
+                period: None,
             },
             TokenLimit {
                 token: Address::random(),
                 limit: U256::from(200),
+                period: None,
             },
         ];
 
@@ -1931,6 +1935,7 @@ mod tests {
                         .map(|_| TokenLimit {
                             token: Address::random(),
                             limit: U256::from(1000),
+                            period: None,
                         })
                         .collect(),
                 )
@@ -2012,10 +2017,12 @@ mod tests {
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(1000),
+                        period: None,
                     },
                     TokenLimit {
                         token: Address::random(),
                         limit: U256::from(2000),
+                        period: None,
                     },
                 ]),
             },
