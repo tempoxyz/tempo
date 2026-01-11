@@ -842,6 +842,7 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
+    use alloy_primitives::address;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory};
 
     use super::*;
@@ -1960,20 +1961,28 @@ pub(crate) mod tests {
             let mut factory = TIP20Factory::new();
             factory.initialize()?;
 
-            // Create pathUSD with a misconfigured quote token
-            let invalid_quote_token = Address::random();
+            // Create a new token to act as the pathUSD quote token
+            let quote_token = factory.create_token_reserved_address(
+                address!("20C0000000000000000000000000000000000001"),
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
             factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
                 "pathUSD",
                 "pathUSD",
                 "USD",
-                invalid_quote_token,
+                quote_token,
                 admin,
             )?;
             let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
 
             // Verify initial state
-            assert_eq!(path_usd.quote_token()?, invalid_quote_token);
+            assert_eq!(path_usd.quote_token()?, quote_token);
 
             // Update pathUSD quote token to address(0)
             path_usd.set_next_quote_token(
