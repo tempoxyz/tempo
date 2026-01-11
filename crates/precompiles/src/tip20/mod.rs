@@ -2001,7 +2001,7 @@ pub(crate) mod tests {
             TIP20Setup::path_usd(admin).apply()?;
 
             let mut token_b = TIP20Setup::create("TokenB", "TKNB", admin).apply()?;
-            let mut token_a = TIP20Setup::create("TokenA", "TKNA", admin)
+            let token_a = TIP20Setup::create("TokenA", "TKNA", admin)
                 .quote_token(token_b.address)
                 .apply()?;
 
