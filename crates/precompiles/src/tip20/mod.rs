@@ -244,18 +244,25 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
-        // Verify the new quote token is a valid TIP20 token that has been deployed
-        // use factory's `is_tip20()` which checks both prefix and counter
-        if !TIP20Factory::new().is_tip20(call.newQuoteToken)? {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
-        // Check if the currency is USD, if so then the quote token's currency MUST also be USD
-        let currency = self.currency()?;
-        if currency == USD_CURRENCY {
-            let quote_token_currency = Self::from_address(call.newQuoteToken)?.currency()?;
-            if quote_token_currency != USD_CURRENCY {
+        // If the token address is the root, require that the quote token is `Address::ZERO`
+        if self.address == PATH_USD_ADDRESS {
+            if call.newQuoteToken != Address::ZERO {
                 return Err(TIP20Error::invalid_quote_token().into());
+            }
+        } else {
+            // Verify the new quote token is a valid TIP20 token that has been deployed
+            // use factory's `is_tip20()` which checks both prefix and counter
+            if !TIP20Factory::new().is_tip20(call.newQuoteToken)? {
+                return Err(TIP20Error::invalid_quote_token().into());
+            }
+
+            // Check if the currency is USD, if so then the quote token's currency MUST also be USD
+            let currency = self.currency()?;
+            if currency == USD_CURRENCY {
+                let quote_token_currency = Self::from_address(call.newQuoteToken)?.currency()?;
+                if quote_token_currency != USD_CURRENCY {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
             }
         }
 
@@ -273,18 +280,24 @@ impl TIP20Token {
         _call: ITIP20::completeQuoteTokenUpdateCall,
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
-
         let next_quote_token = self.next_quote_token()?;
 
-        // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (pathUSD)
-        let mut current = next_quote_token;
-        while current != PATH_USD_ADDRESS {
-            if current == self.address {
+        // If the token address is the root, require that the quote token is `Address::ZERO`
+        if self.address == PATH_USD_ADDRESS {
+            if next_quote_token != Address::ZERO {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
+        } else {
+            // Check that this does not create a loop
+            // Loop through quote tokens until we reach the root (pathUSD)
+            let mut current = next_quote_token;
+            while current != PATH_USD_ADDRESS {
+                if current == self.address {
+                    return Err(TIP20Error::invalid_quote_token().into());
+                }
 
-            current = Self::from_address(current)?.quote_token()?;
+                current = Self::from_address(current)?.quote_token()?;
+            }
         }
 
         // Update the quote token
@@ -1902,6 +1915,120 @@ pub(crate) mod tests {
                 assert!(result.is_ok());
                 assert_eq!(token.transfer_policy_id()?, policy_id);
             }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_path_usd_rejects_non_zero_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let other_token = TIP20Setup::create("Other", "OTH", admin).apply()?;
+
+            // Attempting to stage a non-zero quote token fails immediately
+            let result = path_usd.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: other_token.address,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // Verify next quote token was not updated
+            assert_eq!(path_usd.next_quote_token()?, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_path_usd_quote_token_update() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // Create pathUSD with a misconfigured quote token
+            let invalid_quote_token = Address::random();
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                invalid_quote_token,
+                admin,
+            )?;
+            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
+
+            // Verify initial state
+            assert_eq!(path_usd.quote_token()?, invalid_quote_token);
+
+            // Update pathUSD quote token to address(0)
+            path_usd.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(path_usd.next_quote_token()?, Address::ZERO);
+
+            path_usd.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            assert_eq!(path_usd.quote_token()?, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_non_path_usd_cycle_detection() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::path_usd(admin).apply()?;
+
+            let mut token_b = TIP20Setup::create("TokenB", "TKNB", admin).apply()?;
+            let mut token_a = TIP20Setup::create("TokenA", "TKNA", admin)
+                .quote_token(token_b.address)
+                .apply()?;
+
+            // Verify chain where token_a -> token_b -> PATH_USD
+            assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
+
+            // Try to create cycle where token_b -> token_a
+            token_b.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: token_a.address,
+                },
+            )?;
+
+            let result =
+                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
+            assert_eq!(token_a.quote_token()?, token_b.address);
 
             Ok(())
         })
