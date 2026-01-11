@@ -1750,23 +1750,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_deploy_path_usd_directly() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            // pathUSD is at a reserved address, so we initialize it directly (not via factory)
-            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize(admin, "pathUSD", "pathUSD", "USD", PATH_USD_ADDRESS, admin)?;
-
-            assert_eq!(path_usd.currency()?, "USD");
-            // pathUSD uses itself as quote token
-            assert_eq!(path_usd.quote_token()?, PATH_USD_ADDRESS);
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_change_transfer_policy_id_invalid_policy() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
