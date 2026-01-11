@@ -588,11 +588,14 @@ contract StablecoinDEX is IStablecoinDEX {
                 );
             }
 
+            bytes32 bookKey = order.bookKey;
+            int16 tick = order.tick;
+
             delete orders[orderId];
 
             // Check if tick is exhausted and return 0 if so
             if (level.head == 0) {
-                _clearTickBit(order.bookKey, order.tick, isBid);
+                _clearTickBit(bookKey, tick, isBid);
                 return 0;
             }
         } else {
