@@ -342,14 +342,21 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_fee_token = if let Some(address) = deployment_gas_token {
+        let default_user_fee_token = if let Some(address) = deployment_gas_token {
             address
         } else {
             PATH_USD_ADDRESS
         };
 
+        let default_validator_fee_token = if let Some(address) = deployment_gas_token {
+            address
+        } else {
+            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
+        };
+
         initialize_fee_manager(
-            default_fee_token,
+            default_validator_fee_token,
+            default_user_fee_token,
             addresses.clone(),
             // TODO: also populate validators here, once the logic is back.
             vec![self.coinbase],
@@ -685,12 +692,12 @@ fn create_and_mint_token(
 }
 
 fn initialize_fee_manager(
-    fee_token_address: Address,
+    validator_fee_token_address: Address,
+    user_fee_token_address: Address,
     initial_accounts: Vec<Address>,
     validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
-    println!("Setting fee token address: {fee_token_address}");
     // Update the beneficiary since the validator can't set the validator fee token for themselves
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
@@ -703,7 +710,7 @@ fn initialize_fee_manager(
                 .set_user_token(
                     *address,
                     IFeeManager::setUserTokenCall {
-                        token: fee_token_address,
+                        token: user_fee_token_address,
                     },
                 )
                 .expect("Could not set fee token");
@@ -715,7 +722,7 @@ fn initialize_fee_manager(
                 .set_validator_token(
                     validator,
                     IFeeManager::setValidatorTokenCall {
-                        token: fee_token_address,
+                        token: validator_fee_token_address,
                     },
                     // use random address to avoid `CannotChangeWithinBlock` error
                     Address::random(),
