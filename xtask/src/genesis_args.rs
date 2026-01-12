@@ -295,7 +295,9 @@ impl GenesisArgs {
                     "DONOTUSE",
                     "USD",
                     PATH_USD_ADDRESS,
-                    pathusd_admin,
+                    self.mainnet_gas_token_admin.expect(
+                        "Mainnet gas token admin is required if you want to deploy the token",
+                    ),
                     &addresses,
                     U256::from(u64::MAX),
                     None,
