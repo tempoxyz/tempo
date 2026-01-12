@@ -596,49 +596,52 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @notice Called after invariant testing completes to clean up state
     /// @dev Cancels all remaining orders and verifies TEMPO-DEX3 (refunds) and TEMPO-DEX10 (linked list)
     function afterInvariant() public {
+        // Cancel all orders by iterating through order IDs
+        for (uint128 orderId = 1; orderId < _nextOrderId; orderId++) {
+            try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
+                // TEMPO-DEX10: Verify linked list consistency before cancel
+                _assertOrderLinkedListConsistency(orderId, order);
+
+                // Get the base token for this order
+                (address base,,,) = exchange.books(order.bookKey);
+                address maker = order.maker;
+
+                vm.startPrank(maker);
+                exchange.cancel(orderId);
+
+                // TEMPO-DEX3: Verify refund credited to internal balance and withdraw to ensure actors can exit
+                if (order.isBid) {
+                    uint32 price = exchange.tickToPrice(order.tick);
+                    uint128 expectedRefund = uint128(
+                        (uint256(order.remaining) * uint256(price) + exchange.PRICE_SCALE() - 1)
+                            / exchange.PRICE_SCALE()
+                    );
+                    assertTrue(
+                        exchange.balanceOf(maker, address(pathUSD)) >= expectedRefund,
+                        "TEMPO-DEX3: bid cancel refund not credited"
+                    );
+                    exchange.withdraw(address(pathUSD), expectedRefund);
+                } else {
+                    assertTrue(
+                        exchange.balanceOf(maker, base) >= order.remaining,
+                        "TEMPO-DEX3: ask cancel refund not credited"
+                    );
+                    exchange.withdraw(base, order.remaining);
+                }
+                vm.stopPrank();
+            } catch { }
+        }
+
+        // Withdraw remaining balances for all actors
         for (uint256 i = 0; i < _actors.length; i++) {
             address actor = _actors[i];
             vm.startPrank(actor);
-            for (uint256 orderId = 0; orderId < _placedOrders[actor].length; orderId++) {
-                uint128 placedOrderId = _placedOrders[actor][orderId];
-                // Placed orders could be filled and removed.
-                try exchange.getOrder(placedOrderId) returns (IStablecoinDEX.Order memory order) {
-                    // TEMPO-DEX10: Verify linked list consistency before cancel
-                    _assertOrderLinkedListConsistency(placedOrderId, order);
-
-                    // Get the base token for this order
-                    (address base,,,) = exchange.books(order.bookKey);
-
-                    exchange.cancel(placedOrderId);
-
-                    // TEMPO-DEX3: Verify refund credited to internal balance and withdraw to ensure actors can exit
-                    if (order.isBid) {
-                        uint32 price = exchange.tickToPrice(order.tick);
-                        uint128 expectedRefund = uint128(
-                            (uint256(order.remaining) * uint256(price) + exchange.PRICE_SCALE() - 1)
-                                / exchange.PRICE_SCALE()
-                        );
-                        assertTrue(
-                            exchange.balanceOf(actor, address(pathUSD)) >= expectedRefund,
-                            "TEMPO-DEX3: bid cancel refund not credited"
-                        );
-                        exchange.withdraw(address(pathUSD), expectedRefund);
-                    } else {
-                        assertTrue(
-                            exchange.balanceOf(actor, base) >= order.remaining,
-                            "TEMPO-DEX3: ask cancel refund not credited"
-                        );
-                        exchange.withdraw(base, order.remaining);
-                    }
-                } catch { }
-            }
             exchange.withdraw(address(pathUSD), exchange.balanceOf(actor, address(pathUSD)));
             for (uint256 j = 0; j < _tokens.length; j++) {
                 exchange.withdraw(
                     address(_tokens[j]), exchange.balanceOf(actor, address(_tokens[j]))
                 );
             }
-
             vm.stopPrank();
         }
 
@@ -646,6 +649,28 @@ contract StablecoinDEXInvariantTest is BaseTest {
         for (uint256 j = 0; j < _tokens.length; j++) {
             totalBalance += _tokens[j].balanceOf(address(exchange));
         }
+
+        // Log dust remaining in DEX
+        string memory dustLog = string.concat(
+            "Dust remaining: pathUSD=", vm.toString(pathUSD.balanceOf(address(exchange)))
+        );
+        for (uint256 j = 0; j < _tokens.length; j++) {
+            dustLog = string.concat(
+                dustLog,
+                ", ",
+                _tokens[j].symbol(),
+                "=",
+                vm.toString(_tokens[j].balanceOf(address(exchange)))
+            );
+        }
+        dustLog = string.concat(
+            dustLog,
+            " | Total=",
+            vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
+            ", Swaps=",
+            vm.toString(_numSwaps)
+        );
+        _log(dustLog);
 
         assertGe(
             _numSwaps,
