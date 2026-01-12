@@ -27,9 +27,6 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
     uint128 private _nextOrderId;
 
-    /// @dev Trading pair keys for each token/pathUSD pair
-    bytes32[] private _pairKeys;
-
     /// @dev Blacklist policy IDs for each token
     mapping(address => uint64) private _tokenPolicyIds;
 
@@ -68,7 +65,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         for (uint256 i = 0; i < tokens.length; i++) {
             tokens[i].grantRole(_ISSUER_ROLE, admin);
             _tokens.push(tokens[i]);
-            _pairKeys.push(exchange.createPair(address(tokens[i])));
+            exchange.createPair(address(tokens[i]));
 
             // Create blacklist policy for each token
             uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);

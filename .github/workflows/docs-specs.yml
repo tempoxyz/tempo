@@ -115,7 +115,7 @@ jobs:
 
       - name: Build tempo-foundry forge
         working-directory: tempo-foundry
-        run: cargo build -p forge --profile dev
+        run: cargo build -p forge --profile release
 
       - name: Run Forge tests with Rust precompiles
         working-directory: tempo/docs/specs
