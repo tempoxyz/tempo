@@ -62,6 +62,13 @@ import TempoTxProperties from '../../../snippets/tempo-tx-properties.mdx'
 ## Documentation Style
 Follow `style-guide.md`: active voice, present tense, sentence case headings, no Latin abbreviations, Oxford comma. Use `code font` for API objects.
 
+## Adding a New Guide
+1. Copy `pages/guide/_template.mdx` as a starting point
+2. Update placeholder content with your guide's title, description, steps, and examples
+3. Follow the template structure: intro + demo, steps section with code examples, recipes, best practices, learning resources
+4. For multi-step guides, use `Step.*` components and code-group for showing side-by-side examples
+5. Run `bun run dev` to verify, then `bun run check` before committing
+
 ## Adding a New Page
 1. Create `.mdx` file in appropriate `pages/` subdirectory (match URL path to file path)
 2. Add entry to sidebar in `vocs.config.tsx`

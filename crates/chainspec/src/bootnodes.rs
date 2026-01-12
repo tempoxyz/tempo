@@ -10,3 +10,14 @@ pub(crate) static ANDANTINO_BOOTNODES: [&str; 4] = [
 pub(crate) fn andantino_nodes() -> Vec<NodeRecord> {
     parse_nodes(ANDANTINO_BOOTNODES)
 }
+
+pub(crate) static MODERATO_BOOTNODES: [&str; 4] = [
+    "enode://daff60c56f91f13f7a01304badbf65a4b0fe71004293a1fa26e31bf9b2083cb7c176b8318219ac2a651dc26c61e094eff70ece6f440b849b8a1881c7766373bb@148.113.217.72:30014",
+    "enode://1dc8f9d6f7406cd9ea546f7dd8abc84f69fce8a88dc7315372859010e3db9235d74a93347e91732283e7b4dd22f7d3a60c81dee31a8dc6665dc7ed9aff977c20@148.113.193.121:30016",
+    "enode://c2b3cd1404534510487b96b099541d88072260d5410bcc38195d7f606decf0c0043964f6f9252869534675a80ca9f12af81d5b9c078966e9dfae4487a773cb0b@148.113.225.199:30018",
+    "enode://53fc9564e37a20aa3f53dc5b3dce124f55df6b8eab45f5b40b13d19f4753255f4b1e240c4b5004bab8f5f8698a7f8c6607d28dc9afa0018fb69526b88411d8ab@148.113.193.123:30020",
+];
+
+pub(crate) fn moderato_nodes() -> Vec<NodeRecord> {
+    parse_nodes(MODERATO_BOOTNODES)
+}

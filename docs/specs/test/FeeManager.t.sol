@@ -62,10 +62,8 @@ contract FeeManagerTest is BaseTest {
     function test_setValidatorToken() public {
         vm.prank(validator, validator);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit IFeeManager.ValidatorTokenSet(validator, address(validatorToken));
-        }
+        vm.expectEmit(true, true, true, true);
+        emit IFeeManager.ValidatorTokenSet(validator, address(validatorToken));
 
         amm.setValidatorToken(address(validatorToken));
 
@@ -129,10 +127,8 @@ contract FeeManagerTest is BaseTest {
     function test_setUserToken() public {
         vm.prank(user, user);
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, true, true);
-            emit IFeeManager.UserTokenSet(user, address(userToken));
-        }
+        vm.expectEmit(true, true, true, true);
+        emit IFeeManager.UserTokenSet(user, address(userToken));
 
         amm.setUserToken(address(userToken));
 
@@ -261,7 +257,7 @@ contract FeeManagerTest is BaseTest {
         }
     }
 
-    function test_defaultValidatorTokenIsPathUSD() public {
+    function test_defaultValidatorTokenIsPathUsd() public {
         vm.startPrank(user);
         userToken.approve(address(amm), type(uint256).max);
         vm.stopPrank();

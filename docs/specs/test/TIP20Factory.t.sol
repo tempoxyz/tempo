@@ -31,12 +31,10 @@ contract TIP20FactoryTest is BaseTest {
                 | uint160(uint64(bytes8(keccak256(abi.encode(address(this), eurSalt)))))
         );
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit ITIP20Factory.TokenCreated(
-                expectedAddr, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, eurSalt
-            );
-        }
+        vm.expectEmit(true, true, false, true);
+        emit ITIP20Factory.TokenCreated(
+            expectedAddr, "Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, eurSalt
+        );
 
         address eurTokenAddr =
             factory.createToken("Euro Token", "EUR", "EUR", ITIP20(_PATH_USD), admin, eurSalt);
@@ -51,12 +49,10 @@ contract TIP20FactoryTest is BaseTest {
                 | uint160(uint64(bytes8(keccak256(abi.encode(address(this), testSalt)))))
         );
 
-        if (!isTempo) {
-            vm.expectEmit(true, true, false, true);
-            emit ITIP20Factory.TokenCreated(
-                expectedAddr, "Test", "Test", "EUR", eurToken, admin, testSalt
-            );
-        }
+        vm.expectEmit(true, true, false, true);
+        emit ITIP20Factory.TokenCreated(
+            expectedAddr, "Test", "Test", "EUR", eurToken, admin, testSalt
+        );
 
         address tokenAddr = factory.createToken("Test", "Test", "EUR", eurToken, admin, testSalt);
         ITIP20 nonUSDToken = ITIP20(tokenAddr);
@@ -65,7 +61,7 @@ contract TIP20FactoryTest is BaseTest {
     }
 
     function testCreateTokenWithValidQuoteToken() public {
-        // Create token with PathUSD as the quote token
+        // Create token with pathUSD as the quote token
         address tokenAddr = factory.createToken(
             "Test Token", "TEST", "USD", ITIP20(_PATH_USD), admin, bytes32("valid")
         );
@@ -209,7 +205,7 @@ contract TIP20FactoryTest is BaseTest {
         assertFalse(factory.isTIP20(_TIP20FACTORY));
     }
 
-    /// @notice Edge case: PathUSD address should always be valid
+    /// @notice Edge case: pathUSD address should always be valid
     function test_EDGE_pathUSDAlwaysValid() public view {
         assertTrue(factory.isTIP20(_PATH_USD));
     }

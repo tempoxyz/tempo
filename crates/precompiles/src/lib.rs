@@ -42,7 +42,7 @@ use alloy::{
 use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
 use revm::{
     context::CfgEnv,
-    precompile::{PrecompileId, PrecompileOutput, PrecompileResult},
+    precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 
 pub use tempo_contracts::precompiles::{
@@ -200,17 +200,13 @@ fn metadata<T: SolCall>(f: impl FnOnce() -> Result<T::Return>) -> PrecompileResu
 }
 
 #[inline]
-fn view<T: SolCall>(calldata: &[u8], f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
-    let Ok(call) = T::abi_decode(calldata) else {
-        // TODO refactor
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
+fn view<T: SolCall>(call: T, f: impl FnOnce(T) -> Result<T::Return>) -> PrecompileResult {
     f(call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
-pub fn mutate<T: SolCall>(
-    calldata: &[u8],
+fn mutate<T: SolCall>(
+    call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
@@ -220,15 +216,12 @@ pub fn mutate<T: SolCall>(
             StaticCallNotAllowed {}.abi_encode().into(),
         ));
     }
-    let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
     f(sender, call).into_precompile_result(0, |ret| T::abi_encode_returns(&ret).into())
 }
 
 #[inline]
 fn mutate_void<T: SolCall>(
-    calldata: &[u8],
+    call: T,
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
@@ -238,17 +231,11 @@ fn mutate_void<T: SolCall>(
             StaticCallNotAllowed {}.abi_encode().into(),
         ));
     }
-    let Ok(call) = T::abi_decode(calldata) else {
-        return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
-    };
     f(sender, call).into_precompile_result(0, |()| Bytes::new())
 }
 
 #[inline]
-fn fill_precompile_output(
-    mut output: PrecompileOutput,
-    storage: &mut StorageCtx,
-) -> PrecompileOutput {
+fn fill_precompile_output(mut output: PrecompileOutput, storage: &StorageCtx) -> PrecompileOutput {
     output.gas_used = storage.gas_used();
 
     // add refund only if it is not reverted
@@ -263,6 +250,35 @@ fn fill_precompile_output(
 #[inline]
 pub fn unknown_selector(selector: [u8; 4], gas: u64) -> PrecompileResult {
     error::TempoPrecompileError::UnknownFunctionSelector(selector).into_precompile_result(gas)
+}
+
+/// Helper function to decode calldata and dispatch it.
+#[inline]
+fn dispatch_call<T>(
+    calldata: &[u8],
+    decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    f: impl FnOnce(T) -> PrecompileResult,
+) -> PrecompileResult {
+    if calldata.len() < 4 {
+        return Err(PrecompileError::Other(
+            "Invalid input: missing function selector".into(),
+        ));
+    }
+
+    let storage = StorageCtx::default();
+    let result = decode(calldata);
+
+    match result {
+        Ok(call) => f(call).map(|res| fill_precompile_output(res, &storage)),
+        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+            unknown_selector(*selector, storage.gas_used())
+                .map(|res| fill_precompile_output(res, &storage))
+        }
+        Err(_) => Ok(fill_precompile_output(
+            PrecompileOutput::new_reverted(0, Bytes::new()),
+            &storage,
+        )),
+    }
 }
 
 #[cfg(test)]
