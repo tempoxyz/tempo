@@ -533,8 +533,8 @@ mod tests {
             TempoTransaction {
                 chain_id: 1,
                 fee_token: None,
-                max_priority_fee_per_gas: 0,
-                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 10,
+                max_fee_per_gas: 10,
                 gas_limit: self.gas_limit,
                 calls: self.calls,
                 access_list: Default::default(),
@@ -767,15 +767,37 @@ mod tests {
             .build();
 
         let signed_tx = key_pair.sign_tx(tx)?;
-        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+        let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
         // Create EVM and execute transaction
         let mut evm = create_funded_evm(caller);
+        evm.block.basefee = 1;
+
+        let block = TempoBlockEnv::default();
+        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+
+        // The core logic of setting up thread-local storage is here.
+        _ = StorageCtx::enter(&mut provider, || {
+            let t = TIP20Setup::path_usd(caller)
+                .with_issuer(caller)
+                .with_mint(caller, U256::from(100_000))
+                .apply();
+            t
+        });
+
+        drop(provider);
+
+        tx_env.inner.gas_price = 10;
+        tx_env.inner.gas_priority_fee = Some(2);
 
         let result = evm.transact(tx_env)?;
 
         assert!(result.result.is_success());
         assert_eq!(result.result.gas_used(), 31286);
+
+        println!("result: {:?}", result);
 
         // simple tx
         let tx_env = TxEnv {
