@@ -40,6 +40,7 @@ use indicatif::{ParallelProgressIterator, ProgressBar, ProgressIterator};
 use rand::{random_range, seq::IndexedRandom};
 use rlimit::Resource;
 use serde::Serialize;
+use uuid::Uuid;
 use std::{
     collections::VecDeque,
     fs::File,
@@ -72,7 +73,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::cmd::signer_providers::SignerProviderManager;
+use crate::cmd::{
+    clickhouse::{ClickHouseConfig, ClickHouseReporter, TempoBenchBlock, TempoBenchRun},
+    signer_providers::SignerProviderManager,
+};
 
 /// Run maximum TPS throughput benchmarking
 #[derive(Parser, Debug)]
@@ -166,6 +170,30 @@ pub struct MaxTpsArgs {
     /// Disable 2D nonces
     #[arg(long)]
     disable_2d_nonces: bool,
+
+    /// ClickHouse URL for storing benchmark results (e.g., http://localhost:8123)
+    #[arg(long, env = "CLICKHOUSE_URL")]
+    clickhouse_url: Option<String>,
+
+    /// ClickHouse database name
+    #[arg(long, env = "CLICKHOUSE_DATABASE", default_value = "default")]
+    clickhouse_database: String,
+
+    /// ClickHouse user
+    #[arg(long, env = "CLICKHOUSE_USER")]
+    clickhouse_user: Option<String>,
+
+    /// ClickHouse password
+    #[arg(long, env = "CLICKHOUSE_PASSWORD")]
+    clickhouse_password: Option<String>,
+
+    /// Argo workflow name (for CI/CD identification)
+    #[arg(long, env = "ARGO_WORKFLOW_NAME")]
+    argo_workflow_name: Option<String>,
+
+    /// Kubernetes namespace where the benchmark is running
+    #[arg(long, env = "ARGO_WORKFLOW_NAMESPACE")]
+    k8s_namespace: Option<String>,
 }
 
 impl MaxTpsArgs {
@@ -857,7 +885,95 @@ pub async fn generate_report(
     let writer = BufWriter::new(file);
     serde_json::to_writer_pretty(writer, &report)?;
 
-    info!(path, "Generated report");
+    info!(path, "Generated JSON report");
+
+    if let Some(ref clickhouse_url) = args.clickhouse_url {
+        let run_id = Uuid::new_v4();
+
+        let total_transactions: u64 = report.blocks.iter().map(|b| b.tx_count as u64).sum();
+        let total_successful: u64 = report.blocks.iter().map(|b| b.ok_count as u64).sum();
+        let total_failed: u64 = report.blocks.iter().map(|b| b.err_count as u64).sum();
+        let total_gas_used: u64 = report.blocks.iter().map(|b| b.gas_used).sum();
+
+        let latencies: Vec<u64> = report
+            .blocks
+            .iter()
+            .filter_map(|b| b.latency_ms)
+            .collect();
+        let avg_block_time_ms = if latencies.is_empty() {
+            0.0
+        } else {
+            latencies.iter().sum::<u64>() as f64 / latencies.len() as f64
+        };
+
+        let total_time_ms: u64 = latencies.iter().sum();
+        let avg_tps = if total_time_ms > 0 {
+            (total_transactions as f64 * 1000.0) / total_time_ms as f64
+        } else {
+            0.0
+        };
+
+        let config = ClickHouseConfig::new(clickhouse_url.clone())
+            .with_database(args.clickhouse_database.clone());
+        let config = match (&args.clickhouse_user, &args.clickhouse_password) {
+            (Some(user), Some(password)) => {
+                config.with_credentials(user.clone(), password.clone())
+            }
+            _ => config,
+        };
+
+        let reporter = ClickHouseReporter::new(&config);
+
+        let run = TempoBenchRun {
+            run_id,
+            created_at: crate::cmd::clickhouse::now_utc(),
+            chain_id: report.metadata.chain_id,
+            start_block,
+            end_block,
+            target_tps: args.tps,
+            run_duration_secs: args.duration,
+            accounts: args.accounts.get(),
+            total_connections: report.metadata.total_connections as u32,
+            total_blocks: report.blocks.len() as u32,
+            total_transactions,
+            total_successful,
+            total_failed,
+            total_gas_used,
+            avg_block_time_ms,
+            avg_tps,
+            tip20_weight: args.tip20_weight,
+            place_order_weight: args.place_order_weight,
+            swap_weight: args.swap_weight,
+            erc20_weight: args.erc20_weight,
+            node_commit_sha: args.node_commit_sha.clone().unwrap_or_default(),
+            build_profile: args.build_profile.clone().unwrap_or_default(),
+            benchmark_mode: args.benchmark_mode.clone().unwrap_or_default(),
+            argo_workflow_name: args.argo_workflow_name.clone().unwrap_or_default(),
+            k8s_namespace: args.k8s_namespace.clone().unwrap_or_default(),
+        };
+
+        let blocks: Vec<TempoBenchBlock> = report
+            .blocks
+            .iter()
+            .map(|b| TempoBenchBlock {
+                run_id,
+                block_number: b.number,
+                timestamp_ms: b.timestamp,
+                tx_count: b.tx_count as u32,
+                ok_count: b.ok_count as u32,
+                err_count: b.err_count as u32,
+                gas_used: b.gas_used,
+                latency_ms: b.latency_ms.unwrap_or(0),
+            })
+            .collect();
+
+        reporter
+            .report(run, blocks)
+            .await
+            .context("Failed to report to ClickHouse")?;
+
+        info!(run_id = %run_id, "Reported benchmark results to ClickHouse");
+    }
 
     Ok(())
 }
