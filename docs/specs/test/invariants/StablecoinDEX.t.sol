@@ -2,7 +2,6 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
-import { StablecoinDEX } from "../../src/exchanges/StablecoinDEX.sol";
 import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
@@ -41,8 +40,8 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @dev Log file path for recording exchange actions
     string private constant LOG_FILE = "exchange.log";
 
-    /// @dev Number of placed swaps, to be used in invariant checking.
-    uint64 private _numSwaps;
+    /// @dev Maximum amount of dust that can be left in the protocol. This is used to verify TEMPO-DEX19.
+    uint64 private _maxDust;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -184,13 +183,37 @@ contract StablecoinDEXInvariantTest is BaseTest {
         assertEq(order.isBid, isBid, "TEMPO-DEX2: order side mismatch");
     }
 
+    function test_poc() external {
+        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
+            .placeFlipOrder(
+                180_739_590_293_198,
+                375_652_765,
+                3_832_115_738_349_263_146_361_442_917,
+                32_740_479,
+                true
+            );
+        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
+            .placeFlipOrder(36_047_880_443_348_445_879_617, 1_087_594, 32_682, 1, false);
+        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
+            .placeFlipOrder(
+                788_164_003_983_621,
+                589_257,
+                61_364_942_536_591_125_809_573_167,
+                115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640_564_039_457_584_007_913_129_639_935,
+                true
+            );
+        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
+            .swapExactAmount(10, 93_339_479_806, 64, 2, false);
+        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496).afterInvariant();
+    }
+
     function cancelOrder(uint128 orderId) external {
         orderId = orderId % exchange.nextOrderId();
         try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
-            StablecoinDEX.Orderbook memory orderbook = exchange.books(order.bookKey);
+            (address base,,,) = exchange.books(order.bookKey);
             // Cancel, but skip checking `actorBalanceBeforePlace`
             _cancelAndVerifyRefund(
-                orderId, order.maker, orderbook.base, order.remaining, order.tick, order.isBid, 0
+                orderId, order.maker, base, order.remaining, order.tick, order.isBid, 0
             );
         } catch {
             // order was probably cancelled in a previous cancelOrder call
@@ -212,20 +235,16 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         amount = uint128(bound(amount, 1, balance));
 
-        vm.prank(actor);
+        vm.startPrank(actor);
         exchange.withdraw(token, amount);
+        vm.stopPrank();
 
         _log(
             string.concat(
-                _getActorIndex(actor),
-                " withdrew ",
-                vm.toString(amount),
-                " ",
-                TIP20(token).symbol()
+                _getActorIndex(actor), " withdrew ", vm.toString(amount), " ", TIP20(token).symbol()
             )
         );
     }
-
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
     function _cancelAndVerifyRefund(
@@ -268,6 +287,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 dexBalanceBefore = pathUSD.balanceOf(address(exchange));
         uint256 actorExternalBefore = pathUSD.balanceOf(actor);
 
+        vm.startPrank(actor);
         exchange.cancel(orderId);
 
         uint32 price = exchange.tickToPrice(tick);
@@ -283,6 +303,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         uint128 withdrawAmount = balanceAfter;
         exchange.withdraw(address(pathUSD), withdrawAmount);
+        vm.stopPrank();
 
         uint256 dexBalanceAfter = pathUSD.balanceOf(address(exchange));
         assertEq(
@@ -314,6 +335,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 dexBalanceBefore = TIP20(token).balanceOf(address(exchange));
         uint256 actorExternalBefore = TIP20(token).balanceOf(actor);
 
+        vm.startPrank(actor);
         exchange.cancel(orderId);
 
         uint128 balanceAfter = exchange.balanceOf(actor, token);
@@ -321,6 +343,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         uint128 withdrawAmount = balanceAfter;
         exchange.withdraw(token, withdrawAmount);
+        vm.stopPrank();
 
         uint256 dexBalanceAfter = TIP20(token).balanceOf(address(exchange));
         assertEq(
@@ -719,7 +742,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         // TODO: find a better way to assert dust / count swaps (for flip orders)
         /*
         assertGe(
-            _numSwaps,
+            _maxDust,
             pathUSD.balanceOf(address(exchange)) + totalBalance,
             "TEMPO-DEX19: Excess post-swap dust"
         );
@@ -864,7 +887,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountOut
         ) {
-            _numSwaps += 1;
+            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
@@ -922,7 +945,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountIn
         ) {
-            _numSwaps += 1;
+            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
@@ -1154,6 +1177,19 @@ contract StablecoinDEXInvariantTest is BaseTest {
             return address(pathUSD);
         }
         return address(_tokens[index - 1]);
+    }
+
+    /// @dev Returns the number of hops in a trade path (similar to findTradePath in StablecoinDEX)
+    /// @param tokenIn The input token
+    /// @param tokenOut The output token
+    /// @return hops Number of hops (1 for direct, 2 for multi-hop via pathUSD)
+    function _findRoute(address tokenIn, address tokenOut) internal view returns (uint256 hops) {
+        // Direct pair: one of the tokens is pathUSD
+        if (tokenIn == address(pathUSD) || tokenOut == address(pathUSD)) {
+            return 1;
+        }
+        // Multi-hop: base -> pathUSD -> base
+        return 2;
     }
 
     /// @notice Ensures an actor has sufficient token balances for testing
