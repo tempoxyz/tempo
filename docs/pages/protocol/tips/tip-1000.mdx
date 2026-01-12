@@ -1,0 +1,316 @@
+# TIP-1000: State Creation Cost Increase
+This document defines increased gas costs for state creation operations to protect Tempo from adversarial state growth attacks.
+
+- **TIP ID**: TIP-1000
+- **Authors/Owners**: Dankrad Feist @dankrad
+- **Status**: Draft
+- **Related Specs/TIPs**: N/A
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+This TIP increases the gas cost for creating new state elements, accounts, and contract code to provide economic protection against state growth spam attacks. The proposal increases the cost of writing a new state element from 20,000 gas to 250,000 gas, introduces a 250,000 gas charge for account creation (when the account's nonce is first written), and implements a new contract creation cost model: 1,000 gas per byte of contract code plus 500,000 gas for keccak hash and codesize fields.
+
+## Motivation
+
+Tempo's high throughput capability (approximately 20,000 transactions per second) creates a vulnerability where an adversary could create a massive amount of state with the intent of permanently slowing the chain down. If each transaction is used to create a new account, and each account requires approximately 200 bytes of storage, then over 120 TB of storage could be created in a single year. Even if this storage is technically feasible, the database performance implications are unknown and would likely require significant R&D on state management much earlier than needed for business requirements.
+
+The current EVM gas schedule charges 20,000 gas for writing a new state element and has no cost for creating an account. This makes state creation attacks economically viable for adversaries. By increasing these costs to 250,000 gas each, we create a meaningful economic barrier: creating 1 TB of state would cost approximately $50 million, and creating 10 TB would cost approximately $500 million (based on the assumption that a TIP-20 transfer costs 50,000 gas = 0.1 cent, implying 1 cent per 500,000 gas).
+
+### Alternatives Considered
+
+1. **Storage rent**: Implementing a periodic fee for holding state. This was rejected due to complexity and poor user experience.
+2. **State expiry**: Automatically removing unused state after a time period. This was rejected due to technical complexity and breaking changes to existing applications.
+3. **Lower cost increases**: Using smaller multipliers (e.g., 50,000 gas instead of 250,000 gas). This was rejected as it would not provide sufficient economic deterrent against well-funded attackers.
+
+---
+
+# Specification
+
+## Gas Cost Changes
+
+### New State Element Creation
+
+**Current Behavior:**
+- Writing a new state element (SSTORE to a zero slot) costs 20,000 gas
+
+**Proposed Behavior:**
+- Writing a new state element (SSTORE to a zero slot) costs 250,000 gas
+
+This applies to all storage slot writes that transition from zero to non-zero, including:
+- Contract storage slots
+- TIP-20 token balances
+- Nonce key storage in the Nonce precompile (when a new nonce key is first used)
+- Rewards-related storage (userRewardInfo mappings, reward balances)
+- Active key count tracking in the Nonce precompile
+- Any other state elements stored in the EVM state trie
+
+**Note:** Since Tempo-specific operations (nonce keys, rewards processing, etc.) ultimately use EVM storage operations (SSTORE), they are automatically subject to the new state creation pricing. The implementation must ensure all new state element creation is correctly charged at 250,000 gas, regardless of which precompile or contract creates the state.
+
+### Account Creation
+
+**Current Behavior:**
+- Account creation has no explicit gas cost
+- The account is created implicitly when its nonce is first written
+
+**Proposed Behavior:**
+- Account creation incurs a 250,000 gas charge when the account's nonce is first written
+- This charge applies when the account is first used (e.g., sends its first transaction), not when it first receives tokens
+
+**Implementation Details:**
+- The charge is applied when `account.nonce` transitions from 0 to 1
+- The charge also applies to other nonces with [nonce keys](/protocol/transactions/spec-tempo-transaction#specification) (2D nonces)
+- Transactions with a nonce value of 0 need to suppy at least 271,000 gas and are otherwise invalid
+- For EOA accounts: charged on the first transaction sent from that address (when the account is first used)
+- For contract accounts: charged when the contract is deployed (CREATE or CREATE2)
+- **Important:** When tokens are transferred TO a new address, the recipient's nonce remains 0, so no account creation cost is charged. The account creation cost only applies when the account is first used (sends a transaction).
+- The charge is in addition to any other gas costs for the transaction
+
+### Contract Creation
+
+**Current Behavior:**
+- Contract creation (CREATE/CREATE2) has a base cost of 32,000 gas plus 200 gas per byte of contract code
+- Total cost formula: `32,000 + (code_size × 200)` gas
+- Example: A 1,000 byte contract costs 32,000 + (1,000 × 200) = 232,000 gas
+
+**Proposed Behavior:**
+- Contract creation replaces the existing EVM per-byte cost with a new pricing model:
+  - Each byte: 1,000 gas per byte (linear pricing)
+  - Additional state elements: 2 × 250,000 gas = 500,000 gas for keccak hash and codesize fields
+- This pricing applies to the contract code size (the bytecode being deployed)
+
+**Implementation Details:**
+- The code storage cost is calculated as: `code_size × 1,000`
+- Additional state creation costs: 2 × 250,000 gas = 500,000 gas for keccak hash and codesize fields
+- Total contract creation cost: `(code_size × 1,000) + 500,000` gas
+- This replaces the existing EVM per-byte cost for contract creation (not an additional charge)
+- Applies to both CREATE and CREATE2 operations
+- The account creation cost (250,000 gas) is separate and still applies when the contract account's nonce transitions from 0 to 1
+
+## Gas Schedule Summary
+
+| Operation | Current Gas Cost | Proposed Gas Cost | Change |
+|-----------|------------------|-------------------|--------|
+| New state element (SSTORE zero → non-zero) | 20,000 | 250,000 | +230,000 |
+| Account creation (first nonce write) | 0 | 250,000 | +250,000 |
+| Contract creation (per byte) | 200 | 1,000 | +800 |
+| Contract creation (keccak + codesize fields) | Included in base | 500,000 | +500,000 |
+| Existing state element (SSTORE non-zero → non-zero) | 5,000 | 5,000 | No change |
+| Existing state element (SSTORE non-zero → zero) | -15,000 (refund) | -15,000 (refund) | No change |
+
+## Economic Impact Analysis
+
+### Cost Calculations
+
+Based on the assumptions:
+- TIP-20 transfer cost (to existing address, including base transaction and state update): 50,000 gas = 0.1 cent
+- Implied gas price: 1 cent per 500,000 gas
+
+**New State Element Creation:**
+- Gas cost: 250,000 gas
+- Dollar cost: 250,000 / 500,000 = **0.5 cents per state element**
+
+**Account Creation:**
+- Gas cost: 250,000 gas
+- Dollar cost: 250,000 / 500,000 = **0.5 cents per account**
+
+**Contract Creation:**
+- Per byte: 1,000 gas = **0.002 cents per byte**
+- Keccak + codesize fields: 500,000 gas (2 × 250,000) = **1.0 cent**
+- Example: 1,000 byte contract = (1,000 × 1,000) + 500,000 = 1,500,000 gas = **3.0 cents**
+
+### Attack Cost Analysis
+
+**Creating 1 TB of state:**
+- 1 TB = 1,000,000,000,000 bytes
+- Assuming ~100 bytes per state element: 10,000,000,000 state elements
+- Cost: 10,000,000,000 × 0.5 cents = **$50,000,000**
+
+**Creating 10 TB of state:**
+- 10 TB = 10,000,000,000,000 bytes
+- Assuming ~100 bytes per state element: 100,000,000,000 state elements
+- Cost: 100,000,000,000 × 0.5 cents = **$500,000,000**
+
+These costs serve as a significant economic deterrent against state growth spam attacks.
+
+## Impact on Normal Operations
+
+### Transfer to New Address
+
+**Current Cost:**
+- TIP-20 transfer (base + operation): 50,000 gas
+- New state element (balance): 20,000 gas
+- **Total: ~70,000 gas ≈ 0.14 cents**
+- Note: Account creation cost does not apply here because the recipient's nonce remains 0
+
+**Proposed Cost:**
+- TIP-20 transfer (base + operation): 50,000 gas
+- New state element (balance): 250,000 gas
+- **Total: ~300,000 gas ≈ 0.6 cents**
+- Note: Account creation cost does not apply here because the recipient's nonce remains 0
+
+**Impact:** A transfer to a new address increases from 0.14 cents to 0.6 cents, representing a 4.3x increase. The account creation cost (0.5 cents) will be charged separately when the recipient first uses their account.
+
+### First Use of New Account
+
+**Current Cost:**
+- TIP-20 transfer (base + operation + state update): 50,000 gas
+- Account creation: 0 gas
+- **Total: 50,000 gas ≈ 0.1 cents**
+
+**Proposed Cost:**
+- TIP-20 transfer (base + operation + state update): 50,000 gas
+- Account creation (nonce 0 → 1): 250,000 gas
+- **Total: ~300,000 gas ≈ 0.6 cents**
+
+**Impact:** The first transaction from a new account increases from 0.1 cents to 0.6 cents, representing a 6x increase. Combined with the initial transfer cost (0.6 cents), the total onboarding cost for a new user is approximately 1.2 cents.
+
+### Transfer to Existing Address
+
+**Current Cost:**
+- TIP-20 transfer (base + operation + state update): 50,000 gas
+- **Total: 50,000 gas ≈ 0.1 cents**
+
+**Proposed Cost:**
+- TIP-20 transfer (base + operation + state update): 50,000 gas
+- **Total: 50,000 gas ≈ 0.1 cents**
+
+**Impact:** No change for transfers to existing addresses.
+
+### Contract Deployment
+
+**Current Cost:**
+- Contract code storage: 32,000 gas base + 200 gas per byte
+- Example for 1,000 byte contract: 32,000 + (1,000 × 200) = 232,000 gas ≈ 0.46 cents
+
+**Proposed Cost:**
+- Account creation: 250,000 gas
+- Contract code storage: code_size × 1,000 gas
+- Keccak + codesize fields: 500,000 gas (2 × 250,000)
+- Example for 1,000 byte contract: 250,000 + (1,000 × 1,000) + 500,000 = 1,750,000 gas ≈ **3.5 cents**
+
+**Impact:** Contract deployment costs increase significantly, especially for larger contracts. A 100 byte contract costs (100 × 1,000) + 500,000 + 250,000 = 850,000 gas = 1.7 cents total.
+
+## Implementation Requirements
+
+### Node Implementation
+
+The node implementation must:
+
+1. **Detect new state element creation:**
+   - Track SSTORE operations that write to a zero slot
+   - Charge 250,000 gas instead of 20,000 gas for these operations
+
+2. **Detect account creation:**
+   - Track when an account's nonce transitions from 0 to 1
+   - Charge 250,000 gas for this transition
+   - Apply to both EOA and contract account creation
+
+3. **Implement contract creation pricing:**
+   - Replace existing EVM per-byte cost for contract code storage
+   - Charge 1,000 gas per byte of contract code (linear pricing)
+   - Charge 500,000 gas (2 × 250,000) for keccak hash and codesize fields
+   - Total formula: `(code_size × 1,000) + 500,000`
+   - Apply to both CREATE and CREATE2 operations
+
+4. **Maintain backward compatibility:**
+   - Existing state operations (non-zero to non-zero, non-zero to zero) remain unchanged
+   - Gas refunds for storage clearing remain unchanged
+
+### Test Suite Requirements
+
+The test suite must verify:
+
+1. **New state element creation:**
+   - SSTORE to zero slot charges 250,000 gas
+   - Multiple new state elements in one transaction are each charged 250,000 gas
+   - Existing state element updates (non-zero to non-zero) remain at 5,000 gas
+
+2. **Account creation:**
+   - First transaction from EOA charges 250,000 gas for account creation (when nonce transitions 0 → 1)
+   - Contract deployment (CREATE) charges 250,000 gas for account creation
+   - Contract deployment (CREATE2) charges 250,000 gas for account creation
+   - Transfer TO a new address does NOT charge account creation fee (recipient's nonce remains 0)
+   - Subsequent transactions from the same account do not charge account creation fee
+
+3. **Contract creation:**
+   - Contract code storage replaces EVM per-byte cost with new pricing model
+   - Each byte of contract code costs 1,000 gas (linear pricing)
+   - Keccak hash and codesize fields cost 500,000 gas (2 × 250,000) total
+   - Total cost formula: `(code_size × 1,000) + 500,000` gas
+   - Example: 100 byte contract costs (100 × 1,000) + 500,000 = 600,000 gas
+   - Both CREATE and CREATE2 use the same pricing
+
+4. **Tempo-specific state creation operations:**
+   - Nonce key creation: First use of a new nonce key (nonce key > 0) creates storage in Nonce precompile
+   - Active key count tracking: First nonce key for an account creates active key count storage
+   - Rewards opt-in: `setRewardRecipient` creates new `userRewardInfo` mapping entry
+   - Rewards recipient delegation: Setting reward recipient for a new recipient creates storage
+   - Rewards balance creation: First reward accrual to a recipient creates storage if needed
+   - All Tempo-specific operations that create new state elements must charge 250,000 gas per new storage slot
+
+5. **Edge cases:**
+   - Self-destruct and recreation of account
+   - Contracts that create accounts via CREATE/CREATE2
+   - Batch operations creating multiple accounts/state elements
+   - Contract deployment with various code sizes (small, medium, large)
+   - Multiple Tempo-specific operations in a single transaction
+
+6. **Economic calculations:**
+   - Verify gas costs match expected dollar amounts
+   - Verify attack cost calculations for large-scale state creation
+   - Verify contract creation costs match formula: `(code_size × 1,000) + 500,000 + 250,000` (including account creation)
+   - Verify Tempo-specific operations charge correctly for new state creation
+
+---
+
+# Invariants
+
+The following invariants must always hold:
+
+1. **State Creation Cost Invariant:** Any SSTORE operation that writes a non-zero value to a zero slot MUST charge exactly 250,000 gas (not 20,000 gas).
+
+2. **Account Creation Cost Invariant:** The first transaction that causes an account's nonce to transition from 0 to 1 MUST charge exactly 250,000 gas for account creation.
+
+3. **Existing State Invariant:** SSTORE operations that modify existing non-zero state (non-zero to non-zero) MUST continue to charge 5,000 gas and MUST NOT be affected by this change.
+
+4. **Storage Clearing Invariant:** SSTORE operations that clear storage (non-zero to zero) MUST continue to provide a 15,000 gas refund and MUST NOT be affected by this change.
+
+5. **Gas Accounting Invariant:** The total gas charged for a transaction creating N new state elements and M new accounts (where M is the number of accounts whose nonce transitions from 0 to 1 in this transaction) MUST equal: base_transaction_gas + operation_gas + (N × 250,000) + (M × 250,000). Note: Transferring tokens TO a new address does not create the account (nonce remains 0), so M = 0 in that case.
+
+6. **Contract Creation Cost Invariant:** Contract creation (CREATE/CREATE2) MUST charge exactly `(code_size × 1,000) + 500,000` gas for code storage, replacing the existing EVM per-byte cost. This includes: 1,000 gas per byte of contract code (linear pricing) and 500,000 gas (2 × 250,000) for keccak hash and codesize fields. The account creation cost (250,000 gas) is charged separately.
+
+7. **Economic Deterrent Invariant:** The cost to create 1 TB of state MUST be at least $50 million, and the cost to create 10 TB of state MUST be at least $500 million, based on the assumed gas price of 1 cent per 500,000 gas.
+
+## Critical Test Cases
+
+The test suite must cover:
+
+1. **Basic state creation:** Single SSTORE to zero slot charges 250,000 gas
+2. **Multiple state creation:** Multiple SSTORE operations to zero slots each charge 250,000 gas
+3. **Account creation (EOA):** First transaction from new EOA charges 250,000 gas
+4. **Account creation (CREATE):** Contract deployment via CREATE charges 250,000 gas for account creation
+5. **Account creation (CREATE2):** Contract deployment via CREATE2 charges 250,000 gas for account creation
+6. **Contract creation (small):** Contract with 100 bytes charges (100 × 1,000) + 500,000 = 600,000 gas for code storage
+7. **Contract creation (medium):** Contract with 1,000 bytes charges (1,000 × 1,000) + 500,000 = 1,500,000 gas for code storage
+8. **Contract creation (large):** Contract with 10,000 bytes charges (10,000 × 1,000) + 500,000 = 10,500,000 gas for code storage
+9. **Existing state updates:** SSTORE to existing non-zero slot charges 5,000 gas (unchanged)
+10. **Storage clearing:** SSTORE clearing storage provides 15,000 gas refund (unchanged)
+11. **Mixed operations:** Transaction creating both new accounts and new state elements charges correctly for both
+12. **Transfer to new address:** Complete transaction cost matches expected ~300,000 gas (no account creation cost, only new state element cost)
+13. **First use of new account:** Complete transaction cost matches expected ~300,000 gas (account creation cost applies)
+14. **Transfer to existing address:** Complete transaction cost matches expected 50,000 gas (unchanged)
+15. **Batch operations:** Multiple account creations in one transaction each charge 250,000 gas
+16. **Self-destruct and recreate:** Account that self-destructs and is recreated charges account creation fee again
+17. **Transfer to new address does not create account:** Transferring tokens to a new address does not charge account creation fee (only new state element fee applies)
+18. **Nonce key creation:** First use of a new nonce key creates a new storage slot and charges 250,000 gas
+19. **Active key count tracking:** First nonce key for an account creates storage for active key count and charges 250,000 gas
+20. **Rewards opt-in:** First call to `setRewardRecipient` creates a new entry and charges 250,000 gas
+21. **Rewards recipient delegation:** Setting a new reward recipient creates storage and charges 250,000 gas
+22. **Rewards balance creation:** First reward accrual creates storage and charges 250,000 gas (if needed)
+23. **Multiple nonce keys:** Creating multiple nonce keys in one transaction each charges 250,000 gas
+24. **Nonce key and rewards combined:** Transaction creating both nonce key and rewards storage charges 250,000 gas for each new state element
