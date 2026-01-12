@@ -185,7 +185,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
     }
 
     function cancelOrder(uint128 orderId) external {
-        orderId = orderId % _nextOrderId;
+        orderId = orderId % exchange.nextOrderId();
         try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
             StablecoinDEX.Orderbook memory orderbook = exchange.books(order.bookKey);
             // Cancel, but skip checking `actorBalanceBeforePlace`
