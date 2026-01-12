@@ -26,9 +26,6 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @dev Log file path for recording amm actions
     string private constant LOG_FILE = "amm.log";
 
-    /// @dev Number of swaps, to be used in invariant checking.
-    uint64 private _numSwaps;
-
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
     function setUp() public override {
@@ -54,13 +51,18 @@ contract FeeAMMInvariantTest is BaseTest {
         for (uint256 i = 0; i < tokens.length; i++) {
             tokens[i].grantRole(_ISSUER_ROLE, admin);
             _tokens.push(tokens[i]);
-            // amm.createPair(address(tokens[i]));
 
             // Create blacklist policy for each token
             uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
             tokens[i].changeTransferPolicyId(policyId);
             _tokenPolicyIds[address(tokens[i])] = policyId;
         }
+        vm.stopPrank();
+
+        // Create blacklist policy for pathUSD
+        vm.startPrank(pathUSDAdmin);
+        _pathUsdPolicyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
+        pathUSD.changeTransferPolicyId(_pathUsdPolicyId);
         vm.stopPrank();
 
         _actors = _buildActors(20);
@@ -89,6 +91,21 @@ contract FeeAMMInvariantTest is BaseTest {
                             FUZZ HANDLERS
     //////////////////////////////////////////////////////////////*/
 
+    // function mint() {}
+
+    // function burn() {}
+
+    // function rebalanceSwap() {}
+
+    // function simulateFeeSwap() {}
+
+    // function addLiquidity() {}
+
+    // function removeLiquidity() {}
+
+    // function rebalancePool() {}
+
+    // function distributeFees() {}
 
     /*//////////////////////////////////////////////////////////////
                             INVARIANT HOOKS
