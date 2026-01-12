@@ -593,6 +593,10 @@ impl TempoSignature {
     ///
     /// For Keychain signatures, this performs full validation of the inner signature.
     /// The access key address is cached in the KeychainSignature for later use.
+    /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
+    /// that the signature is valid for the keychain. They also need to check the access key is authorized
+    /// in the keychain precompile.
+    /// We cannot check this here, as we don't have access to the keychain precompile.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,

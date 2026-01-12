@@ -558,6 +558,11 @@ where
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
+                // Access keys cannot perform EIP-7702 delegation - skip keychain signatures
+                if authorization.signature().is_keychain() {
+                    continue;
+                }
+
                 let Some(authority) = authorization.authority() else {
                     // invalid signature, we need to skip
                     continue;
