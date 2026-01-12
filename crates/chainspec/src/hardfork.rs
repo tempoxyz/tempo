@@ -42,9 +42,7 @@ hardfork!(
         /// The current Tempo hardfork (genesis).
         #[default]
         Genesis,
-        /// T0 hardfork - adds security fixes:
-        /// - Prevents access keys from performing EIP-7702 delegation
-        /// - Ensures gas limit covers 2D nonce cost before AA execution
+        /// T0 hardfork
         T0,
     }
 );
