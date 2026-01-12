@@ -552,14 +552,17 @@ where
             // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
 
             let chain_id = ctx.cfg().chain_id();
+            // Get hardfork spec for T0 gating before mutable borrow
+            let is_t0 = ctx.cfg().spec().is_t0();
+
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
-                // Access keys cannot perform EIP-7702 delegation - skip keychain signatures
-                if authorization.signature().is_keychain() {
+                // [T0] Access keys cannot perform EIP-7702 delegation - skip keychain signatures
+                if is_t0 && authorization.signature().is_keychain() {
                     continue;
                 }
 
