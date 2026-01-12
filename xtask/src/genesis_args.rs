@@ -471,7 +471,7 @@ impl GenesisArgs {
             osaka_time: Some(0),
             terminal_total_difficulty: Some(U256::from(0)),
             terminal_total_difficulty_passed: true,
-            deposit_contract_address: Some(address!("0x00000000219ab540356cBB839Cbe05303d7705Fa")),
+            deposit_contract_address: Some(Address::ZERO),
             ..Default::default()
         };
 
