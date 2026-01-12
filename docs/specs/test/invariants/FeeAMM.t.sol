@@ -125,6 +125,24 @@ contract FeeAMMInvariantTest is BaseTest {
                           INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Verifies a revert is due to a known/expected error
+    /// @dev Fails if the error selector doesn't match any known error
+    /// @param reason The revert reason bytes from the failed
+    function _assertKnownError(bytes memory reason) internal pure {
+        bytes4 selector = bytes4(reason);
+        bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector
+            || selector == IFeeAMM.InvalidToken.selector
+            || selector == IFeeAMM.InsufficientLiquidity.selector
+            || selector == IFeeAMM.InsufficientReserves.selector
+            || selector == IFeeAMM.InvalidAmount.selector
+            || selector == IFeeAMM.DivisionByZero.selector
+            || selector == IFeeAMM.InvalidSwapCalculation.selector
+            || selector == IFeeAMM.InvalidCurrency.selector
+            || selector == ITIP20.InsufficientBalance.selector
+            || selector == ITIP20.PolicyForbids.selector;
+        assertTrue(isKnownError, "Failed with unknown error");
+    }
+
     /// @notice Creates test actors with initial balances and approvals
     /// @dev Each actor gets funded and approves the FeeAMM for both tokens
     /// @param noOfActors_ Number of actors to create
