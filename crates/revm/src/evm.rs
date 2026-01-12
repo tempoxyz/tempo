@@ -754,6 +754,48 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Create and sign transaction with two calls to identity precompile
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .call_identity(&[])
+            .gas_limit(32000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        // Create EVM and execute transaction
+        let mut evm = create_funded_evm(caller);
+
+        let result = evm.transact(tx_env)?;
+
+        assert!(result.result.is_success());
+        assert_eq!(result.result.gas_used(), 31286);
+
+        // simple tx
+        let tx_env = TxEnv {
+            caller,
+            kind: TxKind::Call(caller),
+            gas_limit: 22_000,
+            ..Default::default()
+        };
+
+        let result = evm.transact(TempoTxEnv {
+            inner: tx_env,
+            ..Default::default()
+        })?;
+
+        assert!(result.result.is_success());
+        assert_eq!(result.result.gas_used(), 21000);
+
+        Ok(())
+    }
+
     /// Test creating and executing a Tempo transaction with:
     /// - WebAuthn signature
     /// - Authorization list (aa_auth_list)
