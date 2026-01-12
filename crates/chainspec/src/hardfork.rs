@@ -71,7 +71,8 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Returns true if T0 is active at the given timestamp.
     fn is_t0_active_at_timestamp(&self, timestamp: u64) -> bool {
-        self.tempo_fork_activation(TempoHardfork::T0).active_at_timestamp(timestamp)
+        self.tempo_fork_activation(TempoHardfork::T0)
+            .active_at_timestamp(timestamp)
     }
 }
 
