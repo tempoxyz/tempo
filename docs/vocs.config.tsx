@@ -79,7 +79,7 @@ export default defineConfig({
         media="(prefers-color-scheme: dark)"
       />
       {process.env['VERCEL_ENV'] === 'production' && (
-        <script src="./ph.js" type="text/javascript"></script>
+        <script src="/ph.js" type="text/javascript"></script>
       )}
     </>
   ),
