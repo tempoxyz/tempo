@@ -39,6 +39,9 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
     /// @dev Log file path for recording exchange actions
     string private constant LOG_FILE = "exchange.log";
+    
+    /// @dev Number of placed swaps, to be used in invariant checking.
+    uint64 private _numSwaps;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -451,6 +454,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         }
         // Read next order id - if a flip order is hit then next order id is incremented.
         _nextOrderId = exchange.nextOrderId();
+        _numSwaps += 1;
 
         vm.stopPrank();
         _logBalances();
@@ -631,6 +635,8 @@ contract StablecoinDEXInvariantTest is BaseTest {
             }
             vm.stopPrank();
         }
+
+        assertGe(_numSwaps, pathUSD.balanceOf(address(exchange)) + token1.balanceOf(address(exchange)), "TEMPO-DEX19: Excess post-swap dust");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -934,12 +940,20 @@ contract StablecoinDEXInvariantTest is BaseTest {
             if (bidLiquidity > 0) {
                 // TEMPO-DEX7: If liquidity > 0, head should be non-zero
                 assertTrue(bidHead != 0, "TEMPO-DEX7: bid tick has liquidity but no head");
+                assertTrue(bidTail != 0, "TEMPO-DEX7: bid tick has liquidity but no tail");
                 // TEMPO-DEX11: Bitmap correctness verified indirectly via bestBidTick/bestAskTick in _assertBestTickConsistency
             }
             if (bidHead == 0) {
                 // If head is 0, tail should also be 0 and liquidity should be 0
                 assertEq(bidTail, 0, "TEMPO-DEX10: bid tail non-zero but head is zero");
                 assertEq(bidLiquidity, 0, "TEMPO-DEX7: bid liquidity non-zero but head is zero");
+            } else {
+                // TEMPO-DEX17: head.prev should be 0
+                IStablecoinDEX.Order memory headOrder = exchange.getOrder(bidHead);
+                assertEq(headOrder.prev, 0, "TEMPO-DEX17: bid head.prev is not None");
+                // TEMPO-DEX17: tail.next should be 0
+                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(bidTail);
+                assertEq(tailOrder.next, 0, "TEMPO-DEX17: bid tail.next is not None");
             }
 
             // Check ask tick level
@@ -947,10 +961,18 @@ contract StablecoinDEXInvariantTest is BaseTest {
                 exchange.getTickLevel(baseToken, tick, false);
             if (askLiquidity > 0) {
                 assertTrue(askHead != 0, "TEMPO-DEX7: ask tick has liquidity but no head");
+                assertTrue(askTail != 0, "TEMPO-DEX7: ask tick has liquidity but no tail");
             }
             if (askHead == 0) {
                 assertEq(askTail, 0, "TEMPO-DEX10: ask tail non-zero but head is zero");
                 assertEq(askLiquidity, 0, "TEMPO-DEX7: ask liquidity non-zero but head is zero");
+            } else {
+                // TEMPO-DEX17: head.prev should be 0
+                IStablecoinDEX.Order memory headOrder = exchange.getOrder(askHead);
+                assertEq(headOrder.prev, 0, "TEMPO-DEX17: ask head.prev is not None");
+                // TEMPO-DEX17: tail.next should be 0
+                IStablecoinDEX.Order memory tailOrder = exchange.getOrder(askTail);
+                assertEq(tailOrder.next, 0, "TEMPO-DEX17: ask tail.next is not None");
             }
         }
     }
