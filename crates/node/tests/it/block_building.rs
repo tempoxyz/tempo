@@ -11,9 +11,9 @@ use alloy_network::{Ethereum, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
+use tempo_contracts::precompiles::{ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::{IRolesAuth, ISSUER_ROLE}};
 use tempo_primitives::TempoTxEnvelope;
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks

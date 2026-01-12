@@ -2,17 +2,22 @@ use crate::{
     Precompile, dispatch_call,
     error::TempoPrecompileError,
     input_cost, metadata, mutate, mutate_void,
-    tip20::{ITIP20, TIP20Token, roles::roles_auth::Interface as IRolesAuth},
+    tip20::{
+        ITIP20, TIP20Token,
+        rewards::rewards::{self, Interface as IRewards},
+        roles::roles_auth::{self, Interface as IRolesAuth},
+    },
     view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
+use tempo_contracts::precompiles::{ITIP20::ITIP20Calls, TIP20Error};
 
 /// Combined enum for dispatching to either ITIP20 or IRolesAuth
 enum TIP20Call {
     TIP20(ITIP20Calls),
-    RolesAuth(IRolesAuthCalls),
+    RolesAuth(roles_auth::Calls),
+    Rewards(rewards::Calls),
 }
 
 impl TIP20Call {
@@ -20,8 +25,10 @@ impl TIP20Call {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
-        if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
+        if roles_auth::Calls::valid_selector(selector) {
+            roles_auth::Calls::abi_decode(calldata).map(Self::RolesAuth)
+        } else if rewards::Calls::valid_selector(selector) {
+            rewards::Calls::abi_decode(calldata).map(Self::Rewards)
         } else {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
         }
@@ -141,46 +148,52 @@ impl Precompile for TIP20Token {
                     self.transfer_from_with_memo(sender, c)
                 })
             }
-            TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
+            TIP20Call::Rewards(rewards::Calls::distributeReward(call)) => {
+                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c.amount))
             }
-            TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
+            TIP20Call::Rewards(rewards::Calls::setRewardRecipient(call)) => {
+                mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c.recipient))
             }
-            TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
-                mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
+            TIP20Call::Rewards(rewards::Calls::claimRewards(call)) => {
+                mutate(call, msg_sender, |s, _| self.claim_rewards(s))
             }
-            TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
-                view(call, |_| self.get_global_reward_per_token())
+            TIP20Call::Rewards(rewards::Calls::globalRewardPerToken(call)) => {
+                view(call, |_| self.global_reward_per_token())
             }
-            TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
-                view(call, |_| self.get_opted_in_supply())
+            TIP20Call::Rewards(rewards::Calls::optedInSupply(call)) => {
+                view(call, |_| self.opted_in_supply())
             }
-            TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => {
-                view(call, |c| self.get_user_reward_info(c.account))
+            TIP20Call::Rewards(rewards::Calls::userRewardInfo(call)) => {
+                view(call, |c| self.user_reward_info(c.account))
             }
-            TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
+            TIP20Call::Rewards(rewards::Calls::getPendingRewards(call)) => {
                 view(call, |c| self.get_pending_rewards(c.account))
             }
 
             // RolesAuth functions
-            TIP20Call::RolesAuth(IRolesAuthCalls::hasRole(call)) => {
+            TIP20Call::RolesAuth(roles_auth::Calls::hasRole(call)) => {
                 view(call, |c| self.has_role(c.account, c.role))
             }
-            TIP20Call::RolesAuth(IRolesAuthCalls::getRoleAdmin(call)) => {
+            TIP20Call::RolesAuth(roles_auth::Calls::getRoleAdmin(call)) => {
                 view(call, |c| self.get_role_admin(c.role))
             }
-            TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.grant_role(s, c.role, c.account))
+            TIP20Call::RolesAuth(roles_auth::Calls::grantRole(call)) => {
+                mutate_void(call, msg_sender, |s, c| {
+                    self.grant_role(s, c.role, c.account)
+                })
             }
-            TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c.role, c.account))
+            TIP20Call::RolesAuth(roles_auth::Calls::revokeRole(call)) => {
+                mutate_void(call, msg_sender, |s, c| {
+                    self.revoke_role(s, c.role, c.account)
+                })
             }
-            TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
+            TIP20Call::RolesAuth(roles_auth::Calls::renounceRole(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c.role))
             }
-            TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c.role, c.adminRole))
+            TIP20Call::RolesAuth(roles_auth::Calls::setRoleAdmin(call)) => {
+                mutate_void(call, msg_sender, |s, c| {
+                    self.set_role_admin(s, c.role, c.admin_role)
+                })
             }
         })
     }
@@ -189,11 +202,10 @@ impl Precompile for TIP20Token {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tip20::RolesAuthError;
     use crate::{
         storage::StorageCtx,
         test_util::{TIP20Setup, setup_storage},
-        tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, RolesAuthError, UNPAUSE_ROLE},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{

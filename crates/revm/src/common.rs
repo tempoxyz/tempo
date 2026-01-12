@@ -17,7 +17,7 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, IRewards, TIP20Token, is_tip20_prefix},
     tip403_registry::TIP403Registry,
 };
 use tempo_primitives::TempoTxEnvelope;
@@ -30,7 +30,7 @@ fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
             s,
             ITIP20::transferCall::SELECTOR
                 | ITIP20::transferWithMemoCall::SELECTOR
-                | ITIP20::distributeRewardCall::SELECTOR
+                | IRewards::distributeRewardCall::SELECTOR
         )
     })
 }
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn test_is_tip20_fee_inference_call() {
-        use tempo_precompiles::tip20::{IRolesAuth::*, ITIP20::*};
+        use tempo_precompiles::tip20::{IRolesAuth::*, IRewards::*, ITIP20::*};
 
         // Allowed selectors
         assert!(is_tip20_fee_inference_call(&transferCall::SELECTOR));

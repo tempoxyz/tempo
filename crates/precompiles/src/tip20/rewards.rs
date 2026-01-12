@@ -10,49 +10,66 @@ use tempo_precompiles_macros::{Storable, solidity};
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 #[solidity]
-pub mod reward_types {
+pub mod rewards {
     use super::*;
 
-    #[derive(Debug, Clone, Storable)]
+    #[derive(Debug, Clone, PartialEq, Eq, Storable)]
     pub struct UserRewardInfo {
         pub reward_recipient: Address,
         pub reward_per_token: U256,
         pub reward_balance: U256,
     }
+
+    pub trait Interface {
+        fn distribute_reward(&mut self, amount: U256) -> Result<()>;
+        fn set_reward_recipient(&mut self, recipient: Address) -> Result<()>;
+        fn claim_rewards(&mut self) -> Result<U256>;
+        fn opted_in_supply(&self) -> Result<u128>;
+        fn global_reward_per_token(&self) -> Result<U256>;
+        fn user_reward_info(&self, account: Address) -> Result<UserRewardInfo>;
+        fn get_pending_rewards(&self, account: Address) -> Result<u128>;
+    }
 }
 
-pub use reward_types::UserRewardInfo;
+pub use rewards::UserRewardInfo;
+use rewards::Interface as _;
 
-impl TIP20Token {
+#[allow(non_snake_case)]
+pub mod IRewards {
+    pub use super::rewards::{
+        Calls, Interface, claimRewardsCall, claimRewardsReturn, distributeRewardCall,
+        distributeRewardReturn, getPendingRewardsCall, getPendingRewardsReturn,
+        globalRewardPerTokenCall, globalRewardPerTokenReturn, new, optedInSupplyCall,
+        optedInSupplyReturn, rewardsInstance as IRewardsInstance, setRewardRecipientCall,
+        setRewardRecipientReturn, userRewardInfoCall, userRewardInfoReturn,
+    };
+}
+
+impl rewards::Interface for TIP20Token {
     /// Allows an authorized user to distribute reward tokens to opted-in recipients.
-    pub fn distribute_reward(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP20::distributeRewardCall,
-    ) -> Result<()> {
+    fn distribute_reward(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         self.check_not_paused()?;
         let token_address = self.address;
 
-        if call.amount == U256::ZERO {
+        if amount == U256::ZERO {
             return Err(TIP20Error::invalid_amount().into());
         }
 
         self.ensure_transfer_authorized(msg_sender, token_address)?;
-        self.check_and_update_spending_limit(msg_sender, call.amount)?;
+        self.check_and_update_spending_limit(msg_sender, amount)?;
 
-        self._transfer(msg_sender, token_address, call.amount)?;
+        self._transfer(msg_sender, token_address, amount)?;
 
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+        let opted_in_supply = U256::from(self.opted_in_supply()?);
         if opted_in_supply.is_zero() {
             return Err(TIP20Error::no_opted_in_supply().into());
         }
 
-        let delta_rpt = call
-            .amount
+        let delta_rpt = amount
             .checked_mul(ACC_PRECISION)
             .and_then(|v| v.checked_div(opted_in_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
-        let current_rpt = self.get_global_reward_per_token()?;
+        let current_rpt = self.global_reward_per_token()?;
         let new_rpt = current_rpt
             .checked_add(delta_rpt)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -61,12 +78,173 @@ impl TIP20Token {
         // Emit distributed reward event for immediate payout
         self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
             funder: msg_sender,
-            amount: call.amount,
+            amount: amount,
         }))?;
 
         Ok(())
     }
 
+    /// Sets or changes the reward recipient for a token holder.
+    ///
+    /// This function allows a token holder to designate who should receive their
+    /// share of rewards. Setting to zero address opts out of rewards.
+    fn set_reward_recipient(&mut self, msg_sender: Address, recipient: Address) -> Result<()> {
+        self.check_not_paused()?;
+        if recipient != Address::ZERO {
+            self.ensure_transfer_authorized(msg_sender, recipient)?;
+        }
+
+        let from_delegate = self.update_rewards(msg_sender)?;
+
+        let holder_balance = self.get_balance(msg_sender)?;
+
+        if from_delegate != Address::ZERO {
+            if recipient == Address::ZERO {
+                let opted_in_supply = U256::from(self.opted_in_supply()?)
+                    .checked_sub(holder_balance)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+        } else if recipient != Address::ZERO {
+            let opted_in_supply = U256::from(self.opted_in_supply()?)
+                .checked_add(holder_balance)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
+        }
+
+        let mut info = self.user_reward_info[msg_sender].read()?;
+        info.reward_recipient = recipient;
+        self.user_reward_info[msg_sender].write(info)?;
+
+        // Emit reward recipient set event
+        self.emit_event(TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
+            holder: msg_sender,
+            recipient: recipient,
+        }))?;
+
+        Ok(())
+    }
+
+    /// Claims accumulated rewards for a recipient.
+    ///
+    /// This function allows a reward recipient to claim their accumulated rewards
+    /// and receive them as token transfers to their own balance.
+    fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
+        self.check_not_paused()?;
+        self.ensure_transfer_authorized(self.address, msg_sender)?;
+
+        self.update_rewards(msg_sender)?;
+
+        let mut info = self.user_reward_info[msg_sender].read()?;
+        let amount = info.reward_balance;
+        let contract_address = self.address;
+        let contract_balance = self.get_balance(contract_address)?;
+        let max_amount = amount.min(contract_balance);
+
+        let reward_recipient = info.reward_recipient;
+        info.reward_balance = amount
+            .checked_sub(max_amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.user_reward_info[msg_sender].write(info)?;
+
+        if max_amount > U256::ZERO {
+            let new_contract_balance = contract_balance
+                .checked_sub(max_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_balance(contract_address, new_contract_balance)?;
+
+            let recipient_balance = self
+                .get_balance(msg_sender)?
+                .checked_add(max_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_balance(msg_sender, recipient_balance)?;
+
+            if reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(self.opted_in_supply()?)
+                    .checked_add(max_amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
+
+            self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+                from: contract_address,
+                to: msg_sender,
+                amount: max_amount,
+            }))?;
+        }
+
+        Ok(max_amount)
+    }
+
+    /// Gets the accumulated global reward per token.
+    fn global_reward_per_token(&self) -> Result<U256> {
+        self.global_reward_per_token.read()
+    }
+
+    /// Gets the total supply of tokens opted into rewards from storage.
+    fn opted_in_supply(&self) -> Result<u128> {
+        self.opted_in_supply.read()
+    }
+
+    /// Retrieves user reward information for a given account.
+    fn user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
+        self.user_reward_info[account].read()
+    }
+
+    /// Calculates the pending claimable rewards for an account without modifying state.
+    ///
+    /// This function returns the total pending claimable reward amount, which includes:
+    /// 1. The stored reward balance from previous updates
+    /// 2. Newly accrued rewards based on the current global reward per token
+    ///
+    /// For accounts that have delegated their rewards to another recipient, this returns 0
+    /// since their rewards accrue to their delegate instead.
+    fn get_pending_rewards(&self, account: Address) -> Result<u128> {
+        let info = self.user_reward_info[account].read()?;
+
+        // Start with the stored reward balance
+        let mut pending = info.reward_balance;
+
+        // For the account's own accrued rewards (if self-delegated):
+        if info.reward_recipient == account {
+            let holder_balance = self.get_balance(account)?;
+            if holder_balance > U256::ZERO {
+                let global_reward_per_token = self.global_reward_per_token()?;
+                let reward_per_token_delta = global_reward_per_token
+                    .checked_sub(info.reward_per_token)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                if reward_per_token_delta > U256::ZERO {
+                    let accrued = holder_balance
+                        .checked_mul(reward_per_token_delta)
+                        .and_then(|v| v.checked_div(ACC_PRECISION))
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    pending = pending
+                        .checked_add(accrued)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                }
+            }
+        }
+
+        pending
+            .try_into()
+            .map_err(|_| TempoPrecompileError::under_overflow())
+    }
+}
+
+impl TIP20Token {
     /// Updates and accumulates accrued rewards for a specific token holder.
     ///
     /// This function calculates the rewards earned by a holder based on their
@@ -78,7 +256,7 @@ impl TIP20Token {
 
         let cached_delegate = info.reward_recipient;
 
-        let global_reward_per_token = self.get_global_reward_per_token()?;
+        let global_reward_per_token = self.global_reward_per_token()?;
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(info.reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -113,38 +291,13 @@ impl TIP20Token {
         Ok(cached_delegate)
     }
 
-    /// Sets or changes the reward recipient for a token holder.
-    ///
-    /// This function allows a token holder to designate who should receive their
-    /// share of rewards. Setting to zero address opts out of rewards.
-    pub fn set_reward_recipient(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP20::setRewardRecipientCall,
-    ) -> Result<()> {
-        self.check_not_paused()?;
-        if call.recipient != Address::ZERO {
-            self.ensure_transfer_authorized(msg_sender, call.recipient)?;
-        }
+    /// Handles reward accounting when tokens are minted to an address.
+    pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
+        let to_delegate = self.update_rewards(to)?;
 
-        let from_delegate = self.update_rewards(msg_sender)?;
-
-        let holder_balance = self.get_balance(msg_sender)?;
-
-        if from_delegate != Address::ZERO {
-            if call.recipient == Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(holder_balance)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
-            }
-        } else if call.recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(holder_balance)
+        if !to_delegate.is_zero() {
+            let opted_in_supply = U256::from(self.opted_in_supply()?)
+                .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(
                 opted_in_supply
@@ -153,92 +306,7 @@ impl TIP20Token {
             )?;
         }
 
-        let mut info = self.user_reward_info[msg_sender].read()?;
-        info.reward_recipient = call.recipient;
-        self.user_reward_info[msg_sender].write(info)?;
-
-        // Emit reward recipient set event
-        self.emit_event(TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
-            holder: msg_sender,
-            recipient: call.recipient,
-        }))?;
-
         Ok(())
-    }
-
-    /// Claims accumulated rewards for a recipient.
-    ///
-    /// This function allows a reward recipient to claim their accumulated rewards
-    /// and receive them as token transfers to their own balance.
-    pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
-        self.check_not_paused()?;
-        self.ensure_transfer_authorized(self.address, msg_sender)?;
-
-        self.update_rewards(msg_sender)?;
-
-        let mut info = self.user_reward_info[msg_sender].read()?;
-        let amount = info.reward_balance;
-        let contract_address = self.address;
-        let contract_balance = self.get_balance(contract_address)?;
-        let max_amount = amount.min(contract_balance);
-
-        let reward_recipient = info.reward_recipient;
-        info.reward_balance = amount
-            .checked_sub(max_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.user_reward_info[msg_sender].write(info)?;
-
-        if max_amount > U256::ZERO {
-            let new_contract_balance = contract_balance
-                .checked_sub(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(contract_address, new_contract_balance)?;
-
-            let recipient_balance = self
-                .get_balance(msg_sender)?
-                .checked_add(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(msg_sender, recipient_balance)?;
-
-            if reward_recipient != Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_add(max_amount)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
-            }
-
-            self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-                from: contract_address,
-                to: msg_sender,
-                amount: max_amount,
-            }))?;
-        }
-
-        Ok(max_amount)
-    }
-
-    /// Gets the accumulated global reward per token.
-    pub fn get_global_reward_per_token(&self) -> Result<U256> {
-        self.global_reward_per_token.read()
-    }
-
-    /// Sets the accumulated global reward per token in storage.
-    fn set_global_reward_per_token(&mut self, value: U256) -> Result<()> {
-        self.global_reward_per_token.write(value)
-    }
-
-    /// Gets the total supply of tokens opted into rewards from storage.
-    pub fn get_opted_in_supply(&self) -> Result<u128> {
-        self.opted_in_supply.read()
-    }
-
-    /// Sets the total supply of tokens opted into rewards in storage.
-    pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
-        self.opted_in_supply.write(value)
     }
 
     /// Handles reward accounting for both sender and receiver during token transfers.
@@ -253,7 +321,7 @@ impl TIP20Token {
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                let opted_in_supply = U256::from(self.opted_in_supply()?)
                     .checked_sub(amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(
@@ -263,7 +331,7 @@ impl TIP20Token {
                 )?;
             }
         } else if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+            let opted_in_supply = U256::from(self.opted_in_supply()?)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(
@@ -276,67 +344,14 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Handles reward accounting when tokens are minted to an address.
-    pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
-        let to_delegate = self.update_rewards(to)?;
-
-        if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
-        }
-
-        Ok(())
+    /// Sets the accumulated global reward per token in storage.
+    fn set_global_reward_per_token(&mut self, value: U256) -> Result<()> {
+        self.global_reward_per_token.write(value)
     }
 
-    /// Retrieves user reward information for a given account.
-    pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
-        self.user_reward_info[account].read()
-    }
-
-    /// Calculates the pending claimable rewards for an account without modifying state.
-    ///
-    /// This function returns the total pending claimable reward amount, which includes:
-    /// 1. The stored reward balance from previous updates
-    /// 2. Newly accrued rewards based on the current global reward per token
-    ///
-    /// For accounts that have delegated their rewards to another recipient, this returns 0
-    /// since their rewards accrue to their delegate instead.
-    pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
-        let info = self.user_reward_info[account].read()?;
-
-        // Start with the stored reward balance
-        let mut pending = info.reward_balance;
-
-        // For the account's own accrued rewards (if self-delegated):
-        if info.reward_recipient == account {
-            let holder_balance = self.get_balance(account)?;
-            if holder_balance > U256::ZERO {
-                let global_reward_per_token = self.get_global_reward_per_token()?;
-                let reward_per_token_delta = global_reward_per_token
-                    .checked_sub(info.reward_per_token)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                if reward_per_token_delta > U256::ZERO {
-                    let accrued = holder_balance
-                        .checked_mul(reward_per_token_delta)
-                        .and_then(|v| v.checked_div(ACC_PRECISION))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    pending = pending
-                        .checked_add(accrued)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                }
-            }
-        }
-
-        pending
-            .try_into()
-            .map_err(|_| TempoPrecompileError::under_overflow())
+    /// Sets the total supply of tokens opted into rewards in storage.
+    pub fn set_opted_in_supply(&mut self, value: u128) -> Result<()> {
+        self.opted_in_supply.write(value)
     }
 }
 
@@ -366,23 +381,21 @@ mod tests {
                 .apply()?;
 
             token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+                .set_reward_recipient(alice, alice)?;
 
             let info = token.user_reward_info[alice].read()?;
             assert_eq!(info.reward_recipient, alice);
-            assert_eq!(token.get_opted_in_supply()?, amount.to::<u128>());
+            assert_eq!(token.opted_in_supply()?, amount.to::<u128>());
             assert_eq!(info.reward_per_token, U256::ZERO);
 
             token.set_reward_recipient(
                 alice,
-                ITIP20::setRewardRecipientCall {
-                    recipient: Address::ZERO,
-                },
+                Address::ZERO,
             )?;
 
             let info = token.user_reward_info[alice].read()?;
             assert_eq!(info.reward_recipient, Address::ZERO);
-            assert_eq!(token.get_opted_in_supply()?, 0u128);
+            assert_eq!(token.opted_in_supply()?, 0u128);
             assert_eq!(info.reward_per_token, U256::ZERO);
 
             Ok(())
@@ -405,19 +418,14 @@ mod tests {
                 .apply()?;
 
             token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+                .set_reward_recipient(alice, alice)?;
 
             // Distribute rewards
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // Verify global_reward_per_token increased correctly
             let expected_rpt = reward_amount * ACC_PRECISION / amount;
-            assert_eq!(token.get_global_reward_per_token()?, expected_rpt);
+            assert_eq!(token.global_reward_per_token()?, expected_rpt);
 
             // Verify contract balance increased (rewards transferred from admin to contract)
             assert_eq!(token.get_balance(token.address)?, reward_amount);
@@ -425,7 +433,7 @@ mod tests {
 
             // Update rewards to accrue alice's share
             token.update_rewards(alice)?;
-            let info = token.get_user_reward_info(alice)?;
+            let info = token.user_reward_info(alice)?;
             assert_eq!(info.reward_balance, reward_amount);
 
             // Alice claims the full reward
@@ -443,7 +451,7 @@ mod tests {
                 },
             )?;
             let result =
-                token.distribute_reward(admin, ITIP20::distributeRewardCall { amount: U256::ZERO });
+                token.distribute_reward(admin, U256::ZERO);
             assert!(result.is_err());
 
             Ok(())
@@ -467,26 +475,21 @@ mod tests {
                 .apply()?;
 
             token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+                .set_reward_recipient(alice, alice)?;
 
             // Before any rewards, pending should be 0
             let pending_before = token.get_pending_rewards(alice)?;
             assert_eq!(pending_before, 0u128);
 
             // Distribute immediate reward
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // Now alice should have pending rewards equal to reward_amount (she's the only opted-in holder)
             let pending_after = token.get_pending_rewards(alice)?;
             assert_eq!(U256::from(pending_after), reward_amount);
 
             // Verify that calling get_pending_rewards did not modify state
-            let user_info = token.get_user_reward_info(alice)?;
+            let user_info = token.user_reward_info(alice)?;
             assert_eq!(
                 user_info.reward_balance,
                 U256::ZERO,
@@ -514,28 +517,18 @@ mod tests {
                 .apply()?;
 
             token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+                .set_reward_recipient(alice, alice)?;
 
             // Distribute first reward
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // Trigger an action to update alice's stored reward balance
             token.update_rewards(alice)?;
-            let user_info = token.get_user_reward_info(alice)?;
+            let user_info = token.user_reward_info(alice)?;
             assert_eq!(user_info.reward_balance, reward_amount);
 
             // Distribute second reward
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // get_pending_rewards should return stored + new accrued
             let pending = token.get_pending_rewards(alice)?;
@@ -563,15 +556,10 @@ mod tests {
                 .apply()?;
 
             // Alice delegates to bob
-            token.set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: bob })?;
+            token.set_reward_recipient(alice, bob)?;
 
             // Distribute immediate reward
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // Alice's pending should be 0 (she delegated to bob)
             let alice_pending = token.get_pending_rewards(alice)?;
@@ -612,15 +600,10 @@ mod tests {
 
             // Only alice opts in
             token
-                .set_reward_recipient(alice, ITIP20::setRewardRecipientCall { recipient: alice })?;
+                .set_reward_recipient(alice, alice)?;
 
             // Distribute reward
-            token.distribute_reward(
-                admin,
-                ITIP20::distributeRewardCall {
-                    amount: reward_amount,
-                },
-            )?;
+            token.distribute_reward(admin, reward_amount)?;
 
             // Alice should have pending rewards
             let alice_pending = token.get_pending_rewards(alice)?;

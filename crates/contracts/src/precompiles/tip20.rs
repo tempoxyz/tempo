@@ -1,23 +1,6 @@
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
 use alloy_primitives::{Address, U256};
 
-// IRolesAuth interface for external contract interaction (RPC calls)
-// Internal precompile types are defined in tempo_precompiles::tip20::roles
-crate::sol! {
-    #[derive(Debug, PartialEq, Eq)]
-    #[sol(abi)]
-    interface IRolesAuth {
-        function hasRole(address account, bytes32 role) external view returns (bool);
-        function getRoleAdmin(bytes32 role) external view returns (bytes32);
-        function grantRole(bytes32 role, address account) external;
-        function revokeRole(bytes32 role, address account) external;
-        function renounceRole(bytes32 role) external;
-        function setRoleAdmin(bytes32 role, bytes32 adminRole) external;
-
-        error Unauthorized();
-    }
-}
-
 crate::sol! {
     /// TIP20 token interface providing standard ERC20 functionality with Tempo-specific extensions.
     ///
@@ -83,21 +66,6 @@ crate::sol! {
         /// @return The burn blocked role identifier
         function BURN_BLOCKED_ROLE() external view returns (bytes32);
 
-        struct UserRewardInfo {
-            address rewardRecipient;
-            uint256 rewardPerToken;
-            uint256 rewardBalance;
-        }
-
-        // Reward Functions
-        function distributeReward(uint256 amount) external;
-        function setRewardRecipient(address recipient) external;
-        function claimRewards() external returns (uint256);
-        function optedInSupply() external view returns (uint128);
-        function globalRewardPerToken() external view returns (uint256);
-        function userRewardInfo(address account) external view returns (UserRewardInfo memory);
-        function getPendingRewards(address account) external view returns (uint128);
-
         // Events
         event Transfer(address indexed from, address indexed to, uint256 amount);
         event Approval(address indexed owner, address indexed spender, uint256 amount);
@@ -133,15 +101,6 @@ crate::sol! {
         error InvalidToken();
         error Uninitialized();
         error InvalidTransferPolicyId();
-    }
-}
-
-pub use IRolesAuth::IRolesAuthErrors as RolesAuthError;
-
-impl RolesAuthError {
-    /// Creates an error for unauthorized access.
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IRolesAuth::Unauthorized {})
     }
 }
 

@@ -16,6 +16,7 @@ tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
+alloy-contract.workspace = true
 alloy-evm.workspace = true
 alloy-sol-types.workspace = true
 revm.workspace = true

@@ -50,8 +50,9 @@ pub use roles_auth::{
 pub mod IRolesAuth {
     pub use super::roles_auth::{
         Calls, Interface, getRoleAdminCall, getRoleAdminReturn, grantRoleCall, grantRoleReturn,
-        hasRoleCall, hasRoleReturn, renounceRoleCall, renounceRoleReturn, revokeRoleCall,
-        revokeRoleReturn, setRoleAdminCall, setRoleAdminReturn,
+        hasRoleCall, hasRoleReturn, new, renounceRoleCall, renounceRoleReturn,
+        roles_authInstance as IRolesAuthInstance, revokeRoleCall, revokeRoleReturn,
+        setRoleAdminCall, setRoleAdminReturn,
     };
 }
 
@@ -192,18 +193,18 @@ mod tests {
             // Verify events were emitted
             token.assert_emitted_events(vec![
                 // Event from grant_default_admin during token initialization
-                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                RolesAuthEvent::RoleMembershipUpdated(RoleMembershipUpdated {
                     role: DEFAULT_ADMIN_ROLE,
                     account: admin,
                     sender: admin,
-                    hasRole: true,
+                    has_role: true,
                 }),
                 // Event from grant_role call above
-                RolesAuthEvent::RoleMembershipUpdated(IRolesAuth::RoleMembershipUpdated {
+                RolesAuthEvent::RoleMembershipUpdated(RoleMembershipUpdated {
                     role: custom_role,
                     account: user,
                     sender: admin,
-                    hasRole: true,
+                    has_role: true,
                 }),
             ]);
 

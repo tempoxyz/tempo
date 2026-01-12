@@ -3,6 +3,8 @@ pub mod rewards;
 pub mod roles;
 
 pub use roles::{IRolesAuth, RolesAuthError, RolesAuthEvent};
+pub use rewards::IRewards;
+use rewards::rewards::Interface as _;
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 
@@ -750,7 +752,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+            let opted_in_supply = U256::from(self.opted_in_supply()?)
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(
@@ -801,7 +803,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+            let opted_in_supply = U256::from(self.opted_in_supply()?)
                 .checked_add(refund)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(

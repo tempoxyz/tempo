@@ -11980,6 +11980,7 @@ name = "tempo-precompiles"
 version = "0.8.0"
 dependencies = [
  "alloy",
+ "alloy-contract",
  "alloy-evm",
  "alloy-primitives 1.5.2",
  "alloy-signer",

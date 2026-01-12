@@ -370,9 +370,9 @@ vergen-git2 = "1"
 
 [patch.crates-io]
 # Local alloy-core for development
-alloy-sol-macro = { path = "../../ithaca/alloy-core/crates/sol-macro" }
-alloy-sol-macro-expander = { path = "../../ithaca/alloy-core/crates/sol-macro-expander" }
-alloy-sol-macro-input = { path = "../../ithaca/alloy-core/crates/sol-macro-input" }
+alloy-sol-macro = { path = "../../../ithaca/alloy-core/crates/sol-macro" }
+alloy-sol-macro-expander = { path = "../../../ithaca/alloy-core/crates/sol-macro-expander" }
+alloy-sol-macro-input = { path = "../../../ithaca/alloy-core/crates/sol-macro-input" }
 
 # Commonware main right after https://github.com/commonwarexyz/monorepo/pull/2640 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "82318232ea611fd5ff754b00fa617c6c4a63454b" }
