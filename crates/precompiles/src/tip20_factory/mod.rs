@@ -695,4 +695,55 @@ mod tests {
             Ok(())
         })
     }
+
+    #[test]
+    fn test_path_usd_requires_zero_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            // First create another USD token at a different reserved address
+            let other_usd = factory.create_token_reserved_address(
+                address!("20C0000000000000000000000000000000000001"),
+                "testUSD",
+                "testUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            // Try to create pathUSD with a valid deployed TIP20 as quote_token - should fail
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                other_usd,
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // pathUSD can only be created with Address::ZERO as quote token
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            assert!(TIP20Token::from_address(PATH_USD_ADDRESS)?.is_initialized()?);
+
+            Ok(())
+        })
+    }
 }
