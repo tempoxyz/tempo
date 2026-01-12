@@ -345,7 +345,7 @@ impl GenesisArgs {
         let default_fee_token = if let Some(address) = deployment_gas_token {
             address
         } else {
-            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
+            PATH_USD_ADDRESS
         };
 
         initialize_fee_manager(
@@ -690,6 +690,7 @@ fn initialize_fee_manager(
     validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) {
+    println!("Setting fee token address: {fee_token_address}");
     // Update the beneficiary since the validator can't set the validator fee token for themselves
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
