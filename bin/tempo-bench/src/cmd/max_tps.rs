@@ -1,7 +1,7 @@
 mod dex;
 mod erc20;
 
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, TxReceipt};
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use reth_tracing::{
@@ -74,7 +74,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::cmd::{
-    clickhouse::{ClickHouseConfig, ClickHouseReporter, TempoBenchBlock, TempoBenchRun},
+    clickhouse::{
+        ClickHouseConfig, ClickHouseReporter, TempoBenchBlock, TempoBenchRun,
+        TempoBenchTransaction,
+    },
     signer_providers::SignerProviderManager,
 };
 
@@ -779,6 +782,7 @@ struct BenchmarkedBlock {
     ok_count: usize,
     err_count: usize,
     gas_used: u64,
+    gas_limit: u64,
     timestamp: u64,
     latency_ms: Option<u64>,
 }
@@ -819,8 +823,10 @@ pub async fn generate_report(
     info!(start_block, end_block, "Generating report");
 
     let mut last_block_timestamp: Option<u64> = None;
-
     let mut benchmarked_blocks = Vec::new();
+    let collect_transactions = args.clickhouse_url.is_some();
+    let mut all_receipts: Vec<(BlockNumber, Vec<tempo_alloy::rpc::TempoTransactionReceipt>)> =
+        Vec::new();
 
     for number in start_block..=end_block {
         let block = provider
@@ -851,9 +857,14 @@ pub async fn generate_report(
             ok_count,
             err_count,
             gas_used: block.header.gas_used(),
+            gas_limit: block.header.gas_limit(),
             timestamp: block.header.timestamp_millis(),
             latency_ms,
         });
+
+        if collect_transactions {
+            all_receipts.push((number, receipts));
+        }
 
         last_block_timestamp = Some(timestamp);
     }
@@ -963,12 +974,48 @@ pub async fn generate_report(
                 ok_count: b.ok_count as u32,
                 err_count: b.err_count as u32,
                 gas_used: b.gas_used,
+                gas_limit: b.gas_limit,
                 latency_ms: b.latency_ms.unwrap_or(0),
             })
             .collect();
 
+        let transactions: Vec<TempoBenchTransaction> = all_receipts
+            .iter()
+            .flat_map(|(block_number, receipts)| {
+                receipts.iter().enumerate().map(move |(idx, receipt)| {
+                    TempoBenchTransaction {
+                        run_id,
+                        block_number: *block_number,
+                        tx_index: idx as u32,
+                        tx_hash: format!("{:?}", receipt.transaction_hash()),
+                        from_address: format!("{:?}", receipt.from()),
+                        to_address: receipt
+                            .to()
+                            .map(|a| format!("{:?}", a))
+                            .unwrap_or_default(),
+                        status: receipt.status(),
+                        gas_used: receipt.gas_used(),
+                        effective_gas_price: receipt.effective_gas_price() as u64,
+                        cumulative_gas_used: receipt.cumulative_gas_used(),
+                        fee_token: receipt
+                            .fee_token
+                            .map(|a| format!("{:?}", a))
+                            .unwrap_or_default(),
+                        fee_payer: format!("{:?}", receipt.fee_payer),
+                        logs_count: receipt.inner.inner.logs().len() as u32,
+                    }
+                })
+            })
+            .collect();
+
+        info!(
+            blocks = blocks.len(),
+            transactions = transactions.len(),
+            "Inserting benchmark data into ClickHouse"
+        );
+
         reporter
-            .report(run, blocks)
+            .report(run, blocks, transactions)
             .await
             .context("Failed to report to ClickHouse")?;
 

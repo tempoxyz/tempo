@@ -73,7 +73,25 @@ pub struct TempoBenchBlock {
     pub ok_count: u32,
     pub err_count: u32,
     pub gas_used: u64,
+    pub gas_limit: u64,
     pub latency_ms: u64,
+}
+
+#[derive(Debug, Row, Serialize)]
+pub struct TempoBenchTransaction {
+    pub run_id: Uuid,
+    pub block_number: u64,
+    pub tx_index: u32,
+    pub tx_hash: String,
+    pub from_address: String,
+    pub to_address: String,
+    pub status: bool,
+    pub gas_used: u64,
+    pub effective_gas_price: u64,
+    pub cumulative_gas_used: u64,
+    pub fee_token: String,
+    pub fee_payer: String,
+    pub logs_count: u32,
 }
 
 pub struct ClickHouseReporter {
@@ -145,6 +163,7 @@ impl ClickHouseReporter {
                     ok_count UInt32,
                     err_count UInt32,
                     gas_used UInt64,
+                    gas_limit UInt64,
                     latency_ms UInt64
                 ) ENGINE = MergeTree()
                 ORDER BY (run_id, block_number)
@@ -153,6 +172,31 @@ impl ClickHouseReporter {
             .execute()
             .await
             .context("Failed to create tempo_bench_blocks table")?;
+
+        self.client
+            .query(
+                r#"
+                CREATE TABLE IF NOT EXISTS tempo_bench_transactions (
+                    run_id UUID,
+                    block_number UInt64,
+                    tx_index UInt32,
+                    tx_hash String,
+                    from_address String,
+                    to_address String,
+                    status Bool,
+                    gas_used UInt64,
+                    effective_gas_price UInt64,
+                    cumulative_gas_used UInt64,
+                    fee_token String,
+                    fee_payer String,
+                    logs_count UInt32
+                ) ENGINE = MergeTree()
+                ORDER BY (run_id, block_number, tx_index)
+                "#,
+            )
+            .execute()
+            .await
+            .context("Failed to create tempo_bench_transactions table")?;
 
         Ok(())
     }
@@ -173,14 +217,28 @@ impl ClickHouseReporter {
         Ok(())
     }
 
+    pub async fn insert_transactions(&self, transactions: &[TempoBenchTransaction]) -> eyre::Result<()> {
+        if transactions.is_empty() {
+            return Ok(());
+        }
+        let mut insert = self.client.insert("tempo_bench_transactions")?;
+        for tx in transactions {
+            insert.write(tx).await?;
+        }
+        insert.end().await?;
+        Ok(())
+    }
+
     pub async fn report(
         &self,
         run: TempoBenchRun,
         blocks: Vec<TempoBenchBlock>,
+        transactions: Vec<TempoBenchTransaction>,
     ) -> eyre::Result<()> {
         self.ensure_tables().await?;
         self.insert_run(&run).await?;
         self.insert_blocks(&blocks).await?;
+        self.insert_transactions(&transactions).await?;
         Ok(())
     }
 }
