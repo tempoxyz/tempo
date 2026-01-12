@@ -128,22 +128,18 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo { t0_time, .. } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Add the Genesis hardfork at timestamp 0
-        base_spec
-            .hardforks
-            .insert(TempoHardfork::Genesis, ForkCondition::Timestamp(0));
-
-        // Add T0 hardfork if configured
-        if let Some(t0_time) = info.t0_time() {
-            base_spec
-                .hardforks
-                .insert(TempoHardfork::T0, ForkCondition::Timestamp(t0_time));
-        }
+        let tempo_forks = vec![
+            (TempoHardfork::Genesis, Some(0)),
+            (TempoHardfork::T0, t0_time),
+        ]
+        .into_iter()
+        .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
+        base_spec.hardforks.extend(tempo_forks);
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
