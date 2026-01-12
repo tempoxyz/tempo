@@ -345,13 +345,13 @@ impl GenesisArgs {
         let default_user_fee_token = if let Some(address) = deployment_gas_token {
             address
         } else {
-            PATH_USD_ADDRESS
+            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
         };
 
         let default_validator_fee_token = if let Some(address) = deployment_gas_token {
             address
         } else {
-            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
+            PATH_USD_ADDRESS
         };
 
         initialize_fee_manager(
