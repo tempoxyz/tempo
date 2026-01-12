@@ -105,20 +105,15 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
         } = self;
 
         // Resolve fee_payer for gas estimation:
-        // - FeePayer::Address(addr) -> use that address
-        // - FeePayer::Bool(true) -> use a dummy address different from caller to trigger cold access
-        // - None or FeePayer::Bool(false) -> no fee payer (caller pays)
+        // - true -> use a dummy address to indicate sponsored transaction
+        // - false or None -> no fee payer (caller pays)
         let caller_addr = inner.from.unwrap_or_default();
-        let resolved_fee_payer = fee_payer.as_ref().and_then(|fp| match fp {
-            crate::rpc::FeePayer::Address(addr) => Some(Some(*addr)),
-            crate::rpc::FeePayer::Account(account) => Some(Some(account.address)),
-            crate::rpc::FeePayer::Bool(true) => {
-                // Use a dummy address different from caller to trigger cold account access
-                // Address(1) is a common dummy/precompile address
-                Some(Some(Address::with_last_byte(1)))
-            }
-            crate::rpc::FeePayer::Bool(false) => None,
-        });
+        let resolved_fee_payer = if fee_payer.unwrap_or(false) {
+            // Use a dummy address different from caller to indicate sponsored transaction
+            Some(Some(Address::with_last_byte(1)))
+        } else {
+            None
+        };
 
         Ok(TempoTxEnv {
             fee_token,

@@ -74,43 +74,10 @@ pub struct TempoTransactionRequest {
     pub key_authorization: Option<SignedKeyAuthorization>,
 
     /// Optional fee payer indicator for gas estimation of sponsored transactions.
-    /// When true or an address is provided, indicates the transaction will have a
-    /// fee_payer_signature, adding ECRECOVER_GAS (3,000) to intrinsic gas calculation.
+    /// When true, indicates the transaction will have a fee_payer_signature,
+    /// adding ECRECOVER_GAS (3,000) to intrinsic gas calculation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_payer: Option<FeePayer>,
-}
-
-/// Fee payer specification for gas estimation.
-/// Can be either a boolean (true = sponsored), a specific address, or an account object.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum FeePayer {
-    /// Boolean indicating if transaction is sponsored
-    Bool(bool),
-    /// Specific fee payer address (bare address)
-    Address(Address),
-    /// Account object with address field (from viem/wagmi clients)
-    Account(FeePayerAccount),
-}
-
-/// Fee payer account object with address field.
-/// Used when viem/wagmi sends the full account object as feePayer.
-/// Unknown fields (keyType, publicKey, source, type, etc.) are ignored during deserialization.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FeePayerAccount {
-    /// The fee payer address
-    pub address: Address,
-}
-
-impl FeePayer {
-    /// Returns true if this represents a sponsored transaction
-    pub fn is_sponsored(&self) -> bool {
-        match self {
-            FeePayer::Bool(b) => *b,
-            FeePayer::Address(_) | FeePayer::Account(_) => true,
-        }
-    }
+    pub fee_payer: Option<bool>,
 }
 
 impl TempoTransactionRequest {
@@ -307,7 +274,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
-            fee_payer: tx.fee_payer_signature.as_ref().map(|_| FeePayer::Bool(true)),
+            fee_payer: tx.fee_payer_signature.as_ref().map(|_| true),
         }
     }
 }
