@@ -1956,8 +1956,8 @@ pub(crate) mod tests {
                 )))
             ));
 
-            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
             assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
 
             Ok(())
         })
