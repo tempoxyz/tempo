@@ -735,7 +735,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
             " | Total=",
             vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
             ", Swaps=",
-            vm.toString(_numSwaps)
+            vm.toString(_maxDust)
         );
         _log(dustLog);
 
