@@ -1895,13 +1895,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_path_usd_rejects_set_next_quote_token() -> eyre::Result<()> {
+    fn test_set_next_quote_token_rejects_path_usd() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
             let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
-            let other_token = TIP20Setup::create("Other", "OTH", admin).apply()?;
+            let other_token = TIP20Setup::create("Test", "T", admin).apply()?;
 
             // pathUSD cannot update its quote token
             let result = path_usd.set_next_quote_token(
