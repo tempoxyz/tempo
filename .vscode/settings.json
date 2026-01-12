@@ -4,6 +4,8 @@
 	"markdown.validate.enabled": true,
 	"biome.requireConfiguration":true,
 	"tailwindCSS.classFunctions": ["cva", "cx"],
+  "biome.enabled": true,
+  "biome.runFromTemporaryLocation": true,
 	"biome.configurationPath": "../biome.json",
 	"[html]": {
 		"editor.defaultFormatter": "biomejs.biome"
@@ -31,6 +33,8 @@
 	},
 	"files.associations": {
 		"**/biome.json": "jsonc",
-    "**/ph.js": "plaintext"
+    "**/ph.js": "plaintext",
+    "**/.env": "dotenv",
+    "**/.env.*": "dotenv"
 	}
 }

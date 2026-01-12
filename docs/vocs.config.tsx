@@ -14,9 +14,9 @@ export default defineConfig({
         name="viewport"
       />
       {process.env['VERCEL_ENV'] === 'production' ? (
-        <meta name="robot content" content="index, follow" />
+        <meta name="robot" content="index, follow" />
       ) : (
-        <meta name="robot content" content="noindex, nofollow" />
+        <meta name="robot" content="noindex, nofollow" />
       )}
       <meta content="/og-docs.png" property="og:image" />
       <meta content="image/png" property="og:image:type" />

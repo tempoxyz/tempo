@@ -4,7 +4,6 @@
   "trailingSlash": false,
   "rewrites": [
     {
-      "statusCode": 200,
       "source": "/robots.txt",
       "destination": "/robots-noindex.txt",
       "has": [{ "type": "host", "value": { "neq": "docs.tempo.xyz" } }]
