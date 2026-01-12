@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
+import { StablecoinDEX } from "../../src/exchanges/StablecoinDEX.sol";
 import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
@@ -181,6 +182,20 @@ contract StablecoinDEXInvariantTest is BaseTest {
         assertEq(order.remaining, amount, "TEMPO-DEX2: order remaining mismatch");
         assertEq(order.tick, tick, "TEMPO-DEX2: order tick mismatch");
         assertEq(order.isBid, isBid, "TEMPO-DEX2: order side mismatch");
+    }
+
+    function cancelOrder(uint128 orderId) external {
+        orderId = orderId % _nextOrderId;
+        try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
+            StablecoinDEX.Orderbook memory orderbook = exchange.books(order.bookKey);
+            // Cancel, but skip checking `actorBalanceBeforePlace`
+            _cancelAndVerifyRefund(
+                orderId, order.maker, orderbook.base, order.remaining, order.tick, order.isBid, 0
+            );
+        } catch {
+            // order was probably cancelled in a previous cancelOrder call
+            return;
+        }
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
