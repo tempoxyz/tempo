@@ -163,14 +163,11 @@ impl TIP20Factory {
             ));
         }
 
-        // pathUSD must set address(0) as the quote token
-        if address == PATH_USD_ADDRESS && !quote_token.is_zero() {
-            return Err(TIP20Error::invalid_quote_token().into());
-        }
-
         // quote_token must be address(0) or a valid TIP20
         if !quote_token.is_zero() {
-            if !self.is_tip20(quote_token)? {
+            // pathUSD must set address(0) as the quote token
+            // or the tip20 must be a valid deployed token
+            if address == PATH_USD_ADDRESS || !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
