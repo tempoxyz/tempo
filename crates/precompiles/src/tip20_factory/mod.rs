@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20Fa
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
@@ -161,6 +161,11 @@ impl TIP20Factory {
             return Err(TempoPrecompileError::TIP20Factory(
                 TIP20FactoryError::token_already_exists(address),
             ));
+        }
+
+        // pathUSD must set address(0) as the quote token
+        if address == PATH_USD_ADDRESS && !quote_token.is_zero() {
+            return Err(TIP20Error::invalid_quote_token().into());
         }
 
         // quote_token must be address(0) or a valid TIP20
