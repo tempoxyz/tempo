@@ -454,7 +454,6 @@ contract StablecoinDEXInvariantTest is BaseTest {
         }
         // Read next order id - if a flip order is hit then next order id is incremented.
         _nextOrderId = exchange.nextOrderId();
-        _numSwaps += 1;
 
         vm.stopPrank();
         _logBalances();
@@ -781,6 +780,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountOut
         ) {
+            _numSwaps += 1;
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
@@ -838,6 +838,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountIn
         ) {
+            _numSwaps += 1;
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
