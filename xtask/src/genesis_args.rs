@@ -685,7 +685,7 @@ fn create_and_mint_token(
 }
 
 fn initialize_fee_manager(
-    default_fee_address: Address,
+    fee_token_address: Address,
     initial_accounts: Vec<Address>,
     validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -702,7 +702,7 @@ fn initialize_fee_manager(
                 .set_user_token(
                     *address,
                     IFeeManager::setUserTokenCall {
-                        token: default_fee_address,
+                        token: fee_token_address,
                     },
                 )
                 .expect("Could not set fee token");
@@ -714,7 +714,7 @@ fn initialize_fee_manager(
                 .set_validator_token(
                     validator,
                     IFeeManager::setValidatorTokenCall {
-                        token: PATH_USD_ADDRESS,
+                        token: fee_token_address,
                     },
                     // use random address to avoid `CannotChangeWithinBlock` error
                     Address::random(),
