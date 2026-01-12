@@ -39,7 +39,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
     /// @dev Log file path for recording exchange actions
     string private constant LOG_FILE = "exchange.log";
-    
+
     /// @dev Number of placed swaps, to be used in invariant checking.
     uint64 private _numSwaps;
 
@@ -636,7 +636,11 @@ contract StablecoinDEXInvariantTest is BaseTest {
             vm.stopPrank();
         }
 
-        assertGe(_numSwaps, pathUSD.balanceOf(address(exchange)) + token1.balanceOf(address(exchange)), "TEMPO-DEX19: Excess post-swap dust");
+        assertGe(
+            _numSwaps,
+            pathUSD.balanceOf(address(exchange)) + token1.balanceOf(address(exchange)),
+            "TEMPO-DEX19: Excess post-swap dust"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
