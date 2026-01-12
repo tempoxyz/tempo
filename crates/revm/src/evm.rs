@@ -215,7 +215,7 @@ mod tests {
         nonce::NonceManager,
         storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
-        tip20::ITIP20,
+        tip20::{ITIP20, TIP20Token},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -768,6 +768,8 @@ mod tests {
         Ok(())
     }
 
+    use tempo_precompiles::storage::Handler;
+
     #[test]
     fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -775,7 +777,7 @@ mod tests {
 
         // Create EVM
         let mut evm = create_funded_evm(caller);
-        evm.block.basefee = 1;
+        evm.block.basefee = 100_000_000_000;
 
         // Set up TIP20 first (required for fee token validation)
         let block = TempoBlockEnv::default();
@@ -795,18 +797,48 @@ mod tests {
         // First tx: single call
         let tx1 = TxBuilder::new()
             .call_identity(&[])
-            .gas_limit(30_000)
-            .with_max_fee_per_gas(10)
-            .with_max_priority_fee_per_gas(2)
+            .gas_limit(300_000)
+            .with_max_fee_per_gas(200_000_000_000)
+            .with_max_priority_fee_per_gas(0)
             .build();
 
         let signed_tx1 = key_pair.sign_tx(tx1)?;
         let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
 
-        let result1 = evm.transact(tx_env1)?;
-        println!("{result1:#?}");
-        assert!(result1.result.is_success());
-        assert_eq!(result1.result.gas_used(), 28_671);
+        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+
+        let slot = StorageCtx::enter(&mut provider, || {
+            TIP20Token::from_address(PATH_USD_ADDRESS)?
+                .balances
+                .at(caller)
+                .read()
+        })
+        .unwrap();
+        drop(provider);
+
+        assert_eq!(slot, U256::from(100_000));
+
+        let result1 = evm.transact_commit(tx_env1)?;
+        //println!("{result1:#?}");
+        assert!(result1.is_success());
+        assert_eq!(result1.gas_used(), 28_671);
+
+        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+
+        let slot = StorageCtx::enter(&mut provider, || {
+            TIP20Token::from_address(PATH_USD_ADDRESS)?
+                .balances
+                .at(caller)
+                .read()
+        })
+        .unwrap();
+        drop(provider);
+
+        assert_eq!(slot, U256::from(97_132));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -814,18 +846,33 @@ mod tests {
             .call_identity(&[])
             .nonce(1)
             .gas_limit(35_000)
-            .with_max_fee_per_gas(10)
-            .with_max_priority_fee_per_gas(2)
+            .with_max_fee_per_gas(200_000_000_000)
+            .with_max_priority_fee_per_gas(0)
             .build();
 
         let signed_tx2 = key_pair.sign_tx(tx2)?;
         let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
 
-        let result2 = evm.transact(tx_env2)?;
+        let result2 = evm.transact_commit(tx_env2)?;
 
-        println!("{result2:#?}");
-        assert!(result2.result.is_success());
-        assert_eq!(result2.result.gas_used(), 31_286);
+        //println!("{result2:#?}");
+        assert!(result2.is_success());
+        assert_eq!(result2.gas_used(), 31_286);
+
+        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let mut provider =
+            EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
+
+        let slot = StorageCtx::enter(&mut provider, || {
+            TIP20Token::from_address(PATH_USD_ADDRESS)?
+                .balances
+                .at(caller)
+                .read()
+        })
+        .unwrap();
+        drop(provider);
+
+        assert_eq!(slot, U256::from(94_003));
 
         Ok(())
     }
