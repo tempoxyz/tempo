@@ -1956,6 +1956,7 @@ pub(crate) mod tests {
                 )))
             ));
 
+            // assert that quote tokens are unchanged
             assert_eq!(token_a.quote_token()?, token_b.address);
             assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
 
