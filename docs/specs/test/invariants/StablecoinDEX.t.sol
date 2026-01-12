@@ -198,6 +198,35 @@ contract StablecoinDEXInvariantTest is BaseTest {
         }
     }
 
+    /// @notice Fuzz handler: Withdraws random amount of random token for random actor
+    /// @dev This causes flip orders to randomly fail when their internal balance is depleted
+    /// @param actorRnd Random seed for selecting actor
+    /// @param amount Amount to withdraw (bounded to actor's internal balance)
+    /// @param tokenRnd Random seed for selecting token
+    function withdraw(uint256 actorRnd, uint128 amount, uint256 tokenRnd) external {
+        address actor = _actors[actorRnd % _actors.length];
+        address token = _selectToken(tokenRnd);
+
+        uint128 balance = exchange.balanceOf(actor, token);
+        if (balance == 0) return;
+
+        amount = uint128(bound(amount, 1, balance));
+
+        vm.prank(actor);
+        exchange.withdraw(token, amount);
+
+        _log(
+            string.concat(
+                _getActorIndex(actor),
+                " withdrew ",
+                vm.toString(amount),
+                " ",
+                TIP20(token).symbol()
+            )
+        );
+    }
+
+
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
     function _cancelAndVerifyRefund(
         uint128 orderId,
