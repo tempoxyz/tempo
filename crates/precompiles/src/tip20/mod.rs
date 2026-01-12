@@ -1351,7 +1351,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_complete_quote_token_update() -> eyre::Result<()> {
+    fn test_finalize_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
