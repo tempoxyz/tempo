@@ -425,6 +425,8 @@ mod tests {
         nonce: u64,
         nonce_key: U256,
         gas_limit: u64,
+        max_fee_per_gas: u128,
+        max_priority_fee_per_gas: u128,
         valid_before: Option<u64>,
         valid_after: Option<u64>,
         authorization_list: Vec<TempoSignedAuthorization>,
@@ -438,6 +440,8 @@ mod tests {
                 nonce: 0,
                 nonce_key: U256::ZERO,
                 gas_limit: 100_000,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
                 valid_before: Some(u64::MAX),
                 valid_after: None,
                 authorization_list: vec![],
@@ -506,6 +510,16 @@ mod tests {
             self
         }
 
+        fn with_max_fee_per_gas(mut self, max_fee_per_gas: u128) -> Self {
+            self.max_fee_per_gas = max_fee_per_gas;
+            self
+        }
+
+        fn with_max_priority_fee_per_gas(mut self, max_priority_fee_per_gas: u128) -> Self {
+            self.max_priority_fee_per_gas = max_priority_fee_per_gas;
+            self
+        }
+
         fn valid_before(mut self, valid_before: Option<u64>) -> Self {
             self.valid_before = valid_before;
             self
@@ -533,8 +547,8 @@ mod tests {
             TempoTransaction {
                 chain_id: 1,
                 fee_token: None,
-                max_priority_fee_per_gas: 10,
-                max_fee_per_gas: 10,
+                max_priority_fee_per_gas: self.max_priority_fee_per_gas,
+                max_fee_per_gas: self.max_fee_per_gas,
                 gas_limit: self.gas_limit,
                 calls: self.calls,
                 access_list: Default::default(),
@@ -759,61 +773,59 @@ mod tests {
         let key_pair = P256KeyPair::random();
         let caller = key_pair.address;
 
-        // Create and sign transaction with two calls to identity precompile
-        let tx = TxBuilder::new()
-            .call_identity(&[])
-            .call_identity(&[])
-            .gas_limit(32000)
-            .build();
-
-        let signed_tx = key_pair.sign_tx(tx)?;
-        let mut tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
-
-        // Create EVM and execute transaction
+        // Create EVM
         let mut evm = create_funded_evm(caller);
         evm.block.basefee = 1;
 
+        // Set up TIP20 first (required for fee token validation)
         let block = TempoBlockEnv::default();
         let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
-        // The core logic of setting up thread-local storage is here.
         _ = StorageCtx::enter(&mut provider, || {
-            let t = TIP20Setup::path_usd(caller)
+            TIP20Setup::path_usd(caller)
                 .with_issuer(caller)
                 .with_mint(caller, U256::from(100_000))
-                .apply();
-            t
+                .apply()
         });
 
         drop(provider);
 
-        tx_env.inner.gas_price = 10;
-        tx_env.inner.gas_priority_fee = Some(2);
+        // First tx: single call
+        let tx1 = TxBuilder::new()
+            .call_identity(&[])
+            .gas_limit(30_000)
+            .with_max_fee_per_gas(10)
+            .with_max_priority_fee_per_gas(2)
+            .build();
 
-        let result = evm.transact(tx_env)?;
+        let signed_tx1 = key_pair.sign_tx(tx1)?;
+        let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
 
-        assert!(result.result.is_success());
-        assert_eq!(result.result.gas_used(), 31286);
+        let result1 = evm.transact(tx_env1)?;
+        println!("{result1:#?}");
+        assert!(result1.result.is_success());
+        assert_eq!(result1.result.gas_used(), 28_671);
 
-        println!("result: {:?}", result);
+        // Second tx: two calls
+        let tx2 = TxBuilder::new()
+            .call_identity(&[])
+            .call_identity(&[])
+            .nonce(1)
+            .gas_limit(35_000)
+            .with_max_fee_per_gas(10)
+            .with_max_priority_fee_per_gas(2)
+            .build();
 
-        // simple tx
-        let tx_env = TxEnv {
-            caller,
-            kind: TxKind::Call(caller),
-            gas_limit: 22_000,
-            ..Default::default()
-        };
+        let signed_tx2 = key_pair.sign_tx(tx2)?;
+        let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
 
-        let result = evm.transact(TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        })?;
+        let result2 = evm.transact(tx_env2)?;
 
-        assert!(result.result.is_success());
-        assert_eq!(result.result.gas_used(), 21000);
+        println!("{result2:#?}");
+        assert!(result2.result.is_success());
+        assert_eq!(result2.result.gas_used(), 31_286);
 
         Ok(())
     }
