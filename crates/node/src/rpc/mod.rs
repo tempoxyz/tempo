@@ -1,21 +1,15 @@
 pub mod admin;
-pub mod amm;
 pub mod consensus;
-pub mod dex;
 pub mod error;
 pub mod eth_ext;
-pub mod policy;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
 use alloy_primitives::B256;
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
-pub use amm::{TempoAmm, TempoAmmApiServer};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
-pub use dex::{TempoDex, api::TempoDexApiServer};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
 use futures::{TryFutureExt, future::Either};
-pub use policy::{TempoPolicy, TempoPolicyApiServer};
 use reth_errors::RethError;
 use reth_primitives_traits::{
     Recovered, TransactionMeta, TxTy, WithEncoded, transaction::TxHashRef,
