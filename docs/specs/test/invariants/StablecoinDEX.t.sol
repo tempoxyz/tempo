@@ -739,14 +739,11 @@ contract StablecoinDEXInvariantTest is BaseTest {
         );
         _log(dustLog);
 
-        // TODO: find a better way to assert dust / count swaps (for flip orders)
-        /*
         assertGe(
             _maxDust,
             pathUSD.balanceOf(address(exchange)) + totalBalance,
             "TEMPO-DEX19: Excess post-swap dust"
         );
-        */
     }
 
     /*//////////////////////////////////////////////////////////////
