@@ -1,3 +1,77 @@
+## Actors
+
+| Actor | Description |
+|-------|-------------|
+| **User** | End-user paying transaction fees; sets preferred `userToken` via `setUserToken()` |
+| **Validator** | Block producer (`block.coinbase`); sets preferred `validatorToken`; receives collected fees |
+| **LP (Liquidity Provider)** | Provides single-sided liquidity (validatorToken); earns spread from swap imbalance |
+| **Rebalancer/Arbitrageur** | Swaps validatorToken→userToken at 0.15% worse rate to extract accumulated userTokens |
+| **Protocol** | Calls `collectFeePreTx`/`collectFeePostTx` (enforced via `msg.sender == address(0)`) |
+
+---
+
+## Actions
+
+### FeeManager
+
+| Function | Actor | Effect |
+|----------|-------|--------|
+| `setUserToken(token)` | User | Configure preferred fee token (direct call only) |
+| `setValidatorToken(token)` | Validator | Configure preferred payout token (direct call only, not during own block) |
+| `collectFeePreTx(user, userToken, maxAmount)` | Protocol | Lock max fee from user, check liquidity for cross-token swap |
+| `collectFeePostTx(user, maxAmount, actualUsed, userToken)` | Protocol | Refund unused fees, execute swap if needed, accumulate fees for validator |
+| `distributeFees(validator, token)` | Anyone | Transfer accumulated fees to validator |
+
+### FeeAMM
+
+| Function | Actor | Effect |
+|----------|-------|--------|
+| `mint(userToken, validatorToken, amount, to)` | LP | Deposit validatorToken, receive LP tokens (single-sided) |
+| `burn(userToken, validatorToken, liquidity, to)` | LP | Redeem LP tokens for pro-rata share of both reserves |
+| `rebalanceSwap(userToken, validatorToken, amountOut, to)` | Rebalancer | Swap validatorToken→userToken at rate N/SCALE (0.9985) |
+
+---
+
+## Swap Rates
+
+| Swap Type | Rate | Direction |
+|-----------|------|-----------|
+| Fee Swap | M = 0.9970 (0.30% fee) | userToken → validatorToken |
+| Rebalance Swap | N = 0.9985 (0.15% fee) | validatorToken → userToken |
+| **Spread** | 15 basis points | LP profit margin |
+
+---
+
+## Security Risk Scenarios
+
+### Critical Risks
+
+| Risk | Description | Mitigation | Unit Tests |
+|------|-------------|------------|------------|
+| **Rounding exploitation** | Repeated small swaps accumulate rounding errors in attacker's favor | Invariants A7, A8, I2; round against user | `RoundingExploit.t.sol` |
+| **LP share inflation attack** | First depositor manipulates reserves to dilute subsequent LPs | MIN_LIQUIDITY (1000) permanently locked on first mint | `RoundingExploit.t.sol` |
+| **Reserve insolvency** | Token balance < sum of reserves across all pools | Invariant A3, I3: `balance ≥ sum(reserves)` | `ReserveInsolvency.t.sol` |
+
+### Medium Risks
+
+| Risk | Description | Mitigation | Unit Tests |
+|------|-------------|------------|------------|
+| **Pool ID collision** | Different token pairs mapping to same poolId | Invariant A4: poolId unique per ordered pair | `FeeAMMInvariant.t.sol` |
+| **Cross-token arbitrage** | Exploit spread between fee swap (M) and rebalance swap (N) | Invariants I1, I2, I8 ensure 15 bps spread maintained | `CrossTokenArbitrage.t.sol` |
+| **Fee double-counting** | Distributed fees exceed collected fees | Invariants F3, F4, I5 enforce conservation | `FeeDoubleCount.t.sol` |
+| **Validator token manipulation** | Validator changes token mid-block to steal fees | `CANNOT_CHANGE_WITHIN_BLOCK` check | - |
+
+### Lower Risks
+
+| Risk | Description | Mitigation | Unit Tests |
+|------|-------------|------------|------------|
+| **LP rug via burn** | Burning more LP tokens than ever minted | Invariant A7: `burned ≤ minted` | `RoundingExploit.t.sol` |
+| **Directional pool confusion** | Mixing up Pool(A,B) vs Pool(B,A) logic | Invariant I6: pools are directional and separate | `CrossTokenArbitrage.t.sol` |
+| **uint128 overflow** | Reserve updates exceed uint128 max | `_requireU128()` checks on all reserve modifications | `FeeAMMOverflow.t.sol` |
+| **Uninitialized pool LP** | LP tokens exist for pool with zero supply | Invariant A5: `supply == 0 ⇒ all balances == 0` | `FeeAMMInvariant.t.sol` |
+
+---
+
 # Invariants Tested
 
 ## FeeAMM Invariants (A1-A11)
