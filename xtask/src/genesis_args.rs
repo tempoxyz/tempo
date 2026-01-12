@@ -303,7 +303,7 @@ impl GenesisArgs {
                     &mut evm,
                 )?;
 
-                println!("Mainnet gas token address: {}", address);
+                println!("Mainnet gas token address: {address}");
                 Some(address)
             } else {
                 None
@@ -633,16 +633,9 @@ fn create_and_mint_token(
             "Salt and address cannot be both specified"
         );
 
-        let token_address = if address.is_some() {
+        let token_address = if let Some(address) = address {
             factory
-                .create_token_reserved_address(
-                    address.expect("missing address for reserved token"),
-                    name,
-                    symbol,
-                    currency,
-                    quote_token,
-                    admin,
-                )
+                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
                 .expect("Could not create token")
         } else {
             factory
