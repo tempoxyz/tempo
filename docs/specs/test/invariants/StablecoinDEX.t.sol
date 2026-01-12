@@ -15,6 +15,9 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @dev Array of test actors that interact with the DEX
     address[] private _actors;
 
+    /// @dev Array of tradeable tokens (token1, token2, token3, token4)
+    TIP20[] private _tokens;
+
     /// @dev Mapping of actor address to their placed order IDs
     mapping(address => uint128[]) private _placedOrders;
 
@@ -24,14 +27,18 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @dev Expected next order ID, used to verify TEMPO-DEX1
     uint128 private _nextOrderId;
 
-    /// @dev The trading pair key for token1/pathUSD
-    bytes32 private _pairKey;
+    /// @dev Trading pair keys for each token/pathUSD pair
+    bytes32[] private _pairKeys;
 
-    /// @dev Blacklist policy ID for token1
-    uint64 private _token1PolicyId;
+    /// @dev Blacklist policy IDs for each token
+    mapping(address => uint64) private _tokenPolicyIds;
 
     /// @dev Blacklist policy ID for pathUSD
     uint64 private _pathUsdPolicyId;
+
+    /// @dev Additional tokens (token3, token4) - token1/token2 from BaseTest
+    TIP20 public token3;
+    TIP20 public token4;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -40,10 +47,11 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         targetContract(address(this));
 
-        // Setup token1 with issuer role (admin is the token1 admin from BaseTest)
-        vm.startPrank(admin);
-        token1.grantRole(_ISSUER_ROLE, admin);
-        vm.stopPrank();
+        // Create additional tokens (token1, token2 already created in BaseTest)
+        token3 =
+            TIP20(factory.createToken("TOKEN3", "T3", "USD", pathUSD, admin, bytes32("token3")));
+        token4 =
+            TIP20(factory.createToken("TOKEN4", "T4", "USD", pathUSD, admin, bytes32("token4")));
 
         // Setup pathUSD with issuer role (pathUSDAdmin is the pathUSD admin from BaseTest)
         vm.startPrank(pathUSDAdmin);
@@ -51,15 +59,22 @@ contract StablecoinDEXInvariantTest is BaseTest {
         pathUSD.grantRole(_ISSUER_ROLE, admin);
         vm.stopPrank();
 
-        // Create the trading pair
-        _pairKey = exchange.createPair(address(token1));
-
-        // Create blacklist policies for testing cancelStaleOrder
+        // Setup all tokens with issuer role and create trading pairs
         vm.startPrank(admin);
-        _token1PolicyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
-        token1.changeTransferPolicyId(_token1PolicyId);
+        TIP20[4] memory tokens = [token1, token2, token3, token4];
+        for (uint256 i = 0; i < tokens.length; i++) {
+            tokens[i].grantRole(_ISSUER_ROLE, admin);
+            _tokens.push(tokens[i]);
+            _pairKeys.push(exchange.createPair(address(tokens[i])));
+
+            // Create blacklist policy for each token
+            uint64 policyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+            tokens[i].changeTransferPolicyId(policyId);
+            _tokenPolicyIds[address(tokens[i])] = policyId;
+        }
         vm.stopPrank();
 
+        // Create blacklist policy for pathUSD
         vm.startPrank(pathUSDAdmin);
         _pathUsdPolicyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         pathUSD.changeTransferPolicyId(_pathUsdPolicyId);
@@ -78,81 +93,105 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @param actorRnd Random seed for selecting actor
     /// @param amount Order amount (bounded to valid range)
     /// @param tickRnd Random seed for selecting tick
+    /// @param tokenRnd Random seed for selecting token
     /// @param isBid True for bid order, false for ask order
     /// @param cancel If true, immediately cancels the placed order
-    function placeOrder(uint256 actorRnd, uint128 amount, uint256 tickRnd, bool isBid, bool cancel)
-        external
-    {
+    function placeOrder(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid,
+        bool cancel
+    ) external {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
+        address token = address(_tokens[tokenRnd % _tokens.length]);
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
 
-        _ensureFunds(actor, amount);
+        // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
+        _ensureFunds(actor, TIP20(isBid ? address(pathUSD) : token), amount);
 
         vm.startPrank(actor);
-        uint128 orderId = exchange.place(address(token1), amount, isBid, tick);
+        uint128 orderId = exchange.place(token, amount, isBid, tick);
 
         // TEMPO-DEX1: Order ID monotonically increases
         _assertNextOrderId(orderId);
 
-        uint32 price = exchange.tickToPrice(tick);
-        uint256 expectedEscrow = (uint256(amount) * uint256(price) + exchange.PRICE_SCALE() - 1)
-            / uint256(exchange.PRICE_SCALE());
-
         // Verify order was created correctly
+        _assertOrderCreated(orderId, actor, amount, tick, isBid);
+
+        if (cancel) {
+            _cancelAndVerifyRefund(orderId, actor, token, amount, tick, isBid);
+        } else {
+            _placedOrders[actor].push(orderId);
+
+            // TEMPO-DEX7: Verify tick level liquidity updated
+            (,, uint128 tickLiquidity) = exchange.getTickLevel(token, tick, isBid);
+            assertTrue(tickLiquidity >= amount, "TEMPO-DEX7: tick liquidity not updated");
+        }
+
+        vm.stopPrank();
+    }
+
+    /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
+    function _assertOrderCreated(
+        uint128 orderId,
+        address actor,
+        uint128 amount,
+        int16 tick,
+        bool isBid
+    ) internal view {
         IStablecoinDEX.Order memory order = exchange.getOrder(orderId);
         assertEq(order.maker, actor, "TEMPO-DEX2: order maker mismatch");
         assertEq(order.amount, amount, "TEMPO-DEX2: order amount mismatch");
         assertEq(order.remaining, amount, "TEMPO-DEX2: order remaining mismatch");
         assertEq(order.tick, tick, "TEMPO-DEX2: order tick mismatch");
         assertEq(order.isBid, isBid, "TEMPO-DEX2: order side mismatch");
+    }
 
-        if (cancel) {
-            // Capture balance before cancel to verify refund amount
-            uint128 balanceBeforePathUsd = exchange.balanceOf(actor, address(pathUSD));
-            uint128 balanceBeforeToken1 = exchange.balanceOf(actor, address(token1));
+    /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
+    function _cancelAndVerifyRefund(
+        uint128 orderId,
+        address actor,
+        address token,
+        uint128 amount,
+        int16 tick,
+        bool isBid
+    ) internal {
+        uint128 balanceBeforePathUsd = exchange.balanceOf(actor, address(pathUSD));
+        uint128 balanceBeforeToken = exchange.balanceOf(actor, token);
 
-            exchange.cancel(orderId);
+        exchange.cancel(orderId);
 
-            // TEMPO-DEX3: Cancel refunds correct amounts to internal balance
-            if (isBid) {
-                uint128 refund = uint128(expectedEscrow);
-                uint128 balanceAfter = exchange.balanceOf(actor, address(pathUSD));
-                assertEq(
-                    balanceAfter - balanceBeforePathUsd,
-                    refund,
-                    "TEMPO-DEX3: bid cancel refund mismatch"
-                );
-                exchange.withdraw(address(pathUSD), refund);
-            } else {
-                uint128 balanceAfter = exchange.balanceOf(actor, address(token1));
-                assertEq(
-                    balanceAfter - balanceBeforeToken1,
-                    amount,
-                    "TEMPO-DEX3: ask cancel refund mismatch"
-                );
-                exchange.withdraw(address(token1), amount);
-            }
-
-            // Verify order no longer exists
-            try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory) {
-                revert("TEMPO-DEX3: order should not exist after cancel");
-            } catch (bytes memory reason) {
-                assertEq(
-                    bytes4(reason),
-                    IStablecoinDEX.OrderDoesNotExist.selector,
-                    "TEMPO-DEX3: unexpected error on getOrder"
-                );
-            }
+        // TEMPO-DEX3: Cancel refunds correct amounts to internal balance
+        if (isBid) {
+            uint32 price = exchange.tickToPrice(tick);
+            uint128 expectedEscrow = uint128(
+                (uint256(amount) * uint256(price) + exchange.PRICE_SCALE() - 1)
+                    / uint256(exchange.PRICE_SCALE())
+            );
+            uint128 balanceAfter = exchange.balanceOf(actor, address(pathUSD));
+            assertEq(
+                balanceAfter - balanceBeforePathUsd, expectedEscrow, "TEMPO-DEX3: bid cancel refund mismatch"
+            );
+            exchange.withdraw(address(pathUSD), expectedEscrow);
         } else {
-            _placedOrders[actor].push(orderId);
-
-            // TEMPO-DEX7: Verify tick level liquidity updated
-            (,, uint128 tickLiquidity) = exchange.getTickLevel(address(token1), tick, isBid);
-            assertTrue(tickLiquidity >= amount, "TEMPO-DEX7: tick liquidity not updated");
+            uint128 balanceAfter = exchange.balanceOf(actor, token);
+            assertEq(balanceAfter - balanceBeforeToken, amount, "TEMPO-DEX3: ask cancel refund mismatch");
+            exchange.withdraw(token, amount);
         }
 
-        vm.stopPrank();
+        // Verify order no longer exists
+        try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory) {
+            revert("TEMPO-DEX3: order should not exist after cancel");
+        } catch (bytes memory reason) {
+            assertEq(
+                bytes4(reason),
+                IStablecoinDEX.OrderDoesNotExist.selector,
+                "TEMPO-DEX3: unexpected error on getOrder"
+            );
+        }
     }
 
     /// @notice Fuzz handler: Places a flip order that auto-flips when filled
@@ -160,25 +199,36 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @param actorRnd Random seed for selecting actor
     /// @param amount Order amount (bounded to valid range)
     /// @param tickRnd Random seed for selecting tick
+    /// @param tokenRnd Random seed for selecting token
     /// @param isBid True for bid flip order, false for ask flip order
-    function placeFlipOrder(uint256 actorRnd, uint128 amount, uint256 tickRnd, bool isBid)
-        external
-    {
+    function placeFlipOrder(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid
+    ) external {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
+        TIP20 token = _tokens[tokenRnd % _tokens.length];
         amount = uint128(bound(amount, 100_000_000, 10_000_000_000));
 
-        _ensureFunds(actor, amount);
+        // Ensure funds for the token being escrowed (pathUSD for bids, base token for asks)
+        if (isBid) {
+            _ensureFunds(actor, pathUSD, amount);
+        } else {
+            _ensureFunds(actor, token, amount);
+        }
 
         vm.startPrank(actor);
         uint128 orderId;
         int16 flipTick;
         if (isBid) {
             flipTick = 200;
-            orderId = exchange.placeFlip(address(token1), amount, true, tick, flipTick);
+            orderId = exchange.placeFlip(address(token), amount, true, tick, flipTick);
         } else {
             flipTick = -200;
-            orderId = exchange.placeFlip(address(token1), amount, false, tick, flipTick);
+            orderId = exchange.placeFlip(address(token), amount, false, tick, flipTick);
         }
         _assertNextOrderId(orderId);
 
@@ -202,20 +252,46 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
     /// @dev Struct to capture swapper balances before swap to avoid stack too deep
     struct SwapBalanceSnapshot {
-        uint256 token1External;
-        uint256 pathUsdExternal;
-        uint128 token1Internal;
-        uint128 pathUsdInternal;
+        address tokenIn;
+        address tokenOut;
+        uint256 tokenInExternal;
+        uint256 tokenOutExternal;
+        uint128 tokenInInternal;
+        uint128 tokenOutInternal;
     }
 
     /// @notice Fuzz handler: Executes swaps with exact amount in or exact amount out
     /// @dev Tests TEMPO-DEX4, TEMPO-DEX5, TEMPO-DEX14, TEMPO-DEX16
     /// @param swapperRnd Random seed for selecting swapper
     /// @param amount Swap amount (bounded to valid range)
+    /// @param tokenInRnd Random seed for selecting tokenIn
+    /// @param tokenOutRnd Random seed for selecting tokenOut
     /// @param amtIn True for swapExactAmountIn, false for swapExactAmountOut
-    function swapExactAmount(uint256 swapperRnd, uint128 amount, bool amtIn) external {
+    function swapExactAmount(
+        uint256 swapperRnd,
+        uint128 amount,
+        uint256 tokenInRnd,
+        uint256 tokenOutRnd,
+        bool amtIn
+    ) external {
         address swapper = _actors[swapperRnd % _actors.length];
         amount = uint128(bound(amount, 100_000_000, 1_000_000_000));
+
+        // Select tokenIn and tokenOut from available tokens (base tokens + pathUSD)
+        // tokenIn can be a base token or pathUSD, tokenOut is the opposite side
+        TIP20 baseToken = _tokens[tokenInRnd % _tokens.length];
+
+        // Determine swap direction: base -> pathUSD or pathUSD -> base
+        bool sellBase = tokenOutRnd % 2 == 0;
+        address tokenIn = sellBase ? address(baseToken) : address(pathUSD);
+        address tokenOut = sellBase ? address(pathUSD) : address(baseToken);
+
+        // Ensure swapper has enough of tokenIn
+        if (sellBase) {
+            _ensureFunds(swapper, baseToken, amount);
+        } else {
+            _ensureFunds(swapper, pathUSD, amount);
+        }
 
         // Check if swapper has active orders - if so, skip TEMPO-DEX14 balance checks
         // because self-trade makes the accounting complex (maker proceeds returned to swapper)
@@ -223,10 +299,12 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         // Capture total balances (external + internal) before swap for TEMPO-DEX14
         SwapBalanceSnapshot memory before = SwapBalanceSnapshot({
-            token1External: token1.balanceOf(swapper),
-            pathUsdExternal: pathUSD.balanceOf(swapper),
-            token1Internal: exchange.balanceOf(swapper, address(token1)),
-            pathUsdInternal: exchange.balanceOf(swapper, address(pathUSD))
+            tokenIn: tokenIn,
+            tokenOut: tokenOut,
+            tokenInExternal: TIP20(tokenIn).balanceOf(swapper),
+            tokenOutExternal: TIP20(tokenOut).balanceOf(swapper),
+            tokenInInternal: exchange.balanceOf(swapper, tokenIn),
+            tokenOutInternal: exchange.balanceOf(swapper, tokenOut)
         });
 
         vm.startPrank(swapper);
@@ -262,15 +340,20 @@ contract StablecoinDEXInvariantTest is BaseTest {
             return;
         }
 
-        // Blacklist the actor in the appropriate token
+        // Blacklist the actor in the appropriate token(s)
         if (forBids) {
             // For bids, blacklist in quote token (pathUSD) since that's the escrow token
             vm.prank(pathUSDAdmin);
             registry.modifyPolicyBlacklist(_pathUsdPolicyId, blacklistedActor, true);
         } else {
-            // For asks, blacklist in base token (token1) since that's the escrow token
-            vm.prank(admin);
-            registry.modifyPolicyBlacklist(_token1PolicyId, blacklistedActor, true);
+            // For asks, blacklist in all base tokens since orders can be on any token
+            vm.startPrank(admin);
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                registry.modifyPolicyBlacklist(
+                    _tokenPolicyIds[address(_tokens[t])], blacklistedActor, true
+                );
+            }
+            vm.stopPrank();
         }
 
         // Have a different actor cancel the blacklisted actor's stale orders
@@ -284,10 +367,13 @@ contract StablecoinDEXInvariantTest is BaseTest {
                 bool canCancelStale = (forBids && order.isBid) || (!forBids && !order.isBid);
 
                 if (canCancelStale) {
+                    // Get the base token for this order
+                    (address base,,,) = exchange.books(order.bookKey);
+
                     // Capture balance before cancel
                     uint128 balanceBefore = forBids
                         ? exchange.balanceOf(blacklistedActor, address(pathUSD))
-                        : exchange.balanceOf(blacklistedActor, address(token1));
+                        : exchange.balanceOf(blacklistedActor, base);
 
                     // TEMPO-DEX13: Anyone can cancel a stale order from a blacklisted maker
                     exchange.cancelStaleOrder(orderId);
@@ -295,7 +381,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
                     // Verify refund was credited to blacklisted actor's internal balance
                     uint128 balanceAfter = forBids
                         ? exchange.balanceOf(blacklistedActor, address(pathUSD))
-                        : exchange.balanceOf(blacklistedActor, address(token1));
+                        : exchange.balanceOf(blacklistedActor, base);
 
                     if (order.isBid) {
                         uint32 price = exchange.tickToPrice(order.tick);
@@ -338,8 +424,13 @@ contract StablecoinDEXInvariantTest is BaseTest {
             vm.prank(pathUSDAdmin);
             registry.modifyPolicyBlacklist(_pathUsdPolicyId, blacklistedActor, false);
         } else {
-            vm.prank(admin);
-            registry.modifyPolicyBlacklist(_token1PolicyId, blacklistedActor, false);
+            vm.startPrank(admin);
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                registry.modifyPolicyBlacklist(
+                    _tokenPolicyIds[address(_tokens[t])], blacklistedActor, false
+                );
+            }
+            vm.stopPrank();
         }
 
         // Update next order id in case any flip orders were triggered
@@ -363,6 +454,9 @@ contract StablecoinDEXInvariantTest is BaseTest {
                     // TEMPO-DEX10: Verify linked list consistency before cancel
                     _assertOrderLinkedListConsistency(placedOrderId, order);
 
+                    // Get the base token for this order
+                    (address base,,,) = exchange.books(order.bookKey);
+
                     exchange.cancel(placedOrderId);
 
                     // TEMPO-DEX3: Verify refund credited to internal balance and withdraw to ensure actors can exit
@@ -379,10 +473,10 @@ contract StablecoinDEXInvariantTest is BaseTest {
                         exchange.withdraw(address(pathUSD), expectedRefund);
                     } else {
                         assertTrue(
-                            exchange.balanceOf(actor, address(token1)) >= order.remaining,
+                            exchange.balanceOf(actor, base) >= order.remaining,
                             "TEMPO-DEX3: ask cancel refund not credited"
                         );
-                        exchange.withdraw(address(token1), order.remaining);
+                        exchange.withdraw(base, order.remaining);
                     }
                 } catch { }
             }
@@ -397,33 +491,39 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @notice Main invariant function called after each fuzz sequence
     /// @dev Verifies TEMPO-DEX6 (balance solvency), TEMPO-DEX7/11 (tick consistency), TEMPO-DEX8/9 (best tick)
     function invariantStablecoinDEX() public view {
+        // TEMPO-DEX6: Check pathUSD balance
         uint256 dexPathUsdBalance = pathUSD.balanceOf(address(exchange));
-        uint256 dexToken1Balance = token1.balanceOf(address(exchange));
-
-        // TEMPO-DEX6: DEX token balances must be >= sum of all internal user balances
         uint256 totalUserPathUsd = 0;
-        uint256 totalUserToken1 = 0;
         for (uint256 i = 0; i < _actors.length; i++) {
             totalUserPathUsd += exchange.balanceOf(_actors[i], address(pathUSD));
-            totalUserToken1 += exchange.balanceOf(_actors[i], address(token1));
         }
-
         assertTrue(
             dexPathUsdBalance >= totalUserPathUsd,
             "TEMPO-DEX6: DEX pathUsd balance < sum of user internal balances"
         );
-        assertTrue(
-            dexToken1Balance >= totalUserToken1,
-            "TEMPO-DEX6: DEX token1 balance < sum of user internal balances"
-        );
+
+        // TEMPO-DEX6: Check each base token balance
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            uint256 dexTokenBalance = _tokens[t].balanceOf(address(exchange));
+            uint256 totalUserTokenBalance = 0;
+            for (uint256 i = 0; i < _actors.length; i++) {
+                totalUserTokenBalance += exchange.balanceOf(_actors[i], address(_tokens[t]));
+            }
+            assertTrue(
+                dexTokenBalance >= totalUserTokenBalance,
+                "TEMPO-DEX6: DEX token balance < sum of user internal balances"
+            );
+        }
 
         // Compute expected escrowed amounts from all orders (including flip-created orders)
-        (uint256 expectedPathUsdEscrowed, uint256 expectedToken1Escrowed, uint256 orderCount) =
-            _computeExpectedEscrow();
+        (
+            uint256 expectedPathUsdEscrowed,
+            uint256[] memory expectedTokenEscrowed,
+            uint256 orderCount
+        ) = _computeExpectedEscrow();
 
         // Assert escrowed amounts: DEX balance = user internal balances + escrowed in active orders
         // Allow tolerance for rounding during partial fills (can accumulate across multiple fills)
-        // TODO: check tolerance and rounding error
         uint256 tolerance = orderCount * 4 + 1;
         assertApproxEqAbs(
             dexPathUsdBalance,
@@ -431,30 +531,45 @@ contract StablecoinDEXInvariantTest is BaseTest {
             tolerance,
             "TEMPO-DEX6: DEX pathUSD balance != user balances + escrowed"
         );
-        assertApproxEqAbs(
-            dexToken1Balance,
-            totalUserToken1 + expectedToken1Escrowed,
-            tolerance,
-            "TEMPO-DEX6: DEX token1 balance != user balances + escrowed"
-        );
 
-        // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency
-        _assertBestTickConsistency();
+        // Check each base token escrow
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            uint256 dexTokenBalance = _tokens[t].balanceOf(address(exchange));
+            uint256 totalUserTokenBalance = 0;
+            for (uint256 i = 0; i < _actors.length; i++) {
+                totalUserTokenBalance += exchange.balanceOf(_actors[i], address(_tokens[t]));
+            }
+            assertApproxEqAbs(
+                dexTokenBalance,
+                totalUserTokenBalance + expectedTokenEscrowed[t],
+                tolerance,
+                "TEMPO-DEX6: DEX token balance != user balances + escrowed"
+            );
+        }
 
-        // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency
-        _assertTickLevelConsistency();
+        // TEMPO-DEX8 & TEMPO-DEX9: Best bid/ask tick consistency for all tokens
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            _assertBestTickConsistency(address(_tokens[t]));
+        }
+
+        // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency for all tokens
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            _assertTickLevelConsistency(address(_tokens[t]));
+        }
     }
 
     /// @notice Computes expected escrowed amounts by iterating through all orders
     /// @dev Iterates all order IDs to catch flip-created orders not in _placedOrders
     /// @return pathUsdEscrowed Total pathUSD escrowed in active bid orders
-    /// @return token1Escrowed Total token1 escrowed in active ask orders
+    /// @return tokenEscrowed Array of escrowed amounts for each base token (ask orders)
     /// @return orderCount Number of active orders (for rounding tolerance)
     function _computeExpectedEscrow()
         internal
         view
-        returns (uint256 pathUsdEscrowed, uint256 token1Escrowed, uint256 orderCount)
+        returns (uint256 pathUsdEscrowed, uint256[] memory tokenEscrowed, uint256 orderCount)
     {
+        tokenEscrowed = new uint256[](_tokens.length);
+
         uint128 nextId = exchange.nextOrderId();
         for (uint128 orderId = 1; orderId < nextId; orderId++) {
             try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
@@ -466,7 +581,14 @@ contract StablecoinDEXInvariantTest is BaseTest {
                             / exchange.PRICE_SCALE();
                     pathUsdEscrowed += escrow;
                 } else {
-                    token1Escrowed += order.remaining;
+                    // Find which token this order is for
+                    (address base,,,) = exchange.books(order.bookKey);
+                    for (uint256 t = 0; t < _tokens.length; t++) {
+                        if (address(_tokens[t]) == base) {
+                            tokenEscrowed[t] += order.remaining;
+                            break;
+                        }
+                    }
                 }
             } catch {
                 // Order was filled or cancelled
@@ -487,7 +609,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
     ) internal {
         // TEMPO-DEX16: Quote should match execution TODO: enable when fixed
         uint128 quotedOut;
-        try exchange.quoteSwapExactAmountIn(address(token1), address(pathUSD), amount) returns (
+        try exchange.quoteSwapExactAmountIn(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
         ) {
             quotedOut = quoted;
@@ -495,11 +617,8 @@ contract StablecoinDEXInvariantTest is BaseTest {
             quotedOut = 0;
         }
 
-        try exchange.swapExactAmountIn(
-            address(token1), address(pathUSD), amount, amount - 100
-        ) returns (
-            uint128 amountOut
-        ) {
+        try exchange.swapExactAmountIn(before.tokenIn, before.tokenOut, amount, amount - 100)
+        returns (uint128 amountOut) {
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
@@ -529,7 +648,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
     ) internal {
         // TEMPO-DEX16: Quote should match execution
         uint128 quotedIn;
-        try exchange.quoteSwapExactAmountOut(address(token1), address(pathUSD), amount) returns (
+        try exchange.quoteSwapExactAmountOut(before.tokenIn, before.tokenOut, amount) returns (
             uint128 quoted
         ) {
             quotedIn = quoted;
@@ -537,11 +656,8 @@ contract StablecoinDEXInvariantTest is BaseTest {
             quotedIn = 0;
         }
 
-        try exchange.swapExactAmountOut(
-            address(token1), address(pathUSD), amount, amount + 100
-        ) returns (
-            uint128 amountIn
-        ) {
+        try exchange.swapExactAmountOut(before.tokenIn, before.tokenOut, amount, amount + 100)
+        returns (uint128 amountIn) {
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
@@ -566,71 +682,70 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @notice Checks total balance (external + internal) to handle taker == maker scenarios
     /// @param swapper The swapper address
     /// @param before Balance snapshot before the swap
-    /// @param token1Spent Amount of token1 spent (amountIn for the swap)
-    /// @param pathUsdReceived Amount of pathUSD received (amountOut for the swap)
+    /// @param tokenInSpent Amount of tokenIn spent (amountIn for the swap)
+    /// @param tokenOutReceived Amount of tokenOut received (amountOut for the swap)
     function _assertSwapBalanceChanges(
         address swapper,
         SwapBalanceSnapshot memory before,
-        uint128 token1Spent,
-        uint128 pathUsdReceived
+        uint128 tokenInSpent,
+        uint128 tokenOutReceived
     ) internal view {
         // Calculate total balances (external + internal) after swap
-        uint256 token1TotalBefore = before.token1External + before.token1Internal;
-        uint256 pathUsdTotalBefore = before.pathUsdExternal + before.pathUsdInternal;
+        uint256 tokenInTotalBefore = before.tokenInExternal + before.tokenInInternal;
+        uint256 tokenOutTotalBefore = before.tokenOutExternal + before.tokenOutInternal;
 
-        uint256 token1TotalAfter =
-            token1.balanceOf(swapper) + exchange.balanceOf(swapper, address(token1));
-        uint256 pathUsdTotalAfter =
-            pathUSD.balanceOf(swapper) + exchange.balanceOf(swapper, address(pathUSD));
+        uint256 tokenInTotalAfter =
+            TIP20(before.tokenIn).balanceOf(swapper) + exchange.balanceOf(swapper, before.tokenIn);
+        uint256 tokenOutTotalAfter = TIP20(before.tokenOut).balanceOf(swapper)
+            + exchange.balanceOf(swapper, before.tokenOut);
 
-        // Swapper's total token1 should decrease by token1Spent
-        // Note: If swapper's bid orders were filled, they gain token1 to internal balance,
-        // but since we're selling token1 for pathUSD here, the net is still -token1Spent
+        // Swapper's total tokenIn should decrease by tokenInSpent
         assertEq(
-            token1TotalBefore - token1TotalAfter,
-            token1Spent,
-            "TEMPO-DEX14: swapper total token1 change incorrect"
+            tokenInTotalBefore - tokenInTotalAfter,
+            tokenInSpent,
+            "TEMPO-DEX14: swapper total tokenIn change incorrect"
         );
 
-        // Swapper's total pathUSD should increase by pathUsdReceived
-        // Note: If swapper's ask orders were filled, they gain pathUSD to internal balance
+        // Swapper's total tokenOut should increase by tokenOutReceived
         assertEq(
-            pathUsdTotalAfter - pathUsdTotalBefore,
-            pathUsdReceived,
-            "TEMPO-DEX14: swapper total pathUsd change incorrect"
+            tokenOutTotalAfter - tokenOutTotalBefore,
+            tokenOutReceived,
+            "TEMPO-DEX14: swapper total tokenOut change incorrect"
         );
     }
 
     /// @notice Verifies best bid and ask tick point to valid tick levels
     /// @dev Tests TEMPO-DEX8 (best bid) and TEMPO-DEX9 (best ask)
-    function _assertBestTickConsistency() internal view {
+    /// @param baseToken The base token address for the trading pair
+    function _assertBestTickConsistency(address baseToken) internal view {
         (,, int16 bestBidTick, int16 bestAskTick) =
-            exchange.books(exchange.pairKey(address(token1), address(pathUSD)));
+            exchange.books(exchange.pairKey(baseToken, address(pathUSD)));
 
         // TEMPO-DEX8: If bestBidTick is not MIN, it should have liquidity
         if (bestBidTick != type(int16).min) {
-            (,, uint128 bidLiquidity) = exchange.getTickLevel(address(token1), bestBidTick, true);
+            (,, uint128 bidLiquidity) = exchange.getTickLevel(baseToken, bestBidTick, true);
             // Note: during swaps, bestBidTick may temporarily point to empty tick
             // This is acceptable as it gets updated on next operation
         }
 
         // TEMPO-DEX9: If bestAskTick is not MAX, it should have liquidity
         if (bestAskTick != type(int16).max) {
-            (,, uint128 askLiquidity) = exchange.getTickLevel(address(token1), bestAskTick, false);
+            (,, uint128 askLiquidity) = exchange.getTickLevel(baseToken, bestAskTick, false);
             // Note: during swaps, bestAskTick may temporarily point to empty tick
         }
     }
 
     /// @notice Verifies tick level data structure consistency
     /// @dev Tests TEMPO-DEX7 (liquidity matches orders), TEMPO-DEX10 (head/tail consistency), TEMPO-DEX11 (bitmap)
-    function _assertTickLevelConsistency() internal view {
+    /// @param baseToken The base token address for the trading pair
+    function _assertTickLevelConsistency(address baseToken) internal view {
         // Check a sample of ticks for consistency
         for (uint256 i = 0; i < _ticks.length; i++) {
             int16 tick = _ticks[i];
 
             // Check bid tick level
             (uint128 bidHead, uint128 bidTail, uint128 bidLiquidity) =
-                exchange.getTickLevel(address(token1), tick, true);
+                exchange.getTickLevel(baseToken, tick, true);
             if (bidLiquidity > 0) {
                 // TEMPO-DEX7: If liquidity > 0, head should be non-zero
                 assertTrue(bidHead != 0, "TEMPO-DEX7: bid tick has liquidity but no head");
@@ -644,7 +759,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
             // Check ask tick level
             (uint128 askHead, uint128 askTail, uint128 askLiquidity) =
-                exchange.getTickLevel(address(token1), tick, false);
+                exchange.getTickLevel(baseToken, tick, false);
             if (askLiquidity > 0) {
                 assertTrue(askHead != 0, "TEMPO-DEX7: ask tick has liquidity but no head");
             }
@@ -717,11 +832,14 @@ contract StablecoinDEXInvariantTest is BaseTest {
             address actor = makeAddr(string(abi.encodePacked("Actor", vm.toString(i))));
             actorsAddress[i] = actor;
 
-            // initial actor balance
-            _ensureFunds(actor, 1_000_000_000_000);
+            // initial actor balance for all tokens
+            _ensureFundsAll(actor, 1_000_000_000_000);
 
             vm.startPrank(actor);
-            token1.approve(address(exchange), type(uint256).max);
+            // Approve all base tokens and pathUSD for the exchange
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                _tokens[j].approve(address(exchange), type(uint256).max);
+            }
             pathUSD.approve(address(exchange), type(uint256).max);
             vm.stopPrank();
         }
@@ -732,260 +850,31 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @notice Ensures an actor has sufficient token balances for testing
     /// @dev Mints tokens if actor's balance is below the required amount
     /// @param actor The actor address to fund
+    /// @param token The token to mint (base token for asks, pathUSD for bids)
     /// @param amount The minimum balance required
-    function _ensureFunds(address actor, uint256 amount) internal {
+    function _ensureFunds(address actor, TIP20 token, uint256 amount) internal {
         vm.startPrank(admin);
-        if (pathUSD.balanceOf(address(actor)) < amount) {
-            pathUSD.mint(actor, amount + 100_000_000);
-        }
-        if (token1.balanceOf(address(actor)) < amount) {
-            token1.mint(actor, amount + 100_000_000);
+        if (token.balanceOf(address(actor)) < amount) {
+            token.mint(actor, amount + 100_000_000);
         }
         vm.stopPrank();
     }
 
-    /*//////////////////////////////////////////////////////////////
-                          FAILURES REPRO
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice fails if TEMPO-DEX16 enabled
-    function testReproDEX16QuoteMismatchOut() external {
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeOrder(
-                9_558_570_077_960_085_633_653_695_175_917_485_444_202_355_741_275_948_550_613_259_375_346_385,
-                7,
-                233_568_675_898_653_404_360_250_386_309_241_377_793_333_357,
-                true,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(
-                301_365,
-                69_546_172_010_336_025_265_575_322_610_212_078,
-                11_355_817_413_378_558_616_734_169_007_275_482_187,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(289, 6, 11_588, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                379_928_535_540_359_086_518_915_873_206_108_773_663_286_470_566_274_838,
-                18_931,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                458_297_009_615_161_915_289_839, 5_454_670_747_409_380_657_486_770, false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(3824, 335_972_798_343_701_746_246_856_599_657_569_421_132, 9, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                20_605_735_771_902_281_925_382_902, 52_398_262_934_580_807_959_027, true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(26_652_029_005_296_984_319_940_186, 1_955_859_655_031_487, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                6_659_008_076_275, 81_185_804_270_573_679_033_355_557_343_733_708_470, true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(512, 5, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                10_437_175_717_263_000_561_771_835_093_311_785_989_731_915_009_071_034_673,
-                3_805_691_144_036_157_469_320_866_867_444_990,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                7_984_522_694_784_135_442_392_186_573_774_329_013_584_669_394_815_199_262_787_621_290_540_440,
-                4_598_058_576_530_503_464_421,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(13_718_499_648_598_428_557_030, 245_483_527, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                76_742_893_204_655_364_882_045_946_850_991_719_318_475_535_730_078_006_839_746_857_730_770_830,
-                21_419_659_030_609_680,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                16_769_418_490_134_021_599_412_251_537_535_422_356_079_081_397_678_552_738_311_075_357_847_800_021,
-                472_235_423_232_136_161_151,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(9_039_508_932_300_820_592_317_358_777_485_552, 1, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                14_099_490_637_467_691_673_257_349_132_186_879_769_338_692_926_089_876,
-                2_620_256_765_105_727_194,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(8567, 25_259_743_990, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                245_966_488_707_180_590_813_208_198_591_943_838_423_418, 156_040_545_934_950, false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                4_289_741_108_724_363_749_668_415_349_216_424_221_873_212_813_922, 237_387, false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                3_800_222_259_856_644_280_661_621_405_562_981_821_483_747_998_694_606_706_739_912,
-                1_944_473_731_026,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(1, 465_832, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(4_397_963_807, 0, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                774_470_939_459_762_731_314_255_477_042_405_889_664_758_093_659_697_518_387_913_964_575_897_351_494,
-                10_651,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640_564_039_457_584_007_913_129_639_935,
-                8716,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(954, 309_582_385_725_645_795_013_810_066_720_913_664_504, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                285_196_349_613_267_377_582_564_124_496_431_863_584_913_588_201_808,
-                74_830_425_353_290_563_956_238_180_494_631_176,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                3_539_899_022_260_725_149_398_989_128_937,
-                644_262_265_630_211_668_712_835_712_010_667_770,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                106_710_554_243_539_439_919_650_178_084_276_198_561_044_256_727_140_477_710_015_132,
-                2_659_122_473_175_464_551_782_242_779,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(0, 0, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(65_535, 1234, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(6, 1588, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(9_179_926_934_565, 83_603_346_075_970_461_421, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640_564_039_457_584_007_913_129_639_935,
-                1_978_717_316_239_976_334_955_766_350_735_786_172,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(6_859_875_712_693_835_094_221_190_680_222_893, 89_614_929, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(103_623_564_223_206_646_138_244_552, 1, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(255, 244_503_207_430, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                7_582_851_116_386_955_263_219_622_792_571_840_045_696_602_811_702_469_370,
-                48_174,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                153_525_369_901_325_225_621_015_930_226_144_088_737_359_688_749_883,
-                1_140_534_356_669_908_973_403,
-                false
-            );
-    }
-
-    /// @notice fails if TEMPO-DEX16 enabled
-    function testReproDEX16QuoteMismatchIn() external {
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(
-                2, 328_134_792_733_308_945_408_115_820_128_797_045_422, 1_829_955_119, true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(25_259_743_990, 244_503_207_431, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(20, 1_000_000_000, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(1_000_000_000, 5791, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(5, 1_950_818, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                1_518_889_154_448_658_106_372, 848_179_881_728_934_280_417_812_247, true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(3082, 30, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(768, 98_000, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                306_482_207_306_705_579_078_181_145_707_606_147_266_091_845_298_707_357_973_391,
-                31_911_384_263_867_631_961_694_654_561,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(30, 8, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640_564_039_457_584_007_913_129_639_935,
-                6_484_688_131_189_955_155_905,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(129_574_031_215, 15_944_133_472_238_632, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeOrder(
-                208_263_264_604,
-                342_230_965_039_049_105_241_437,
-                1_518_814_207_656_572_061_071_084_709,
-                true,
-                false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(5, 998_414_828_386, true);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(4_397_963_807, 20, true);
-    }
-
-    /// @notice fails TEMPO-DEX6 with 6419205152 !~= 6419205150 if tolerance set to 0
-    function testReproDEX6Tolerance() external {
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(
-                16_620_986_750_173_327_375_072_129_536_696,
-                191_690_262_104_147_198_647,
-                151_418_302_004_512_096_018,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                2_438_339_387_864_312_957_756_060_121_378_828_567, 32_133_919_125_377_151_346, false
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(
-                68_820_684_459_960_264_687_589_486_638_758_947_665_982_554_552_360_197, 48, false
-            );
-
-        vm.startPrank(0x9a3D03B8a341C194aE72e271Ff63f2E9cf3EC506);
-        exchange.cancel(1);
-        exchange.withdraw(address(pathUSD), 6_419_205_150);
-        // Assert dust of 2 in exchange
-        assertEq(pathUSD.balanceOf(address(exchange)), 2);
+    /// @notice Ensures an actor has sufficient balances for all tokens (used in setUp)
+    /// @dev Mints pathUSD and all base tokens if actor's balance is below the required amount
+    /// @param actor The actor address to fund
+    /// @param amount The minimum balance required
+    function _ensureFundsAll(address actor, uint256 amount) internal {
+        vm.startPrank(admin);
+        if (pathUSD.balanceOf(address(actor)) < amount) {
+            pathUSD.mint(actor, amount + 100_000_000);
+        }
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            if (_tokens[i].balanceOf(address(actor)) < amount) {
+                _tokens[i].mint(actor, amount + 100_000_000);
+            }
+        }
+        vm.stopPrank();
     }
 
 }
