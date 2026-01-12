@@ -81,8 +81,12 @@ impl From<TempoHardfork> for SpecId {
 }
 
 impl From<SpecId> for TempoHardfork {
-    fn from(_spec: SpecId) -> Self {
-        Self::Genesis
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::T0)) {
+            Self::T0
+        } else {
+            Self::Genesis
+        }
     }
 }
 
