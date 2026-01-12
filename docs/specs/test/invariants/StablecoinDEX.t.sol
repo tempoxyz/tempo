@@ -633,19 +633,25 @@ contract StablecoinDEXInvariantTest is BaseTest {
                 } catch { }
             }
             exchange.withdraw(address(pathUSD), exchange.balanceOf(actor, address(pathUSD)));
-            for (uint j = 0; i < _tokens.length; j++) {
-                exchange.withdraw(address(_tokens[j]), exchange.balanceOf(actor, address(_tokens[j])));
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                exchange.withdraw(
+                    address(_tokens[j]), exchange.balanceOf(actor, address(_tokens[j]))
+                );
             }
 
             vm.stopPrank();
         }
 
         uint256 totalBalance;
-        for (uint j = 0; j < _tokens.length; j++) {
+        for (uint256 j = 0; j < _tokens.length; j++) {
             totalBalance += _tokens[j].balanceOf(address(exchange));
         }
 
-        assertGe(_numSwaps, pathUSD.balanceOf(address(exchange)) + totalBalance, "TEMPO-DEX19: Excess post-swap dust");
+        assertGe(
+            _numSwaps,
+            pathUSD.balanceOf(address(exchange)) + totalBalance,
+            "TEMPO-DEX19: Excess post-swap dust"
+        );
     }
 
     /*//////////////////////////////////////////////////////////////
