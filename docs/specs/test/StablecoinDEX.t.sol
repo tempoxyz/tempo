@@ -1715,6 +1715,43 @@ contract StablecoinDEXTest is BaseTest {
         assertEq(liquidity, exchange.MIN_ORDER_AMOUNT());
     }
 
+    // Testing edge case when spread is negative and arbitrage is possible
+    function test_ArbitrageOrder() external {
+        _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, -100);
+        _placeBidOrder(alice, exchange.MIN_ORDER_AMOUNT() * 2, 100);
+
+        uint256 balanceBefore1 = token1.balanceOf(bob);
+        uint256 balanceBeforeUSD = pathUSD.balanceOf(bob);
+
+        vm.startPrank(bob);
+        uint256 out1 = exchange.swapExactAmountIn(
+            address(token1), address(pathUSD), exchange.MIN_ORDER_AMOUNT() / 2, 0
+        );
+        uint256 out2 = exchange.swapExactAmountIn(
+            address(pathUSD), address(token1), exchange.MIN_ORDER_AMOUNT() / 2, 0
+        );
+
+        vm.assertGt(token1.balanceOf(bob), balanceBefore1);
+        vm.assertGt(pathUSD.balanceOf(bob), balanceBeforeUSD);
+    }
+
+    // Test the case when a maker is a taker in their own orderbook
+    function test_TakerIsMaker() external {
+        uint256 balanceBefore1 = token1.balanceOf(alice);
+        uint256 balanceBeforeUSD = pathUSD.balanceOf(alice);
+
+        // token1 escrowed
+        _placeAskOrder(alice, exchange.MIN_ORDER_AMOUNT(), 100);
+
+        vm.startPrank(alice);
+        uint128 out = exchange.swapExactAmountIn(
+            address(pathUSD), address(token1), exchange.MIN_ORDER_AMOUNT() / 2, 0
+        );
+
+        vm.assertEq(token1.balanceOf(alice), balanceBefore1 - exchange.MIN_ORDER_AMOUNT() + out); //
+        vm.assertEq(pathUSD.balanceOf(alice), balanceBeforeUSD); // order fills go back into self balance
+    }
+
     /*//////////////////////////////////////////////////////////////
                         HELPER FUNCTIONS
     //////////////////////////////////////////////////////////////*/
