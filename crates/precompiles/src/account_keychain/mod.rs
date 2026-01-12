@@ -773,6 +773,109 @@ mod tests {
         })
     }
 
+    #[test]
+    fn test_authorize_approve() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+        let contract = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // authorize access key with 100 token spending limit
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            let initial_limit = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(initial_limit, U256::from(100));
+
+            // Switch to access key for remaining tests
+            keychain.set_transaction_key(access_key)?;
+
+            // Increase approval by 30, which deducts from the limit
+            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30))?;
+
+            let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after, U256::from(70));
+
+            // Decrease approval to 20, does not affect limit
+            keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20))?;
+
+            let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_unchanged, U256::from(70));
+
+            // Increase from 20 to 50, reducing the limit by 30
+            keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50))?;
+
+            let limit_after_increase = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after_increase, U256::from(40));
+
+            // Assert that spending limits only applied when account is tx origin
+            keychain.authorize_approve(contract, token, U256::ZERO, U256::from(1000))?;
+
+            let limit_after_contract = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after_contract, U256::from(40)); // unchanged
+
+            // Assert that exceeding remaining limit fails
+            let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
+            assert!(matches!(
+                exceed_result,
+                Err(TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                ))
+            ));
+
+            // Assert that the main key bypasses spending limits, does not affect existing limits
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(1000))?;
+
+            let limit_main_key = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_main_key, U256::from(40));
+
+            Ok(())
+        })
+    }
+
     /// Test that spending limits are only enforced when msg_sender == tx_origin.
     ///
     /// This test verifies the fix for the bug where spending limits were incorrectly

@@ -2,6 +2,7 @@ use crate::{
     Precompile, dispatch_call,
     error::TempoPrecompileError,
     input_cost, metadata, mutate, mutate_void,
+    storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
@@ -114,7 +115,9 @@ impl Precompile for TIP20Token {
                 mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
             }
             TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, _| self.complete_quote_token_update(s))
+                mutate_void(call, msg_sender, |s, c| {
+                    self.complete_quote_token_update(s, c)
+                })
             }
             TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
                 mutate_void(call, msg_sender, |s, c| self.mint(s, c))

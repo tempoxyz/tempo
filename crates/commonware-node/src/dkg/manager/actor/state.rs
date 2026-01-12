@@ -99,15 +99,6 @@ where
         self.current.clone()
     }
 
-    /// Returns the DKG outcome for the previous epoch, if there is one.
-    pub(super) async fn previous(&self) -> Option<State> {
-        let previous_epoch = self.current().epoch.previous()?;
-
-        let segment = self.states.size().checked_sub(2)?;
-        let previous = self.states.read(segment).await.ok()?;
-        (previous_epoch == previous.epoch).then_some(previous)
-    }
-
     /// Appends the outcome of a DKG ceremony to state
     pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
         self.states
@@ -465,10 +456,30 @@ where
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-        self.states
-            .prune(up_to_epoch.get())
-            .await
-            .wrap_err("unable to prune outcomes journal")?;
+
+        // Cannot map epochs directly to segments like in the events journal.
+        // Need to first check what the epoch of the state is and go from there.
+        //
+        // size-2 to ensure that there is always something at the tip.
+        if let Some(previous_segment) = self.states.size().checked_sub(2)
+            && let Ok(previous_state) = self.states.read(previous_segment).await
+        {
+            // NOTE: this does not cover the segment at size-3. In theory it
+            // could be state-3.epoch >= up_to_epoch, but that's ok as long
+            // as state-2 does not get pruned.
+            let to_prune = if previous_state.epoch >= up_to_epoch {
+                previous_segment
+            } else {
+                self.states
+                    .size()
+                    .checked_sub(1)
+                    .expect("there must be at least one segment")
+            };
+            self.states
+                .prune(to_prune)
+                .await
+                .wrap_err("unable to prune state journal")?;
+        }
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
         Ok(())
     }

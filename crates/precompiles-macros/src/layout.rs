@@ -209,7 +209,12 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
             }
 
             #[inline(always)]
-            fn storage(&mut self) -> &mut crate::storage::StorageCtx {
+            fn storage(&self) -> &crate::storage::StorageCtx {
+                &self.storage
+            }
+
+            #[inline(always)]
+            fn storage_mut(&mut self) -> &mut crate::storage::StorageCtx {
                 &mut self.storage
             }
         }

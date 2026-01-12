@@ -781,19 +781,29 @@ async fn verify_block<TContext: Pacer>(
         );
         return Ok(false);
     }
-    let scheme = scheme_provider
-        .scoped(epoch)
-        .ok_or_eyre("cannot determine participants in the current epoch")?;
+
+    // FIXME: in cases where validate_block is called on the boundary block,
+    // the scheme might not be available.
+    //
+    // The fix is to track directly track notarizations and feed them to the
+    // EL that way, instead of doing this at the automaton/proposal level.
+    //
+    // https://github.com/tempoxyz/tempo/issues/1411
+    //
+    // let scheme = scheme_provider
+    //     .scoped(epoch)
+    //     .ok_or_eyre("cannot determine participants in the current epoch")?;
+    let validator_set = scheme_provider.scoped(epoch).map(|scheme| {
+        scheme
+            .participants()
+            .into_iter()
+            .map(|p| B256::from_slice(p))
+            .collect()
+    });
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
-        validator_set: Some(
-            scheme
-                .participants()
-                .into_iter()
-                .map(|p| B256::from_slice(p))
-                .collect(),
-        ),
+        validator_set,
     };
     let payload_status = engine
         .new_payload(execution_data)
