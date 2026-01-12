@@ -1442,12 +1442,13 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoBlockEnv, TempoTxEnv};
-    use alloy_primitives::{Address, B256, U256};
+    use crate::{TempoBlockEnv, TempoTxEnv, evm::TempoEvm, tx::TempoBatchCallEnv};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use revm::{
         Context, Journal, MainContext,
         context::CfgEnv,
         database::{CacheDB, EmptyDB},
+        handler::Handler,
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
     };
@@ -1455,6 +1456,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_primitives::transaction::Call;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -2152,16 +2154,6 @@ mod tests {
 
     #[test]
     fn test_2d_nonce_gas_limit_validation() {
-        use crate::{evm::TempoEvm, tx::TempoBatchCallEnv};
-        use alloy_primitives::{Bytes, TxKind};
-        use revm::{
-            Context, Journal,
-            context::CfgEnv,
-            database::{CacheDB, EmptyDB},
-            handler::Handler,
-        };
-        use tempo_primitives::transaction::Call;
-
         const INTRINSIC_GAS: u64 = 21_000;
 
         // Test cases: (gas_limit, should_succeed)
