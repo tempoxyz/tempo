@@ -15,7 +15,7 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{TryFromIterator as _, ordered};
-use eyre::{WrapErr as _, ensure, eyre};
+use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rand::SeedableRng as _;
@@ -136,13 +136,13 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     no_extra_tokens: bool,
 
-    /// Enable creating mainnet gas token.
+    /// Enable creating deployment gas token.
     #[arg(long)]
-    mainnet_gas_token: bool,
+    deployment_gas_token: bool,
 
-    /// Custom admin address for mainnet gas token.
+    /// Custom admin address for deployment gas token.
     #[arg(long)]
-    mainnet_gas_token_admin: Option<Address>,
+    deployment_gas_token_admin: Option<Address>,
 
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
@@ -240,8 +240,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    Some(address!("20C0000000000000000000000000000000000001")),
-                    None,
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000001")),
                     &mut evm,
                 )?;
 
@@ -253,8 +252,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    Some(address!("20C0000000000000000000000000000000000002")),
-                    None,
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000002")),
                     &mut evm,
                 )?;
 
@@ -266,8 +264,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    Some(address!("20C0000000000000000000000000000000000003")),
-                    None,
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000003")),
                     &mut evm,
                 )?;
 
@@ -277,12 +274,14 @@ impl GenesisArgs {
                 (None, None, None)
             };
 
-        if self.mainnet_gas_token && self.mainnet_gas_token_admin.is_none() {
-            eyre::bail!("--mainnet-gas-token-admin is required when --mainnet-gas-token is set");
+        if self.deployment_gas_token && self.deployment_gas_token_admin.is_none() {
+            eyre::bail!(
+                "--deployment-gas-token-admin is required when --deployment-gas-token is set"
+            );
         }
 
-        let mainnet_gas_token = {
-            if self.mainnet_gas_token {
+        let deployment_gas_token = {
+            if self.deployment_gas_token {
                 let mut rng = rand::rngs::StdRng::seed_from_u64(
                     self.seed.unwrap_or_else(rand::random::<u64>),
                 );
@@ -295,17 +294,16 @@ impl GenesisArgs {
                     "DONOTUSE",
                     "USD",
                     PATH_USD_ADDRESS,
-                    self.mainnet_gas_token_admin.expect(
-                        "Mainnet gas token admin is required if you want to deploy the token",
+                    self.deployment_gas_token_admin.expect(
+                        "Deployment gas token admin is required if you want to deploy the token",
                     ),
                     &addresses,
                     U256::from(u64::MAX),
-                    None,
-                    Some(B256::from(salt_bytes)),
+                    SaltOrAddress::Salt(B256::from(salt_bytes)),
                     &mut evm,
                 )?;
 
-                println!("Mainnet gas token address: {address}");
+                println!("Deployment gas token address: {address}");
                 Some(address)
             } else {
                 None
@@ -344,7 +342,7 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_fee_token = if let Some(address) = mainnet_gas_token {
+        let default_fee_token = if let Some(address) = deployment_gas_token {
             address
         } else {
             alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
@@ -601,6 +599,11 @@ fn create_path_usd_token(
     })
 }
 
+enum SaltOrAddress {
+    Salt(B256),
+    Address(Address),
+}
+
 /// Creates a TIP20 token through the factory (factory must already be initialized)
 #[expect(clippy::too_many_arguments)]
 fn create_and_mint_token(
@@ -611,8 +614,7 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
-    address: Option<Address>,
-    salt: Option<B256>,
+    salt_or_address: SaltOrAddress,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -625,22 +627,8 @@ fn create_and_mint_token(
             "TIP20Factory must be initialized before creating tokens"
         );
 
-        ensure!(
-            salt.is_some() || address.is_some(),
-            "Either salt or address must be specified"
-        );
-
-        ensure!(
-            salt.is_some() != address.is_some(),
-            "Salt and address cannot be both specified"
-        );
-
-        let token_address = if let Some(address) = address {
-            factory
-                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
-                .expect("Could not create token")
-        } else {
-            factory
+        let token_address = match salt_or_address {
+            SaltOrAddress::Salt(salt) => factory
                 .create_token(
                     admin,
                     ITIP20Factory::createTokenCall {
@@ -648,11 +636,14 @@ fn create_and_mint_token(
                         symbol: symbol.into(),
                         currency: currency.into(),
                         quoteToken: quote_token,
-                        salt: salt.expect("missing salt for unreserved token"),
+                        salt,
                         admin,
                     },
                 )
-                .expect("Could not create token")
+                .expect("Could not create token"),
+            SaltOrAddress::Address(address) => factory
+                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
+                .expect("Could not create token"),
         };
 
         let mut token =
