@@ -27,6 +27,7 @@ alloy = { workspace = true, features = [
   "signers",
   "signer-local",
   "signer-mnemonic",
+  "rand",
   "sol-types",
   "getrandom",
 ] }

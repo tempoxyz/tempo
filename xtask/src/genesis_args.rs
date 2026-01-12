@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -15,9 +15,10 @@ use commonware_cryptography::{
 };
 use commonware_math::algebra::Random as _;
 use commonware_utils::{TryFromIterator as _, ordered};
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, ensure, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
+use rand::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -41,7 +42,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::IValidatorConfig,
+    precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -134,6 +135,14 @@ pub(crate) struct GenesisArgs {
     /// Disable creating Alpha/Beta/ThetaUSD tokens.
     #[arg(long)]
     no_extra_tokens: bool,
+
+    /// Enable creating mainnet gas token.
+    #[arg(long)]
+    mainnet_gas_token: bool,
+
+    /// Custom admin address for mainnet gas token.
+    #[arg(long)]
+    mainnet_gas_token_admin: Option<Address>,
 
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
@@ -231,7 +240,8 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000001"),
+                    Some(address!("20C0000000000000000000000000000000000001")),
+                    None,
                     &mut evm,
                 )?;
 
@@ -243,7 +253,8 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000002"),
+                    Some(address!("20C0000000000000000000000000000000000002")),
+                    None,
                     &mut evm,
                 )?;
 
@@ -255,7 +266,8 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000003"),
+                    Some(address!("20C0000000000000000000000000000000000003")),
+                    None,
                     &mut evm,
                 )?;
 
@@ -264,6 +276,39 @@ impl GenesisArgs {
                 println!("Skipping extra token creation (--no-extra-tokens)");
                 (None, None, None)
             };
+
+        if self.mainnet_gas_token && self.mainnet_gas_token_admin.is_none() {
+            eyre::bail!("--mainnet-gas-token-admin is required when --mainnet-gas-token is set");
+        }
+
+        let mainnet_gas_token = {
+            if self.mainnet_gas_token {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(
+                    self.seed.unwrap_or_else(rand::random::<u64>),
+                );
+
+                let mut salt_bytes = [0u8; 32];
+                rand::Rng::fill(&mut rng, &mut salt_bytes);
+
+                let address = create_and_mint_token(
+                    "DONOTUSE",
+                    "DONOTUSE",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    pathusd_admin,
+                    &addresses,
+                    U256::from(u64::MAX),
+                    None,
+                    Some(B256::from(salt_bytes)),
+                    &mut evm,
+                )?;
+
+                println!("Mainnet gas token address: {}", address);
+                Some(address)
+            } else {
+                None
+            }
+        };
 
         println!(
             "generating consensus config for validators: {:?}",
@@ -297,7 +342,12 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_fee_token = alpha_token_address.unwrap_or(PATH_USD_ADDRESS);
+        let default_fee_token = if let Some(address) = mainnet_gas_token {
+            address
+        } else {
+            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
+        };
+
         initialize_fee_manager(
             default_fee_token,
             addresses.clone(),
@@ -559,7 +609,8 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
-    address: Address,
+    address: Option<Address>,
+    salt: Option<B256>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -571,9 +622,43 @@ fn create_and_mint_token(
                 .expect("Could not check factory initialization"),
             "TIP20Factory must be initialized before creating tokens"
         );
-        let token_address = factory
-            .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
-            .expect("Could not create token");
+
+        ensure!(
+            salt.is_some() || address.is_some(),
+            "Either salt or address must be specified"
+        );
+
+        ensure!(
+            salt.is_some() != address.is_some(),
+            "Salt and address cannot be both specified"
+        );
+
+        let token_address = if address.is_some() {
+            factory
+                .create_token_reserved_address(
+                    address.expect("missing address for reserved token"),
+                    name,
+                    symbol,
+                    currency,
+                    quote_token,
+                    admin,
+                )
+                .expect("Could not create token")
+        } else {
+            factory
+                .create_token(
+                    admin,
+                    ITIP20Factory::createTokenCall {
+                        name: name.into(),
+                        symbol: symbol.into(),
+                        currency: currency.into(),
+                        quoteToken: quote_token,
+                        salt: salt.expect("missing salt for unreserved token"),
+                        admin,
+                    },
+                )
+                .expect("Could not create token")
+        };
 
         let mut token =
             TIP20Token::from_address(token_address).expect("Could not create token instance");
@@ -767,7 +852,6 @@ fn generate_consensus_config(
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-    use rand::SeedableRng as _;
 
     match (validators.is_empty(), no_dkg_in_genesis) {
         (_, true) => {
