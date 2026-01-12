@@ -74,10 +74,6 @@ pub(crate) struct GenesisArgs {
     )]
     mnemonic: String,
 
-    /// Balance for each account
-    #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
-    balance: U256,
-
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
     coinbase: Address,
@@ -710,6 +706,7 @@ fn initialize_fee_manager(
             .initialize()
             .expect("Could not init fee manager");
         for address in initial_accounts.iter().progress() {
+            println!("Setting user token for {user_fee_token_address}");
             fee_manager
                 .set_user_token(
                     *address,
@@ -722,6 +719,7 @@ fn initialize_fee_manager(
 
         // Set validator fee tokens to pathUSD
         for validator in validators {
+            println!("Setting user token for {validator} {validator_fee_token_address}");
             fee_manager
                 .set_validator_token(
                     validator,
