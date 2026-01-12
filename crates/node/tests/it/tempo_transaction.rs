@@ -3,6 +3,7 @@ use alloy::{
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionRequest,
     signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
 };
@@ -26,13 +27,15 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
-            P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            WebAuthnSignature,
         },
         tt_signed::AASigned,
     },
 };
 
 use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
@@ -2598,10 +2601,6 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-    use tempo_primitives::transaction::tempo_transaction::Call;
-
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2696,10 +2695,6 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-    use tempo_primitives::transaction::tempo_transaction::Call;
-
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2972,9 +2967,6 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Create transaction request using RPC interface
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-
     let tx_request = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(sender_addr),
@@ -3111,8 +3103,6 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
 /// Test that keychain signatures in tempo_authorization_list are rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<()> {
-    use tempo_primitives::transaction::tt_signature::KeychainSignature;
-
     reth_tracing::init_test_tracing();
 
     // Setup test node with funded sender account
@@ -3171,9 +3161,6 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
     // ========================================================================
 
     let recipient = Address::random();
-
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
 
     let tx_request = TempoTransactionRequest {
         inner: TransactionRequest {
