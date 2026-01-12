@@ -122,6 +122,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pathusd_admin: Option<Address>,
 
+    #[arg(long, default_value_t = u64::MAX)]
+    pathusd_amount: u64,
+
     /// Custom admin address for validator config.
     /// If not set, uses the first generated account.
     #[arg(long)]
@@ -227,7 +230,7 @@ impl GenesisArgs {
         initialize_tip20_factory(&mut evm)?;
 
         println!("Creating pathUSD through factory");
-        create_path_usd_token(pathusd_admin, &addresses, &mut evm)?;
+        create_path_usd_token(pathusd_admin, &addresses, self.pathusd_amount, &mut evm)?;
 
         let (alpha_token_address, beta_token_address, theta_token_address) =
             if !self.no_extra_tokens {
@@ -571,6 +574,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
+    amount_per_recipient: u64,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
@@ -596,7 +600,7 @@ fn create_path_usd_token(
                     admin,
                     ITIP20::mintCall {
                         to: *recipient,
-                        amount: U256::from(u64::MAX),
+                        amount: U256::from(amount_per_recipient),
                     },
                 )
                 .expect("Could not mint pathUSD");
