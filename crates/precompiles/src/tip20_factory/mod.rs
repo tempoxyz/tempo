@@ -705,7 +705,6 @@ mod tests {
             let mut factory = TIP20Factory::new();
             factory.initialize()?;
 
-            // First create another USD token at a different reserved address
             let other_usd = factory.create_token_reserved_address(
                 address!("20C0000000000000000000000000000000000001"),
                 "testUSD",
@@ -715,7 +714,6 @@ mod tests {
                 admin,
             )?;
 
-            // Try to create pathUSD with a valid deployed TIP20 as quote_token - should fail
             let result = factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
                 "pathUSD",
@@ -731,7 +729,6 @@ mod tests {
                 )))
             ));
 
-            // pathUSD can only be created with Address::ZERO as quote token
             factory.create_token_reserved_address(
                 PATH_USD_ADDRESS,
                 "pathUSD",
