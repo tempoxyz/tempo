@@ -71,8 +71,22 @@ Follow `style-guide.md`: active voice, present tense, sentence case headings, no
 
 ## Adding a New Page
 1. Create `.mdx` file in appropriate `pages/` subdirectory (match URL path to file path)
-2. Add entry to sidebar in `vocs.config.tsx`
-3. Run `bun run dev` to verify, then `bun run check` before committing
+2. **Add SEO frontmatter** at the top of the file (required):
+   ```yaml
+   ---
+   title: Page Title Here
+   description: A concise 150-160 character description for search engines and social sharing.
+   ---
+   ```
+   - **title**: Concise, descriptive page title (used in `<title>` and OG tags)
+   - **description**: 150-160 characters, active voice, describes what the page covers
+3. Add entry to sidebar in `vocs.config.tsx`
+4. Run `bun run dev` to verify, then `bun run check` before committing
+
+## SEO Configuration
+- **Dynamic OG images**: Generated via `/api/og.tsx` using title and description from frontmatter
+- **Config**: `vocs.config.tsx` sets `baseUrl`, `ogImageUrl` (with `%title` and `%description` template variables), and `titleTemplate`
+- All pages automatically get proper `<title>`, `<meta description>`, Open Graph, and Twitter Card tags from frontmatter
 
 ## Generated Content (Do Not Edit)
 - `specs/` - Regenerate with `bun run gen:specs`; do not hand-edit
