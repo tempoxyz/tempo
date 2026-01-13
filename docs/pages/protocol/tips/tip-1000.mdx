@@ -64,7 +64,7 @@ This applies to all storage slot writes that transition from zero to non-zero, i
 **Implementation Details:**
 - The charge is applied when `account.nonce` transitions from 0 to 1
 - The charge also applies to other nonces with [nonce keys](/protocol/transactions/spec-tempo-transaction#specification) (2D nonces)
-- Transactions with a nonce value of 0 need to suppy at least 271,000 gas and are otherwise invalid
+- Transactions with a nonce value of 0 need to supply at least 271,000 gas and are otherwise invalid
 - For EOA accounts: charged on the first transaction sent from that address (when the account is first used)
 - For contract accounts: charged when the contract is deployed (CREATE or CREATE2)
 - **Important:** When tokens are transferred TO a new address, the recipient's nonce remains 0, so no account creation cost is charged. The account creation cost only applies when the account is first used (sends a transaction).
