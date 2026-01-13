@@ -52,7 +52,7 @@ export function CreateToken(props: DemoStepProps) {
       completed={create.isSuccess}
       number={stepNumber}
       actions={showLogin && <Login />}
-      title="Create & deploy a token to testnet."
+      title="Create & deploy a token to mainnet."
     >
       {(active || create.isSuccess) && (
         <div className="flex ml-6 flex-col gap-3 py-4">

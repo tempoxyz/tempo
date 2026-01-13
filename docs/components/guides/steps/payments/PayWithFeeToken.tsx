@@ -8,7 +8,7 @@ import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { betaUsd, DONOTUSE, pathUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-// Current validator token on testnet
+// Current validator token on mainnet
 const validatorToken = DONOTUSE
 
 export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
@@ -40,7 +40,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
     token: feeToken,
   })
   // Pool details. Fees are paid in feeToken, so it's the userToken
-  // validator token is a testnet property set at top of file
+  // validator token is a mainnet property set at top of file
   const { data: pool } = Hooks.amm.usePool({
     userToken: feeToken,
     validatorToken,

@@ -3,7 +3,7 @@ import type { VariantProps } from 'cva'
 import * as React from 'react'
 import type { Address, BaseError } from 'viem'
 import { formatUnits } from 'viem'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import {
   useAccount,
   useConnect,
@@ -44,7 +44,7 @@ function getExplorerHost() {
     return VITE_EXPLORER_OVERRIDE
   }
 
-  return tempoModerato.blockExplorers.default.url
+  return tempo.blockExplorers.default.url
 }
 
 export function ExplorerLink({ hash }: { hash: string }) {

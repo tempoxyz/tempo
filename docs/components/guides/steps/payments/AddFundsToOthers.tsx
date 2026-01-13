@@ -114,7 +114,7 @@ export function AddFundsToOthers(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to an address."
+      title="Add funds to an address."
     >
       <div className="flex mx-6 flex-col gap-3 pb-4">
         <div className="ps-5 border-gray4 border-s-2">

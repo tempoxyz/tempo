@@ -7,7 +7,7 @@ import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-// Current validator token on testnet
+// Current validator token on mainnet
 const validatorToken = DONOTUSE
 
 export function PayWithIssuedToken(props: DemoStepProps) {

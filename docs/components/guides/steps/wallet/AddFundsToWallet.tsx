@@ -102,7 +102,7 @@ export function AddFundsToWallet(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to your wallet."
+      title="Add funds to your wallet."
     />
   )
 }

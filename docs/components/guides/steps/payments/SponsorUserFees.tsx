@@ -85,7 +85,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title="Send 100 DONOTUSE with fees sponsored by the testnet fee payer."
+      title="Send 100 DONOTUSE with fees sponsored by the fee payer."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -102,7 +102,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
                 </div>
               </div>
               <div className="text-gray9 text-[12px] mt-2 pt-2 border-t border-gray4">
-                The testnet fee payer at https://sponsor.tempo.xyz will
+                The fee payer at https://sponsor.tempo.xyz will
                 pay the transaction fees.
               </div>
             </div>

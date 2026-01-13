@@ -103,7 +103,7 @@ export function AddFunds(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to your account."
+      title="Add funds to your account."
     />
   )
 }

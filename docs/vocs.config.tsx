@@ -79,7 +79,7 @@ export default defineConfig({
     )
   },
   title: 'Documentation ⋅ Tempo',
-  description: 'Documentation for Tempo testnet and protocol specifications',
+  description: 'Documentation for Tempo and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
     dark: '/lockup-dark.svg',

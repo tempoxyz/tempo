@@ -31,7 +31,7 @@ First, create and mint your stablecoin by following the [Create a Stablecoin](/g
 
 ### Add fee pool liquidity
 
-Before users can pay fees with your token, ensure there is sufficient liquidity in the fee pool. On the Moderato testnet, all validators expect fees in DONOTUSE, so you need to add DONOTUSE liquidity to your token's fee pool.
+Before users can pay fees with your token, ensure there is sufficient liquidity in the fee pool. On the mainnet candidate, validators expect fees in DONOTUSE, so you need to add DONOTUSE liquidity to your token's fee pool.
 
 Add liquidity to your token's fee pool:
 
@@ -45,7 +45,7 @@ import { useConnection } from 'wagmi'
 
 const { address } = useConnection()
 const yourToken = '0x...' // Your issued token address
-const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE on testnet
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE token
 
 const mintFeeLiquidity = Hooks.amm.useMintSync() // [!code hl]
 
@@ -85,7 +85,7 @@ import { Hooks } from 'wagmi/tempo'
 
 const { data: pool } = Hooks.amm.usePool({
   userToken: yourToken,
-  validatorToken: '0x20c0000000000000000000000000000000000001', // DONOTUSE on testnet
+  validatorToken: '0x20c0000000000000000000000000000000000001', // DONOTUSE token
 })
 
 const hasLiquidity = pool && pool.reserveValidatorToken > 0n
@@ -292,7 +292,7 @@ Keep sufficient validator token reserves in your fee pool to handle expected tra
 
 ### Test before launch
 
-Before promoting fee payments with your token, thoroughly test the flow on testnet:
+Before promoting fee payments with your token, thoroughly test the flow:
 1. Add liquidity to the fee pool
 2. Verify users can set your token as their fee preference
 3. Execute test transactions with various gas costs
