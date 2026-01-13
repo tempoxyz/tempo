@@ -1,5 +1,4 @@
 // [!region setup]
-
 import { createClient, http, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { tempoTestnet } from 'viem/chains'
