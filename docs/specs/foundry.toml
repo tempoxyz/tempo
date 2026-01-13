@@ -5,8 +5,8 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 extra_output = ["storageLayout"]
-invariant = { runs = 10, depth = 200, fail_on_revert = true, show_solidity = true }
-fs_permissions = [{ access = "read-write", path = "./" }]
+invariant = { fail_on_revert = true, show_solidity = true }
+fs_permissions = [{ access = "read-write", path = "./"}]
 
 [profile.ci]
 optimizer = true

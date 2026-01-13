@@ -32,3 +32,5 @@ docs/tmp
 docs/.sonda
 
 _
+.vercel
+.env*.local
