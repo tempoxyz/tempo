@@ -616,9 +616,10 @@ where
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
             let mut refunded_accounts = 0u64;
+            let spec: TempoHardfork = evm.ctx_ref().cfg().spec();
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
-                if authorization.signature().is_keychain() {
+                if spec.is_t0() && authorization.signature().is_keychain() {
                     continue;
                 }
 
