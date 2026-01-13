@@ -18,7 +18,7 @@ TIP-1004 adds EIP-2612 compatible `permit()` functionality to TIP-20 tokens, ena
 
 ## Motivation
 
-The standard ERC-20 approval flow requires users to submit a transaction to approve a spender before that spender can transfer tokens on their behalf. This creates friction in user experiences and requires users to hold native tokens for gas.
+The standard ERC-20 approval flow requires users to submit a transaction to approve a spender before that spender can transfer tokens on their behalf. Among other things, this makes it difficult for a transaction to "sweep" tokens from multiple addresses that have never sent a transaction onchain. 
 
 EIP-2612 introduced the `permit()` function which allows approvals to be granted via a signed message rather than an on-chain transaction. This enables:
 
@@ -27,6 +27,14 @@ EIP-2612 introduced the `permit()` function which allows approvals to be granted
 - **Improved UX**: Users don't need to wait for or pay for a separate approval transaction
 
 Since TIP-20 aims to be a superset of ERC-20 with additional functionality, adding EIP-2612 permit support ensures TIP-20 tokens work seamlessly with existing DeFi protocols and tooling that expect permit functionality.
+
+### Alternatives
+
+While Tempo transactions provide solutions for most of the common problems that are solved by account abstraction, they do not provide a way to transfer tokens from an address that has never sent a transaction onchain, which means it does not provide an easy way for a batched transaction to "sweep" tokens from many addresses.
+
+While we plan to have Permit2 deployed on the chain, it, too, requires an initial transaction from the address being transferred from.
+
+Adding a function for `transferWithAuthorization`, which we are also considering, would also solve this problem. But `permit` is somewhat more flexible, and we think these functions are not mutually exclusive.
 
 ---
 
