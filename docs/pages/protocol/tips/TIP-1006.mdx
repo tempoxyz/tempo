@@ -3,7 +3,7 @@
 This document specifies the `burnAt` function for TIP-20 tokens, enabling authorized administrators to burn tokens from any address.
 
 - **TIP ID**: TIP-1006
-- **Authors/Owners**: @dan
+- **Authors/Owners**: Dan Robinson
 - **Status**: Draft
 - **Related Specs/TIPs**: TIP-20
 - **Protocol Version**: TBD
@@ -22,11 +22,7 @@ The existing TIP-20 burn mechanisms have the following limitations:
 1. `burn()` - Only burns from the caller's own balance, requires `ISSUER_ROLE`
 2. `burnBlocked()` - Can burn from other addresses, but only if the target address is blocked by the transfer policy
 
-There are legitimate use cases where token administrators need to burn tokens from any address regardless of their policy status, such as:
-- Regulatory compliance actions
-- Error correction (e.g., tokens sent to wrong address)
-- Court-ordered asset seizure
-- Emergency protocol interventions
+There are legitimate use cases where token administrators may want a privileged caller to have the ability to burn tokens from any address regardless of their policy status, such as allowing a bridge contract to burn tokens that are being bridged out without requiring approval (as in the `crosschainBurn` function proposed in [ERC 7802](https://github.com/ethereum/ERCs/blob/master/ERCS/erc-7802.md)).
 
 The `burnAt` function provides this capability with appropriate access controls via a dedicated role.
 
