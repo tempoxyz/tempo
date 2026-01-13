@@ -73,3 +73,79 @@ impl AA2dPoolMetrics {
         self.demoted_transactions.increment(count as u64);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aa2d_pool_metrics_default() {
+        // Ensure we can create the metrics struct (macro-generated)
+        let _metrics = AA2dPoolMetrics::default();
+    }
+
+    #[test]
+    fn test_set_transaction_counts() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.set_transaction_counts(100, 50, 50);
+        metrics.set_transaction_counts(0, 0, 0);
+        metrics.set_transaction_counts(usize::MAX, usize::MAX / 2, usize::MAX / 2);
+    }
+
+    #[test]
+    fn test_inc_nonce_key_count() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.inc_nonce_key_count(0);
+        metrics.inc_nonce_key_count(1);
+        metrics.inc_nonce_key_count(100);
+    }
+
+    #[test]
+    fn test_inc_inserted() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.inc_inserted();
+        metrics.inc_inserted();
+    }
+
+    #[test]
+    fn test_inc_removed() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.inc_removed(0);
+        metrics.inc_removed(1);
+        metrics.inc_removed(100);
+    }
+
+    #[test]
+    fn test_inc_promoted() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.inc_promoted(0);
+        metrics.inc_promoted(1);
+        metrics.inc_promoted(100);
+    }
+
+    #[test]
+    fn test_inc_demoted() {
+        let metrics = AA2dPoolMetrics::default();
+
+        // Should not panic
+        metrics.inc_demoted(0);
+        metrics.inc_demoted(1);
+        metrics.inc_demoted(100);
+    }
+
+    #[test]
+    fn test_metrics_clone() {
+        let metrics = AA2dPoolMetrics::default();
+        let _cloned = metrics;
+    }
+}

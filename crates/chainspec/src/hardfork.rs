@@ -39,11 +39,20 @@ hardfork!(
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// The current Tempo hardfork (genesis).
-        #[default]
+        /// Genesis hardfork
         Genesis,
+        #[default]
+        /// T0 hardfork (default)
+        T0,
     }
 );
+
+impl TempoHardfork {
+    /// Returns true if this hardfork is T0 or later.
+    pub fn is_t0(&self) -> bool {
+        matches!(self, Self::T0)
+    }
+}
 
 /// Trait for querying Tempo-specific hardfork activations.
 pub trait TempoHardforks: EthereumHardforks {
@@ -51,8 +60,17 @@ pub trait TempoHardforks: EthereumHardforks {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
-    fn tempo_hardfork_at(&self, _timestamp: u64) -> TempoHardfork {
+    fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t0_active_at_timestamp(timestamp) {
+            return TempoHardfork::T0;
+        }
         TempoHardfork::Genesis
+    }
+
+    /// Returns true if T0 is active at the given timestamp.
+    fn is_t0_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T0)
+            .active_at_timestamp(timestamp)
     }
 }
 
@@ -63,8 +81,12 @@ impl From<TempoHardfork> for SpecId {
 }
 
 impl From<SpecId> for TempoHardfork {
-    fn from(_spec: SpecId) -> Self {
-        Self::Genesis
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::T0)) {
+            Self::T0
+        } else {
+            Self::Genesis
+        }
     }
 }
 
@@ -77,6 +99,18 @@ mod tests {
     fn test_genesis_hardfork_name() {
         let fork = TempoHardfork::Genesis;
         assert_eq!(fork.name(), "Genesis");
+    }
+
+    #[test]
+    fn test_t0_hardfork_name() {
+        let fork = TempoHardfork::T0;
+        assert_eq!(fork.name(), "T0");
+    }
+
+    #[test]
+    fn test_is_t0() {
+        assert!(!TempoHardfork::Genesis.is_t0());
+        assert!(TempoHardfork::T0.is_t0());
     }
 
     #[test]

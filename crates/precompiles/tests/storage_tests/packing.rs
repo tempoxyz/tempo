@@ -3,8 +3,9 @@
 //! This module tests the Storable derive macro's implementation of storage packing,
 //! verifying that fields are correctly packed into slots according to Solidity's rules.
 
+use alloy::primitives::FixedBytes;
 use tempo_precompiles::{
-    storage::{Layout, StorableType, StorageCtx},
+    storage::{FromWord, Layout, StorableType, StorageCtx, packing::insert_into_word},
     test_util::gen_word_from,
 };
 
@@ -669,4 +670,61 @@ fn test_slot_boundary_at_32_bytes() {
         Ok::<(), error::TempoPrecompileError>(())
     })
     .unwrap();
+}
+
+/// Verifies that `to_word()` produces right-aligned U256 (data in low bytes).
+/// This is the key invariant required for packing to work correctly.
+#[test]
+fn test_fixed_bytes_to_word_alignment() {
+    // FixedBytes<11> should be right-aligned at bytes[21..32] (32 - 11 = 21)
+    let value = FixedBytes::<11>::from([0xAA; 11]);
+    let word = value.to_word();
+    let bytes = word.to_be_bytes::<32>();
+
+    // First 21 bytes should be zero padding
+    assert_eq!(&bytes[0..21], &[0u8; 21], "padding should be zeros");
+    // Last 11 bytes should be the data
+    assert_eq!(&bytes[21..32], &[0xAA; 11], "data should be right-aligned");
+}
+
+/// Verifies that insert_into_word + extract_from_word roundtrip works for FixedBytes.
+/// This would fail with left-aligned to_word() because the mask extracts wrong bytes.
+#[test]
+fn test_fixed_bytes_packing_roundtrip() {
+    let value = FixedBytes::<7>::from([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]);
+
+    // Insert at offset 5
+    let slot = insert_into_word(U256::ZERO, &value, 5, 7).unwrap();
+
+    // Extract back
+    let extracted: FixedBytes<7> = extract_from_word(slot, 5, 7).unwrap();
+
+    assert_eq!(value, extracted, "packing roundtrip should preserve value");
+}
+
+/// Verifies that multiple FixedBytes fields packed in one slot don't corrupt each other.
+/// This catches the bug where left-aligned data would be masked to zeros during packing.
+#[test]
+fn test_fixed_bytes_multi_field_packing() {
+    let fb4 = FixedBytes::<4>::from([0x11, 0x22, 0x33, 0x44]);
+    let fb8 = FixedBytes::<8>::from([0xAA; 8]);
+
+    // Pack fb4 at offset 0, fb8 at offset 4
+    let mut slot = U256::ZERO;
+    slot = insert_into_word(slot, &fb4, 0, 4).unwrap();
+    slot = insert_into_word(slot, &fb8, 4, 8).unwrap();
+
+    // Both values should be recoverable
+    let extracted_fb4: FixedBytes<4> = extract_from_word(slot, 0, 4).unwrap();
+    let extracted_fb8: FixedBytes<8> = extract_from_word(slot, 4, 8).unwrap();
+
+    assert_eq!(fb4, extracted_fb4, "fb4 should be preserved after packing");
+    assert_eq!(fb8, extracted_fb8, "fb8 should be preserved after packing");
+
+    // Also verify the raw slot layout matches expected bit pattern
+    let expected = gen_word_from(&[
+        "0xAAAAAAAAAAAAAAAA", // offset 4 (8 bytes)
+        "0x11223344",         // offset 0 (4 bytes)
+    ]);
+    assert_eq!(slot, expected, "slot layout should match expected pattern");
 }

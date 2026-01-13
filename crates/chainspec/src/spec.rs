@@ -28,6 +28,9 @@ pub struct TempoGenesisInfo {
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<u64>,
+    /// Activation timestamp for T0 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t0_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -42,6 +45,10 @@ impl TempoGenesisInfo {
 
     pub fn epoch_length(&self) -> Option<u64> {
         self.epoch_length
+    }
+
+    pub fn t0_time(&self) -> Option<u64> {
+        self.t0_time
     }
 }
 
@@ -80,13 +87,17 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
 pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
         .expect("`./genesis/andantino.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis).into()
+    TempoChainSpec::from_genesis(genesis)
+        .with_default_follow_url("wss://rpc.testnet.tempo.xyz")
+        .into()
 });
 
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis).into()
+    TempoChainSpec::from_genesis(genesis)
+        .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
+        .into()
 });
 
 /// Development chainspec with funded dev accounts and activated tempo hardforks
@@ -104,21 +115,31 @@ pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
     pub info: TempoGenesisInfo,
+    /// Default RPC URL for following this chain.
+    pub default_follow_url: Option<&'static str>,
 }
 
 impl TempoChainSpec {
+    /// Returns the default RPC URL for following this chain.
+    pub fn default_follow_url(&self) -> Option<&'static str> {
+        self.default_follow_url
+    }
+
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo { t0_time, .. } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Add the Genesis hardfork at timestamp 0
-        base_spec
-            .hardforks
-            .insert(TempoHardfork::Genesis, ForkCondition::Timestamp(0));
+        let tempo_forks = vec![
+            (TempoHardfork::Genesis, Some(0)),
+            (TempoHardfork::T0, t0_time),
+        ]
+        .into_iter()
+        .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
+        base_spec.hardforks.extend(tempo_forks);
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {
@@ -128,7 +149,14 @@ impl TempoChainSpec {
                 inner,
             }),
             info,
+            default_follow_url: None,
         }
+    }
+
+    /// Sets the default follow URL for this chain spec.
+    pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
+        self.default_follow_url = Some(url);
+        self
     }
 }
 
@@ -144,6 +172,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 shared_gas_limit: 0,
             }),
             info: TempoGenesisInfo::default(),
+            default_follow_url: None,
         }
     }
 }

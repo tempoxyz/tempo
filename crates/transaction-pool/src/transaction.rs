@@ -405,12 +405,24 @@ impl EthPoolTransaction for TempoPooledTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::TxBuilder;
     use alloy_consensus::TxEip1559;
-    use alloy_primitives::address;
+    use alloy_primitives::{Address, Signature, TxKind, address};
+    use tempo_precompiles::nonce::NonceManager;
+    use tempo_primitives::transaction::{
+        TempoTransaction,
+        tempo_transaction::Call,
+        tt_signature::{PrimitiveSignature, TempoSignature},
+        tt_signed::AASigned,
+    };
+
+    // ============================================
+    // Payment classification tests
+    // ============================================
 
     #[test]
-    fn test_payment_classification_caching() {
-        // Test that payment classification is properly cached in TempoPooledTransaction
+    fn test_payment_classification_positive() {
+        // Test that TIP20 address prefix is correctly classified as payment
         let payment_addr = address!("20c0000000000000000000000000000000000001");
         let tx = TxEip1559 {
             to: TxKind::Call(payment_addr),
@@ -420,8 +432,8 @@ mod tests {
 
         let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
             tx,
-            alloy_primitives::Signature::test_signature(),
-            alloy_primitives::B256::ZERO,
+            Signature::test_signature(),
+            B256::ZERO,
         ));
 
         let recovered = Recovered::new_unchecked(
@@ -429,8 +441,435 @@ mod tests {
             address!("0000000000000000000000000000000000000001"),
         );
 
-        // Create via new() and verify caching
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(pooled_tx.is_payment());
+    }
+
+    #[test]
+    fn test_payment_classification_negative() {
+        // Test that non-TIP20 address is NOT classified as payment
+        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let pooled_tx = TxBuilder::eip1559(non_payment_addr)
+            .gas_limit(21000)
+            .build_eip1559();
+        assert!(!pooled_tx.is_payment());
+    }
+
+    // ============================================
+    // fee_token_cost tests
+    // ============================================
+
+    #[test]
+    fn test_fee_token_cost() {
+        let sender = Address::random();
+        let value = U256::from(1000);
+        let tx = TxBuilder::aa(sender)
+            .gas_limit(100_000)
+            .value(value)
+            .build();
+
+        // fee_token_cost should be cost - value
+        let fee_cost = tx.fee_token_cost();
+
+        // The cost includes gas spending + value, so fee_token_cost = cost - value = gas spending
+        assert!(fee_cost > U256::ZERO, "Fee token cost should be positive");
+        // Inner cost should equal fee_cost + value
+        assert_eq!(tx.inner.cost, fee_cost + value);
+    }
+
+    // ============================================
+    // AA helper tests - non-AA transactions
+    // ============================================
+
+    #[test]
+    fn test_non_aa_transaction_helpers() {
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
+
+        // Non-AA transactions should return None/false for AA-specific helpers
+        assert!(!tx.is_aa(), "Non-AA tx should not be AA");
+        assert!(
+            tx.nonce_key().is_none(),
+            "Non-AA tx should have no nonce key"
+        );
+        assert!(
+            tx.nonce_key_slot().is_none(),
+            "Non-AA tx should have no nonce key slot"
+        );
+        assert!(!tx.is_aa_2d(), "Non-AA tx should not be AA 2D");
+        assert!(
+            tx.aa_transaction_id().is_none(),
+            "Non-AA tx should have no AA transaction ID"
+        );
+    }
+
+    // ============================================
+    // AA helper tests - AA with nonce_key = 0
+    // ============================================
+
+    #[test]
+    fn test_aa_transaction_with_zero_nonce_key() {
+        let sender = Address::random();
+        let nonce = 5u64;
+        let tx = TxBuilder::aa(sender).nonce(nonce).build();
+
+        assert!(tx.is_aa(), "AA tx should be AA");
+        assert_eq!(
+            tx.nonce_key(),
+            Some(U256::ZERO),
+            "Should have nonce_key = 0"
+        );
+        assert!(!tx.is_aa_2d(), "AA tx with nonce_key=0 should NOT be 2D");
+
+        // Check aa_transaction_id
+        let aa_id = tx
+            .aa_transaction_id()
+            .expect("Should have AA transaction ID");
+        assert_eq!(aa_id.seq_id.address, sender);
+        assert_eq!(aa_id.seq_id.nonce_key, U256::ZERO);
+        assert_eq!(aa_id.nonce, nonce);
+    }
+
+    // ============================================
+    // AA helper tests - AA with nonce_key > 0 (2D nonce)
+    // ============================================
+
+    #[test]
+    fn test_aa_transaction_with_nonzero_nonce_key() {
+        let sender = Address::random();
+        let nonce_key = U256::from(42);
+        let nonce = 10u64;
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .build();
+
+        assert!(tx.is_aa(), "AA tx should be AA");
+        assert_eq!(
+            tx.nonce_key(),
+            Some(nonce_key),
+            "Should have correct nonce_key"
+        );
+        assert!(tx.is_aa_2d(), "AA tx with nonce_key > 0 should be 2D");
+
+        // Check aa_transaction_id
+        let aa_id = tx
+            .aa_transaction_id()
+            .expect("Should have AA transaction ID");
+        assert_eq!(aa_id.seq_id.address, sender);
+        assert_eq!(aa_id.seq_id.nonce_key, nonce_key);
+        assert_eq!(aa_id.nonce, nonce);
+    }
+
+    // ============================================
+    // nonce_key_slot caching tests
+    // ============================================
+
+    #[test]
+    fn test_nonce_key_slot_caching_for_2d_tx() {
+        let sender = Address::random();
+        let nonce_key = U256::from(123);
+        let tx = TxBuilder::aa(sender).nonce_key(nonce_key).build();
+
+        // Compute expected slot
+        let expected_slot = NonceManager::new().nonces[sender][nonce_key].slot();
+
+        // First call should compute and cache
+        let slot1 = tx.nonce_key_slot();
+        assert_eq!(slot1, Some(expected_slot));
+
+        // Second call should return cached value (same result)
+        let slot2 = tx.nonce_key_slot();
+        assert_eq!(slot2, Some(expected_slot));
+        assert_eq!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_nonce_key_slot_returns_none_for_non_aa() {
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
+        assert!(tx.nonce_key_slot().is_none());
+    }
+
+    // ============================================
+    // TxEnv caching tests
+    // ============================================
+
+    #[test]
+    fn test_prepare_tx_env_and_into_with_tx_env() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        let hash = *tx.hash();
+
+        // Pre-compute tx_env
+        tx.prepare_tx_env();
+
+        // Convert to WithTxEnv (should use cached value)
+        let with_env = tx.into_with_tx_env();
+
+        // Verify the tx is preserved
+        assert_eq!(with_env.tx.tx_hash(), &hash);
+    }
+
+    #[test]
+    fn test_into_with_tx_env_without_prepare() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        let hash = *tx.hash();
+
+        // Don't call prepare_tx_env, should still work (compute on demand)
+        let with_env = tx.into_with_tx_env();
+        assert_eq!(with_env.tx.tx_hash(), &hash);
+    }
+
+    // ============================================
+    // TempoPoolTransactionError::is_bad_transaction tests
+    // ============================================
+
+    #[test]
+    fn test_error_is_bad_transaction_false_cases() {
+        // These errors are NOT "bad transactions" (can be retried)
+        let false_cases = [
+            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+            TempoPoolTransactionError::InvalidFeeToken(Address::ZERO),
+            TempoPoolTransactionError::MissingFeeToken,
+            TempoPoolTransactionError::InvalidValidBefore {
+                valid_before: 100,
+                min_allowed: 200,
+            },
+            TempoPoolTransactionError::InvalidValidAfter {
+                valid_after: 200,
+                max_allowed: 100,
+            },
+            TempoPoolTransactionError::Keychain("test error"),
+            TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
+            TempoPoolTransactionError::BlackListedFeePayer {
+                fee_token: Address::ZERO,
+                fee_payer: Address::ZERO,
+            },
+        ];
+
+        for err in false_cases {
+            assert!(
+                !err.is_bad_transaction(),
+                "Expected is_bad_transaction() == false for: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_error_is_bad_transaction_true_cases() {
+        // These errors ARE "bad transactions" (should not be retried)
+        let true_cases = [
+            TempoPoolTransactionError::NonZeroValue,
+            TempoPoolTransactionError::SubblockNonceKey,
+            TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
+                gas_limit: 21000,
+                intrinsic_gas: 50000,
+            },
+        ];
+
+        for err in true_cases {
+            assert!(
+                err.is_bad_transaction(),
+                "Expected is_bad_transaction() == true for: {err}"
+            );
+        }
+    }
+
+    // ============================================
+    // PoolTransaction::requires_nonce_check tests
+    // ============================================
+
+    #[test]
+    fn test_requires_nonce_check_non_aa() {
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
+        assert!(
+            tx.requires_nonce_check(),
+            "Non-AA should require nonce check"
+        );
+    }
+
+    #[test]
+    fn test_requires_nonce_check_aa_with_zero_nonce_key() {
+        let tx = TxBuilder::aa(Address::random()).build();
+        assert!(
+            tx.requires_nonce_check(),
+            "AA with nonce_key=0 should require nonce check"
+        );
+    }
+
+    #[test]
+    fn test_requires_nonce_check_aa_with_nonzero_nonce_key() {
+        let tx = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .build();
+        assert!(
+            !tx.requires_nonce_check(),
+            "AA with nonce_key > 0 should NOT require nonce check"
+        );
+    }
+
+    // ============================================
+    // EthPoolTransaction::validate_blob tests
+    // ============================================
+
+    #[test]
+    fn test_validate_blob_returns_not_blob_transaction() {
+        use alloy_eips::eip7594::BlobTransactionSidecarVariant;
+
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
+
+        // Create a minimal sidecar (empty blobs)
+        let sidecar = BlobTransactionSidecarVariant::Eip4844(Default::default());
+        // Use a static reference to avoid needing KzgSettings::default()
+        let settings = alloy_eips::eip4844::env_settings::EnvKzgSettings::Default.get();
+
+        let result = tx.validate_blob(&sidecar, settings);
+
+        assert!(result.is_err());
+        match result {
+            Err(BlobTransactionValidationError::NotBlobTransaction(ty)) => {
+                // EIP-1559 type
+                assert_eq!(ty, tx.ty());
+            }
+            other => panic!("Expected NotBlobTransaction error, got: {other:?}"),
+        }
+    }
+
+    // ============================================
+    // EthPoolTransaction::take_blob tests
+    // ============================================
+
+    #[test]
+    fn test_take_blob_returns_none() {
+        let mut tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(21000)
+            .build_eip1559();
+        let blob = tx.take_blob();
+        assert!(matches!(blob, EthBlobTransactionSidecar::None));
+    }
+
+    // ============================================
+    // Inner reference accessor tests
+    // ============================================
+
+    #[test]
+    fn test_inner_returns_correct_reference() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).nonce(5).build();
+
+        let inner = tx.inner();
+        assert_eq!(inner.signer(), sender);
+        assert_eq!(inner.nonce(), 5);
+    }
+
+    // ============================================
+    // PoolTransaction trait implementation tests
+    // ============================================
+
+    #[test]
+    fn test_pool_transaction_hash_and_sender() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+
+        assert!(!tx.hash().is_zero(), "Hash should not be zero");
+        assert_eq!(tx.sender(), sender);
+        assert_eq!(tx.sender_ref(), &sender);
+    }
+
+    #[test]
+    fn test_pool_transaction_clone_into_consensus() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        let hash = *tx.hash();
+
+        let cloned = tx.clone_into_consensus();
+        assert_eq!(cloned.tx_hash(), &hash);
+        assert_eq!(cloned.signer(), sender);
+    }
+
+    #[test]
+    fn test_pool_transaction_into_consensus() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        let hash = *tx.hash();
+
+        let consensus = tx.into_consensus();
+        assert_eq!(consensus.tx_hash(), &hash);
+        assert_eq!(consensus.signer(), sender);
+    }
+
+    #[test]
+    fn test_pool_transaction_from_pooled() {
+        let sender = Address::random();
+        let nonce = 42u64;
+        let aa_tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Default::default(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce,
+            ..Default::default()
+        };
+
+        let signature =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let aa_signed = AASigned::new_unhashed(aa_tx, signature);
+        let envelope: TempoTxEnvelope = aa_signed.into();
+        let recovered = Recovered::new_unchecked(envelope, sender);
+
+        let pooled = TempoPooledTransaction::from_pooled(recovered);
+        assert_eq!(pooled.sender(), sender);
+        assert_eq!(pooled.nonce(), nonce);
+    }
+
+    // ============================================
+    // Transaction trait forwarding tests
+    // ============================================
+
+    #[test]
+    fn test_transaction_trait_forwarding() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender)
+            .gas_limit(100_000)
+            .value(U256::from(500))
+            .build();
+
+        // Test various Transaction trait methods
+        assert_eq!(tx.chain_id(), Some(1));
+        assert_eq!(tx.nonce(), 0);
+        assert_eq!(tx.gas_limit(), 100_000);
+        assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
+        assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
+        assert!(tx.is_dynamic_fee());
+        assert!(!tx.is_create());
+    }
+
+    // ============================================
+    // cost() always returns zero (Tempo-specific)
+    // ============================================
+
+    #[test]
+    fn test_cost_returns_zero() {
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(100_000)
+            .value(U256::from(1000))
+            .build();
+
+        // PoolTransaction::cost() returns &U256::ZERO for Tempo
+        assert_eq!(*tx.cost(), U256::ZERO);
     }
 }

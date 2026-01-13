@@ -262,4 +262,26 @@ mod tests {
             TempoInvalidTransaction::EthInvalidTransaction(_)
         ));
     }
+
+    #[test]
+    fn test_is_nonce_too_low() {
+        let err = TempoInvalidTransaction::EthInvalidTransaction(InvalidTransaction::NonceTooLow {
+            tx: 1,
+            state: 0,
+        });
+        assert!(err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_some());
+
+        let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+    }
+
+    #[test]
+    fn test_fee_payment_error() {
+        let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            fee: U256::from(1000),
+        }
+        .into();
+    }
 }

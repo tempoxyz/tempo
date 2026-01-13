@@ -89,6 +89,15 @@ export default defineConfig({
     dark: '/icon-dark.png',
   },
   rootDir: '.',
+  banner: {
+    content: (
+        <div>
+          <strong>Testnet migration:</strong> We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th.{' '}
+          <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>Learn more →</a>
+        </div>
+      ),
+    dismissable: true,
+  },
   socials: [
     {
       icon: 'github',
@@ -111,6 +120,10 @@ export default defineConfig({
           {
             text: 'Overview',
             link: '/quickstart/integrate-tempo',
+          },
+          {
+            text: 'Network Upgrades',
+            link: '/network-upgrades',
           },
           {
             text: 'Connect to the Network',
@@ -243,23 +256,23 @@ export default defineConfig({
             items: [
               {
                 text: 'Overview',
-                link: '/guide/stablecoin-exchange',
+                link: '/guide/stablecoin-dex',
               },
               {
                 text: 'Managing fee liquidity',
-                link: '/guide/stablecoin-exchange/managing-fee-liquidity',
+                link: '/guide/stablecoin-dex/managing-fee-liquidity',
               },
               {
                 text: 'Executing swaps',
-                link: '/guide/stablecoin-exchange/executing-swaps',
+                link: '/guide/stablecoin-dex/executing-swaps',
               },
               {
                 text: 'View the orderbook',
-                link: '/guide/stablecoin-exchange/view-the-orderbook',
+                link: '/guide/stablecoin-dex/view-the-orderbook',
               },
               {
                 text: 'Providing liquidity',
-                link: '/guide/stablecoin-exchange/providing-liquidity',
+                link: '/guide/stablecoin-dex/providing-liquidity',
               },
             ],
           },

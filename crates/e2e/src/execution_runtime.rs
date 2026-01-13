@@ -70,7 +70,7 @@ pub const TEST_MNEMONIC: &str = "test test test test test test test test test te
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
-    validators: Option<ordered::Map<PublicKey, SocketAddr>>,
+    validators: Option<ordered::Map<PublicKey, (SocketAddr, Address)>>,
 }
 
 impl Builder {
@@ -96,7 +96,10 @@ impl Builder {
         }
     }
 
-    pub fn with_validators(self, validators: ordered::Map<PublicKey, SocketAddr>) -> Self {
+    pub fn with_validators(
+        self,
+        validators: ordered::Map<PublicKey, (SocketAddr, Address)>,
+    ) -> Self {
         Self {
             validators: Some(validators),
             ..self
@@ -138,16 +141,16 @@ impl Builder {
                     .wrap_err("Failed to initialize validator config")
                     .unwrap();
 
-                for (i, (peer, addr)) in validators.iter_pairs().enumerate() {
+                for (peer, (net_addr, chain_addr)) in validators.iter_pairs() {
                     validator_config
                         .add_validator(
                             admin(),
                             IValidatorConfig::addValidatorCall {
-                                newValidatorAddress: validator(i as u32),
+                                newValidatorAddress: *chain_addr,
                                 publicKey: peer.encode().as_ref().try_into().unwrap(),
                                 active: true,
-                                inboundAddress: addr.to_string(),
-                                outboundAddress: addr.to_string(),
+                                inboundAddress: net_addr.to_string(),
+                                outboundAddress: net_addr.to_string(),
                             },
                         )
                         .unwrap();
