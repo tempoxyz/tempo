@@ -2319,5 +2319,5 @@ mod tests {
             INTRINSIC_GAS + SPENT.0 + SPENT.1 - (REFUND.0 + REFUND.1) as u64,
             "used() should be spent - refund"
         );
-        }
+    }
 }
