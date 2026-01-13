@@ -203,30 +203,6 @@ contract StablecoinDEXInvariantTest is BaseTest {
         assertEq(order.isBid, isBid, "TEMPO-DEX2: order side mismatch");
     }
 
-    function test_poc() external {
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(
-                180_739_590_293_198,
-                375_652_765,
-                3_832_115_738_349_263_146_361_442_917,
-                32_740_479,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(36_047_880_443_348_445_879_617, 1_087_594, 32_682, 1, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .placeFlipOrder(
-                788_164_003_983_621,
-                589_257,
-                61_364_942_536_591_125_809_573_167,
-                115_792_089_237_316_195_423_570_985_008_687_907_853_269_984_665_640_564_039_457_584_007_913_129_639_935,
-                true
-            );
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496)
-            .swapExactAmount(10, 93_339_479_806, 64, 2, false);
-        StablecoinDEXInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496).afterInvariant();
-    }
-
     function cancelOrder(uint128 orderId) external {
         orderId = orderId % exchange.nextOrderId();
         try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
