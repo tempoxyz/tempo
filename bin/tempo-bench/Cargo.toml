@@ -45,6 +45,6 @@ rlimit = "0.10.2"
 governor = "0.10.1"
 rand = "0.9.2"
 rand_08 = { package = "rand", version = "0.8" }
-clickhouse = { version = "0.13", features = ["uuid", "time"] }
+clickhouse = { version = "0.13", features = ["uuid", "time", "rustls-tls"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 time = "0.3"

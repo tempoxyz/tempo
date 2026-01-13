@@ -196,6 +196,10 @@ pub struct MaxTpsArgs {
     /// Kubernetes namespace where the benchmark is running
     #[arg(long, env = "ARGO_WORKFLOW_NAMESPACE")]
     k8s_namespace: Option<String>,
+
+    /// Skip uploading results to ClickHouse even if CLICKHOUSE_URL is set
+    #[arg(long)]
+    skip_clickhouse: bool,
 }
 
 impl MaxTpsArgs {
@@ -823,7 +827,7 @@ pub async fn generate_report(
 
     let mut last_block_timestamp: Option<u64> = None;
     let mut benchmarked_blocks = Vec::new();
-    let collect_transactions = args.clickhouse_url.is_some();
+    let collect_transactions = args.clickhouse_url.is_some() && !args.skip_clickhouse;
     let mut all_receipts: Vec<(BlockNumber, Vec<tempo_alloy::rpc::TempoTransactionReceipt>)> =
         Vec::new();
 
@@ -897,7 +901,7 @@ pub async fn generate_report(
 
     info!(path, "Generated JSON report");
 
-    if let Some(ref clickhouse_url) = args.clickhouse_url {
+    if let Some(ref clickhouse_url) = args.clickhouse_url.as_ref().filter(|_| !args.skip_clickhouse) {
         let run_id = Uuid::new_v4();
 
         let total_transactions: u64 = report.blocks.iter().map(|b| b.tx_count as u64).sum();
@@ -919,7 +923,7 @@ pub async fn generate_report(
             0.0
         };
 
-        let config = ClickHouseConfig::new(clickhouse_url.clone())
+        let config = ClickHouseConfig::new(clickhouse_url.to_string())
             .with_database(args.clickhouse_database.clone());
         let config = match (&args.clickhouse_user, &args.clickhouse_password) {
             (Some(user), Some(password)) => config.with_credentials(user.clone(), password.clone()),

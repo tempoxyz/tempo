@@ -36,6 +36,7 @@ impl ClickHouseConfig {
 
 #[derive(Debug, Row, Serialize)]
 pub struct TempoBenchRun {
+    #[serde(with = "clickhouse::serde::uuid")]
     pub run_id: Uuid,
     #[serde(with = "clickhouse::serde::time::datetime64::millis")]
     pub created_at: OffsetDateTime,
@@ -66,6 +67,7 @@ pub struct TempoBenchRun {
 
 #[derive(Debug, Row, Serialize)]
 pub struct TempoBenchBlock {
+    #[serde(with = "clickhouse::serde::uuid")]
     pub run_id: Uuid,
     pub block_number: u64,
     pub timestamp_ms: u64,
@@ -79,6 +81,7 @@ pub struct TempoBenchBlock {
 
 #[derive(Debug, Row, Serialize)]
 pub struct TempoBenchTransaction {
+    #[serde(with = "clickhouse::serde::uuid")]
     pub run_id: Uuid,
     pub block_number: u64,
     pub tx_index: u32,
@@ -102,7 +105,8 @@ impl ClickHouseReporter {
     pub fn new(config: &ClickHouseConfig) -> Self {
         let mut client = Client::default()
             .with_url(&config.url)
-            .with_database(&config.database);
+            .with_database(&config.database)
+            .with_option("wait_end_of_query", "1");
 
         if let Some(ref user) = config.user {
             client = client.with_user(user);
