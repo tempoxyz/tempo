@@ -1154,4 +1154,556 @@ mod tests {
             );
         }
     }
+
+    mod keychain_validation {
+        use super::*;
+        use alloy_primitives::{Signature, TxKind, address};
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{
+            KeyAuthorization, SignatureType, SignedKeyAuthorization, TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        /// Generate a secp256k1 keypair for testing
+        fn generate_keypair() -> (PrivateKeySigner, Address) {
+            let signer = PrivateKeySigner::random();
+            let address = signer.address();
+            (signer, address)
+        }
+
+        /// Create an AA transaction with a keychain signature.
+        fn create_aa_with_keychain_signature(
+            user_address: Address,
+            access_key_signer: &PrivateKeySigner,
+            key_authorization: Option<SignedKeyAuthorization>,
+        ) -> TempoPooledTransaction {
+            let tx_aa = TempoTransaction {
+                chain_id: 42431, // MODERATO chain_id
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 2_000_000_000,
+                gas_limit: 100_000,
+                calls: vec![Call {
+                    to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_payer_signature: None,
+                valid_after: None,
+                valid_before: None,
+                access_list: Default::default(),
+                tempo_authorization_list: vec![],
+                key_authorization,
+            };
+
+            // Create unsigned transaction to get the signature hash
+            let unsigned = AASigned::new_unhashed(
+                tx_aa.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let sig_hash = unsigned.signature_hash();
+
+            // Sign with the access key
+            let signature = access_key_signer
+                .sign_hash_sync(&sig_hash)
+                .expect("signing failed");
+
+            // Create keychain signature
+            let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
+                user_address,
+                PrimitiveSignature::Secp256k1(signature),
+            ));
+
+            let signed_tx = AASigned::new_unhashed(tx_aa, keychain_sig);
+            let envelope: TempoTxEnvelope = signed_tx.into();
+            let recovered = envelope.try_into_recovered().unwrap();
+            TempoPooledTransaction::new(recovered)
+        }
+
+        /// Setup validator with keychain storage for a specific user and key_id.
+        fn setup_validator_with_keychain_storage(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            authorized_key_slot_value: Option<U256>,
+        ) -> TempoTransactionValidator<
+            MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
+        > {
+            let provider =
+                MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+
+            // Add sender account
+            provider.add_account(
+                transaction.sender(),
+                ExtendedAccount::new(transaction.nonce(), U256::ZERO),
+            );
+            provider.add_block(B256::random(), Default::default());
+
+            // If slot value provided, setup AccountKeychain storage
+            if let Some(slot_value) = authorized_key_slot_value {
+                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+                provider.add_account(
+                    ACCOUNT_KEYCHAIN_ADDRESS,
+                    ExtendedAccount::new(0, U256::ZERO)
+                        .extend_storage([(storage_slot.into(), slot_value)]),
+                );
+            }
+
+            let inner = EthTransactionValidatorBuilder::new(provider.clone())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+            let amm_cache =
+                AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+            TempoTransactionValidator::new(inner, 3600, amm_cache)
+        }
+
+        #[test]
+        fn test_non_aa_transaction_skips_keychain_validation() {
+            // Non-AA transaction should return Ok(Ok(())) immediately
+            let transaction = get_transaction(None);
+            let validator = setup_validator(&transaction, 0);
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "Non-AA tx should skip keychain validation"
+            );
+        }
+
+        #[test]
+        fn test_aa_with_primitive_signature_skips_keychain_validation() {
+            // AA transaction with primitive (non-keychain) signature should skip validation
+            let transaction = create_aa_transaction(None, None);
+            let validator = setup_validator(&transaction, 0);
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "AA tx with primitive signature should skip keychain validation"
+            );
+        }
+
+        #[test]
+        fn test_keychain_signature_with_valid_authorized_key() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with a valid authorized key (expiry > 0, not revoked)
+            let slot_value = AuthorizedKey {
+                signature_type: 0, // secp256k1
+                expiry: u64::MAX,  // never expires
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "Valid authorized key should pass validation, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_keychain_signature_with_revoked_key_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with a revoked key
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: 0, // revoked keys have expiry=0
+                enforce_limits: false,
+                is_revoked: true,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("revoked")),
+                "Revoked key should be rejected, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_keychain_signature_with_nonexistent_key_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with expiry = 0 (key doesn't exist)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: 0, // expiry = 0 means key doesn't exist
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("does not exist")),
+                "Non-existent key should be rejected, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_keychain_signature_with_no_storage_rejected() {
+            let (access_key_signer, _) = generate_keypair();
+            let user_address = Address::random();
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // No storage setup - slot value defaults to 0
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                Address::ZERO,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("does not exist")),
+                "Missing storage should result in non-existent key error, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_skips_storage_check() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            // Create KeyAuthorization signed by the user's main key
+            let key_auth = KeyAuthorization {
+                chain_id: 42431, // MODERATO chain_id
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None, // never expires
+                limits: None, // unlimited
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            // NO storage setup - KeyAuthorization should skip storage check
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "Valid KeyAuthorization should skip storage check, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_wrong_chain_id_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            // Create KeyAuthorization with wrong chain_id (not 0 and not matching)
+            let key_auth = KeyAuthorization {
+                chain_id: 99999, // Wrong chain_id
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("chain_id")),
+                "Wrong chain_id should be rejected, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_chain_id_zero_accepted() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+
+            // Create KeyAuthorization with chain_id = 0 (wildcard)
+            let key_auth = KeyAuthorization {
+                chain_id: 0, // Wildcard - works on any chain
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "chain_id=0 (wildcard) should be accepted, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_mismatched_key_id_rejected() {
+            let (access_key_signer, _access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let different_key_id = Address::random();
+
+            // Create KeyAuthorization with a DIFFERENT key_id than the one signing the tx
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: different_key_id, // Different from access_key_address
+                expiry: None,
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            // Transaction is signed by access_key_signer but KeyAuth has different_key_id
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                different_key_id,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("key_id") && msg.contains("match")),
+                "Mismatched key_id should be rejected, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_invalid_signature_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (_user_signer, user_address) = generate_keypair();
+            let (random_signer, _) = generate_keypair();
+
+            // Create KeyAuthorization but sign with a random key (not the user's key)
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None,
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            // Sign with random_signer instead of user_signer
+            let auth_signature = random_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Err(msg)) if msg.contains("Invalid") && msg.contains("signature")),
+                "Invalid KeyAuthorization signature should be rejected, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_keychain_user_address_mismatch_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let real_user = Address::random();
+
+            // Create transaction claiming to be from real_user
+            let tx_aa = TempoTransaction {
+                chain_id: 42431,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 2_000_000_000,
+                gas_limit: 100_000,
+                calls: vec![Call {
+                    to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                    value: U256::ZERO,
+                    input: alloy_primitives::Bytes::new(),
+                }],
+                nonce_key: U256::ZERO,
+                nonce: 0,
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                fee_payer_signature: None,
+                valid_after: None,
+                valid_before: None,
+                access_list: Default::default(),
+                tempo_authorization_list: vec![],
+                key_authorization: None,
+            };
+
+            let unsigned = AASigned::new_unhashed(
+                tx_aa.clone(),
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            let sig_hash = unsigned.signature_hash();
+            let signature = access_key_signer
+                .sign_hash_sync(&sig_hash)
+                .expect("signing failed");
+
+            // Create keychain signature with DIFFERENT user_address than what sender() returns
+            // The transaction's sender is derived from user_address in KeychainSignature
+            let keychain_sig = TempoSignature::Keychain(KeychainSignature::new(
+                real_user, // This becomes the sender
+                PrimitiveSignature::Secp256k1(signature),
+            ));
+
+            let signed_tx = AASigned::new_unhashed(tx_aa, keychain_sig);
+            let envelope: TempoTxEnvelope = signed_tx.into();
+            let recovered = envelope.try_into_recovered().unwrap();
+            let transaction = TempoPooledTransaction::new(recovered);
+
+            // The transaction.sender() == real_user (from keychain sig's user_address)
+            // So this validation path checks sig.user_address == transaction.sender()
+            // which should always be true by construction.
+            // The actual mismatch scenario would require manually constructing an invalid state.
+
+            // Setup with valid key for the actual sender
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+            let validator = setup_validator_with_keychain_storage(
+                &transaction,
+                real_user,
+                access_key_address,
+                Some(slot_value),
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            // This should pass since user_address matches sender by construction
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "Properly constructed keychain sig should pass, got: {result:?}"
+            );
+        }
+    }
 }

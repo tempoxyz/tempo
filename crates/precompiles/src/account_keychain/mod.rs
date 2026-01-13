@@ -12,7 +12,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, packing::insert_into_word},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -49,6 +49,47 @@ impl AuthorizedKey {
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode AuthorizedKey from slot")
+    }
+
+    /// Encode AuthorizedKey to a storage slot value
+    ///
+    /// This is useful for tests that need to set up storage state directly.
+    pub fn encode_to_slot(&self) -> U256 {
+        use __packing_authorized_key::{
+            ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
+        };
+
+        let encoded = insert_into_word(
+            U256::ZERO,
+            &self.signature_type,
+            SIGNATURE_TYPE_LOC.offset_bytes,
+            SIGNATURE_TYPE_LOC.size,
+        )
+        .expect("unable to insert 'signature_type'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.expiry,
+            EXPIRY_LOC.offset_bytes,
+            EXPIRY_LOC.size,
+        )
+        .expect("unable to insert 'expiry'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.enforce_limits,
+            ENFORCE_LIMITS_LOC.offset_bytes,
+            ENFORCE_LIMITS_LOC.size,
+        )
+        .expect("unable to insert 'enforce_limits'");
+
+        insert_into_word(
+            encoded,
+            &self.is_revoked,
+            IS_REVOKED_LOC.offset_bytes,
+            IS_REVOKED_LOC.size,
+        )
+        .expect("unable to insert 'is_revoked'")
     }
 }
 
@@ -930,5 +971,34 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_authorized_key_encode_decode_roundtrip() {
+        let original = AuthorizedKey {
+            signature_type: 2,  // WebAuthn
+            expiry: 1234567890, // some timestamp
+            enforce_limits: true,
+            is_revoked: false,
+        };
+
+        let encoded = original.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+
+        assert_eq!(
+            decoded, original,
+            "encode/decode roundtrip should be lossless"
+        );
+
+        // Test with revoked key
+        let revoked = AuthorizedKey {
+            signature_type: 0,
+            expiry: 0,
+            enforce_limits: false,
+            is_revoked: true,
+        };
+        let encoded = revoked.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+        assert_eq!(decoded, revoked);
     }
 }

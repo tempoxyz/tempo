@@ -12055,6 +12055,8 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
  "futures",
  "metrics",
  "parking_lot",
