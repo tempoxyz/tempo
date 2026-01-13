@@ -1394,6 +1394,8 @@ where
 /// - validBefore: Transaction can only be included before this timestamp
 ///
 /// This ensures transactions are only valid within a specific time window.
+///
+/// IMPORTANT: must be aligned with `fn has_expired_transactions` in `tempo-payload-builder`.
 pub fn validate_time_window(
     valid_after: Option<u64>,
     valid_before: Option<u64>,
