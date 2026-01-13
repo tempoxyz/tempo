@@ -17,10 +17,10 @@
     "cancunTime": 0,
     "pragueTime": 0,
     "osakaTime": 0,
-    "t0Time": 0,
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
+    "t0Time": 0,
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
   },
   "nonce": "0x42",
