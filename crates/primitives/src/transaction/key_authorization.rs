@@ -9,7 +9,12 @@ use core::mem;
 ///
 /// Defines a per-token spending limit for an access key provisioned via key_authorization.
 /// This limit is enforced by the AccountKeychain precompile when the key is used.
+///
+/// If `period` is `None`, the limit is one-time and depletes permanently.
+/// If `period` is `Some(seconds)`, the limit resets every `seconds` seconds, enabling
+/// subscription-based access patterns (e.g., "up to X tokens per month").
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -19,8 +24,16 @@ pub struct TokenLimit {
     /// TIP20 token address
     pub token: Address,
 
-    /// Maximum spending amount for this token (enforced over the key's lifetime)
+    /// Maximum spending amount for this token
+    /// - For one-time limits: enforced over the key's lifetime
+    /// - For periodic limits: enforced per period (resets automatically)
     pub limit: U256,
+
+    /// Period duration in seconds for periodic limits.
+    /// - `None` (RLP 0x80) = one-time limit that depletes permanently
+    /// - `Some(seconds)` = periodic limit that resets every `seconds` seconds
+    #[cfg_attr(feature = "serde", serde(with = "alloy_serde::quantity::opt"))]
+    pub period: Option<u64>,
 }
 
 /// Key authorization for provisioning access keys
@@ -95,7 +108,7 @@ impl KeyAuthorization {
         mem::size_of::<Option<u64>>() + // expiry
         self.limits.as_ref().map_or(0, |limits| {
             limits.iter().map(|_limit| {
-                mem::size_of::<Address>() + mem::size_of::<U256>()
+                mem::size_of::<Address>() + mem::size_of::<U256>() + mem::size_of::<Option<u64>>()
             }).sum::<usize>()
         })
     }
@@ -242,6 +255,7 @@ mod tests {
                 Some(vec![TokenLimit {
                     token: Address::ZERO,
                     limit: U256::from(100),
+                    period: None,
                 }])
             )
             .has_unlimited_spending()
@@ -261,12 +275,13 @@ mod tests {
         let auth_no_limits = make_auth(None, None);
         assert_eq!(auth_no_limits.size(), base_size);
 
-        let limit_size = mem::size_of::<Address>() + mem::size_of::<U256>();
+        let limit_size = mem::size_of::<Address>() + mem::size_of::<U256>() + mem::size_of::<Option<u64>>();
         let auth_one_limit = make_auth(
             None,
             Some(vec![TokenLimit {
                 token: Address::ZERO,
                 limit: U256::ZERO,
+                period: None,
             }]),
         );
         assert_eq!(auth_one_limit.size(), base_size + limit_size);
@@ -277,10 +292,12 @@ mod tests {
                 TokenLimit {
                     token: Address::ZERO,
                     limit: U256::ZERO,
+                    period: None,
                 },
                 TokenLimit {
                     token: Address::repeat_byte(1),
                     limit: U256::from(1),
+                    period: None,
                 },
             ]),
         );

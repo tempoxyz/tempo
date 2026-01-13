@@ -60,6 +60,15 @@ pub struct AccountKeychain {
     // spendingLimits[(account, keyId)][token] -> amount
     // Using a hash of account and keyId as the key to avoid triple nesting
     spending_limits: Mapping<B256, Mapping<Address, U256>>,
+    // periodEnds[(account, keyId)][token] -> timestamp
+    // Stores when the current period ends for periodic limits (0 = one-time limit)
+    period_ends: Mapping<B256, Mapping<Address, u64>>,
+    // periodLimits[(account, keyId)][token] -> amount
+    // Stores the limit per period for periodic limits (0 = one-time limit)
+    period_limits: Mapping<B256, Mapping<Address, U256>>,
+    // periodDurations[(account, keyId)][token] -> seconds
+    // Stores the period duration in seconds for periodic limits (0 = one-time limit)
+    period_durations: Mapping<B256, Mapping<Address, u64>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -133,8 +142,23 @@ impl AccountKeychain {
         // Set initial spending limits (only if enforce_limits is true)
         if call.enforceLimits {
             let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
+            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
             for limit in call.limits {
-                self.spending_limits[limit_key][limit.token].write(limit.amount)?;
+                // In Solidity, period is uint64 where 0 = one-time limit, >0 = periodic limit
+                let period = limit.period;
+                
+                if period > 0 {
+                    // Periodic limit: store period_limit, period_duration, and set period_end
+                    self.period_limits[limit_key][limit.token].write(limit.amount)?;
+                    self.period_durations[limit_key][limit.token].write(period)?;
+                    let period_end = current_timestamp.saturating_add(period);
+                    self.period_ends[limit_key][limit.token].write(period_end)?;
+                    // Initialize spending limit to the full period amount
+                    self.spending_limits[limit_key][limit.token].write(limit.amount)?;
+                } else {
+                    // One-time limit: just store the limit
+                    self.spending_limits[limit_key][limit.token].write(limit.amount)?;
+                }
             }
         }
 
@@ -192,6 +216,8 @@ impl AccountKeychain {
     ///
     /// This can be used to add limits to an unlimited key (converting it to limited)
     /// or to update existing limits.
+    /// 
+    /// Note: For periodic limits, this updates the per-period amount and resets the current period.
     pub fn update_spending_limit(
         &mut self,
         msg_sender: Address,
@@ -217,9 +243,24 @@ impl AccountKeychain {
             self.keys[msg_sender][call.keyId].write(key)?;
         }
 
-        // Update the spending limit
         let limit_key = Self::spending_limit_key(msg_sender, call.keyId);
-        self.spending_limits[limit_key][call.token].write(call.newLimit)?;
+        
+        // Check if this is currently a periodic limit
+        let period_end = self.period_ends[limit_key][call.token].read()?;
+        let is_periodic = period_end > 0;
+        
+        if is_periodic {
+            // For periodic limits, update the period_limit and reset the current period
+            let period_duration = self.period_durations[limit_key][call.token].read()?;
+            self.period_limits[limit_key][call.token].write(call.newLimit)?;
+            let new_period_end = current_timestamp.saturating_add(period_duration);
+            self.period_ends[limit_key][call.token].write(new_period_end)?;
+            // Reset spending limit to the new period amount
+            self.spending_limits[limit_key][call.token].write(call.newLimit)?;
+        } else {
+            // For one-time limits, just update the limit
+            self.spending_limits[limit_key][call.token].write(call.newLimit)?;
+        }
 
         // Emit event
         self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
@@ -265,8 +306,27 @@ impl AccountKeychain {
     }
 
     /// Get remaining spending limit
+    /// 
+    /// For periodic limits, this returns the remaining amount in the current period.
+    /// If the period has expired, it returns the full period limit (the period will be
+    /// reset on the next spending attempt).
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
         let limit_key = Self::spending_limit_key(call.account, call.keyId);
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        
+        // Check if this is a periodic limit
+        let period_end = self.period_ends[limit_key][call.token].read()?;
+        let period_limit = self.period_limits[limit_key][call.token].read()?;
+        
+        // If period_end > 0, this is a periodic limit
+        if period_end > 0 && period_limit > U256::ZERO {
+            // If period has expired, return the full period limit (will be reset on next use)
+            if current_timestamp >= period_end {
+                return Ok(period_limit);
+            }
+        }
+        
+        // Return current remaining limit
         self.spending_limits[limit_key][call.token].read()
     }
 
@@ -363,8 +423,27 @@ impl AccountKeychain {
             return Ok(());
         }
 
-        // Check and update spending limit
         let limit_key = Self::spending_limit_key(account, key_id);
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        
+        // Check if this is a periodic limit
+        let period_end = self.period_ends[limit_key][token].read()?;
+        let period_limit = self.period_limits[limit_key][token].read()?;
+        
+        // If period_end > 0, this is a periodic limit
+        if period_end > 0 && period_limit > U256::ZERO {
+            // Check if current period has expired
+            if current_timestamp >= period_end {
+                // Reset the period: set new period_end and restore limit
+                let period_duration = self.period_durations[limit_key][token].read()?;
+                let new_period_end = current_timestamp.saturating_add(period_duration);
+                self.period_ends[limit_key][token].write(new_period_end)?;
+                // Restore spending limit to the full period amount
+                self.spending_limits[limit_key][token].write(period_limit)?;
+            }
+        }
+        
+        // Check and update spending limit
         let remaining = self.spending_limits[limit_key][token].read()?;
 
         if amount > remaining {
@@ -737,6 +816,7 @@ mod tests {
                 limits: vec![TokenLimit {
                     token,
                     amount: U256::from(100),
+                    period: 0, // One-time limit
                 }],
             };
             keychain.authorize_key(eoa, auth_call)?;
@@ -849,6 +929,7 @@ mod tests {
                 limits: vec![TokenLimit {
                     token,
                     amount: U256::from(100),
+                    period: 0, // One-time limit
                 }],
             };
             keychain.authorize_key(eoa_alice, auth_call)?;
