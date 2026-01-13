@@ -485,6 +485,17 @@ where
             tempo_transaction_pool::maintain::maintain_amm_cache(transaction_pool.clone()),
         );
 
+        // Spawn keychain revocation maintenance task
+        let keychain_pool = transaction_pool.clone();
+        let keychain_provider = ctx.provider().clone();
+        ctx.task_executor().spawn_critical(
+            "txpool maintenance - evict revoked keychain txs",
+            tempo_transaction_pool::maintain::evict_revoked_keychain_txs(
+                keychain_pool,
+                keychain_provider,
+            ),
+        );
+
         info!(target: "reth::cli", "Transaction pool initialized");
         debug!(target: "reth::cli", "Spawned txpool maintenance task");
 
