@@ -40,8 +40,8 @@ contract StablecoinDEXInvariantTest is BaseTest {
     /// @dev Log file path for recording exchange actions
     string private constant LOG_FILE = "exchange.log";
 
-    /// @dev Number of placed swaps, to be used in invariant checking.
-    uint64 private _numSwaps;
+    /// @dev Maximum amount of dust that can be left in the protocol. This is used to verify TEMPO-DEX19.
+    uint64 private _maxDust;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -125,7 +125,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 tokenRnd,
         bool isBid,
         bool cancel
-    ) external {
+    ) public {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
         address token = address(_tokens[tokenRnd % _tokens.length]);
@@ -167,6 +167,26 @@ contract StablecoinDEXInvariantTest is BaseTest {
         _logBalances();
     }
 
+    function placeOrder1(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid
+    ) external {
+        placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, false);
+    }
+
+    function placeOrder2(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid
+    ) external {
+        placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, false);
+    }
+
     /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
     function _assertOrderCreated(
         uint128 orderId,
@@ -181,6 +201,45 @@ contract StablecoinDEXInvariantTest is BaseTest {
         assertEq(order.remaining, amount, "TEMPO-DEX2: order remaining mismatch");
         assertEq(order.tick, tick, "TEMPO-DEX2: order tick mismatch");
         assertEq(order.isBid, isBid, "TEMPO-DEX2: order side mismatch");
+    }
+
+    function cancelOrder(uint128 orderId) external {
+        orderId = orderId % exchange.nextOrderId();
+        try exchange.getOrder(orderId) returns (IStablecoinDEX.Order memory order) {
+            (address base,,,) = exchange.books(order.bookKey);
+            // Cancel, but skip checking `actorBalanceBeforePlace`
+            _cancelAndVerifyRefund(
+                orderId, order.maker, base, order.remaining, order.tick, order.isBid, 0
+            );
+        } catch {
+            // order was probably cancelled in a previous cancelOrder call
+            return;
+        }
+    }
+
+    /// @notice Fuzz handler: Withdraws random amount of random token for random actor
+    /// @dev This causes flip orders to randomly fail when their internal balance is depleted
+    /// @param actorRnd Random seed for selecting actor
+    /// @param amount Amount to withdraw (bounded to actor's internal balance)
+    /// @param tokenRnd Random seed for selecting token
+    function withdraw(uint256 actorRnd, uint128 amount, uint256 tokenRnd) external {
+        address actor = _actors[actorRnd % _actors.length];
+        address token = _selectToken(tokenRnd);
+
+        uint128 balance = exchange.balanceOf(actor, token);
+        if (balance == 0) return;
+
+        amount = uint128(bound(amount, 1, balance));
+
+        vm.startPrank(actor);
+        exchange.withdraw(token, amount);
+        vm.stopPrank();
+
+        _log(
+            string.concat(
+                _getActorIndex(actor), " withdrew ", vm.toString(amount), " ", TIP20(token).symbol()
+            )
+        );
     }
 
     /// @dev Helper to cancel order and verify refund (TEMPO-DEX3)
@@ -224,6 +283,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 dexBalanceBefore = pathUSD.balanceOf(address(exchange));
         uint256 actorExternalBefore = pathUSD.balanceOf(actor);
 
+        vm.startPrank(actor);
         exchange.cancel(orderId);
 
         uint32 price = exchange.tickToPrice(tick);
@@ -239,6 +299,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         uint128 withdrawAmount = balanceAfter;
         exchange.withdraw(address(pathUSD), withdrawAmount);
+        vm.stopPrank();
 
         uint256 dexBalanceAfter = pathUSD.balanceOf(address(exchange));
         assertEq(
@@ -270,6 +331,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 dexBalanceBefore = TIP20(token).balanceOf(address(exchange));
         uint256 actorExternalBefore = TIP20(token).balanceOf(actor);
 
+        vm.startPrank(actor);
         exchange.cancel(orderId);
 
         uint128 balanceAfter = exchange.balanceOf(actor, token);
@@ -277,6 +339,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         uint128 withdrawAmount = balanceAfter;
         exchange.withdraw(token, withdrawAmount);
+        vm.stopPrank();
 
         uint256 dexBalanceAfter = TIP20(token).balanceOf(address(exchange));
         assertEq(
@@ -668,18 +731,15 @@ contract StablecoinDEXInvariantTest is BaseTest {
             " | Total=",
             vm.toString(pathUSD.balanceOf(address(exchange)) + totalBalance),
             ", Swaps=",
-            vm.toString(_numSwaps)
+            vm.toString(_maxDust)
         );
         _log(dustLog);
 
-        // TODO: find a better way to assert dust / count swaps (for flip orders)
-        /*
         assertGe(
-            _numSwaps,
+            _maxDust,
             pathUSD.balanceOf(address(exchange)) + totalBalance,
             "TEMPO-DEX19: Excess post-swap dust"
         );
-        */
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -714,19 +774,15 @@ contract StablecoinDEXInvariantTest is BaseTest {
         }
 
         // Compute expected escrowed amounts from all orders (including flip-created orders)
-        (
-            uint256 expectedPathUsdEscrowed,
-            uint256[] memory expectedTokenEscrowed,
-            uint256 orderCount
-        ) = _computeExpectedEscrow();
+        (uint256 expectedPathUsdEscrowed, uint256[] memory expectedTokenEscrowed,) =
+            _computeExpectedEscrow();
 
         // Assert escrowed amounts: DEX balance = user internal balances + escrowed in active orders
         // Allow tolerance for rounding during partial fills (can accumulate across multiple fills)
-        uint256 tolerance = orderCount * 4 + 1;
         assertApproxEqAbs(
             dexPathUsdBalance,
             totalUserPathUsd + expectedPathUsdEscrowed,
-            tolerance,
+            _maxDust,
             "TEMPO-DEX6: DEX pathUSD balance != user balances + escrowed"
         );
 
@@ -740,7 +796,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
             assertApproxEqAbs(
                 dexTokenBalance,
                 totalUserTokenBalance + expectedTokenEscrowed[t],
-                tolerance,
+                _maxDust,
                 "TEMPO-DEX6: DEX token balance != user balances + escrowed"
             );
         }
@@ -820,7 +876,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountOut
         ) {
-            _numSwaps += 1;
+            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
@@ -878,7 +934,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         ) returns (
             uint128 amountIn
         ) {
-            _numSwaps += 1;
+            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
@@ -1110,6 +1166,19 @@ contract StablecoinDEXInvariantTest is BaseTest {
             return address(pathUSD);
         }
         return address(_tokens[index - 1]);
+    }
+
+    /// @dev Returns the number of hops in a trade path (similar to findTradePath in StablecoinDEX)
+    /// @param tokenIn The input token
+    /// @param tokenOut The output token
+    /// @return hops Number of hops (1 for direct, 2 for multi-hop via pathUSD)
+    function _findRoute(address tokenIn, address tokenOut) internal view returns (uint256 hops) {
+        // Direct pair: one of the tokens is pathUSD
+        if (tokenIn == address(pathUSD) || tokenOut == address(pathUSD)) {
+            return 1;
+        }
+        // Multi-hop: base -> pathUSD -> base
+        return 2;
     }
 
     /// @notice Ensures an actor has sufficient token balances for testing
