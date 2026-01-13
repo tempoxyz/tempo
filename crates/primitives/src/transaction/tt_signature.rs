@@ -230,11 +230,11 @@ impl PrimitiveSignature {
 
     /// Get the in-memory size of the signature
     pub fn size(&self) -> usize {
-        match self {
-            Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
-            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
-            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
-        }
+        size_of::<Self>()
+            + match self {
+                Self::Secp256k1(_) | Self::P256(_) => 0,
+                Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+            }
     }
 
     /// Recover the signer address from the signature

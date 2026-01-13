@@ -292,7 +292,7 @@ impl reth_primitives_traits::SignedTransaction for TempoTxEnvelope {}
 #[cfg(feature = "reth")]
 impl reth_primitives_traits::InMemorySize for TempoTxType {
     fn size(&self) -> usize {
-        core::mem::size_of::<Self>()
+        size_of::<Self>()
     }
 }
 
