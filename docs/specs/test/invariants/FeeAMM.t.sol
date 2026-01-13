@@ -1236,6 +1236,10 @@ contract FeeAMMInvariantTest is BaseTest {
         // - Unclaimed fee dust from rounding in fee swaps
         // - Rebalance +1 rounding dust
 
+        // TEMPO-AMM24: Verify MIN_LIQUIDITY preserves reserves after all pro-rata burns
+        // For each initialized pool, totalSupply >= MIN_LIQUIDITY, so reserves cannot be fully drained
+        _verifyMinLiquidityPreservesReserves();
+
         // Calculate actual remaining balance per token
         uint256 ammPathUSD = pathUSD.balanceOf(address(amm));
 
@@ -1356,6 +1360,57 @@ contract FeeAMMInvariantTest is BaseTest {
             totalDust <= maxExpectedDust,
             "TEMPO-AMM24: AMM has more dust than expected - potential value creation bug"
         );
+    }
+
+    /// @dev Verify that MIN_LIQUIDITY preserves reserves after all pro-rata burns
+    /// For each initialized pool: since totalSupply >= MIN_LIQUIDITY and user balances sum to
+    /// totalSupply - MIN_LIQUIDITY, burning all user balances leaves MIN_LIQUIDITY/totalSupply
+    /// fraction of reserves locked permanently.
+    function _verifyMinLiquidityPreservesReserves() internal view {
+        // Check token/token pools
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                if (i == j) continue;
+                _verifyPoolMinLiquidity(address(_tokens[i]), address(_tokens[j]));
+            }
+
+            // Check pathUSD pools
+            _verifyPoolMinLiquidity(address(_tokens[i]), address(pathUSD));
+            _verifyPoolMinLiquidity(address(pathUSD), address(_tokens[i]));
+        }
+    }
+
+    /// @dev Helper to verify MIN_LIQUIDITY preservation for a single pool
+    function _verifyPoolMinLiquidity(address userToken, address validatorToken) internal view {
+        bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+        uint256 totalSupply = amm.totalSupply(poolId);
+        IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
+
+        // Skip uninitialized pools
+        if (totalSupply == 0) return;
+
+        // TEMPO-AMM15: totalSupply >= MIN_LIQUIDITY for initialized pools
+        assertTrue(
+            totalSupply >= MIN_LIQUIDITY, "TEMPO-AMM24: totalSupply < MIN_LIQUIDITY after burns"
+        );
+
+        // Sum all user LP balances
+        uint256 sumUserBalances = 0;
+        for (uint256 k = 0; k < _actors.length; k++) {
+            sumUserBalances += amm.liquidityBalances(poolId, _actors[k]);
+        }
+
+        // After all burns, sumUserBalances should be 0
+        // The remaining totalSupply should be >= MIN_LIQUIDITY (locked)
+        // Therefore reserves should be > 0 if the pool had any activity
+        if (sumUserBalances == 0 && totalSupply >= MIN_LIQUIDITY) {
+            // Pool has been fully exited - verify reserves are preserved
+            // At least one reserve must be > 0 (validator token is always deposited on mint)
+            assertTrue(
+                pool.reserveValidatorToken > 0 || pool.reserveUserToken > 0,
+                "TEMPO-AMM24: reserves drained despite MIN_LIQUIDITY lock"
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
