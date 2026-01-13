@@ -12,8 +12,8 @@ import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
-/// @dev Uses vm.store to simulate fee collection for compatibility with both foundry and tempo-foundry.
-///      On tempo-foundry, vm.store operations on the precompile are no-ops.
+/// @dev Uses vm.store to simulate fee collection. Works on both foundry (Solidity reference)
+///      and tempo-foundry (Rust precompile) with correct storage slot layout.
 contract FeeAMMInvariantTest is BaseTest {
     /// @dev Array of test actors that interact with the FeeAMM
     address[] private _actors;
@@ -35,11 +35,10 @@ contract FeeAMMInvariantTest is BaseTest {
     string private constant LOG_FILE = "amm.log";
 
     /// @dev Constants from Rust tip_fee_manager/amm.rs
-    uint256 private constant M = 9970; // Fee swap rate (0.997)
-    uint256 private constant N = 9985; // Rebalance swap rate (0.9985)
+    uint256 private constant M = 9970; // Fee swap rate (0.997 = 0.30% fee)
+    uint256 private constant N = 9985; // Rebalance swap rate (0.9985 = 0.15% fee)
     uint256 private constant SCALE = 10_000;
     uint256 private constant MIN_LIQUIDITY = 1000;
-    uint256 private constant SPREAD = N - M; // 15 basis points
 
     /// @dev Ghost variables for tracking state changes
     uint256 private _totalMints;
@@ -71,12 +70,6 @@ contract FeeAMMInvariantTest is BaseTest {
         uint256 actorValidatorBefore;
         uint256 actorUserBefore;
     }
-
-    /// @dev Mapping to track liquidity provided per pool
-    mapping(bytes32 => uint256) private _ghostTotalLiquidity;
-
-    /// @dev Mapping to track total validator tokens deposited per pool
-    mapping(bytes32 => uint256) private _ghostValidatorTokensDeposited;
 
     /// @dev Ghost variables for tracking rounding exploitation attempts
     uint256 private _totalMintBurnCycles;
@@ -130,7 +123,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         _actors = _buildActors(20);
 
-        // Initialize log file
+        // Initialize log file (cleared at start of test, appends across invariant runs)
         try vm.removeFile(LOG_FILE) {} catch {}
         _log("=== FeeAMM Invariant Test Log (tempo-foundry) ===");
         _log(
@@ -185,8 +178,6 @@ contract FeeAMMInvariantTest is BaseTest {
             vm.stopPrank();
 
             _totalMints++;
-            _ghostTotalLiquidity[poolId] += liquidity;
-            _ghostValidatorTokensDeposited[poolId] += amount;
 
             // TEMPO-AMM1: Liquidity minted should be positive
             assertTrue(liquidity > 0, "TEMPO-AMM1: Minted liquidity should be positive");
@@ -717,7 +708,7 @@ contract FeeAMMInvariantTest is BaseTest {
                             INVARIANT HOOKS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Called after invariant testing completes to log final state
+    /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
         _log("");
         _log("=== Final State ===");
@@ -744,6 +735,7 @@ contract FeeAMMInvariantTest is BaseTest {
             )
         );
         _logBalances();
+        _log("");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -913,8 +905,8 @@ contract FeeAMMInvariantTest is BaseTest {
         // Since M < N, this is never true
 
         assertTrue(M < N, "TEMPO-AMM21: M must be less than N for spread");
-        assertTrue(N - M == SPREAD, "TEMPO-AMM21: Spread should be 15 bps");
-        assertTrue(SPREAD == 15, "TEMPO-AMM21: Spread constant incorrect");
+        // Spread = N - M = 9985 - 9970 = 15 basis points
+        assertTrue(N - M == 15, "TEMPO-AMM21: Spread should be 15 bps");
     }
 
     /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool
