@@ -195,7 +195,7 @@ contract FeeAMMInvariantTest is BaseTest {
         address validatorToken = _selectToken(tokenSeed2);
 
         // Skip if tokens are identical
-        if (userToken == validatorToken) return;
+        vm.assume(userToken != validatorToken);
 
         // Bound amount to reasonable range (must be > 2 * MIN_LIQUIDITY for first mint)
         amount = bound(amount, MIN_LIQUIDITY * 3, 10_000_000_000);
@@ -270,13 +270,13 @@ contract FeeAMMInvariantTest is BaseTest {
         ctx.validatorToken = _selectToken(tokenSeed2);
 
         // Skip if tokens are identical
-        if (ctx.userToken == ctx.validatorToken) return;
+        vm.assume(ctx.userToken != ctx.validatorToken);
 
         ctx.poolId = amm.getPoolId(ctx.userToken, ctx.validatorToken);
         ctx.actorLiquidity = amm.liquidityBalances(ctx.poolId, ctx.actor);
 
         // Skip if actor has no liquidity
-        if (ctx.actorLiquidity == 0) return;
+        vm.assume(ctx.actorLiquidity > 0);
 
         // Calculate amount to burn
         liquidityPct = bound(liquidityPct, 1, 100);
@@ -392,12 +392,12 @@ contract FeeAMMInvariantTest is BaseTest {
         ctx.validatorToken = _selectToken(tokenSeed2);
 
         // Skip if tokens are identical
-        if (ctx.userToken == ctx.validatorToken) return;
+        vm.assume(ctx.userToken != ctx.validatorToken);
 
         IFeeAMM.Pool memory poolBefore = amm.getPool(ctx.userToken, ctx.validatorToken);
 
         // Skip if pool has no user token reserves
-        if (poolBefore.reserveUserToken == 0) return;
+        vm.assume(poolBefore.reserveUserToken > 0);
 
         // Bound amountOut to available reserves
         ctx.amountOut = bound(amountOutRaw, 1, poolBefore.reserveUserToken);
@@ -486,7 +486,7 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @param tokenSeed Seed for selecting token
     function setValidatorToken(uint256 actorSeed, uint256 tokenSeed) external {
         // Only set tokens for actors who have participated in fee activities
-        if (_activeActorList.length == 0) return;
+        vm.assume(_activeActorList.length > 0);
         address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
@@ -514,7 +514,7 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @param tokenSeed Seed for selecting token
     function setUserToken(uint256 actorSeed, uint256 tokenSeed) external {
         // Only set tokens for actors who have participated in fee activities
-        if (_activeActorList.length == 0) return;
+        vm.assume(_activeActorList.length > 0);
         address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
@@ -548,7 +548,7 @@ contract FeeAMMInvariantTest is BaseTest {
         address userToken = _selectToken(tokenSeed1);
         address validatorToken = _selectToken(tokenSeed2);
 
-        if (userToken == validatorToken) return;
+        vm.assume(userToken != validatorToken);
 
         amount = bound(amount, MIN_LIQUIDITY * 3, 100_000);
         _ensureFunds(actor, TIP20(validatorToken), amount);
@@ -592,14 +592,14 @@ contract FeeAMMInvariantTest is BaseTest {
         address userToken = _selectToken(tokenSeed1);
         address validatorToken = _selectToken(tokenSeed2);
 
-        if (userToken == validatorToken) return;
+        vm.assume(userToken != validatorToken);
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
-        if (pool.reserveUserToken == 0) return;
+        vm.assume(pool.reserveUserToken > 0);
 
         // Use very small amounts where rounding matters most
         uint256 amountOut = bound(pool.reserveUserToken, 1, 100);
-        if (amountOut > pool.reserveUserToken) return;
+        vm.assume(amountOut <= pool.reserveUserToken);
 
         uint256 expectedIn = (amountOut * N) / SCALE + 1;
         _ensureFunds(actor, TIP20(validatorToken), expectedIn * 2);
@@ -633,7 +633,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // Skip if we know there are no pending fees for this validator/token pair
         // This avoids wasting calls on "received 0 fees" scenarios
-        if (!_hasPendingFees[validator][token]) return;
+        vm.assume(_hasPendingFees[validator][token]);
 
         uint256 collectedBefore = amm.collectedFees(validator, token);
         uint256 validatorBalanceBefore = TIP20(token).balanceOf(validator);
@@ -722,11 +722,11 @@ contract FeeAMMInvariantTest is BaseTest {
             uint256 expectedOut = (feeAmount * M) / SCALE;
 
             // Skip if insufficient liquidity
-            if (pool.reserveValidatorToken < expectedOut) return;
-            if (expectedOut == 0) return;
+            vm.assume(pool.reserveValidatorToken >= expectedOut);
+            vm.assume(expectedOut > 0);
 
             // Skip if adding feeAmount would overflow uint128
-            if (uint256(pool.reserveUserToken) + feeAmount > type(uint128).max) return;
+            vm.assume(uint256(pool.reserveUserToken) + feeAmount <= type(uint128).max);
 
             // Simulate fee swap: update pool reserves
             bytes32 poolId = amm.getPoolId(userToken, validatorToken);
