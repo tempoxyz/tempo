@@ -509,7 +509,7 @@ def "main bench" [
 
     print $"Running benchmark: ($bench_cmd | str join ' ')"
     try {
-        sh -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+        bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
     } catch {
         print "Benchmark interrupted or failed."
     }
