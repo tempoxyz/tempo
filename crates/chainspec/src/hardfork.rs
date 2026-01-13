@@ -42,6 +42,8 @@ hardfork!(
         /// The current Tempo hardfork (genesis).
         #[default]
         Genesis,
+        /// Tempo Protocol Version 1.
+        T1,
     }
 );
 

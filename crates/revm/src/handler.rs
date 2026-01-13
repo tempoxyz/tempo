@@ -7,7 +7,7 @@ use reth_evm::EvmError;
 use revm::{
     Database,
     context::{
-        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction,
+        Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
         result::{EVMError, ExecutionResult, InvalidTransaction},
         transaction::{AccessListItem, AccessListItemTr},
@@ -22,13 +22,9 @@ use revm::{
     interpreter::{
         Gas, InitialAndFloorGas,
         gas::get_tokens_in_calldata_istanbul,
-        instructions::{
-            ACCESS_LIST_ADDRESS, ACCESS_LIST_STORAGE_KEY, COLD_SLOAD_COST, SSTORE_SET,
-            STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
-        },
+        instructions::{COLD_SLOAD_COST, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET},
         interpreter::EthInterpreter,
     },
-    primitives::eip7702,
 };
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
@@ -50,6 +46,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
+    gas_params::TempoGasParams,
 };
 
 /// Additional gas for P256 signature verification
@@ -1088,20 +1085,75 @@ where
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
         let tx = evm.ctx_ref().tx();
+        let gas_params = evm.ctx_ref().cfg().gas_params();
+        let gas_limit = tx.gas_limit();
 
         // Route to appropriate gas calculation based on transaction type
-        if tx.tempo_tx_env.is_some() {
+        let mut init_gas = if tx.tempo_tx_env.is_some() {
             // AA transaction - use batch gas calculation
-            validate_aa_initial_tx_gas(evm)
+            validate_aa_initial_tx_gas(evm)?
         } else {
-            // Standard transaction - use default revm validation
-            let spec = evm.ctx_ref().cfg().spec().into();
-            Ok(validation::validate_initial_tx_gas(
-                tx,
-                spec,
-                evm.ctx.cfg.is_eip7623_disabled(),
-            )?)
+            let mut acc = 0;
+            let mut storage = 0;
+            // legacy is only tx type that does not have access list.
+            if tx.tx_type() != TransactionType::Legacy {
+                (acc, storage) = tx
+                    .access_list()
+                    .map(|al| {
+                        al.fold((0, 0), |(acc, storage), item| {
+                            (acc + 1, storage + item.storage_slots().count())
+                        })
+                    })
+                    .unwrap_or_default();
+            };
+            let mut init_gas = gas_params.initial_tx_gas(
+                tx.input(),
+                tx.kind().is_create(),
+                acc as u64,
+                storage as u64,
+                tx.authorization_list_len() as u64,
+            );
+            // TIP-1000: Storage pricing updates for launch
+            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+            for auth in tx.authorization_list() {
+                if auth.nonce == 0 {
+                    init_gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+                }
+            }
+            init_gas
+        };
+
+        // TIP-1000: Storage pricing updates for launch
+        // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+        // TODO(rakita): check if this is needed for `validate_aa_initial_tx_gas` function.
+        if tx.nonce == 0 {
+            // TODO(rakita): make simpler function
+            init_gas.initial_gas += gas_params.new_account_cost(true, true);
         }
+
+        if evm.ctx.cfg.is_eip7623_disabled() {
+            init_gas.floor_gas = 0u64;
+        }
+
+        // Validate gas limit is sufficient for initial gas
+        if gas_limit < init_gas.initial_gas {
+            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                gas_limit,
+                intrinsic_gas: init_gas.initial_gas,
+            }
+            .into());
+        }
+
+        // Validate floor gas (Prague+)
+        if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < init_gas.floor_gas {
+            return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                gas_limit,
+                intrinsic_gas: init_gas.floor_gas,
+            }
+            .into());
+        }
+
+        Ok(init_gas)
     }
 
     fn catch_error(
@@ -1164,7 +1216,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let mut gas = InitialAndFloorGas::default();
 
     // 1. Base stipend (21k, once per transaction)
-    gas.initial_gas += 21_000;
+    gas.initial_gas += gas_params.tx_base_stipend();
 
     // 2. Signature verification gas
     gas.initial_gas += tempo_signature_verification_gas(signature);
@@ -1177,10 +1229,16 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.initial_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
 
     // 4. Authorization list costs (EIP-7702)
-    gas.initial_gas += authorization_list.len() as u64 * eip7702::PER_EMPTY_ACCOUNT_COST;
+    gas.initial_gas +=
+        authorization_list.len() as u64 * gas_params.tx_eip7702_per_empty_account_cost();
     // Add signature verification costs for each authorization
     for auth in authorization_list {
         gas.initial_gas += tempo_signature_verification_gas(auth.signature());
+        // TIP-1000: Storage pricing updates for launch
+        // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
     }
 
     // 5. Key authorization costs (if present)
@@ -1199,7 +1257,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         // 4b. CREATE-specific costs
         if call.to.is_create() {
             // CREATE costs 32000 additional gas
-            gas.initial_gas += gas_params.create_cost(); // 32000 gas
+            gas.initial_gas += gas_params.create_cost(); // 32_000 gas after TIP-1000 250_000 gas
 
             // EIP-3860: Initcode analysis gas using revm helper
             gas.initial_gas += gas_params.tx_initcode_cost(call.input.len());
@@ -1218,19 +1276,15 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         }
     }
 
-    gas.initial_gas += total_tokens * STANDARD_TOKEN_COST;
+    gas.initial_gas += total_tokens * gas_params.tx_token_cost();
 
     // 5. Access list costs using revm constants
     if let Some(access_list) = access_list {
-        let (accounts, storages) =
-            access_list.fold((0u64, 0u64), |(acc_count, storage_count), item| {
-                (
-                    acc_count + 1,
-                    storage_count + item.storage_slots().count() as u64,
-                )
-            });
-        gas.initial_gas += accounts * ACCESS_LIST_ADDRESS; // 2400 per account
-        gas.initial_gas += storages * ACCESS_LIST_STORAGE_KEY; // 1900 per storage
+        let (accounts, storages) = access_list.fold((0, 0), |(acc_count, storage_count), item| {
+            (acc_count + 1, storage_count + item.storage_slots().count())
+        });
+        gas.initial_gas += accounts * gas_params.tx_access_list_address_cost(); // 2400 per account
+        gas.initial_gas += storages as u64 * gas_params.tx_access_list_storage_key_cost(); // 1900 per storage
     }
 
     // 6. Floor gas  using revm helper
@@ -1260,7 +1314,6 @@ where
         .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
     let calls = &aa_env.aa_calls;
-    let gas_limit = tx.gas_limit();
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
@@ -1271,31 +1324,7 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list())?;
-
-    if evm.ctx.cfg.is_eip7623_disabled() {
-        batch_gas.floor_gas = 0u64;
-    }
-
-    // Validate gas limit is sufficient for initial gas
-    if gas_limit < batch_gas.initial_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-            gas_limit,
-            intrinsic_gas: batch_gas.initial_gas,
-        }
-        .into());
-    }
-
-    // Validate floor gas (Prague+)
-    if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
-        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-            gas_limit,
-            intrinsic_gas: batch_gas.floor_gas,
-        }
-        .into());
-    }
-
-    Ok(batch_gas)
+    calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list()).map_err(Into::into)
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
