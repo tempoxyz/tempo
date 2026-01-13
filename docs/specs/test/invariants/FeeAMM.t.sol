@@ -730,13 +730,9 @@ contract FeeAMMInvariantTest is BaseTest {
             _ghostFeeInputSum += feeAmount;
             _ghostFeeOutputSum += expectedOut;
 
-            // Track precise dust from fee swap
-            // Theoretical dust = feeAmount * (SCALE - M) / SCALE
-            // Actual dust = feeAmount - expectedOut
-            uint256 theoreticalFee = (feeAmount * (SCALE - M)) / SCALE;
-            uint256 actualFee = feeAmount - expectedOut;
-            _ghostFeeSwapTheoreticalDust += theoreticalFee;
-            _ghostFeeSwapActualDust += actualFee;
+            // Track precise dust from fee swap (inline to avoid stack depth)
+            _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
+            _ghostFeeSwapActualDust += feeAmount - expectedOut;
 
             _log(
                 string.concat(
