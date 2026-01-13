@@ -34,6 +34,16 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM15**: MIN_LIQUIDITY is permanently locked - once a pool is initialized, total supply is always >= MIN_LIQUIDITY.
 - **TEMPO-AMM16**: Fee rates are constant - M = 9970, N = 9985, SCALE = 10000.
 
+### Rounding & Exploitation Invariants
+
+- **TEMPO-AMM17**: Mint/burn cycle should not profit the actor - prevents rounding exploitation.
+- **TEMPO-AMM18**: Small swaps should still pay >= theoretical rate.
+- **TEMPO-AMM19**: Must pay at least 1 for any swap - prevents zero-cost extraction.
+- **TEMPO-AMM20**: Reserves are always bounded by uint128.
+- **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
+- **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding.
+- **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
+
 ## FeeManager
 
 The FeeManager extends FeeAMM and handles fee token preferences and distribution for validators and users.
@@ -48,16 +58,10 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 - **TEMPO-FEE3**: After `distributeFees`, collected fees for that validator/token pair are zeroed.
 - **TEMPO-FEE4**: Validator receives exactly the previously collected fee amount on distribution.
 
-### Fee Collection Invariants (Protocol-Level)
+### Fee Collection Invariants
 
-These invariants apply during transaction fee collection (called by the protocol):
-
-- **TEMPO-FEE5**: Pre-tx fee collection transfers max fee amount to the FeeManager.
-- **TEMPO-FEE6**: Pre-tx fee collection checks sufficient liquidity when user token ≠ validator token.
-- **TEMPO-FEE7**: Post-tx fee collection refunds unused gas to the user.
-- **TEMPO-FEE8**: Post-tx fee collection executes swap immediately when user token ≠ validator token.
-- **TEMPO-FEE9**: Fee swap output follows formula: `amountOut = amountIn * M / SCALE` (0.30% fee).
-- **TEMPO-FEE10**: Collected fees accumulate correctly for the validator in their preferred token.
+- **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
+- **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
 ## Running Invariant Tests
 

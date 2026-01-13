@@ -12,8 +12,6 @@ import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
-/// @dev Uses vm.store to simulate fee collection. Works on both foundry (Solidity reference)
-///      and tempo-foundry (Rust precompile) with correct storage slot layout.
 contract FeeAMMInvariantTest is BaseTest {
     /// @dev Array of test actors that interact with the FeeAMM
     address[] private _actors;
@@ -39,6 +37,7 @@ contract FeeAMMInvariantTest is BaseTest {
     uint256 private constant N = 9985; // Rebalance swap rate (0.9985 = 0.15% fee)
     uint256 private constant SCALE = 10_000;
     uint256 private constant MIN_LIQUIDITY = 1000;
+    uint256 private constant SPREAD = 15; // N - M = 15 basis points
 
     /// @dev Ghost variables for tracking state changes
     uint256 private _totalMints;
@@ -56,6 +55,8 @@ contract FeeAMMInvariantTest is BaseTest {
         uint256 totalSupplyBefore;
         uint128 reserveUserBefore;
         uint128 reserveValidatorBefore;
+        uint256 actorUserBalanceBefore;
+        uint256 actorValidatorBalanceBefore;
     }
 
     /// @dev Struct to reduce stack depth in rebalance handler
@@ -81,6 +82,34 @@ contract FeeAMMInvariantTest is BaseTest {
     uint256 private _totalFeeCollections;
     uint256 private _ghostFeeInputSum;
     uint256 private _ghostFeeOutputSum;
+
+    /// @dev Track validators with pending fees (validator => token => hasFees)
+    /// Used to avoid wasting calls on distributeFees when there are no fees
+    mapping(address => mapping(address => bool)) private _hasPendingFees;
+
+    /// @dev Track actors who have participated in fee-related activities
+    /// Only these actors should have their token preferences changed
+    mapping(address => bool) private _activeActors;
+    address[] private _activeActorList;
+
+    /// @dev Ghost variables for tracking dust accumulation from rounding
+    /// All rounding should favor the pool (dust accumulates in AMM, not extracted by users)
+    uint256 private _ghostBurnUserTheoretical;
+    uint256 private _ghostBurnUserActual;
+    uint256 private _ghostBurnValidatorTheoretical;
+    uint256 private _ghostBurnValidatorActual;
+
+    /// @dev Precise dust tracking for fee swaps
+    /// Fee swap: user pays X, validator receives (X * M / SCALE)
+    /// Dust = X - (X * M / SCALE) = X * (SCALE - M) / SCALE (theoretical)
+    /// But integer division may leave extra dust
+    uint256 private _ghostFeeSwapTheoreticalDust;
+    uint256 private _ghostFeeSwapActualDust;
+
+    /// @dev Precise dust tracking for rebalance swaps
+    /// Rebalance: user receives Y, pays (Y * N / SCALE) + 1
+    /// The +1 is intentional rounding that favors the pool
+    uint256 private _ghostRebalanceRoundingDust;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -252,6 +281,8 @@ contract FeeAMMInvariantTest is BaseTest {
         ctx.totalSupplyBefore = amm.totalSupply(ctx.poolId);
         ctx.reserveUserBefore = poolBefore.reserveUserToken;
         ctx.reserveValidatorBefore = poolBefore.reserveValidatorToken;
+        ctx.actorUserBalanceBefore = TIP20(ctx.userToken).balanceOf(ctx.actor);
+        ctx.actorValidatorBalanceBefore = TIP20(ctx.validatorToken).balanceOf(ctx.actor);
 
         vm.startPrank(ctx.actor);
         try amm.burn(ctx.userToken, ctx.validatorToken, ctx.liquidityToBurn, ctx.actor) returns (
@@ -259,6 +290,17 @@ contract FeeAMMInvariantTest is BaseTest {
         ) {
             vm.stopPrank();
             _totalBurns++;
+
+            // Track theoretical vs actual for dust analysis
+            // Theoretical (unrounded): liquidity * reserve / totalSupply
+            // Due to integer division, actual <= theoretical
+            uint256 theoreticalUser = (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
+            uint256 theoreticalValidator = (ctx.liquidityToBurn * ctx.reserveValidatorBefore) / ctx.totalSupplyBefore;
+            _ghostBurnUserTheoretical += theoreticalUser;
+            _ghostBurnUserActual += amountUserToken;
+            _ghostBurnValidatorTheoretical += theoreticalValidator;
+            _ghostBurnValidatorActual += amountValidatorToken;
+
             _assertBurnInvariants(ctx, amountUserToken, amountValidatorToken);
             _logBurn(ctx.actor, ctx.liquidityToBurn, amountUserToken, amountValidatorToken);
         } catch (bytes memory reason) {
@@ -295,6 +337,18 @@ contract FeeAMMInvariantTest is BaseTest {
             amm.liquidityBalances(ctx.poolId, ctx.actor),
             ctx.actorLiquidity - ctx.liquidityToBurn,
             "TEMPO-AMM7: Actor liquidity balance mismatch"
+        );
+
+        // TEMPO-AMM8: Actor receives the exact calculated token amounts
+        assertEq(
+            TIP20(ctx.userToken).balanceOf(ctx.actor),
+            ctx.actorUserBalanceBefore + amountUserToken,
+            "TEMPO-AMM8: Actor user token balance mismatch"
+        );
+        assertEq(
+            TIP20(ctx.validatorToken).balanceOf(ctx.actor),
+            ctx.actorValidatorBalanceBefore + amountValidatorToken,
+            "TEMPO-AMM8: Actor validator token balance mismatch"
         );
 
         // TEMPO-AMM9: Pool reserves should decrease
@@ -363,6 +417,17 @@ contract FeeAMMInvariantTest is BaseTest {
                 _totalSmallRebalanceSwaps++;
             }
 
+            // Track the +1 rounding dust that favors the pool
+            // Formula: amountIn = (amountOut * N / SCALE) + 1
+            // Without +1: amountIn would be (amountOut * N / SCALE)
+            // The +1 is dust captured by the pool
+            uint256 withoutRounding = (ctx.amountOut * N) / SCALE;
+            uint256 roundingDust = amountIn - withoutRounding; // Should always be 1
+            _ghostRebalanceRoundingDust += roundingDust;
+
+            // Mark actor as active
+            _markActorActive(ctx.actor);
+
             _assertRebalanceInvariants(ctx, amountIn);
             _logRebalance(ctx.actor, amountIn, ctx.amountOut);
         } catch (bytes memory reason) {
@@ -403,10 +468,13 @@ contract FeeAMMInvariantTest is BaseTest {
     }
 
     /// @notice Handler for setting validator token preference
+    /// @dev Only sets tokens for active actors to avoid wasted calls
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
     function setValidatorToken(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
+        // Only set tokens for actors who have participated in fee activities
+        if (_activeActorList.length == 0) return;
+        address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
         // Cannot set validator token if actor is the block coinbase (beneficiary check in Rust)
@@ -428,10 +496,13 @@ contract FeeAMMInvariantTest is BaseTest {
     }
 
     /// @notice Handler for setting user token preference
+    /// @dev Only sets tokens for active actors to avoid wasted calls
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
     function setUserToken(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
+        // Only set tokens for actors who have participated in fee activities
+        if (_activeActorList.length == 0) return;
+        address actor = _selectActiveActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
         vm.startPrank(actor, actor); // Set both msg.sender and tx.origin
@@ -542,10 +613,17 @@ contract FeeAMMInvariantTest is BaseTest {
         address validator = _selectActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
+        // Skip if we know there are no pending fees for this validator/token pair
+        // This avoids wasting calls on "received 0 fees" scenarios
+        if (!_hasPendingFees[validator][token]) return;
+
         uint256 collectedBefore = amm.collectedFees(validator, token);
         uint256 validatorBalanceBefore = TIP20(token).balanceOf(validator);
 
         try amm.distributeFees(validator, token) {
+            // Clear pending fees tracker
+            _hasPendingFees[validator][token] = false;
+
             // TEMPO-FEE3: Collected fees should be zeroed after distribution
             uint256 collectedAfter = amm.collectedFees(validator, token);
             assertEq(collectedAfter, 0, "TEMPO-FEE3: Collected fees should be zero after distribution");
@@ -581,7 +659,8 @@ contract FeeAMMInvariantTest is BaseTest {
     function simulateFeeCollection(
         uint256 userSeed,
         uint256 validatorSeed,
-        uint256 feeAmountRaw
+        uint256 feeAmountRaw,
+        uint256 crossTokenBias
     ) external {
         address user = _selectActor(userSeed);
         address validator = _selectActor(validatorSeed);
@@ -593,8 +672,28 @@ contract FeeAMMInvariantTest is BaseTest {
         address validatorToken = amm.validatorTokens(validator);
         if (validatorToken == address(0)) validatorToken = address(pathUSD);
 
-        // Bound fee amount
+        // Bound fee amount first so we can check liquidity
         uint256 feeAmount = bound(feeAmountRaw, 1000, 1_000_000);
+        uint256 expectedOutForCheck = (feeAmount * M) / SCALE;
+
+        // Bias toward cross-token swaps: 90% chance to force different tokens
+        // This exercises the actual swap logic more frequently
+        if (userToken == validatorToken && (crossTokenBias % 100) < 90) {
+            // Try to find a different validator token with sufficient liquidity
+            // Use modulo to prevent overflow when iterating
+            uint256 baseSeed = crossTokenBias % 1000;
+            for (uint256 i = 0; i < 5; i++) {
+                address candidateToken = _selectToken(baseSeed + i);
+                if (candidateToken != userToken) {
+                    IFeeAMM.Pool memory candidatePool = amm.getPool(userToken, candidateToken);
+                    // Only use this token if the pool has sufficient liquidity
+                    if (candidatePool.reserveValidatorToken >= expectedOutForCheck) {
+                        validatorToken = candidateToken;
+                        break;
+                    }
+                }
+            }
+        }
 
         // If tokens differ, we need a pool with liquidity
         if (userToken != validatorToken) {
@@ -604,6 +703,9 @@ contract FeeAMMInvariantTest is BaseTest {
             // Skip if insufficient liquidity
             if (pool.reserveValidatorToken < expectedOut) return;
             if (expectedOut == 0) return;
+
+            // Skip if adding feeAmount would overflow uint128
+            if (uint256(pool.reserveUserToken) + feeAmount > type(uint128).max) return;
 
             // Simulate fee swap: update pool reserves
             bytes32 poolId = amm.getPoolId(userToken, validatorToken);
@@ -618,10 +720,23 @@ contract FeeAMMInvariantTest is BaseTest {
 
             // Accumulate fees for validator
             _storeCollectedFees(validator, validatorToken, expectedOut);
+            _hasPendingFees[validator][validatorToken] = true;
+
+            // Mark both actors as active for future token preference changes
+            _markActorActive(user);
+            _markActorActive(validator);
 
             _totalFeeCollections++;
             _ghostFeeInputSum += feeAmount;
             _ghostFeeOutputSum += expectedOut;
+
+            // Track precise dust from fee swap
+            // Theoretical dust = feeAmount * (SCALE - M) / SCALE
+            // Actual dust = feeAmount - expectedOut
+            uint256 theoreticalFee = (feeAmount * (SCALE - M)) / SCALE;
+            uint256 actualFee = feeAmount - expectedOut;
+            _ghostFeeSwapTheoreticalDust += theoreticalFee;
+            _ghostFeeSwapActualDust += actualFee;
 
             _log(
                 string.concat(
@@ -646,10 +761,16 @@ contract FeeAMMInvariantTest is BaseTest {
             TIP20(userToken).transfer(address(amm), feeAmount);
 
             _storeCollectedFees(validator, validatorToken, feeAmount);
+            _hasPendingFees[validator][validatorToken] = true;
+
+            // Mark both actors as active
+            _markActorActive(user);
+            _markActorActive(validator);
 
             _totalFeeCollections++;
             _ghostFeeInputSum += feeAmount;
             _ghostFeeOutputSum += feeAmount;
+            // No dust for same-token transfers
 
             _log(
                 string.concat(
@@ -718,22 +839,50 @@ contract FeeAMMInvariantTest is BaseTest {
         _log(string.concat("Total fee collections: ", vm.toString(_totalFeeCollections)));
         _log(string.concat("Total mint/burn cycles: ", vm.toString(_totalMintBurnCycles)));
         _log(string.concat("Total small rebalance swaps: ", vm.toString(_totalSmallRebalanceSwaps)));
+
+        // Fee collection: In > Out due to 0.30% fee (M=0.9970)
+        // The difference is fee revenue captured by the AMM
+        uint256 feeRevenue = _ghostFeeInputSum > _ghostFeeOutputSum
+            ? _ghostFeeInputSum - _ghostFeeOutputSum
+            : 0;
         _log(
             string.concat(
-                "Rebalance totals - In: ",
-                vm.toString(_ghostRebalanceInputSum),
-                ", Out: ",
-                vm.toString(_ghostRebalanceOutputSum)
-            )
-        );
-        _log(
-            string.concat(
-                "Fee collection totals - In: ",
+                "Fee swaps - In: ",
                 vm.toString(_ghostFeeInputSum),
                 ", Out: ",
-                vm.toString(_ghostFeeOutputSum)
+                vm.toString(_ghostFeeOutputSum),
+                ", Revenue (0.30% fee): ",
+                vm.toString(feeRevenue)
             )
         );
+
+        // Rebalance: Out > In due to 0.15% discount (N=0.9985)
+        // The difference is the incentive paid to LPs for rebalancing
+        uint256 rebalanceIncentive = _ghostRebalanceOutputSum > _ghostRebalanceInputSum
+            ? _ghostRebalanceOutputSum - _ghostRebalanceInputSum
+            : 0;
+        _log(
+            string.concat(
+                "Rebalance swaps - In: ",
+                vm.toString(_ghostRebalanceInputSum),
+                ", Out: ",
+                vm.toString(_ghostRebalanceOutputSum),
+                ", LP incentive (0.15% discount): ",
+                vm.toString(rebalanceIncentive)
+            )
+        );
+
+        // Net AMM position: fee revenue minus rebalance incentives paid
+        // Should be positive if fee volume exceeds rebalance volume (fee rate > rebalance rate)
+        if (feeRevenue >= rebalanceIncentive) {
+            _log(string.concat("Net AMM revenue: +", vm.toString(feeRevenue - rebalanceIncentive)));
+        } else {
+            _log(string.concat("Net AMM revenue: -", vm.toString(rebalanceIncentive - feeRevenue)));
+        }
+
+        // Precise dust tracking
+        _logDustTracking();
+
         _logBalances();
         _log("");
     }
@@ -751,6 +900,7 @@ contract FeeAMMInvariantTest is BaseTest {
         _invariantReservesBoundedByU128();
         _invariantSpreadPreventsArbitrage();
         _invariantRebalanceRoundingFavorsPool();
+        _invariantBurnRoundingFavorsPool();
         _invariantCollectedFeesNotExceedBalance();
         _invariantFeeSwapRateApplied();
     }
@@ -906,7 +1056,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         assertTrue(M < N, "TEMPO-AMM21: M must be less than N for spread");
         // Spread = N - M = 9985 - 9970 = 15 basis points
-        assertTrue(N - M == 15, "TEMPO-AMM21: Spread should be 15 bps");
+        assertTrue(N - M == SPREAD, "TEMPO-AMM21: Spread should be 15 bps");
     }
 
     /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool
@@ -969,6 +1119,23 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
+    /// @notice TEMPO-AMM23: Burn rounding dust accumulates in pool, not extracted by users
+    /// @dev Integer division in burn calculation: amount = liquidity * reserve / totalSupply
+    ///      This always rounds down, so users receive <= theoretical amount.
+    ///      The dust (theoretical - actual) remains in the pool.
+    function _invariantBurnRoundingFavorsPool() internal view {
+        // Actual amounts received should never exceed theoretical
+        // (they should be equal or less due to rounding down)
+        assertTrue(
+            _ghostBurnUserActual <= _ghostBurnUserTheoretical,
+            "TEMPO-AMM23: Burn user actual exceeds theoretical"
+        );
+        assertTrue(
+            _ghostBurnValidatorActual <= _ghostBurnValidatorTheoretical,
+            "TEMPO-AMM23: Burn validator actual exceeds theoretical"
+        );
+    }
+
     /*//////////////////////////////////////////////////////////////
                           INTERNAL HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -978,6 +1145,22 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @return Selected actor address
     function _selectActor(uint256 seed) internal view returns (address) {
         return _actors[seed % _actors.length];
+    }
+
+    /// @dev Marks an actor as active (participating in fee-related activities)
+    function _markActorActive(address actor) internal {
+        if (!_activeActors[actor]) {
+            _activeActors[actor] = true;
+            _activeActorList.push(actor);
+        }
+    }
+
+    /// @dev Selects from active actors only, or falls back to regular selection if none active
+    function _selectActiveActor(uint256 seed) internal view returns (address) {
+        if (_activeActorList.length == 0) {
+            return _actors[seed % _actors.length];
+        }
+        return _activeActorList[seed % _activeActorList.length];
     }
 
     /// @notice Verifies a revert is due to a known/expected FeeAMM error
@@ -1185,6 +1368,38 @@ contract FeeAMMInvariantTest is BaseTest {
             );
         }
         _log(balanceStr);
+    }
+
+    /// @dev Logs precise dust tracking information
+    function _logDustTracking() internal {
+        // Fee swap dust analysis
+        uint256 extraDust = _ghostFeeSwapActualDust > _ghostFeeSwapTheoreticalDust
+            ? _ghostFeeSwapActualDust - _ghostFeeSwapTheoreticalDust
+            : 0;
+        _log(
+            string.concat(
+                "Fee swap dust - Theoretical: ",
+                vm.toString(_ghostFeeSwapTheoreticalDust),
+                ", Actual: ",
+                vm.toString(_ghostFeeSwapActualDust),
+                ", Extra: ",
+                vm.toString(extraDust)
+            )
+        );
+
+        // Rebalance +1 rounding dust (should equal swap count)
+        _log(
+            string.concat(
+                "Rebalance +1 rounding dust: ",
+                vm.toString(_ghostRebalanceRoundingDust),
+                " (should equal rebalance swap count: ",
+                vm.toString(_totalRebalanceSwaps),
+                ")"
+            )
+        );
+
+        // Active actor count
+        _log(string.concat("Active actors: ", vm.toString(_activeActorList.length)));
     }
 
     /// @dev Gets actor index from address for logging
