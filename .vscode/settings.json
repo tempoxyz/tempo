@@ -2,7 +2,7 @@
 	"editor.defaultFormatter": "biomejs.biome",
 	"editor.formatOnSave": true,
 	"markdown.validate.enabled": true,
-	"biome.requireConfiguration":true,
+	"biome.requireConfiguration": true,
 	"tailwindCSS.classFunctions": ["cva", "cx"],
   "biome.enabled": true,
   "biome.runFromTemporaryLocation": true,
