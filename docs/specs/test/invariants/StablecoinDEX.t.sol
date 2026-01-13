@@ -125,7 +125,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         uint256 tokenRnd,
         bool isBid,
         bool cancel
-    ) external {
+    ) public {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
         address token = address(_tokens[tokenRnd % _tokens.length]);
@@ -165,6 +165,26 @@ contract StablecoinDEXInvariantTest is BaseTest {
 
         vm.stopPrank();
         _logBalances();
+    }
+
+    function placeOrder1(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid
+    ) external {
+        placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, false);
+    }
+
+    function placeOrder2(
+        uint256 actorRnd,
+        uint128 amount,
+        uint256 tickRnd,
+        uint256 tokenRnd,
+        bool isBid
+    ) external {
+        placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, false);
     }
 
     /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
