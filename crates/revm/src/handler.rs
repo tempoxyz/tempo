@@ -380,9 +380,12 @@ where
 
                 // Include gas from all previous successful calls + failed call
                 let gas_spent_by_failed_call = frame_result.gas().spent();
-                let total_gas_spent = (gas_limit - remaining_gas)
+                let gas_spent_so_far = gas_limit
+                    .checked_sub(remaining_gas)
+                    .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
+                let total_gas_spent = gas_spent_so_far
                     .checked_add(gas_spent_by_failed_call)
-                    .ok_or_else(|| EVMError::Custom("total gas spent overflow".to_string()))?;
+                    .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
 
                 // Create new Gas with correct limit, because Gas does not have a set_limit method
                 // (the frame_result has the limit from just the last call)
@@ -404,11 +407,11 @@ where
 
             accumulated_gas_refund = accumulated_gas_refund
                 .checked_add(gas_refunded)
-                .ok_or_else(|| EVMError::Custom("gas refund overflow".to_string()))?;
+                .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
             // Subtract only execution gas (intrinsic gas already deducted upfront)
             remaining_gas = remaining_gas
                 .checked_sub(gas_spent)
-                .ok_or_else(|| EVMError::Custom("gas spent exceeds remaining gas".to_string()))?;
+                .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
 
             final_result = Some(frame_result);
         }
@@ -845,10 +848,7 @@ where
                 let expiry = key_auth.expiry.unwrap_or(u64::MAX);
 
                 // Validate expiry is not in the past
-                let current_timestamp: u64 = block
-                    .timestamp()
-                    .try_into()
-                    .map_err(|_| TempoInvalidTransaction::ArithmeticUnderOverflow)?;
+                let current_timestamp: u64 = block.timestamp().saturating_to();
                 if expiry <= current_timestamp {
                     return Err(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
                         reason: format!(
@@ -1039,7 +1039,7 @@ where
             )?
             .checked_sub(tx.value)
             .and_then(|v| v.checked_sub(actual_spending))
-            .ok_or_else(|| EVMError::Custom("refund amount underflow".to_string()))?;
+            .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
 
         // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
@@ -1139,12 +1139,7 @@ where
             )?;
 
             // Validate time window for AA transactions
-            let block_timestamp: u64 = evm
-                .ctx_ref()
-                .block()
-                .timestamp()
-                .try_into()
-                .map_err(|_| TempoInvalidTransaction::ArithmeticUnderOverflow)?;
+            let block_timestamp: u64 = evm.ctx_ref().block().timestamp().saturating_to();
             validate_time_window(aa_env.valid_after, aa_env.valid_before, block_timestamp)?;
         }
 
@@ -1247,8 +1242,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
 
     // 3. Per-call overhead: cold account access for additional calls beyond the first.
-    #[allow(clippy::manual_saturating_arithmetic)]
-    let additional_calls = calls.len().checked_sub(1).unwrap_or(0) as u64;
+    let additional_calls = calls.len().saturating_sub(1) as u64;
     let cold_access_gas = COLD_ACCOUNT_ACCESS_COST
         .checked_mul(additional_calls)
         .ok_or(TempoInvalidTransaction::ArithmeticUnderOverflow)?;
