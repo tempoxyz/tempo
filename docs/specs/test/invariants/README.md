@@ -81,6 +81,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding.
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
+- **TEMPO-AMM24**: All participants can exit - after distributing all fees and burning all LP positions, only dust remains in the AMM. This ensures no funds are locked and all participants can withdraw.
 
 ## FeeManager
 

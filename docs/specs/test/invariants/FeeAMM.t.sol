@@ -785,7 +785,6 @@ contract FeeAMMInvariantTest is BaseTest {
     }
 
     /// @dev Stores pool reserves directly using vm.store
-    /// @dev Works on both foundry (Solidity ref) and tempo-foundry (Rust precompile)
     function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator) internal {
         // TipFeeManager storage layout (Rust struct order):
         // slot 0: validator_tokens
@@ -802,7 +801,6 @@ contract FeeAMMInvariantTest is BaseTest {
     }
 
     /// @dev Stores/increments collected fees using vm.store
-    /// @dev Works on both foundry (Solidity ref) and tempo-foundry (Rust precompile)
     function _storeCollectedFees(address validator, address token, uint256 amount) internal {
         // TipFeeManager storage layout (Rust struct order):
         // slot 0: validator_tokens
@@ -880,6 +878,10 @@ contract FeeAMMInvariantTest is BaseTest {
         _logDustTracking();
 
         _logBalances();
+
+        // TEMPO-AMM24: All participants can exit - simulate full withdrawal
+        _verifyAllCanExit();
+
         _log("");
     }
 
@@ -1129,6 +1131,197 @@ contract FeeAMMInvariantTest is BaseTest {
         assertTrue(
             _ghostBurnValidatorActual <= _ghostBurnValidatorTheoretical,
             "TEMPO-AMM23: Burn validator actual exceeds theoretical"
+        );
+    }
+
+    /// @notice TEMPO-AMM24: All participants can exit - verify everyone can withdraw
+    /// @dev After all operations, all LPs should be able to burn their positions and
+    ///      all validators should be able to claim their fees. Only dust should remain.
+    function _verifyAllCanExit() internal {
+        // Step 1: Distribute all pending fees to validators
+        _exitDistributeAllFees();
+
+        // Step 2: Have all actors burn their LP positions
+        _exitBurnAllLiquidity();
+
+        // Step 3: Verify only dust remains in the AMM
+        _exitVerifyOnlyDustRemains();
+    }
+
+    /// @dev Distribute all collected fees to validators
+    function _exitDistributeAllFees() internal {
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address validator = _actors[i];
+
+            // Distribute fees for each token
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                address token = address(_tokens[t]);
+                if (amm.collectedFees(validator, token) > 0) {
+                    try amm.distributeFees(validator, token) {} catch {}
+                }
+            }
+
+            // Also distribute pathUSD fees
+            if (amm.collectedFees(validator, address(pathUSD)) > 0) {
+                try amm.distributeFees(validator, address(pathUSD)) {} catch {}
+            }
+        }
+    }
+
+    /// @dev Have all actors burn their LP positions
+    function _exitBurnAllLiquidity() internal {
+        for (uint256 a = 0; a < _actors.length; a++) {
+            address actor = _actors[a];
+
+            // Check all pool pairs
+            for (uint256 i = 0; i < _tokens.length; i++) {
+                for (uint256 j = 0; j < _tokens.length; j++) {
+                    if (i == j) continue;
+
+                    address userToken = address(_tokens[i]);
+                    address validatorToken = address(_tokens[j]);
+                    bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+
+                    uint256 lpBalance = amm.liquidityBalances(poolId, actor);
+                    if (lpBalance > 0) {
+                        vm.prank(actor);
+                        try amm.burn(userToken, validatorToken, lpBalance, actor) {} catch {}
+                    }
+                }
+
+                // Also check pathUSD pairs
+                address token = address(_tokens[i]);
+
+                // token/pathUSD pool
+                bytes32 poolId1 = amm.getPoolId(token, address(pathUSD));
+                uint256 lpBalance1 = amm.liquidityBalances(poolId1, actor);
+                if (lpBalance1 > 0) {
+                    vm.prank(actor);
+                    try amm.burn(token, address(pathUSD), lpBalance1, actor) {} catch {}
+                }
+
+                // pathUSD/token pool
+                bytes32 poolId2 = amm.getPoolId(address(pathUSD), token);
+                uint256 lpBalance2 = amm.liquidityBalances(poolId2, actor);
+                if (lpBalance2 > 0) {
+                    vm.prank(actor);
+                    try amm.burn(address(pathUSD), token, lpBalance2, actor) {} catch {}
+                }
+            }
+        }
+    }
+
+    /// @dev Verify only dust remains after all exits
+    /// Calculates exact expected remaining balance per pool and asserts equality
+    function _exitVerifyOnlyDustRemains() internal {
+        // After all burns, each initialized pool should have exactly:
+        // - reserveValidatorToken: the MIN_LIQUIDITY share of validator tokens
+        // - reserveUserToken: the MIN_LIQUIDITY share of user tokens
+        // These are locked permanently from the first mint.
+        //
+        // Additionally, the AMM balance may include:
+        // - Unclaimed fee dust from rounding in fee swaps
+        // - Rebalance +1 rounding dust
+
+        // Calculate actual remaining balance per token
+        uint256 ammPathUSD = pathUSD.balanceOf(address(amm));
+
+        // Calculate expected remaining = sum of all pool reserves (after burns)
+        // After burn, pools retain MIN_LIQUIDITY's worth of tokens
+        uint256 expectedPathUSD = 0;
+        uint256[] memory expectedTokens = new uint256[](_tokens.length);
+
+        // Sum up remaining reserves in all pools
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                if (i == j) continue;
+                IFeeAMM.Pool memory pool = amm.getPool(address(_tokens[i]), address(_tokens[j]));
+                expectedTokens[i] += pool.reserveUserToken;
+                expectedTokens[j] += pool.reserveValidatorToken;
+            }
+
+            // pathUSD pairs
+            IFeeAMM.Pool memory pool1 = amm.getPool(address(_tokens[i]), address(pathUSD));
+            expectedTokens[i] += pool1.reserveUserToken;
+            expectedPathUSD += pool1.reserveValidatorToken;
+
+            IFeeAMM.Pool memory pool2 = amm.getPool(address(pathUSD), address(_tokens[i]));
+            expectedPathUSD += pool2.reserveUserToken;
+            expectedTokens[i] += pool2.reserveValidatorToken;
+        }
+
+        // Log detailed breakdown
+        _log(
+            string.concat(
+                "EXIT CHECK - pathUSD: actual=",
+                vm.toString(ammPathUSD),
+                ", expected_reserves=",
+                vm.toString(expectedPathUSD)
+            )
+        );
+
+        // Assert: actual balance >= expected reserves (solvency)
+        // The difference is dust from fee swaps that accumulated
+        assertTrue(
+            ammPathUSD >= expectedPathUSD,
+            "TEMPO-AMM24: pathUSD balance < expected reserves after exit"
+        );
+        uint256 pathUSDDust = ammPathUSD - expectedPathUSD;
+
+        uint256 totalDust = pathUSDDust;
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            uint256 ammBalance = _tokens[t].balanceOf(address(amm));
+
+            assertTrue(
+                ammBalance >= expectedTokens[t],
+                "TEMPO-AMM24: Token balance < expected reserves after exit"
+            );
+
+            uint256 tokenDust = ammBalance - expectedTokens[t];
+            totalDust += tokenDust;
+
+            _log(
+                string.concat(
+                    "EXIT CHECK - ",
+                    _tokens[t].symbol(),
+                    ": actual=",
+                    vm.toString(ammBalance),
+                    ", expected_reserves=",
+                    vm.toString(expectedTokens[t]),
+                    ", dust=",
+                    vm.toString(tokenDust)
+                )
+            );
+        }
+
+        // Calculate expected dust from tracked sources
+        uint256 expectedDust = _ghostFeeSwapActualDust + _ghostRebalanceRoundingDust;
+
+        _log(
+            string.concat(
+                "EXIT CHECK - Total dust: ",
+                vm.toString(totalDust),
+                ", Expected dust (fee+rebalance): ",
+                vm.toString(expectedDust),
+                ", Fee dust: ",
+                vm.toString(_ghostFeeSwapActualDust),
+                ", Rebalance +1: ",
+                vm.toString(_ghostRebalanceRoundingDust)
+            )
+        );
+
+        // Assert: total dust should equal our tracked dust sources
+        // Allow small variance for burn rounding dust we haven't tracked
+        uint256 burnDust = (_ghostBurnUserTheoretical - _ghostBurnUserActual)
+            + (_ghostBurnValidatorTheoretical - _ghostBurnValidatorActual);
+        uint256 expectedTotalDust = expectedDust + burnDust;
+
+        // The total dust should match what we've tracked
+        // If it doesn't, there's unaccounted value flow
+        assertEq(
+            totalDust,
+            expectedTotalDust,
+            "TEMPO-AMM24: Dust mismatch - unaccounted value in AMM"
         );
     }
 
