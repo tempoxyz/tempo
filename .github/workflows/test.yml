@@ -53,6 +53,8 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
+      - name: Build and compile tests
+        run: cargo nextest run --no-run -j num-cpus
       - name: Run tests
         run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
 
