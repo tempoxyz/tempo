@@ -5804,14 +5804,12 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     assert!(key_info.isRevoked, "Key should be marked as revoked");
     println!("Access key revoked");
 
-    // The evict_revoked_keychain_txs maintenance task has a 1-second startup delay,
-    // then monitors storage changes on block commits and evicts transactions signed
-    // with revoked keys. We need to advance a block to trigger the commit notification,
+    // The maintain_tempo_pool task monitors block commits and evicts transactions signed
+    // with revoked keys. Advance a block to trigger the commit notification,
     // then wait for the maintenance task to process it.
-    // Advance another block to trigger the commit notification
     setup.node.advance_block().await?;
 
-    // Wait for keychain eviction task to process the block with the revocation
+    // Wait for maintenance task to process the block with the revocation
     tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // ========================================
