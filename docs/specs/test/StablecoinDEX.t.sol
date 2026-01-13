@@ -1749,6 +1749,7 @@ contract StablecoinDEXTest is BaseTest {
         );
 
         vm.assertEq(token1.balanceOf(alice), balanceBefore1 - exchange.MIN_ORDER_AMOUNT() + out); //
+        exchange.withdraw(address(pathUSD), exchange.balanceOf(alice, address(pathUSD)));
         vm.assertEq(pathUSD.balanceOf(alice), balanceBeforeUSD); // order fills go back into self balance
     }
 
