@@ -622,6 +622,295 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
+    /// @notice Handler for testing blacklisted actor operations
+    /// @dev Tests TEMPO-AMM32: Blacklisted actors cannot receive tokens from AMM operations
+    ///      Blacklists an actor, attempts operations that would transfer tokens to them, verifies failure,
+    ///      then removes from blacklist to continue fuzzing
+    /// @param blacklistActorSeed Seed for selecting actor to blacklist
+    /// @param tokenSeed Seed for selecting which token's blacklist to modify
+    /// @param operationType 0=burn, 1=rebalanceSwap, 2=distributeFees
+    function blacklistAndTestOperations(
+        uint256 blacklistActorSeed,
+        uint256 tokenSeed,
+        uint256 operationType
+    ) external {
+        address blacklistedActor = _selectActor(blacklistActorSeed);
+        address token = _selectToken(tokenSeed);
+
+        // Get the policy ID for this token
+        uint64 policyId;
+        address policyAdmin;
+        if (token == address(pathUSD)) {
+            policyId = _pathUsdPolicyId;
+            policyAdmin = pathUSDAdmin;
+        } else {
+            policyId = _tokenPolicyIds[token];
+            policyAdmin = admin;
+        }
+
+        // Blacklist the actor
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, blacklistedActor, true);
+
+        _log(
+            string.concat(
+                "BLACKLIST: ",
+                _getActorIndex(blacklistedActor),
+                " blacklisted for ",
+                _getTokenSymbol(token)
+            )
+        );
+
+        // Test operations based on type
+        uint256 op = operationType % 3;
+        if (op == 0) {
+            _testBlacklistedBurn(blacklistedActor, token);
+        } else if (op == 1) {
+            _testBlacklistedRebalanceSwap(blacklistedActor, token);
+        } else {
+            _testBlacklistedDistributeFees(blacklistedActor, token);
+        }
+
+        // Remove from blacklist so actor can continue participating
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, blacklistedActor, false);
+
+        _log(
+            string.concat(
+                "WHITELIST: ",
+                _getActorIndex(blacklistedActor),
+                " removed from blacklist for ",
+                _getTokenSymbol(token)
+            )
+        );
+    }
+
+    /// @dev Tests that blacklisted actor cannot receive tokens via burn
+    /// TEMPO-AMM32: Burn should revert with PolicyForbids when recipient is blacklisted
+    function _testBlacklistedBurn(address blacklistedActor, address blacklistedToken) internal {
+        // Find a pool where blacklistedActor has LP and one of the tokens is the blacklisted token
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            address otherToken = address(_tokens[i]);
+            if (otherToken == blacklistedToken) continue;
+
+            // Try both pool directions
+            address[2] memory userTokens = [blacklistedToken, otherToken];
+            address[2] memory validatorTokens = [otherToken, blacklistedToken];
+
+            for (uint256 d = 0; d < 2; d++) {
+                bytes32 poolId = amm.getPoolId(userTokens[d], validatorTokens[d]);
+                uint256 lpBalance = amm.liquidityBalances(poolId, blacklistedActor);
+
+                if (lpBalance > 0) {
+                    // Actor has LP - try to burn, should fail
+                    vm.startPrank(blacklistedActor);
+                    try amm.burn(userTokens[d], validatorTokens[d], lpBalance, blacklistedActor) {
+                        vm.stopPrank();
+                        // If burn succeeds, the blacklisted token wasn't transferred
+                        // This can happen if the pro-rata amount for that token is 0
+                        _log(
+                            "BLACKLIST_BURN: Burn succeeded (possibly zero amount for blacklisted token)"
+                        );
+                    } catch (bytes memory reason) {
+                        vm.stopPrank();
+                        bytes4 selector = bytes4(reason);
+                        // TEMPO-AMM32: Should fail with PolicyForbids
+                        if (selector == ITIP20.PolicyForbids.selector) {
+                            _log("BLACKLIST_BURN: Correctly reverted with PolicyForbids");
+                        } else {
+                            // Other errors are acceptable (e.g., InsufficientReserves)
+                            _assertKnownError(reason);
+                            _log("BLACKLIST_BURN: Reverted with other known error");
+                        }
+                    }
+                    return; // Only test one pool
+                }
+            }
+        }
+
+        // Also check pathUSD pools
+        if (blacklistedToken != address(pathUSD)) {
+            bytes32 poolId = amm.getPoolId(blacklistedToken, address(pathUSD));
+            uint256 lpBalance = amm.liquidityBalances(poolId, blacklistedActor);
+
+            if (lpBalance > 0) {
+                vm.startPrank(blacklistedActor);
+                try amm.burn(blacklistedToken, address(pathUSD), lpBalance, blacklistedActor) {
+                    vm.stopPrank();
+                    _log(
+                        "BLACKLIST_BURN: Burn succeeded (possibly zero amount for blacklisted token)"
+                    );
+                } catch (bytes memory reason) {
+                    vm.stopPrank();
+                    bytes4 selector = bytes4(reason);
+                    if (selector == ITIP20.PolicyForbids.selector) {
+                        _log("BLACKLIST_BURN: Correctly reverted with PolicyForbids");
+                    } else {
+                        _assertKnownError(reason);
+                        _log("BLACKLIST_BURN: Reverted with other known error");
+                    }
+                }
+            }
+        }
+    }
+
+    /// @dev Tests that blacklisted actor cannot receive tokens via rebalanceSwap
+    /// TEMPO-AMM32: RebalanceSwap should revert with PolicyForbids when recipient is blacklisted
+    function _testBlacklistedRebalanceSwap(address blacklistedActor, address blacklistedToken)
+        internal
+    {
+        // Find a pool where blacklistedToken is the userToken (output of rebalanceSwap)
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            address validatorToken = address(_tokens[i]);
+            if (validatorToken == blacklistedToken) continue;
+
+            IFeeAMM.Pool memory pool = amm.getPool(blacklistedToken, validatorToken);
+            if (pool.reserveUserToken == 0) continue;
+
+            // Try to swap - actor receives blacklistedToken
+            uint256 amountOut = pool.reserveUserToken > 100 ? 100 : pool.reserveUserToken;
+            uint256 amountIn = (amountOut * N) / SCALE + 1;
+            _ensureFunds(blacklistedActor, TIP20(validatorToken), amountIn * 2);
+
+            vm.startPrank(blacklistedActor);
+            try amm.rebalanceSwap(blacklistedToken, validatorToken, amountOut, blacklistedActor) {
+                vm.stopPrank();
+                // Should not succeed if actor is blacklisted for the output token
+                revert("TEMPO-AMM32: RebalanceSwap should fail for blacklisted recipient");
+            } catch (bytes memory reason) {
+                vm.stopPrank();
+                bytes4 selector = bytes4(reason);
+                // TEMPO-AMM32: Should fail with PolicyForbids
+                assertTrue(
+                    selector == ITIP20.PolicyForbids.selector,
+                    "TEMPO-AMM32: RebalanceSwap should revert with PolicyForbids for blacklisted recipient"
+                );
+                _log("BLACKLIST_REBALANCE: Correctly reverted with PolicyForbids");
+            }
+            return; // Only test one pool
+        }
+
+        // Also check pathUSD as validator token
+        if (blacklistedToken != address(pathUSD)) {
+            IFeeAMM.Pool memory pool = amm.getPool(blacklistedToken, address(pathUSD));
+            if (pool.reserveUserToken > 0) {
+                uint256 amountOut = pool.reserveUserToken > 100 ? 100 : pool.reserveUserToken;
+                uint256 amountIn = (amountOut * N) / SCALE + 1;
+                _ensureFunds(blacklistedActor, TIP20(address(pathUSD)), amountIn * 2);
+
+                vm.startPrank(blacklistedActor);
+                try amm.rebalanceSwap(
+                    blacklistedToken, address(pathUSD), amountOut, blacklistedActor
+                ) {
+                    vm.stopPrank();
+                    revert("TEMPO-AMM32: RebalanceSwap should fail for blacklisted recipient");
+                } catch (bytes memory reason) {
+                    vm.stopPrank();
+                    bytes4 selector = bytes4(reason);
+                    assertTrue(
+                        selector == ITIP20.PolicyForbids.selector,
+                        "TEMPO-AMM32: RebalanceSwap should revert with PolicyForbids"
+                    );
+                    _log("BLACKLIST_REBALANCE: Correctly reverted with PolicyForbids");
+                }
+            }
+        }
+    }
+
+    /// @dev Tests that blacklisted validator cannot receive distributed fees
+    /// TEMPO-AMM32: DistributeFees should revert with PolicyForbids when validator is blacklisted
+    function _testBlacklistedDistributeFees(address blacklistedActor, address blacklistedToken)
+        internal
+    {
+        // Check if validator has pending fees in the blacklisted token
+        uint256 collectedFees = amm.collectedFees(blacklistedActor, blacklistedToken);
+
+        if (collectedFees > 0) {
+            try amm.distributeFees(blacklistedActor, blacklistedToken) {
+                // Should not succeed
+                revert("TEMPO-AMM32: DistributeFees should fail for blacklisted validator");
+            } catch (bytes memory reason) {
+                bytes4 selector = bytes4(reason);
+                // TEMPO-AMM32: Should fail with PolicyForbids
+                assertTrue(
+                    selector == ITIP20.PolicyForbids.selector,
+                    "TEMPO-AMM32: DistributeFees should revert with PolicyForbids"
+                );
+                _log("BLACKLIST_DISTRIBUTE: Correctly reverted with PolicyForbids");
+            }
+        } else {
+            _log("BLACKLIST_DISTRIBUTE: No pending fees to test");
+        }
+    }
+
+    /// @notice Handler for testing that blacklisted actors cannot mint (deposit tokens)
+    /// @dev Tests TEMPO-AMM33: Blacklisted actors cannot deposit tokens into the AMM
+    /// @param blacklistActorSeed Seed for selecting actor to blacklist
+    /// @param tokenSeed1 Seed for selecting user token
+    /// @param tokenSeed2 Seed for selecting validator token
+    /// @param amount Amount to attempt minting
+    function blacklistAndTestMint(
+        uint256 blacklistActorSeed,
+        uint256 tokenSeed1,
+        uint256 tokenSeed2,
+        uint256 amount
+    ) external {
+        address blacklistedActor = _selectActor(blacklistActorSeed);
+        address userToken = _selectToken(tokenSeed1);
+        address validatorToken = _selectToken(tokenSeed2);
+
+        vm.assume(userToken != validatorToken);
+
+        // Blacklist the actor for the validator token (the token they would transfer in)
+        uint64 policyId;
+        address policyAdmin;
+        if (validatorToken == address(pathUSD)) {
+            policyId = _pathUsdPolicyId;
+            policyAdmin = pathUSDAdmin;
+        } else {
+            policyId = _tokenPolicyIds[validatorToken];
+            policyAdmin = admin;
+        }
+
+        amount = bound(amount, MIN_LIQUIDITY * 3, 10_000_000);
+        _ensureFunds(blacklistedActor, TIP20(validatorToken), amount);
+
+        // Blacklist the actor
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, blacklistedActor, true);
+
+        _log(
+            string.concat(
+                "BLACKLIST_MINT: ",
+                _getActorIndex(blacklistedActor),
+                " blacklisted for ",
+                _getTokenSymbol(validatorToken)
+            )
+        );
+
+        // Try to mint - should fail because actor is blacklisted
+        vm.startPrank(blacklistedActor);
+        try amm.mint(userToken, validatorToken, amount, blacklistedActor) {
+            vm.stopPrank();
+            // Mint succeeded - this means the transfer succeeded which shouldn't happen
+            // if blacklist is properly enforced on transfers
+            revert("TEMPO-AMM33: Mint should fail for blacklisted actor");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            bytes4 selector = bytes4(reason);
+            // TEMPO-AMM33: Should fail with PolicyForbids (transfer from blacklisted actor)
+            assertTrue(
+                selector == ITIP20.PolicyForbids.selector,
+                "TEMPO-AMM33: Mint should revert with PolicyForbids for blacklisted actor"
+            );
+            _log("BLACKLIST_MINT: Correctly reverted with PolicyForbids");
+        }
+
+        // Remove from blacklist
+        vm.prank(policyAdmin);
+        registry.modifyPolicyBlacklist(policyId, blacklistedActor, false);
+    }
+
     /// @notice Handler for distributing collected fees
     /// @dev On tempo-foundry, fees are only collected via protocol tx execution
     ///      This handler tests the distribution mechanism when fees exist

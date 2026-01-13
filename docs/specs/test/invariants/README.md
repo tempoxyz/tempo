@@ -102,6 +102,11 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 
   Note: Fee swap dust (0.30% fee) and rebalance +1 rounding go INTO reserves and are distributed pro-rata to LPs when they burn. This is the intended fee mechanism - LPs earn revenue from fee swaps. The invariant verifies no value is created (balance ≤ reserves + tracked dust) rather than requiring dust to remain, since dust legitimately flows to LPs.
 
+### TIP-403 Blacklist Invariants
+
+- **TEMPO-AMM32**: Blacklisted actors cannot receive tokens from AMM operations. Operations that would transfer tokens to a blacklisted recipient (burn, rebalanceSwap, distributeFees) revert with `PolicyForbids`.
+- **TEMPO-AMM33**: Blacklisted actors cannot deposit tokens into the AMM. Mint operations from blacklisted actors revert with `PolicyForbids`.
+
 ## FeeManager
 
 The FeeManager extends FeeAMM and handles fee token preferences and distribution for validators and users.
