@@ -13,7 +13,8 @@
 <br>
 <br>
 
-# Tempo
+# Tempo 
+[![X Follow](https://img.shields.io/twitter/follow/tempo?style=social)](https://x.com/tempo)
 
 The blockchain for payments at scale.
 
