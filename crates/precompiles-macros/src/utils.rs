@@ -62,7 +62,18 @@ pub(crate) fn to_snake_case(s: &str) -> String {
 }
 
 /// Converts a string from snake_case to camelCase.
+/// Preserves SCREAMING_SNAKE_CASE, as those are assumed to be constant/immutable names.
 pub(crate) fn to_camel_case(s: &str) -> String {
+    // Preserve SCREAMING_SNAKE_CASE constants (all uppercase with underscores)
+    // These are Solidity constants that must keep their exact names for correct selectors
+    if s.contains('_')
+        && s.chars()
+            .filter(|c| c.is_alphabetic())
+            .all(|c| c.is_uppercase())
+    {
+        return s.to_string();
+    }
+
     let mut result = String::new();
     let mut first_word = true;
 
@@ -284,13 +295,22 @@ mod tests {
 
     #[test]
     fn test_to_camel_case() {
+        // snake_case → camelCase
         assert_eq!(to_camel_case("balance_of"), "balanceOf");
         assert_eq!(to_camel_case("transfer_from"), "transferFrom");
         assert_eq!(to_camel_case("update_quote_token"), "updateQuoteToken");
         assert_eq!(to_camel_case("name"), "name");
         assert_eq!(to_camel_case("token"), "token");
         assert_eq!(to_camel_case("alreadycamelCase"), "alreadycamelCase");
-        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAINSEPARATOR");
+
+        // SCREAMING_SNAKE_CASE preserved (Solidity constants)
+        assert_eq!(to_camel_case("DOMAIN_SEPARATOR"), "DOMAIN_SEPARATOR");
+        assert_eq!(to_camel_case("PAUSE_ROLE"), "PAUSE_ROLE");
+        assert_eq!(to_camel_case("ISSUER_ROLE"), "ISSUER_ROLE");
+        assert_eq!(to_camel_case("BURN_BLOCKED_ROLE"), "BURN_BLOCKED_ROLE");
+
+        // Mixed case still converts
+        assert_eq!(to_camel_case("get_Balance"), "getBalance");
     }
 
     #[test]

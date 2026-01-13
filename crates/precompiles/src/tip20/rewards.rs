@@ -1,10 +1,9 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::TIP20Token,
+    tip20::{TIP20Error, TIP20Event, TIP20Token, Transfer},
 };
 use alloy::primitives::{Address, U256, uint};
-use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::{Storable, solidity};
 
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
@@ -18,6 +17,20 @@ pub mod rewards {
         pub reward_recipient: Address,
         pub reward_per_token: U256,
         pub reward_balance: U256,
+    }
+
+    pub enum Event {
+        RewardDistributed {
+            #[indexed]
+            funder: Address,
+            amount: U256,
+        },
+        RewardRecipientSet {
+            #[indexed]
+            holder: Address,
+            #[indexed]
+            recipient: Address,
+        },
     }
 
     pub trait Interface {
@@ -76,10 +89,7 @@ impl rewards::Interface for TIP20Token {
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event for immediate payout
-        self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
-            funder: msg_sender,
-            amount: amount,
-        }))?;
+        self.emit_event(rewards::Event::reward_distributed(msg_sender, amount))?;
 
         Ok(())
     }
@@ -125,10 +135,7 @@ impl rewards::Interface for TIP20Token {
         self.user_reward_info[msg_sender].write(info)?;
 
         // Emit reward recipient set event
-        self.emit_event(TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
-            holder: msg_sender,
-            recipient: recipient,
-        }))?;
+        self.emit_event(rewards::Event::reward_recipient_set(msg_sender, recipient))?;
 
         Ok(())
     }
@@ -178,7 +185,7 @@ impl rewards::Interface for TIP20Token {
                 )?;
             }
 
-            self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
+            self.emit_event(TIP20Event::Transfer(Transfer {
                 from: contract_address,
                 to: msg_sender,
                 amount: max_amount,
@@ -362,10 +369,10 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip403_registry::TIP403Registry,
+        tip20::{ITIP20, PolicyForbids},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::primitives::{Address, U256};
-    use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
@@ -649,7 +656,7 @@ mod tests {
             token.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -657,7 +664,7 @@ mod tests {
             assert!(
                 matches!(
                     err,
-                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
                 ),
                 "Expected PolicyForbids error, got: {err:?}"
             );

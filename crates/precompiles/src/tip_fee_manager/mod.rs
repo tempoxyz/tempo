@@ -5,7 +5,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip_fee_manager::amm::{Pool, compute_amount_out},
-    tip20::{ITIP20, TIP20Token, validate_usd_currency},
+    tip20::{TIP20Token, tip20::Interface as _, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::B256;
@@ -199,13 +199,7 @@ impl TipFeeManager {
 
         // Transfer fees to validator
         let mut tip20_token = TIP20Token::from_address(token)?;
-        tip20_token.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to: validator,
-                amount,
-            },
-        )?;
+        tip20_token.transfer(self.address, validator, amount)?;
 
         // Emit FeesDistributed event
         self.emit_event(FeeManagerEvent::FeesDistributed(
@@ -236,15 +230,13 @@ impl TipFeeManager {
 
 #[cfg(test)]
 mod tests {
-    use tempo_contracts::precompiles::TIP20Error;
-
     use super::*;
     use crate::{
         TIP_FEE_MANAGER_ADDRESS,
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ITIP20, TIP20Token},
+        tip20::{InvalidCurrency, TIP20Error, TIP20Token, tip20::Interface as _},
     };
 
     #[test]
@@ -461,7 +453,7 @@ mod tests {
             let result = fee_manager.set_user_token(user, call);
             assert!(matches!(
                 result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(InvalidCurrency)))
             ));
 
             // Try to set non-USD as validator token - should also fail
@@ -471,7 +463,7 @@ mod tests {
             let result = fee_manager.set_validator_token(validator, call, beneficiary);
             assert!(matches!(
                 result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(InvalidCurrency)))
             ));
 
             Ok(())

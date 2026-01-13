@@ -17,7 +17,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{TIP20Token, is_tip20_prefix, tip20::Interface as _, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
@@ -147,13 +147,7 @@ impl StablecoinDEX {
 
     /// Transfer tokens, accounting for pathUSD
     fn transfer(&mut self, token: Address, to: Address, amount: u128) -> Result<()> {
-        TIP20Token::from_address(token)?.transfer(
-            self.address,
-            ITIP20::transferCall {
-                to,
-                amount: U256::from(amount),
-            },
-        )?;
+        TIP20Token::from_address(token)?.transfer(self.address, to, U256::from(amount))?;
         Ok(())
     }
 
@@ -161,11 +155,9 @@ impl StablecoinDEX {
     fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
         TIP20Token::from_address(token)?.transfer_from(
             self.address,
-            ITIP20::transferFromCall {
-                from,
-                to: self.address,
-                amount: U256::from(amount),
-            },
+            from,
+            self.address,
+            U256::from(amount),
         )?;
         Ok(())
     }
@@ -1374,12 +1366,12 @@ impl StablecoinDEX {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::IntoLogData;
-    use tempo_contracts::precompiles::TIP20Error;
 
     use crate::{
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
+        tip20::{InvalidCurrency, PolicyForbids, TIP20Error},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
 
@@ -2864,7 +2856,7 @@ mod tests {
             let result = exchange.create_pair(token_0.address());
             assert!(matches!(
                 result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(_)))
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidCurrency(InvalidCurrency)))
             ));
 
             Ok(())
@@ -3740,7 +3732,7 @@ mod tests {
             quote.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -3753,7 +3745,7 @@ mod tests {
             base.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -3790,7 +3782,7 @@ mod tests {
             assert!(
                 matches!(
                     err,
-                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                    TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
                 ),
                 "Expected PolicyForbids error, got: {err:?}"
             );
@@ -3827,7 +3819,7 @@ mod tests {
             base.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -3881,7 +3873,7 @@ mod tests {
             base.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -3928,7 +3920,7 @@ mod tests {
             base.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -3949,7 +3941,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
             ));
 
             // Test placeFlip bid order - should also fail
@@ -3958,7 +3950,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
             ));
 
             Ok(())
@@ -3994,7 +3986,7 @@ mod tests {
             quote.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: policy_id,
+                    new_policy_id: policy_id,
                 },
             )?;
 
@@ -4015,7 +4007,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
             ));
 
             // Test placeFlip ask order - should also fail
@@ -4024,7 +4016,7 @@ mod tests {
             assert!(result.is_err());
             assert!(matches!(
                 result.unwrap_err(),
-                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_))
+                TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(PolicyForbids))
             ));
 
             Ok(())
