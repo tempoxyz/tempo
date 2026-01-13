@@ -197,6 +197,12 @@ contract FeeAMMInvariantTest is BaseTest {
         // Skip if tokens are identical
         vm.assume(userToken != validatorToken);
 
+        // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
+        uint64 policyId = validatorToken == address(pathUSD)
+            ? _pathUsdPolicyId
+            : _tokenPolicyIds[validatorToken];
+        vm.assume(registry.isAuthorized(policyId, actor));
+
         // Bound amount to reasonable range (must be > 2 * MIN_LIQUIDITY for first mint)
         amount = bound(amount, MIN_LIQUIDITY * 3, 10_000_000_000);
 
@@ -394,6 +400,12 @@ contract FeeAMMInvariantTest is BaseTest {
         // Skip if tokens are identical
         vm.assume(ctx.userToken != ctx.validatorToken);
 
+        // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
+        uint64 policyId = ctx.validatorToken == address(pathUSD)
+            ? _pathUsdPolicyId
+            : _tokenPolicyIds[ctx.validatorToken];
+        vm.assume(registry.isAuthorized(policyId, ctx.actor));
+
         IFeeAMM.Pool memory poolBefore = amm.getPool(ctx.userToken, ctx.validatorToken);
 
         // Skip if pool has no user token reserves
@@ -501,7 +513,14 @@ contract FeeAMMInvariantTest is BaseTest {
             address storedToken = amm.validatorTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE1: Validator token not set correctly");
 
-            _logSetToken("SET_VALIDATOR_TOKEN", actor, token);
+            _log(
+                string.concat(
+                    "SET_VALIDATOR_TOKEN: ",
+                    _getActorIndex(actor),
+                    " -> ",
+                    _getTokenSymbol(token)
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -526,7 +545,11 @@ contract FeeAMMInvariantTest is BaseTest {
             address storedToken = amm.userTokens(actor);
             assertEq(storedToken, token, "TEMPO-FEE2: User token not set correctly");
 
-            _logSetToken("SET_USER_TOKEN", actor, token);
+            _log(
+                string.concat(
+                    "SET_USER_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
+                )
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownFeeManagerError(reason);
@@ -549,6 +572,12 @@ contract FeeAMMInvariantTest is BaseTest {
         address validatorToken = _selectToken(tokenSeed2);
 
         vm.assume(userToken != validatorToken);
+
+        // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
+        uint64 policyId = validatorToken == address(pathUSD)
+            ? _pathUsdPolicyId
+            : _tokenPolicyIds[validatorToken];
+        vm.assume(registry.isAuthorized(policyId, actor));
 
         amount = bound(amount, MIN_LIQUIDITY * 3, 100_000);
         _ensureFunds(actor, TIP20(validatorToken), amount);
@@ -593,6 +622,12 @@ contract FeeAMMInvariantTest is BaseTest {
         address validatorToken = _selectToken(tokenSeed2);
 
         vm.assume(userToken != validatorToken);
+
+        // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
+        uint64 policyId = validatorToken == address(pathUSD)
+            ? _pathUsdPolicyId
+            : _tokenPolicyIds[validatorToken];
+        vm.assume(registry.isAuthorized(policyId, actor));
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
         vm.assume(pool.reserveUserToken > 0);
@@ -675,7 +710,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // Blacklistable actor (0-4): can be permanently blacklisted
         if (currentlyBlacklisted) {
-            // Already blacklisted - stay blacklisted (permanent until blacklistRecovery)
+            // Already blacklisted - stay blacklisted (permanent until Phase 2 exit)
             return;
         }
 
@@ -769,6 +804,11 @@ contract FeeAMMInvariantTest is BaseTest {
         uint256 feeAmount = bound(feeAmountRaw, 1000, 1_000_000);
         uint256 expectedOutForCheck = (feeAmount * M) / SCALE;
 
+        // Skip if user is blacklisted for userToken (can't mint funds to them or transfer from them)
+        uint64 userTokenPolicyId =
+            userToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[userToken];
+        vm.assume(registry.isAuthorized(userTokenPolicyId, user));
+
         // Bias toward cross-token swaps: 90% chance to force different tokens
         // This exercises the actual swap logic more frequently
         if (userToken == validatorToken && (crossTokenBias % 100) < 90) {
@@ -800,82 +840,90 @@ contract FeeAMMInvariantTest is BaseTest {
             // Skip if adding feeAmount would overflow uint128
             vm.assume(uint256(pool.reserveUserToken) + feeAmount <= type(uint128).max);
 
-            // Simulate fee swap: update pool reserves
-            bytes32 poolId = amm.getPoolId(userToken, validatorToken);
-            uint128 newReserveUser = pool.reserveUserToken + uint128(feeAmount);
-            uint128 newReserveValidator = pool.reserveValidatorToken - uint128(expectedOut);
-            _storePoolReserves(poolId, newReserveUser, newReserveValidator);
-
-            // Transfer userToken to AMM (simulating fee payment)
+            // Transfer userToken to AMM first (may fail due to blacklist)
             _ensureFunds(user, TIP20(userToken), feeAmount);
             vm.prank(user);
-            TIP20(userToken).transfer(address(amm), feeAmount);
+            try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
+                if (!success) return;
 
-            // Accumulate fees for validator
-            _storeCollectedFees(validator, validatorToken, expectedOut);
-            _hasPendingFees[validator][validatorToken] = true;
+                // Simulate fee swap: update pool reserves
+                bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+                uint128 newReserveUser = pool.reserveUserToken + uint128(feeAmount);
+                uint128 newReserveValidator = pool.reserveValidatorToken - uint128(expectedOut);
+                _storePoolReserves(poolId, newReserveUser, newReserveValidator);
 
-            // Mark both actors as active for future token preference changes
-            _markActorActive(user);
-            _markActorActive(validator);
+                // Accumulate fees for validator
+                _storeCollectedFees(validator, validatorToken, expectedOut);
+                _hasPendingFees[validator][validatorToken] = true;
 
-            _totalFeeCollections++;
-            _ghostFeeInputSum += feeAmount;
-            _ghostFeeOutputSum += expectedOut;
-            _ghostTotalFeesCollected += expectedOut; // Track for TEMPO-AMM29
+                // Mark both actors as active for future token preference changes
+                _markActorActive(user);
+                _markActorActive(validator);
 
-            // Track precise dust from fee swap (inline to avoid stack depth)
-            _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
-            _ghostFeeSwapActualDust += feeAmount - expectedOut;
+                _totalFeeCollections++;
+                _ghostFeeInputSum += feeAmount;
+                _ghostFeeOutputSum += expectedOut;
+                _ghostTotalFeesCollected += expectedOut; // Track for TEMPO-AMM29
 
-            _log(
-                string.concat(
-                    "FEE_COLLECTION: ",
-                    _getActorIndex(user),
-                    " paid ",
-                    vm.toString(feeAmount),
-                    " ",
-                    _getTokenSymbol(userToken),
-                    " -> ",
-                    _getActorIndex(validator),
-                    " receives ",
-                    vm.toString(expectedOut),
-                    " ",
-                    _getTokenSymbol(validatorToken)
-                )
-            );
+                // Track precise dust from fee swap (inline to avoid stack depth)
+                _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
+                _ghostFeeSwapActualDust += feeAmount - expectedOut;
+
+                _log(
+                    string.concat(
+                        "FEE_COLLECTION: ",
+                        _getActorIndex(user),
+                        " paid ",
+                        vm.toString(feeAmount),
+                        " ",
+                        _getTokenSymbol(userToken),
+                        " -> ",
+                        _getActorIndex(validator),
+                        " receives ",
+                        vm.toString(expectedOut),
+                        " ",
+                        _getTokenSymbol(validatorToken)
+                    )
+                );
+            } catch (bytes memory reason) {
+                _assertKnownError(reason);
+            }
         } else {
             // Same token: no swap needed, just accumulate
             _ensureFunds(user, TIP20(userToken), feeAmount);
             vm.prank(user);
-            TIP20(userToken).transfer(address(amm), feeAmount);
+            try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
+                if (!success) return;
 
-            _storeCollectedFees(validator, validatorToken, feeAmount);
-            _hasPendingFees[validator][validatorToken] = true;
+                _storeCollectedFees(validator, validatorToken, feeAmount);
+                _hasPendingFees[validator][validatorToken] = true;
 
-            // Mark both actors as active
-            _markActorActive(user);
-            _markActorActive(validator);
+                // Mark both actors as active
+                _markActorActive(user);
+                _markActorActive(validator);
 
-            _totalFeeCollections++;
-            _ghostFeeInputSum += feeAmount;
-            _ghostFeeOutputSum += feeAmount;
-            _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
-            // No dust for same-token transfers
+                _totalFeeCollections++;
+                _ghostFeeInputSum += feeAmount;
+                _ghostFeeOutputSum += feeAmount;
+                _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
+                // No dust for same-token transfers
 
-            _log(
-                string.concat(
-                    "FEE_COLLECTION: ",
-                    _getActorIndex(user),
-                    " paid ",
-                    vm.toString(feeAmount),
-                    " ",
-                    _getTokenSymbol(userToken),
-                    " -> ",
-                    _getActorIndex(validator),
-                    " (same token, no swap)"
-                )
-            );
+                _log(
+                    string.concat(
+                        "FEE_COLLECTION: ",
+                        _getActorIndex(user),
+                        " paid ",
+                        vm.toString(feeAmount),
+                        " ",
+                        _getTokenSymbol(userToken),
+                        " -> ",
+                        _getActorIndex(validator),
+                        " (same token, no swap)"
+                    )
+                );
+            } catch (bytes memory reason) {
+                _assertKnownError(reason);
+            }
         }
     }
 
@@ -1362,10 +1410,9 @@ contract FeeAMMInvariantTest is BaseTest {
         _exitVerifyOnlyDustRemains();
 
         _log("");
-        _log("=== EXIT CHECK PHASE 2: Unblacklist permanently blacklisted actors and verify recovery ===");
+        _log("=== EXIT CHECK PHASE 2: Unblacklist all actors and verify complete recovery ===");
 
-        // Step 4: TEMPO-AMM34 - Unblacklist only the permanently blacklistable actors (0-4)
-        // and verify they can now recover their frozen balances
+        // Step 4: TEMPO-AMM34 - Unblacklist all actors and verify frozen balances are recoverable
         _exitVerifyCleanExitAfterUnblacklist();
     }
 
@@ -1713,31 +1760,12 @@ contract FeeAMMInvariantTest is BaseTest {
             );
         }
 
-        // Calculate expected dust from tracked sources
-        uint256 expectedDust = _ghostFeeSwapActualDust + _ghostRebalanceRoundingDust;
-
-        _log(
-            string.concat(
-                "EXIT CHECK - Total dust: ",
-                vm.toString(totalDust),
-                ", Expected dust (fee+rebalance): ",
-                vm.toString(expectedDust),
-                ", Fee dust: ",
-                vm.toString(_ghostFeeSwapActualDust),
-                ", Rebalance +1: ",
-                vm.toString(_ghostRebalanceRoundingDust)
-            )
-        );
-
         // Fee swap dust and rebalance +1 rounding both go INTO reserves (not as extra balance).
         // When LPs burn, they receive their pro-rata share of reserves including this dust.
         // Therefore, `totalDust` (balance - reserves) should be minimal, NOT equal to tracked dust.
         //
         // The key security invariant is SOLVENCY: balance >= reserves (checked above).
         // This ensures LPs cannot extract more than the AMM holds.
-        //
-        // The tracked dust (_ghostFeeSwapActualDust, _ghostRebalanceRoundingDust) represents
-        // value captured by the AMM that benefits LPs - this is the intended fee mechanism.
         uint256 burnDust = (_ghostBurnUserTheoretical - _ghostBurnUserActual)
             + (_ghostBurnValidatorTheoretical - _ghostBurnValidatorActual);
 
@@ -1747,49 +1775,27 @@ contract FeeAMMInvariantTest is BaseTest {
             totalFrozenFees += _exitFrozenFees[address(_tokens[t])];
         }
 
-        // Log comprehensive exit summary with all categories
-        _log("EXIT CHECK - Balance Categories:");
-        _log(
-            string.concat(
-                "  1. Balance excess (actual - reserves): ",
-                vm.toString(totalDust)
-            )
-        );
-        _log(
-            string.concat(
-                "  2. Fee dust in reserves: ",
-                vm.toString(_ghostFeeSwapActualDust)
-            )
-        );
-        _log(
-            string.concat(
-                "  3. Rebalance +1 rounding: ",
-                vm.toString(_ghostRebalanceRoundingDust)
-            )
-        );
-        _log(
-            string.concat(
-                "  4. Burn rounding dust: ",
-                vm.toString(burnDust)
-            )
-        );
-        _log(
-            string.concat(
-                "  5. Frozen fees (blacklisted actors): ",
-                vm.toString(totalFrozenFees)
-            )
-        );
-
         // TEMPO-AMM24: After all burns, any remaining balance beyond reserves should be
         // from MIN_LIQUIDITY lockup, unclaimed collectedFees, or frozen blacklisted balances.
         // The balance should NOT exceed reserves by more than the tracked dust sources (no value creation).
+        uint256 expectedDust = _ghostFeeSwapActualDust + _ghostRebalanceRoundingDust;
         uint256 maxExpectedDust = expectedDust + burnDust + totalFrozenFees;
 
         _log(
             string.concat(
-                "EXIT CHECK - Max allowed excess: ",
+                "EXIT CHECK - Dust: actual=",
+                vm.toString(totalDust),
+                ", max_allowed=",
                 vm.toString(maxExpectedDust),
-                " (fee+rebalance+burn+frozen)"
+                " (fee=",
+                vm.toString(_ghostFeeSwapActualDust),
+                " + rebalance=",
+                vm.toString(_ghostRebalanceRoundingDust),
+                " + burn=",
+                vm.toString(burnDust),
+                " + frozen=",
+                vm.toString(totalFrozenFees),
+                ")"
             )
         );
 
@@ -2037,13 +2043,6 @@ contract FeeAMMInvariantTest is BaseTest {
                 vm.toString(amountOut),
                 " user tokens"
             )
-        );
-    }
-
-    /// @dev Logs a set token action
-    function _logSetToken(string memory action, address actor, address token) internal {
-        _log(
-            string.concat(action, ": ", _getActorIndex(actor), " set token to ", vm.toString(token))
         );
     }
 
