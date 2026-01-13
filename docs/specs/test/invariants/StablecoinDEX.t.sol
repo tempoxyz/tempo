@@ -777,16 +777,14 @@ contract StablecoinDEXInvariantTest is BaseTest {
         (
             uint256 expectedPathUsdEscrowed,
             uint256[] memory expectedTokenEscrowed,
-            uint256 orderCount
         ) = _computeExpectedEscrow();
 
         // Assert escrowed amounts: DEX balance = user internal balances + escrowed in active orders
         // Allow tolerance for rounding during partial fills (can accumulate across multiple fills)
-        uint256 tolerance = orderCount * 4 + 1;
         assertApproxEqAbs(
             dexPathUsdBalance,
             totalUserPathUsd + expectedPathUsdEscrowed,
-            tolerance,
+            _maxDust,
             "TEMPO-DEX6: DEX pathUSD balance != user balances + escrowed"
         );
 
