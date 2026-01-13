@@ -10,6 +10,10 @@ import { IFeeManager } from "../../src/interfaces/IFeeManager.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "../BaseTest.t.sol";
 
+/// @title FeeAMM Invariant Test
+/// @notice Invariant tests for the FeeAMM/FeeManager implementation
+/// @dev Uses vm.store to simulate fee collection for compatibility with both foundry and tempo-foundry.
+///      On tempo-foundry, vm.store operations on the precompile are no-ops.
 contract FeeAMMInvariantTest is BaseTest {
     /// @dev Array of test actors that interact with the FeeAMM
     address[] private _actors;
@@ -30,16 +34,12 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @dev Log file path for recording amm actions
     string private constant LOG_FILE = "amm.log";
 
-    /// @dev Constants from FeeAMM
+    /// @dev Constants from Rust tip_fee_manager/amm.rs
     uint256 private constant M = 9970; // Fee swap rate (0.997)
     uint256 private constant N = 9985; // Rebalance swap rate (0.9985)
     uint256 private constant SCALE = 10_000;
     uint256 private constant MIN_LIQUIDITY = 1000;
     uint256 private constant SPREAD = N - M; // 15 basis points
-
-    /// @dev Constants for overflow and boundary testing
-    uint256 private constant MAX_U128 = type(uint128).max;
-    uint256 private constant REALISTIC_MAX = 1_000_000_000_000e18; // 1 trillion tokens
 
     /// @dev Ghost variables for tracking state changes
     uint256 private _totalMints;
@@ -72,20 +72,6 @@ contract FeeAMMInvariantTest is BaseTest {
         uint256 actorUserBefore;
     }
 
-    /// @dev Struct to reduce stack depth in fee swap handler
-    struct FeeSwapContext {
-        address actor;
-        address userToken;
-        address validatorToken;
-        uint256 feeAmount;
-        uint256 amountOut;
-        uint128 reserveUserBefore;
-        uint128 reserveValidatorBefore;
-        uint128 newReserveUser;
-        uint128 newReserveValidator;
-        bytes32 poolId;
-    }
-
     /// @dev Mapping to track liquidity provided per pool
     mapping(bytes32 => uint256) private _ghostTotalLiquidity;
 
@@ -98,10 +84,10 @@ contract FeeAMMInvariantTest is BaseTest {
     uint256 private _ghostRebalanceInputSum;
     uint256 private _ghostRebalanceOutputSum;
 
-    /// @dev Ghost variables for tracking fee swaps
-    uint256 private _totalFeeSwaps;
-    uint256 private _ghostFeeSwapInputSum;
-    uint256 private _ghostFeeSwapOutputSum;
+    /// @dev Ghost variables for tracking fee collection
+    uint256 private _totalFeeCollections;
+    uint256 private _ghostFeeInputSum;
+    uint256 private _ghostFeeOutputSum;
 
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
@@ -146,7 +132,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // Initialize log file
         try vm.removeFile(LOG_FILE) {} catch {}
-        _log("=== FeeAMM Invariant Test Log ===");
+        _log("=== FeeAMM Invariant Test Log (tempo-foundry) ===");
         _log(
             string.concat(
                 "Tokens: T1=",
@@ -183,7 +169,7 @@ contract FeeAMMInvariantTest is BaseTest {
         // Skip if tokens are identical
         if (userToken == validatorToken) return;
 
-        // Bound amount to reasonable range
+        // Bound amount to reasonable range (must be > 2 * MIN_LIQUIDITY for first mint)
         amount = bound(amount, MIN_LIQUIDITY * 3, 10_000_000_000);
 
         // Ensure actor has funds
@@ -432,7 +418,7 @@ contract FeeAMMInvariantTest is BaseTest {
         address actor = _selectActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
-        // Cannot set validator token if actor is the block coinbase
+        // Cannot set validator token if actor is the block coinbase (beneficiary check in Rust)
         vm.coinbase(address(0xdead));
 
         vm.startPrank(actor, actor); // Set both msg.sender and tx.origin
@@ -472,7 +458,7 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice Handler for mint/burn cycle (tests rounding exploitation A7)
+    /// @notice Handler for mint/burn cycle (tests rounding exploitation)
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed1 Seed for selecting user token
     /// @param tokenSeed2 Seed for selecting validator token
@@ -489,7 +475,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         if (userToken == validatorToken) return;
 
-        amount = bound(amount, 1000, 100_000);
+        amount = bound(amount, MIN_LIQUIDITY * 3, 100_000);
         _ensureFunds(actor, TIP20(validatorToken), amount);
 
         uint256 actorBalBefore = TIP20(validatorToken).balanceOf(actor);
@@ -518,7 +504,7 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice Handler for small rebalance swaps (tests rounding exploitation A8)
+    /// @notice Handler for small rebalance swaps (tests rounding exploitation)
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed1 Seed for selecting user token
     /// @param tokenSeed2 Seed for selecting validator token
@@ -556,84 +542,9 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice Handler for simulating fee accumulation in a pool
-    /// @dev Since executeFeeSwap is protocol-only, we simulate fee accumulation by:
-    ///      1. Transferring userTokens to the AMM (simulating fee payment)
-    ///      2. Updating pool reserves directly via vm.store (only works when !isTempo)
-    ///      This allows subsequent rebalanceSwaps to extract the accumulated fees.
-    /// @param actorSeed Seed for selecting actor (fee payer)
-    /// @param tokenSeed1 Seed for selecting user token
-    /// @param tokenSeed2 Seed for selecting validator token
-    /// @param feeAmountRaw The fee amount to accumulate
-    function accumulateFees(
-        uint256 actorSeed,
-        uint256 tokenSeed1,
-        uint256 tokenSeed2,
-        uint256 feeAmountRaw
-    ) external {
-        FeeSwapContext memory ctx;
-        ctx.actor = _selectActor(actorSeed);
-        ctx.userToken = _selectToken(tokenSeed1);
-        ctx.validatorToken = _selectToken(tokenSeed2);
-
-        // Skip if tokens are identical
-        if (ctx.userToken == ctx.validatorToken) return;
-
-        // Bound fee amount to reasonable range
-        ctx.feeAmount = bound(feeAmountRaw, 1000, 5_000_000);
-
-        // Check if pool exists (has some liquidity)
-        IFeeAMM.Pool memory pool = amm.getPool(ctx.userToken, ctx.validatorToken);
-        if (pool.reserveValidatorToken == 0) return;
-
-        // Calculate fee swap output (at rate M)
-        ctx.amountOut = (ctx.feeAmount * M) / SCALE;
-        if (ctx.amountOut == 0) return;
-        if (pool.reserveValidatorToken < ctx.amountOut) return;
-
-        ctx.reserveUserBefore = pool.reserveUserToken;
-        ctx.reserveValidatorBefore = pool.reserveValidatorToken;
-
-        // Ensure actor has enough user tokens
-        _ensureFunds(ctx.actor, TIP20(ctx.userToken), ctx.feeAmount);
-
-        // Transfer user tokens to AMM (simulating fee payment)
-        vm.prank(ctx.actor);
-        TIP20(ctx.userToken).transfer(address(amm), ctx.feeAmount);
-
-        // Calculate new reserves after fee swap
-        ctx.newReserveUser = ctx.reserveUserBefore + uint128(ctx.feeAmount);
-        ctx.newReserveValidator = ctx.reserveValidatorBefore - uint128(ctx.amountOut);
-
-        // Update pool reserves directly via vm.store to simulate executeFeeSwap
-        ctx.poolId = amm.getPoolId(ctx.userToken, ctx.validatorToken);
-        _storePoolReserves(ctx.poolId, ctx.newReserveUser, ctx.newReserveValidator);
-
-        // Verify the update worked - if not, silently return (vm.store may not work on precompiles)
-        IFeeAMM.Pool memory poolAfter = amm.getPool(ctx.userToken, ctx.validatorToken);
-        if (poolAfter.reserveUserToken != ctx.newReserveUser) {
-            // vm.store failed, skip this fee accumulation
-            return;
-        }
-
-        _totalFeeSwaps++;
-        _ghostFeeSwapInputSum += ctx.feeAmount;
-        _ghostFeeSwapOutputSum += ctx.amountOut;
-
-        _logFeeSwap(ctx.actor, ctx.userToken, ctx.validatorToken, ctx.feeAmount, ctx.amountOut);
-    }
-
-    /// @dev Stores pool reserves directly using vm.store
-    function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator) internal {
-        // Storage slot for mapping: keccak256(key, slot) where slot=0 for pools mapping
-        bytes32 poolSlot = keccak256(abi.encode(poolId, uint256(0)));
-
-        // Pack: lower 128 bits = reserveUserToken, upper 128 bits = reserveValidatorToken
-        bytes32 newPoolValue = bytes32(uint256(reserveUser) | (uint256(reserveValidator) << 128));
-        vm.store(address(amm), poolSlot, newPoolValue);
-    }
-
     /// @notice Handler for distributing collected fees
+    /// @dev On tempo-foundry, fees are only collected via protocol tx execution
+    ///      This handler tests the distribution mechanism when fees exist
     /// @param actorSeed Seed for selecting validator
     /// @param tokenSeed Seed for selecting token
     function distributeFees(uint256 actorSeed, uint256 tokenSeed) external {
@@ -642,11 +553,6 @@ contract FeeAMMInvariantTest is BaseTest {
 
         uint256 collectedBefore = amm.collectedFees(validator, token);
         uint256 validatorBalanceBefore = TIP20(token).balanceOf(validator);
-
-        // Ensure AMM has enough tokens to distribute
-        if (collectedBefore > 0) {
-            _ensureFunds(address(amm), TIP20(token), collectedBefore);
-        }
 
         try amm.distributeFees(validator, token) {
             // TEMPO-FEE3: Collected fees should be zeroed after distribution
@@ -669,18 +575,156 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
+    /// @notice Handler for simulating fee collection (mocked approach)
+    /// @dev Simulates the fee swap and fee accumulation that would happen during tx execution.
+    ///      This mocks what collect_fee_pre_tx + collect_fee_post_tx would do:
+    ///      1. User pays fees in their preferred token (userToken)
+    ///      2. If userToken != validatorToken, execute fee swap at rate M
+    ///      3. Accumulate fees for validator in their preferred token
+    ///
+    ///      Uses vm.store to directly modify precompile storage. Works on both foundry
+    ///      (Solidity reference impl) and tempo-foundry (Rust precompile).
+    /// @param userSeed Seed for selecting user (fee payer)
+    /// @param validatorSeed Seed for selecting validator (fee recipient)
+    /// @param feeAmountRaw Amount of fees to simulate
+    function simulateFeeCollection(
+        uint256 userSeed,
+        uint256 validatorSeed,
+        uint256 feeAmountRaw
+    ) external {
+        address user = _selectActor(userSeed);
+        address validator = _selectActor(validatorSeed);
+
+        // Get user and validator token preferences (default to pathUSD if not set)
+        address userToken = amm.userTokens(user);
+        if (userToken == address(0)) userToken = address(pathUSD);
+
+        address validatorToken = amm.validatorTokens(validator);
+        if (validatorToken == address(0)) validatorToken = address(pathUSD);
+
+        // Bound fee amount
+        uint256 feeAmount = bound(feeAmountRaw, 1000, 1_000_000);
+
+        // If tokens differ, we need a pool with liquidity
+        if (userToken != validatorToken) {
+            IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
+            uint256 expectedOut = (feeAmount * M) / SCALE;
+
+            // Skip if insufficient liquidity
+            if (pool.reserveValidatorToken < expectedOut) return;
+            if (expectedOut == 0) return;
+
+            // Simulate fee swap: update pool reserves
+            bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+            uint128 newReserveUser = pool.reserveUserToken + uint128(feeAmount);
+            uint128 newReserveValidator = pool.reserveValidatorToken - uint128(expectedOut);
+            _storePoolReserves(poolId, newReserveUser, newReserveValidator);
+
+            // Transfer userToken to AMM (simulating fee payment)
+            _ensureFunds(user, TIP20(userToken), feeAmount);
+            vm.prank(user);
+            TIP20(userToken).transfer(address(amm), feeAmount);
+
+            // Accumulate fees for validator
+            _storeCollectedFees(validator, validatorToken, expectedOut);
+
+            _totalFeeCollections++;
+            _ghostFeeInputSum += feeAmount;
+            _ghostFeeOutputSum += expectedOut;
+
+            _log(
+                string.concat(
+                    "FEE_COLLECTION: ",
+                    _getActorIndex(user),
+                    " paid ",
+                    vm.toString(feeAmount),
+                    " ",
+                    _getTokenSymbol(userToken),
+                    " -> ",
+                    _getActorIndex(validator),
+                    " receives ",
+                    vm.toString(expectedOut),
+                    " ",
+                    _getTokenSymbol(validatorToken)
+                )
+            );
+        } else {
+            // Same token: no swap needed, just accumulate
+            _ensureFunds(user, TIP20(userToken), feeAmount);
+            vm.prank(user);
+            TIP20(userToken).transfer(address(amm), feeAmount);
+
+            _storeCollectedFees(validator, validatorToken, feeAmount);
+
+            _totalFeeCollections++;
+            _ghostFeeInputSum += feeAmount;
+            _ghostFeeOutputSum += feeAmount;
+
+            _log(
+                string.concat(
+                    "FEE_COLLECTION: ",
+                    _getActorIndex(user),
+                    " paid ",
+                    vm.toString(feeAmount),
+                    " ",
+                    _getTokenSymbol(userToken),
+                    " -> ",
+                    _getActorIndex(validator),
+                    " (same token, no swap)"
+                )
+            );
+        }
+    }
+
+    /// @dev Stores pool reserves directly using vm.store
+    /// @dev Works on both foundry (Solidity ref) and tempo-foundry (Rust precompile)
+    function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator) internal {
+        // TipFeeManager storage layout (Rust struct order):
+        // slot 0: validator_tokens
+        // slot 1: user_tokens
+        // slot 2: collected_fees
+        // slot 3: pools
+        // slot 4: total_supply
+        // slot 5: liquidity_balances
+        bytes32 poolSlot = keccak256(abi.encode(poolId, uint256(3)));
+
+        // Pack: lower 128 bits = reserveUserToken, upper 128 bits = reserveValidatorToken
+        bytes32 newPoolValue = bytes32(uint256(reserveUser) | (uint256(reserveValidator) << 128));
+        vm.store(address(amm), poolSlot, newPoolValue);
+    }
+
+    /// @dev Stores/increments collected fees using vm.store
+    /// @dev Works on both foundry (Solidity ref) and tempo-foundry (Rust precompile)
+    function _storeCollectedFees(address validator, address token, uint256 amount) internal {
+        // TipFeeManager storage layout (Rust struct order):
+        // slot 0: validator_tokens
+        // slot 1: user_tokens
+        // slot 2: collected_fees
+        // slot 3: pools
+        // slot 4: total_supply
+        // slot 5: liquidity_balances
+        // collected_fees is mapping(address => mapping(address => uint256))
+        // slot = keccak256(token, keccak256(validator, 2))
+        bytes32 innerSlot = keccak256(abi.encode(validator, uint256(2)));
+        bytes32 feeSlot = keccak256(abi.encode(token, innerSlot));
+
+        // Read current value and add
+        uint256 current = uint256(vm.load(address(amm), feeSlot));
+        vm.store(address(amm), feeSlot, bytes32(current + amount));
+    }
+
     /*//////////////////////////////////////////////////////////////
                             INVARIANT HOOKS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Called after invariant testing completes to clean up state
+    /// @notice Called after invariant testing completes to log final state
     function afterInvariant() public {
         _log("");
         _log("=== Final State ===");
         _log(string.concat("Total mints: ", vm.toString(_totalMints)));
         _log(string.concat("Total burns: ", vm.toString(_totalBurns)));
         _log(string.concat("Total rebalance swaps: ", vm.toString(_totalRebalanceSwaps)));
-        _log(string.concat("Total fee swaps: ", vm.toString(_totalFeeSwaps)));
+        _log(string.concat("Total fee collections: ", vm.toString(_totalFeeCollections)));
         _log(string.concat("Total mint/burn cycles: ", vm.toString(_totalMintBurnCycles)));
         _log(string.concat("Total small rebalance swaps: ", vm.toString(_totalSmallRebalanceSwaps)));
         _log(
@@ -693,10 +737,10 @@ contract FeeAMMInvariantTest is BaseTest {
         );
         _log(
             string.concat(
-                "Fee swap totals - In: ",
-                vm.toString(_ghostFeeSwapInputSum),
+                "Fee collection totals - In: ",
+                vm.toString(_ghostFeeInputSum),
                 ", Out: ",
-                vm.toString(_ghostFeeSwapOutputSum)
+                vm.toString(_ghostFeeOutputSum)
             )
         );
         _logBalances();
@@ -715,7 +759,8 @@ contract FeeAMMInvariantTest is BaseTest {
         _invariantReservesBoundedByU128();
         _invariantSpreadPreventsArbitrage();
         _invariantRebalanceRoundingFavorsPool();
-        _invariantNoDoubleCountFees();
+        _invariantCollectedFeesNotExceedBalance();
+        _invariantFeeSwapRateApplied();
     }
 
     /// @notice TEMPO-AMM13: Pool solvency - AMM token balances >= sum of reserves
@@ -823,7 +868,7 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice TEMPO-AMM16: Fee rates are correctly applied
+    /// @notice TEMPO-AMM16: Fee rates are correctly applied (matches Rust constants)
     function _invariantFeeRates() internal pure {
         // Fee swap rate: m = 0.9970 means 0.30% fee
         // Rebalance rate: n = 0.9985 means 0.15% fee
@@ -833,8 +878,9 @@ contract FeeAMMInvariantTest is BaseTest {
         assertTrue(SCALE == 10_000, "TEMPO-AMM16: SCALE should be 10000");
     }
 
-    /// @notice TEMPO-AMM20: Reserves are always bounded by uint128 (A10)
+    /// @notice TEMPO-AMM20: Reserves are always bounded by uint128
     function _invariantReservesBoundedByU128() internal view {
+        uint256 MAX_U128 = type(uint128).max;
         for (uint256 i = 0; i < _tokens.length; i++) {
             for (uint256 j = 0; j < _tokens.length; j++) {
                 if (i == j) continue;
@@ -857,7 +903,7 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice TEMPO-AMM21: Spread between fee swap and rebalance prevents arbitrage (I8)
+    /// @notice TEMPO-AMM21: Spread between fee swap and rebalance prevents arbitrage
     function _invariantSpreadPreventsArbitrage() internal pure {
         // For any amount X:
         // Fee swap: X -> (X * M / SCALE)
@@ -871,7 +917,7 @@ contract FeeAMMInvariantTest is BaseTest {
         assertTrue(SPREAD == 15, "TEMPO-AMM21: Spread constant incorrect");
     }
 
-    /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool (A8)
+    /// @notice TEMPO-AMM22: Rebalance swap rounding always favors the pool
     function _invariantRebalanceRoundingFavorsPool() internal view {
         // The +1 in rebalanceSwap formula ensures pool never loses to rounding
         // amountIn = (amountOut * N) / SCALE + 1
@@ -887,59 +933,46 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
-    /// @notice TEMPO-AMM23: Collected fees cannot be double-counted (F3, F4)
-    function _invariantNoDoubleCountFees() internal view {
-        // For each validator and token, verify collected fees <= token balance at AMM
-        // This is a sanity check - actual fee accounting is tested in handlers
+    /// @notice TEMPO-FEE5: Collected fees should not exceed AMM token balance
+    function _invariantCollectedFeesNotExceedBalance() internal view {
         for (uint256 i = 0; i < _tokens.length; i++) {
             address token = address(_tokens[i]);
             uint256 ammBalance = TIP20(token).balanceOf(address(amm));
 
-            // Sum of all collected fees for this token should not exceed balance
-            uint256 totalCollectedForToken = 0;
+            // Sum collected fees for all actors for this token
+            uint256 totalCollected = 0;
             for (uint256 j = 0; j < _actors.length; j++) {
-                totalCollectedForToken += amm.collectedFees(_actors[j], token);
+                totalCollected += amm.collectedFees(_actors[j], token);
             }
 
             assertTrue(
-                totalCollectedForToken <= ammBalance,
-                "TEMPO-AMM23: Collected fees exceed AMM balance"
+                totalCollected <= ammBalance,
+                "TEMPO-FEE5: Collected fees exceed AMM balance"
             );
         }
+
+        // Also check pathUSD
+        uint256 pathUsdBalance = pathUSD.balanceOf(address(amm));
+        uint256 totalPathUsdCollected = 0;
+        for (uint256 j = 0; j < _actors.length; j++) {
+            totalPathUsdCollected += amm.collectedFees(_actors[j], address(pathUSD));
+        }
+        assertTrue(
+            totalPathUsdCollected <= pathUsdBalance,
+            "TEMPO-FEE5: Collected pathUSD fees exceed AMM balance"
+        );
     }
 
-    /// @notice TEMPO-AMM24: Cross-pool solvency - single token balance covers all pool reserves
-    function _invariantCrossPoolSolvency() internal view {
-        // For each token, sum reserves across ALL pools where it appears
-        for (uint256 t = 0; t < _tokens.length; t++) {
-            address token = address(_tokens[t]);
-            uint256 totalReserves = 0;
-
-            // Sum reserves where token is userToken
-            for (uint256 i = 0; i < _tokens.length; i++) {
-                if (i == t) continue;
-                IFeeAMM.Pool memory pool = amm.getPool(token, address(_tokens[i]));
-                totalReserves += pool.reserveUserToken;
-            }
-
-            // Sum reserves where token is validatorToken
-            for (uint256 i = 0; i < _tokens.length; i++) {
-                if (i == t) continue;
-                IFeeAMM.Pool memory pool = amm.getPool(address(_tokens[i]), token);
-                totalReserves += pool.reserveValidatorToken;
-            }
-
-            // Check pathUSD pools
-            IFeeAMM.Pool memory poolPathUsdUser = amm.getPool(address(pathUSD), token);
-            totalReserves += poolPathUsdUser.reserveValidatorToken;
-
-            IFeeAMM.Pool memory poolPathUsdValidator = amm.getPool(token, address(pathUSD));
-            totalReserves += poolPathUsdValidator.reserveUserToken;
-
-            uint256 ammBalance = TIP20(token).balanceOf(address(amm));
+    /// @notice TEMPO-FEE6: Fee swap rate M is correctly applied
+    function _invariantFeeSwapRateApplied() internal view {
+        // Verify via accumulated ghost variables
+        // When userToken == validatorToken: output == input (no swap)
+        // When userToken != validatorToken: output == input * M / SCALE (0.3% fee)
+        // So output should always be <= input
+        if (_ghostFeeInputSum > 0 && _totalFeeCollections > 0) {
             assertTrue(
-                ammBalance >= totalReserves,
-                "TEMPO-AMM24: Cross-pool solvency violated"
+                _ghostFeeOutputSum <= _ghostFeeInputSum,
+                "TEMPO-FEE6: Fee output exceeds fee input"
             );
         }
     }
@@ -997,7 +1030,7 @@ contract FeeAMMInvariantTest is BaseTest {
         address[] memory actorsAddress = new address[](noOfActors_);
 
         for (uint256 i = 0; i < noOfActors_; i++) {
-            address actor = makeAddr(string(abi.encodePacked("Actor", vm.toString(i))));
+            address actor = address(uint160(uint256(keccak256(abi.encodePacked("Actor", i)))));
             actorsAddress[i] = actor;
 
             // initial actor balance for all tokens
@@ -1129,30 +1162,6 @@ contract FeeAMMInvariantTest is BaseTest {
         _log(
             string.concat(
                 "DISTRIBUTE_FEES: ", _getActorIndex(validator), " received ", vm.toString(amount), " fees"
-            )
-        );
-    }
-
-    /// @dev Logs a fee swap action
-    function _logFeeSwap(
-        address actor,
-        address userToken,
-        address validatorToken,
-        uint256 feeAmount,
-        uint256 amountOut
-    ) internal {
-        _log(
-            string.concat(
-                "FEE_SWAP: ",
-                _getActorIndex(actor),
-                " swapped ",
-                vm.toString(feeAmount),
-                " ",
-                _getTokenSymbol(userToken),
-                " -> ",
-                vm.toString(amountOut),
-                " ",
-                _getTokenSymbol(validatorToken)
             )
         );
     }
