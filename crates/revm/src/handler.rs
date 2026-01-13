@@ -502,14 +502,17 @@ where
         // Check if this is an AA transaction by checking for tempo_tx_env
         let evm_ctx = evm.ctx();
         if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
-            // Ensure gas limit covers 2D nonce cost
-            let gas_limit = evm_ctx.tx().gas_limit();
-            if gas_limit < adjusted_gas.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                    gas_limit,
-                    intrinsic_gas: adjusted_gas.initial_gas,
+            // [T0] Ensure gas limit covers 2D nonce cost
+            let spec = evm_ctx.cfg().spec();
+            if spec.is_t0() {
+                let gas_limit = evm_ctx.tx().gas_limit();
+                if gas_limit < adjusted_gas.initial_gas {
+                    return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit,
+                        intrinsic_gas: adjusted_gas.initial_gas,
+                    }
+                    .into());
                 }
-                .into());
             }
 
             // AA transaction - use batch execution with calls field
@@ -563,6 +566,7 @@ where
             // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
 
             let chain_id = ctx.cfg().chain_id();
+            let spec = ctx.cfg().spec();
 
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
@@ -570,7 +574,7 @@ where
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
-                if authorization.signature().is_keychain() {
+                if spec.is_t0() && authorization.signature().is_keychain() {
                     continue;
                 }
 
@@ -1389,14 +1393,17 @@ where
         // Check if this is an AA transaction by checking for tempo_tx_env
         let evm_ctx = evm.ctx();
         if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
-            // Ensure gas limit covers 2D nonce cost
-            let gas_limit = evm_ctx.tx().gas_limit();
-            if gas_limit < adjusted_gas.initial_gas {
-                return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                    gas_limit,
-                    intrinsic_gas: adjusted_gas.initial_gas,
+            // [T0] Ensure gas limit covers 2D nonce cost
+            let spec = evm_ctx.cfg().spec();
+            if spec.is_t0() {
+                let gas_limit = evm_ctx.tx().gas_limit();
+                if gas_limit < adjusted_gas.initial_gas {
+                    return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit,
+                        intrinsic_gas: adjusted_gas.initial_gas,
+                    }
+                    .into());
                 }
-                .into());
             }
 
             // AA transaction - use batch execution with calls field
@@ -2170,10 +2177,12 @@ mod tests {
         for (gas_limit, should_succeed) in cases {
             let db = CacheDB::new(EmptyDB::default());
             let journal = Journal::new(db);
+            // Use T0 hardfork to enable gas limit validation
+            let cfg = CfgEnv::<TempoHardfork>::default().with_spec(TempoHardfork::T0);
             let ctx = Context::mainnet()
                 .with_db(CacheDB::new(EmptyDB::default()))
                 .with_block(TempoBlockEnv::default())
-                .with_cfg(CfgEnv::default())
+                .with_cfg(cfg)
                 .with_tx(TempoTxEnv {
                     inner: revm::context::TxEnv {
                         gas_limit,
@@ -2310,5 +2319,5 @@ mod tests {
             INTRINSIC_GAS + SPENT.0 + SPENT.1 - (REFUND.0 + REFUND.1) as u64,
             "used() should be spent - refund"
         );
-    }
+        }
 }
