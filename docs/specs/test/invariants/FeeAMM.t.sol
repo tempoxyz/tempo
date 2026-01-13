@@ -1560,7 +1560,7 @@ contract FeeAMMInvariantTest is BaseTest {
             remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
         );
 
-        _log("All frozen balances recovered - blacklisting is temporary freeze, not permanent loss");
+        _log("All frozen balances recovered");
     }
 
     /// @dev Track frozen fees per token from blacklisted actors that cannot exit
