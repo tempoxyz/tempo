@@ -6,6 +6,7 @@ import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
 import { BaseTest } from "../BaseTest.t.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 /// @title StablecoinDEX Invariant Tests
 /// @notice Fuzz-based invariant tests for the StablecoinDEX orderbook exchange
@@ -871,12 +872,13 @@ contract StablecoinDEXInvariantTest is BaseTest {
             quotedOut = 0;
         }
 
+        vm.recordLogs();
         try exchange.swapExactAmountIn(
             before.tokenIn, before.tokenOut, amount, amount - 100
         ) returns (
             uint128 amountOut
         ) {
-            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += _countOrderFilledEvents();
             // TEMPO-DEX4: amountOut >= minAmountOut
             assertTrue(
                 amountOut >= amount - 100, "TEMPO-DEX4: swap exact amountOut less than minAmountOut"
@@ -929,12 +931,13 @@ contract StablecoinDEXInvariantTest is BaseTest {
             quotedIn = 0;
         }
 
+        vm.recordLogs();
         try exchange.swapExactAmountOut(
             before.tokenIn, before.tokenOut, amount, amount + 100
         ) returns (
             uint128 amountIn
         ) {
-            _maxDust += uint64(_findRoute(before.tokenIn, before.tokenOut));
+            _maxDust += _countOrderFilledEvents();
             // TEMPO-DEX5: amountIn <= maxAmountIn
             assertTrue(
                 amountIn <= amount + 100, "TEMPO-DEX5: swap exact amountIn greater than maxAmountIn"
@@ -1110,6 +1113,19 @@ contract StablecoinDEXInvariantTest is BaseTest {
         // TEMPO-DEX1: Order ID monotonically increases
         assertEq(orderId, _nextOrderId, "TEMPO-DEX1: next order id mismatch");
         _nextOrderId += 1;
+    }
+
+    /// @notice Counts the number of OrderFilled events in the recorded logs
+    /// @dev Must be called after vm.recordLogs() and swap execution
+    /// @return count The number of OrderFilled events emitted
+    function _countOrderFilledEvents() internal returns (uint64 count) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 orderFilledSelector = IStablecoinDEX.OrderFilled.selector;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == orderFilledSelector) {
+                count++;
+            }
+        }
     }
 
     /// @notice Verifies a swap revert is due to a known/expected error
