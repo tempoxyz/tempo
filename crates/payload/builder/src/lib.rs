@@ -61,8 +61,6 @@ use tempo_transaction_pool::{
 use tracing::{Level, debug, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
-///
-/// IMPORTANT: must match the validation semantics in `handler.rs:validate_time_window`.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
         tx.as_aa()
@@ -664,7 +662,6 @@ mod tests {
 
     trait TestExt {
         fn random() -> Self;
-        // HACK: only used for `RecoveredSubblock`
         fn with_valid_before(_: Option<u64>) -> Self
         where
             Self: Sized,
