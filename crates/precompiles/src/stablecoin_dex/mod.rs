@@ -594,13 +594,16 @@ impl StablecoinDEX {
     }
 
     /// Partially fill an order with the specified amount.
-    /// Fill amount is denominated in base token
+    /// Fill amount is denominated in base token.
+    /// For ask orders, `quote_override` can be provided to specify the exact quote amount
+    /// the maker should receive, avoiding double-rounding issues.
     fn partial_fill_order(
         &mut self,
         order: &mut Order,
         level: &mut TickLevel,
         fill_amount: u128,
         taker: Address,
+        quote_override: Option<u128>,
     ) -> Result<u128> {
         let orderbook = self.books[order.book_key()].read()?;
 
@@ -611,16 +614,21 @@ impl StablecoinDEX {
             .write(new_remaining)?;
 
         // Calculate quote amount for this fill (used by both maker settlement and taker output)
-        let quote_amount = base_to_quote(
-            fill_amount,
-            order.tick(),
-            if order.is_bid() {
-                RoundingDirection::Down // Bid: taker receives quote, round DOWN
-            } else {
-                RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
-            },
-        )
-        .ok_or(TempoPrecompileError::under_overflow())?;
+        let quote_amount = if let Some(override_amount) = quote_override {
+            // Use the provided quote amount directly (for ask partial fills in exact_in swaps)
+            override_amount
+        } else {
+            base_to_quote(
+                fill_amount,
+                order.tick(),
+                if order.is_bid() {
+                    RoundingDirection::Down // Bid: taker receives quote, round DOWN
+                } else {
+                    RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
+                },
+            )
+            .ok_or(TempoPrecompileError::under_overflow())?
+        };
 
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount)
@@ -792,7 +800,7 @@ impl StablecoinDEX {
             };
 
             if fill_amount < order.remaining() {
-                self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
+                self.partial_fill_order(&mut order, &mut level, fill_amount, taker, None)?;
                 total_amount_in = total_amount_in
                     .checked_add(amount_in)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -867,8 +875,10 @@ impl StablecoinDEX {
             };
 
             if fill_amount < order.remaining() {
+                // For asks, pass the actual amount_in as quote_override to avoid double-rounding
+                let quote_override = if bid { None } else { Some(amount_in) };
                 let amount_out =
-                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
+                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker, quote_override)?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -4070,6 +4080,72 @@ mod tests {
             exchange
                 .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
                 .expect("Swap should succeed");
+
+            Ok(())
+        })
+    }
+
+    /// Test that ask swap exact in maintains zero-sum invariant (TIP-1005)
+    /// Previously, double-rounding caused the maker to receive less than the taker paid.
+    #[test]
+    fn test_ask_swap_exact_in_rounding_zero_sum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let bob = Address::random();
+            let admin = Address::random();
+            // tick 2000 = price 1.02
+            let tick = 2000i16;
+
+            // Use price + 1 to trigger the rounding edge case
+            let price = orderbook::tick_to_price(tick) as u128; // 102000
+            let amount_in = price + 1; // 102001
+
+            // Setup quote token (pathUSD)
+            let quote = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .apply()?;
+            let quote_token = quote.address();
+
+            // Setup base token - Alice needs base tokens to place ask order
+            let base = TIP20Setup::create("BASE", "BASE", admin)
+                .with_issuer(admin)
+                .with_mint(alice, U256::from(MIN_ORDER_AMOUNT))
+                .with_approval(alice, exchange.address, U256::MAX)
+                .apply()?;
+            let base_token = base.address();
+
+            exchange
+                .create_pair(base_token)
+                .expect("Could not create pair");
+
+            // Alice places an ask order (selling base for quote)
+            exchange
+                .place(alice, base_token, MIN_ORDER_AMOUNT, false, tick)
+                .expect("Order should succeed");
+
+            // Give Bob quote tokens in his DEX balance
+            exchange
+                .set_balance(bob, quote_token, amount_in)
+                .expect("Could not set balance");
+
+            exchange
+                .swap_exact_amount_in(bob, quote_token, base_token, amount_in, 0)
+                .expect("Swap should succeed");
+
+            // Alice's exchange balance in quote tokens should equal what Bob paid (amount_in)
+            // This is the zero-sum invariant: taker paid == maker received
+            let alice_quote_balance = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(
+                alice_quote_balance,
+                amount_in,
+                "Zero-sum violated: alice received {} but bob spent {}",
+                alice_quote_balance,
+                amount_in
+            );
 
             Ok(())
         })
