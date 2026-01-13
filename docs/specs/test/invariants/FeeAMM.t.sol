@@ -1315,17 +1315,6 @@ contract FeeAMMInvariantTest is BaseTest {
                     poolIdAB != poolIdBA,
                     "TEMPO-AMM27: Pool(A,B) and Pool(B,A) must have different IDs"
                 );
-
-                // Also verify pools are independent (different reserves possible)
-                IFeeAMM.Pool memory poolAB = amm.getPool(tokenA, tokenB);
-                IFeeAMM.Pool memory poolBA = amm.getPool(tokenB, tokenA);
-
-                // If both pools are initialized, they should be able to have different states
-                // (we just verify the IDs are different - actual reserve independence is implicit)
-                if (amm.totalSupply(poolIdAB) > 0 && amm.totalSupply(poolIdBA) > 0) {
-                    // Pools exist independently - no further assertion needed
-                    // The key invariant is the ID uniqueness above
-                }
             }
         }
     }
