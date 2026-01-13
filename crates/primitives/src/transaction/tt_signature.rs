@@ -731,10 +731,18 @@ fn verify_p256_signature_internal(
         .map_err(|_| "P256 signature verification failed")
 }
 
-/// Parses and validates WebAuthn data, returning the message hash for P256 verification
+/// Minimal struct to deserialize only the fields we need from clientDataJSON.
+/// serde_json will ignore unknown fields and only parse `type` and `challenge`.
+#[derive(serde::Deserialize)]
+struct ClientDataJson<'a> {
+    #[serde(rename = "type")]
+    type_field: &'a str,
+    challenge: &'a str,
+}
+
+/// Parses and validates WebAuthn data, returning the message hash for P256 verification.
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 ///
-/// According to the spec, this:
 /// 1. Parses authenticatorData and clientDataJSON
 /// 2. Validates authenticatorData (min 37 bytes, UP flag set)
 /// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
@@ -775,24 +783,18 @@ fn verify_webauthn_data_internal(
     let authenticator_data = &webauthn_data[..auth_data_len];
     let client_data_json = &webauthn_data[auth_data_len..];
 
-    // Validate clientDataJSON
-    let json_str =
-        core::str::from_utf8(client_data_json).map_err(|_| "clientDataJSON is not valid UTF-8")?;
+    // Parse clientDataJSON (only extracts type and challenge fields)
+    // NOTE: Size is already bounded by MAX_WEBAUTHN_SIGNATURE_LENGTH (2KB) at signature parsing
+    let client_data: ClientDataJson<'_> =
+        serde_json::from_slice(client_data_json).map_err(|_| "clientDataJSON is not valid JSON")?;
 
-    // Basic JSON structure validation
-    if !json_str.starts_with('{') || !json_str.ends_with('}') {
-        return Err("clientDataJSON is not valid JSON");
+    // Validate type field
+    if client_data.type_field != "webauthn.get" {
+        return Err("clientDataJSON type must be webauthn.get");
     }
 
-    // Check for required type field
-    if !json_str.contains("\"type\":\"webauthn.get\"") {
-        return Err("clientDataJSON missing required type field");
-    }
-
-    // Verify challenge matches tx_hash (Base64URL encoded)
-    let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
-    let challenge_property = format!("\"challenge\":\"{challenge_b64url}\"");
-    if !json_str.contains(&challenge_property) {
+    // Validate challenge matches tx_hash (Base64URL encoded)
+    if client_data.challenge != URL_SAFE_NO_PAD.encode(tx_hash.as_slice()) {
         return Err("clientDataJSON challenge does not match transaction hash");
     }
 
@@ -1058,7 +1060,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "clientDataJSON missing required type field"
+            "clientDataJSON type must be webauthn.get"
         );
     }
 
