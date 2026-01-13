@@ -65,12 +65,20 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM11**: Pool reserves update correctly - user reserve decreases by `amountOut`, validator reserve increases by `amountIn`.
 - **TEMPO-AMM12**: Actor balances update correctly - pays `amountIn` validator tokens, receives `amountOut` user tokens.
 
+### Fee Swap Invariants
+
+- **TEMPO-AMM25**: Fee swap `amountOut` follows the formula: `amountOut = (amountIn * M / SCALE)` (rounds down). Output never exceeds input.
+- **TEMPO-AMM26**: Fee swap reserves update correctly - user reserve increases by `amountIn`, validator reserve decreases by `amountOut`. Verified via ghost variable tracking in `simulateFeeCollection`.
+
 ### Global Invariants
 
 - **TEMPO-AMM13**: Pool solvency - AMM token balances are always >= sum of pool reserves for that token.
 - **TEMPO-AMM14**: LP token accounting - Total supply equals sum of all user LP balances + MIN_LIQUIDITY (locked on first mint).
 - **TEMPO-AMM15**: MIN_LIQUIDITY is permanently locked - once a pool is initialized, total supply is always >= MIN_LIQUIDITY.
 - **TEMPO-AMM16**: Fee rates are constant - M = 9970, N = 9985, SCALE = 10000.
+- **TEMPO-AMM27**: Pool ID uniqueness - `getPoolId(A, B) != getPoolId(B, A)` for directional pool separation.
+- **TEMPO-AMM28**: No LP when uninitialized - if `totalSupply == 0`, no actor holds LP tokens for that pool.
+- **TEMPO-AMM29**: Fee conservation - `collectedFees + distributed <= totalFeesIn` (fees cannot be created from nothing).
 
 ### Rounding & Exploitation Invariants
 

@@ -112,6 +112,11 @@ contract FeeAMMInvariantTest is BaseTest {
     /// The +1 is intentional rounding that favors the pool
     uint256 private _ghostRebalanceRoundingDust;
 
+    /// @dev Ghost variables for fee conservation (TEMPO-AMM29)
+    /// Track total fees collected and distributed to ensure fees cannot be created from nothing
+    uint256 private _ghostTotalFeesCollected;
+    uint256 private _ghostTotalFeesDistributed;
+
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
     function setUp() public override {
@@ -651,6 +656,7 @@ contract FeeAMMInvariantTest is BaseTest {
                     validatorBalanceBefore + collectedBefore,
                     "TEMPO-FEE4: Validator should receive collected fees"
                 );
+                _ghostTotalFeesDistributed += collectedBefore; // Track for TEMPO-AMM29
             }
 
             _logDistribute(validator, collectedBefore);
@@ -744,6 +750,7 @@ contract FeeAMMInvariantTest is BaseTest {
             _totalFeeCollections++;
             _ghostFeeInputSum += feeAmount;
             _ghostFeeOutputSum += expectedOut;
+            _ghostTotalFeesCollected += expectedOut; // Track for TEMPO-AMM29
 
             // Track precise dust from fee swap (inline to avoid stack depth)
             _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
@@ -781,6 +788,7 @@ contract FeeAMMInvariantTest is BaseTest {
             _totalFeeCollections++;
             _ghostFeeInputSum += feeAmount;
             _ghostFeeOutputSum += feeAmount;
+            _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
             // No dust for same-token transfers
 
             _log(
@@ -917,6 +925,9 @@ contract FeeAMMInvariantTest is BaseTest {
         _invariantBurnRoundingFavorsPool();
         _invariantCollectedFeesNotExceedBalance();
         _invariantFeeSwapRateApplied();
+        _invariantPoolIdUniqueness();
+        _invariantNoLpWhenUninitialized();
+        _invariantFeeConservation();
     }
 
     /// @notice TEMPO-AMM13: Pool solvency - AMM token balances >= sum of reserves
@@ -1117,7 +1128,8 @@ contract FeeAMMInvariantTest is BaseTest {
         );
     }
 
-    /// @notice TEMPO-FEE6: Fee swap rate M is correctly applied
+    /// @notice TEMPO-AMM25: Fee swap rate M is correctly applied
+    /// amountOut = (amountIn * M / SCALE), output never exceeds input
     function _invariantFeeSwapRateApplied() internal view {
         // Verify via accumulated ghost variables
         // When userToken == validatorToken: output == input (no swap)
@@ -1125,7 +1137,8 @@ contract FeeAMMInvariantTest is BaseTest {
         // So output should always be <= input
         if (_ghostFeeInputSum > 0 && _totalFeeCollections > 0) {
             assertTrue(
-                _ghostFeeOutputSum <= _ghostFeeInputSum, "TEMPO-FEE6: Fee output exceeds fee input"
+                _ghostFeeOutputSum <= _ghostFeeInputSum,
+                "TEMPO-AMM25: Fee output exceeds fee input"
             );
         }
     }
@@ -1144,6 +1157,74 @@ contract FeeAMMInvariantTest is BaseTest {
         assertTrue(
             _ghostBurnValidatorActual <= _ghostBurnValidatorTheoretical,
             "TEMPO-AMM23: Burn validator actual exceeds theoretical"
+        );
+    }
+
+    /// @notice TEMPO-AMM27: Pool ID uniqueness - directional pool separation
+    /// Pool(A, B) and Pool(B, A) must be separate pools with different IDs
+    function _invariantPoolIdUniqueness() internal view {
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            for (uint256 j = i + 1; j < _tokens.length; j++) {
+                address tokenA = address(_tokens[i]);
+                address tokenB = address(_tokens[j]);
+
+                bytes32 poolIdAB = amm.getPoolId(tokenA, tokenB);
+                bytes32 poolIdBA = amm.getPoolId(tokenB, tokenA);
+
+                // Pool IDs must be different for directional separation
+                assertTrue(
+                    poolIdAB != poolIdBA,
+                    "TEMPO-AMM27: Pool(A,B) and Pool(B,A) must have different IDs"
+                );
+
+                // Also verify pools are independent (different reserves possible)
+                IFeeAMM.Pool memory poolAB = amm.getPool(tokenA, tokenB);
+                IFeeAMM.Pool memory poolBA = amm.getPool(tokenB, tokenA);
+
+                // If both pools are initialized, they should be able to have different states
+                // (we just verify the IDs are different - actual reserve independence is implicit)
+                if (amm.totalSupply(poolIdAB) > 0 && amm.totalSupply(poolIdBA) > 0) {
+                    // Pools exist independently - no further assertion needed
+                    // The key invariant is the ID uniqueness above
+                }
+            }
+        }
+    }
+
+    /// @notice TEMPO-AMM28: No LP when uninitialized
+    /// If totalSupply == 0, no actor should hold LP tokens for that pool
+    function _invariantNoLpWhenUninitialized() internal view {
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                if (i == j) continue;
+
+                address userToken = address(_tokens[i]);
+                address validatorToken = address(_tokens[j]);
+                bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+
+                uint256 totalSupply = amm.totalSupply(poolId);
+
+                if (totalSupply == 0) {
+                    // Pool is uninitialized - verify no actor has LP tokens
+                    for (uint256 k = 0; k < _actors.length; k++) {
+                        uint256 balance = amm.liquidityBalances(poolId, _actors[k]);
+                        assertEq(
+                            balance,
+                            0,
+                            "TEMPO-AMM28: Actor has LP tokens in uninitialized pool"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @notice TEMPO-AMM29: Fee conservation
+    /// Total fees distributed cannot exceed total fees collected
+    function _invariantFeeConservation() internal view {
+        assertTrue(
+            _ghostTotalFeesDistributed <= _ghostTotalFeesCollected,
+            "TEMPO-AMM29: Fees distributed exceed fees collected - value creation bug"
         );
     }
 
@@ -1170,13 +1251,19 @@ contract FeeAMMInvariantTest is BaseTest {
             for (uint256 t = 0; t < _tokens.length; t++) {
                 address token = address(_tokens[t]);
                 if (amm.collectedFees(validator, token) > 0) {
-                    try amm.distributeFees(validator, token) { } catch { }
+                    try amm.distributeFees(validator, token) { }
+                    catch (bytes memory reason) {
+                        _assertKnownFeeManagerError(reason);
+                    }
                 }
             }
 
             // Also distribute pathUSD fees
             if (amm.collectedFees(validator, address(pathUSD)) > 0) {
-                try amm.distributeFees(validator, address(pathUSD)) { } catch { }
+                try amm.distributeFees(validator, address(pathUSD)) { }
+                catch (bytes memory reason) {
+                    _assertKnownFeeManagerError(reason);
+                }
             }
         }
     }
@@ -1198,7 +1285,10 @@ contract FeeAMMInvariantTest is BaseTest {
                     uint256 lpBalance = amm.liquidityBalances(poolId, actor);
                     if (lpBalance > 0) {
                         vm.prank(actor);
-                        try amm.burn(userToken, validatorToken, lpBalance, actor) { } catch { }
+                        try amm.burn(userToken, validatorToken, lpBalance, actor) { }
+                        catch (bytes memory reason) {
+                            _assertKnownError(reason);
+                        }
                     }
                 }
 
@@ -1210,7 +1300,10 @@ contract FeeAMMInvariantTest is BaseTest {
                 uint256 lpBalance1 = amm.liquidityBalances(poolId1, actor);
                 if (lpBalance1 > 0) {
                     vm.prank(actor);
-                    try amm.burn(token, address(pathUSD), lpBalance1, actor) { } catch { }
+                    try amm.burn(token, address(pathUSD), lpBalance1, actor) { }
+                    catch (bytes memory reason) {
+                        _assertKnownError(reason);
+                    }
                 }
 
                 // pathUSD/token pool
@@ -1218,7 +1311,10 @@ contract FeeAMMInvariantTest is BaseTest {
                 uint256 lpBalance2 = amm.liquidityBalances(poolId2, actor);
                 if (lpBalance2 > 0) {
                     vm.prank(actor);
-                    try amm.burn(address(pathUSD), token, lpBalance2, actor) { } catch { }
+                    try amm.burn(address(pathUSD), token, lpBalance2, actor) { }
+                    catch (bytes memory reason) {
+                        _assertKnownError(reason);
+                    }
                 }
             }
         }
