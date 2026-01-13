@@ -622,35 +622,82 @@ contract FeeAMMInvariantTest is BaseTest {
         }
     }
 
+    /// @dev Number of actors that can be permanently blacklisted (out of 20)
+    /// Only actors 0-4 can remain blacklisted; actors 5-19 are always recovered
+    uint256 private constant BLACKLISTABLE_ACTOR_COUNT = 5;
+
     /// @notice Handler for toggling blacklist status of actors
     /// @dev TEMPO-AMM32/33: Blacklist state changes happen independently of operations.
     ///      Existing handlers (mint, burn, rebalanceSwap, distributeFees) will naturally
     ///      encounter blacklisted actors and verify PolicyForbids behavior.
+    ///
+    ///      Strategy: Only actors 0-4 (5 out of 20) can be permanently blacklisted.
+    ///      Once blacklisted, they stay blacklisted (only recovered in blacklistRecovery).
+    ///      All other actors (5-19) are immediately recovered if blacklisted.
+    ///      This prevents "assume hell" in long fuzzing campaigns while still testing
+    ///      blacklist scenarios thoroughly.
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
-    /// @param addToBlacklist If true, add to blacklist; if false, remove from blacklist
-    function toggleBlacklist(uint256 actorSeed, uint256 tokenSeed, bool addToBlacklist) external {
+    /// @param probabilitySeed Seed for probabilistic decisions
+    function toggleBlacklist(uint256 actorSeed, uint256 tokenSeed, uint256 probabilitySeed)
+        external
+    {
         address actor = _selectActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
         uint64 policyId = token == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[token];
         address policyAdmin = token == address(pathUSD) ? pathUSDAdmin : admin;
 
-        vm.prank(policyAdmin);
-        registry.modifyPolicyBlacklist(policyId, actor, addToBlacklist);
+        // Determine if this actor is in the blacklistable pool (actors 0-4)
+        uint256 actorIndex = actorSeed % _actors.length;
+        bool isBlacklistableActor = actorIndex < BLACKLISTABLE_ACTOR_COUNT;
 
-        _log(
-            string.concat(
-                addToBlacklist ? "BLACKLIST: " : "WHITELIST: ",
-                _getActorIndex(actor),
-                addToBlacklist ? " added to blacklist for " : " removed from blacklist for ",
-                _getTokenSymbol(token)
-            )
-        );
+        // Check current blacklist status
+        bool currentlyBlacklisted = !registry.isAuthorized(policyId, actor);
+
+        if (!isBlacklistableActor) {
+            // Non-blacklistable actor (5-19): always recover if blacklisted, never blacklist
+            if (currentlyBlacklisted) {
+                vm.prank(policyAdmin);
+                registry.modifyPolicyBlacklist(policyId, actor, false);
+                _log(
+                    string.concat(
+                        "WHITELIST: ",
+                        _getActorIndex(actor),
+                        " recovered (non-blacklistable) for ",
+                        _getTokenSymbol(token)
+                    )
+                );
+            }
+            // If not blacklisted, do nothing - keep it that way
+            return;
+        }
+
+        // Blacklistable actor (0-4): can be permanently blacklisted
+        if (currentlyBlacklisted) {
+            // Already blacklisted - stay blacklisted (permanent until blacklistRecovery)
+            return;
+        }
+
+        // Not blacklisted yet - 20% chance to blacklist
+        if ((probabilitySeed % 100) < 20) {
+            vm.prank(policyAdmin);
+            registry.modifyPolicyBlacklist(policyId, actor, true);
+            _log(
+                string.concat(
+                    "BLACKLIST: ",
+                    _getActorIndex(actor),
+                    " permanently blacklisted for ",
+                    _getTokenSymbol(token)
+                )
+            );
+        }
     }
 
     /// @notice Handler for testing recovery after unblacklist
     /// @dev Tests TEMPO-AMM34: Validators can claim frozen fees after being removed from blacklist
+    ///      Only runs when actor is ALREADY blacklisted (from toggleBlacklist) and has pending fees.
+    ///      This tests the organic scenario rather than creating artificial state.
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
     function blacklistRecovery(uint256 actorSeed, uint256 tokenSeed) external {
@@ -661,17 +708,17 @@ contract FeeAMMInvariantTest is BaseTest {
         uint64 policyId = token == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[token];
         address policyAdmin = token == address(pathUSD) ? pathUSDAdmin : admin;
 
-        // Step 1: Set up pending fees for actor
-        uint256 feeAmount = 50_000;
-        _ensureFunds(address(amm), TIP20(token), feeAmount);
-        _storeCollectedFees(actor, token, feeAmount);
+        // Only proceed if actor is ALREADY blacklisted for this token
+        // This ensures we test organic scenarios from toggleBlacklist, not artificial ones
+        // For blacklist policies: isAuthorized returns false when user IS blacklisted
+        bool isAuthorized = registry.isAuthorized(policyId, actor);
+        vm.assume(!isAuthorized); // Not authorized = blacklisted
 
-        // Step 2: Blacklist the actor
-        vm.prank(policyAdmin);
-        registry.modifyPolicyBlacklist(policyId, actor, true);
-
-        // Step 3: Verify distribution fails while blacklisted
+        // Only proceed if actor has pending fees to recover
         uint256 collectedBefore = amm.collectedFees(actor, token);
+        vm.assume(collectedBefore > 0);
+
+        // Step 1: Verify distribution fails while blacklisted
         try amm.distributeFees(actor, token) {
             revert("TEMPO-AMM34: Should not distribute to blacklisted actor");
         } catch (bytes memory reason) {
@@ -689,11 +736,11 @@ contract FeeAMMInvariantTest is BaseTest {
             "TEMPO-AMM34: Fees should remain after failed distribution"
         );
 
-        // Step 4: Remove from blacklist
+        // Step 2: Remove from blacklist
         vm.prank(policyAdmin);
         registry.modifyPolicyBlacklist(policyId, actor, false);
 
-        // Step 5: Now distribution should succeed
+        // Step 3: Now distribution should succeed
         uint256 actorBalanceBefore = TIP20(token).balanceOf(actor);
 
         try amm.distributeFees(actor, token) {
@@ -718,7 +765,9 @@ contract FeeAMMInvariantTest is BaseTest {
                     _getActorIndex(actor),
                     " recovered ",
                     vm.toString(collectedBefore),
-                    " frozen fees after unblacklist"
+                    " ",
+                    _getTokenSymbol(token),
+                    " after unblacklist"
                 )
             );
         } catch (bytes memory reason) {
@@ -1012,6 +1061,7 @@ contract FeeAMMInvariantTest is BaseTest {
         // TEMPO-AMM24: All participants can exit - simulate full withdrawal
         _verifyAllCanExit();
 
+        _log("");
         _log("");
     }
 
@@ -1383,44 +1433,240 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @dev After all operations, all LPs should be able to burn their positions and
     ///      all validators should be able to claim their fees. Only dust should remain.
     function _verifyAllCanExit() internal {
-        // Step 1: Distribute all pending fees to validators
+        _log("=== EXIT CHECK PHASE 1: Exit with blacklisted actors frozen ===");
+
+        // Step 1: Distribute all pending fees to validators (tracks frozen fees from blacklisted)
         _exitDistributeAllFees();
 
-        // Step 2: Have all actors burn their LP positions
-        _exitBurnAllLiquidity();
+        // Step 2: Have all actors burn their LP positions (tracks frozen LP from blacklisted)
+        _exitBurnAllLiquidity(true);
 
-        // Step 3: Verify only dust remains in the AMM
+        // Step 3: Verify only dust remains in the AMM (accounting for frozen balances)
         _exitVerifyOnlyDustRemains();
+
+        _log("");
+        _log("=== EXIT CHECK PHASE 2: Unblacklist permanently blacklisted actors and verify recovery ===");
+
+        // Step 4: TEMPO-AMM34 - Unblacklist only the permanently blacklistable actors (0-4)
+        // and verify they can now recover their frozen balances
+        _exitVerifyCleanExitAfterUnblacklist();
     }
 
+    /// @dev Unblacklist ALL actors and verify they can cleanly exit
+    /// This proves that blacklisting is a temporary freeze, not permanent loss
+    /// Note: Both permanently blacklisted actors (0-4) AND any temporarily blacklisted
+    /// actors (5-19 that haven't been recovered yet) need to be unblacklisted
+    function _exitVerifyCleanExitAfterUnblacklist() internal {
+        // Step 1: Unblacklist ALL actors for all tokens
+        // - Actors 0-4: permanently blacklisted, need explicit unblacklist
+        // - Actors 5-19: may be temporarily blacklisted if toggleBlacklist hasn't recovered them yet
+        uint256 unblacklistedCount = 0;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address actor = _actors[i];
+
+            // Unblacklist for each token
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                address token = address(_tokens[t]);
+                uint64 policyId = _tokenPolicyIds[token];
+
+                // Only unblacklist if currently blacklisted
+                if (!registry.isAuthorized(policyId, actor)) {
+                    vm.prank(admin);
+                    registry.modifyPolicyBlacklist(policyId, actor, false);
+                    unblacklistedCount++;
+                }
+            }
+
+            // Unblacklist for pathUSD
+            if (!registry.isAuthorized(_pathUsdPolicyId, actor)) {
+                vm.prank(pathUSDAdmin);
+                registry.modifyPolicyBlacklist(_pathUsdPolicyId, actor, false);
+                unblacklistedCount++;
+            }
+        }
+
+        if (unblacklistedCount > 0) {
+            _log(
+                string.concat(
+                    "EXIT CHECK - Unblacklisted ",
+                    vm.toString(unblacklistedCount),
+                    " actor/token pairs"
+                )
+            );
+        }
+
+        // Step 2: Distribute any remaining frozen fees
+        uint256 distributedAfterUnblacklist = 0;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            address validator = _actors[i];
+
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                address token = address(_tokens[t]);
+                uint256 pending = amm.collectedFees(validator, token);
+                if (pending > 0) {
+                    try amm.distributeFees(validator, token) {
+                        distributedAfterUnblacklist += pending;
+                    } catch (bytes memory reason) {
+                        // Should not fail after unblacklist - this would be a bug
+                        _assertKnownFeeManagerError(reason);
+                        revert(
+                            string.concat(
+                                "TEMPO-AMM34: Distribution failed for ",
+                                _getActorIndex(validator),
+                                " after unblacklist - frozen fees should be recoverable"
+                            )
+                        );
+                    }
+                }
+            }
+
+            // pathUSD fees
+            uint256 pendingPathUSD = amm.collectedFees(validator, address(pathUSD));
+            if (pendingPathUSD > 0) {
+                try amm.distributeFees(validator, address(pathUSD)) {
+                    distributedAfterUnblacklist += pendingPathUSD;
+                } catch (bytes memory reason) {
+                    _assertKnownFeeManagerError(reason);
+                    revert(
+                        string.concat(
+                            "TEMPO-AMM34: pathUSD distribution failed for ",
+                            _getActorIndex(validator),
+                            " after unblacklist - frozen fees should be recoverable"
+                        )
+                    );
+                }
+            }
+        }
+
+        if (distributedAfterUnblacklist > 0) {
+            _log(
+                string.concat(
+                    "EXIT CHECK - Recovered ",
+                    vm.toString(distributedAfterUnblacklist),
+                    " frozen fees after unblacklisting"
+                )
+            );
+        }
+
+        // Step 3: Burn any remaining LP (should succeed for all actors now)
+        _exitBurnAllLiquidity(false);
+
+        // Step 4: Verify no collected fees remain (all should be distributed now)
+        uint256 remainingFees = 0;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                remainingFees += amm.collectedFees(_actors[i], address(_tokens[t]));
+            }
+            remainingFees += amm.collectedFees(_actors[i], address(pathUSD));
+        }
+
+        assertEq(
+            remainingFees,
+            0,
+            "TEMPO-AMM34: All fees should be distributable after unblacklisting all actors"
+        );
+
+        // Step 5: Verify no LP positions remain (all should be burned now)
+        uint256 remainingLP = 0;
+        for (uint256 a = 0; a < _actors.length; a++) {
+            for (uint256 i = 0; i < _tokens.length; i++) {
+                for (uint256 j = 0; j < _tokens.length; j++) {
+                    if (i == j) continue;
+                    bytes32 poolId = amm.getPoolId(address(_tokens[i]), address(_tokens[j]));
+                    remainingLP += amm.liquidityBalances(poolId, _actors[a]);
+                }
+                // pathUSD pairs
+                bytes32 poolId1 = amm.getPoolId(address(_tokens[i]), address(pathUSD));
+                bytes32 poolId2 = amm.getPoolId(address(pathUSD), address(_tokens[i]));
+                remainingLP += amm.liquidityBalances(poolId1, _actors[a]);
+                remainingLP += amm.liquidityBalances(poolId2, _actors[a]);
+            }
+        }
+
+        assertEq(
+            remainingLP,
+            0,
+            "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
+        );
+
+        _log("EXIT CHECK - Phase 2 complete: all frozen balances recovered after unblacklist");
+    }
+
+    /// @dev Track frozen fees per token from blacklisted actors that cannot exit
+    mapping(address => uint256) private _exitFrozenFees;
+    uint256 private _exitFrozenFeesPathUSD;
+
+    /// @dev Track frozen LP positions from blacklisted actors that cannot burn
+    /// Maps poolId => total frozen LP value
+    mapping(bytes32 => uint256) private _exitFrozenLP;
+
     /// @dev Distribute all collected fees to validators
+    /// Tracks frozen fees for blacklisted actors that cannot claim
     function _exitDistributeAllFees() internal {
+        // Reset frozen fee tracking
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            _exitFrozenFees[address(_tokens[t])] = 0;
+        }
+        _exitFrozenFeesPathUSD = 0;
+
         for (uint256 i = 0; i < _actors.length; i++) {
             address validator = _actors[i];
 
             // Distribute fees for each token
             for (uint256 t = 0; t < _tokens.length; t++) {
                 address token = address(_tokens[t]);
-                if (amm.collectedFees(validator, token) > 0) {
+                uint256 pendingFees = amm.collectedFees(validator, token);
+                if (pendingFees > 0) {
                     try amm.distributeFees(validator, token) { }
                     catch (bytes memory reason) {
                         _assertKnownFeeManagerError(reason);
+                        // If distribution failed (likely due to blacklist), track as frozen
+                        _exitFrozenFees[token] += pendingFees;
                     }
                 }
             }
 
             // Also distribute pathUSD fees
-            if (amm.collectedFees(validator, address(pathUSD)) > 0) {
+            uint256 pendingPathUSD = amm.collectedFees(validator, address(pathUSD));
+            if (pendingPathUSD > 0) {
                 try amm.distributeFees(validator, address(pathUSD)) { }
                 catch (bytes memory reason) {
                     _assertKnownFeeManagerError(reason);
+                    _exitFrozenFeesPathUSD += pendingPathUSD;
                 }
+            }
+        }
+
+        // Log frozen fees
+        if (_exitFrozenFeesPathUSD > 0) {
+            _log(
+                string.concat(
+                    "EXIT CHECK - Frozen pathUSD fees (blacklisted): ",
+                    vm.toString(_exitFrozenFeesPathUSD)
+                )
+            );
+        }
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            if (_exitFrozenFees[address(_tokens[t])] > 0) {
+                _log(
+                    string.concat(
+                        "EXIT CHECK - Frozen ",
+                        _tokens[t].symbol(),
+                        " fees (blacklisted): ",
+                        vm.toString(_exitFrozenFees[address(_tokens[t])])
+                    )
+                );
             }
         }
     }
 
     /// @dev Have all actors burn their LP positions
-    function _exitBurnAllLiquidity() internal {
+    /// Tracks frozen LP for blacklisted actors that cannot burn
+    /// @param trackFrozen If true, track frozen LP from failed burns (first pass)
+    ///                    If false, all burns should succeed (after unblacklist)
+    function _exitBurnAllLiquidity(bool trackFrozen) internal {
+        uint256 totalFrozenLP = 0;
+
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
 
@@ -1439,6 +1685,10 @@ contract FeeAMMInvariantTest is BaseTest {
                         try amm.burn(userToken, validatorToken, lpBalance, actor) { }
                         catch (bytes memory reason) {
                             _assertKnownError(reason);
+                            if (trackFrozen) {
+                                _exitFrozenLP[poolId] += lpBalance;
+                                totalFrozenLP += lpBalance;
+                            }
                         }
                     }
                 }
@@ -1454,6 +1704,10 @@ contract FeeAMMInvariantTest is BaseTest {
                     try amm.burn(token, address(pathUSD), lpBalance1, actor) { }
                     catch (bytes memory reason) {
                         _assertKnownError(reason);
+                        if (trackFrozen) {
+                            _exitFrozenLP[poolId1] += lpBalance1;
+                            totalFrozenLP += lpBalance1;
+                        }
                     }
                 }
 
@@ -1465,9 +1719,22 @@ contract FeeAMMInvariantTest is BaseTest {
                     try amm.burn(address(pathUSD), token, lpBalance2, actor) { }
                     catch (bytes memory reason) {
                         _assertKnownError(reason);
+                        if (trackFrozen) {
+                            _exitFrozenLP[poolId2] += lpBalance2;
+                            totalFrozenLP += lpBalance2;
+                        }
                     }
                 }
             }
+        }
+
+        if (trackFrozen && totalFrozenLP > 0) {
+            _log(
+                string.concat(
+                    "EXIT CHECK - Total frozen LP (blacklisted actors): ",
+                    vm.toString(totalFrozenLP)
+                )
+            );
         }
     }
 
@@ -1586,23 +1853,58 @@ contract FeeAMMInvariantTest is BaseTest {
         uint256 burnDust = (_ghostBurnUserTheoretical - _ghostBurnUserActual)
             + (_ghostBurnValidatorTheoretical - _ghostBurnValidatorActual);
 
+        // Sum up all frozen fees across tokens (from blacklisted actors who couldn't claim)
+        uint256 totalFrozenFees = _exitFrozenFeesPathUSD;
+        for (uint256 t = 0; t < _tokens.length; t++) {
+            totalFrozenFees += _exitFrozenFees[address(_tokens[t])];
+        }
+
+        // Log comprehensive exit summary with all categories
+        _log("EXIT CHECK - Balance Categories:");
         _log(
             string.concat(
-                "EXIT CHECK - Dust summary: balance_excess=",
-                vm.toString(totalDust),
-                ", fee_dust_in_reserves=",
-                vm.toString(_ghostFeeSwapActualDust),
-                ", rebalance_dust_in_reserves=",
-                vm.toString(_ghostRebalanceRoundingDust),
-                ", burn_rounding=",
+                "  1. Balance excess (actual - reserves): ",
+                vm.toString(totalDust)
+            )
+        );
+        _log(
+            string.concat(
+                "  2. Fee dust in reserves: ",
+                vm.toString(_ghostFeeSwapActualDust)
+            )
+        );
+        _log(
+            string.concat(
+                "  3. Rebalance +1 rounding: ",
+                vm.toString(_ghostRebalanceRoundingDust)
+            )
+        );
+        _log(
+            string.concat(
+                "  4. Burn rounding dust: ",
                 vm.toString(burnDust)
+            )
+        );
+        _log(
+            string.concat(
+                "  5. Frozen fees (blacklisted actors): ",
+                vm.toString(totalFrozenFees)
             )
         );
 
         // TEMPO-AMM24: After all burns, any remaining balance beyond reserves should be
-        // from MIN_LIQUIDITY lockup or unclaimed collectedFees. The balance should NOT
-        // exceed reserves by more than the tracked dust sources (no value creation).
-        uint256 maxExpectedDust = expectedDust + burnDust;
+        // from MIN_LIQUIDITY lockup, unclaimed collectedFees, or frozen blacklisted balances.
+        // The balance should NOT exceed reserves by more than the tracked dust sources (no value creation).
+        uint256 maxExpectedDust = expectedDust + burnDust + totalFrozenFees;
+
+        _log(
+            string.concat(
+                "EXIT CHECK - Max allowed excess: ",
+                vm.toString(maxExpectedDust),
+                " (fee+rebalance+burn+frozen)"
+            )
+        );
+
         assertTrue(
             totalDust <= maxExpectedDust,
             "TEMPO-AMM24: AMM has more dust than expected - potential value creation bug"
