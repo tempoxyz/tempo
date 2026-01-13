@@ -5825,57 +5825,23 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     assert!(key_info.isRevoked, "Key should be marked as revoked");
     println!("Access key revoked");
 
-    // Verify the delayed transaction is still in the pool after revocation
-    assert!(
-        setup.node.inner.pool.contains(&delayed_tx_hash),
-        "Delayed transaction should still be in the pool after key revocation"
-    );
-    println!("Delayed transaction still in pool after revocation (TOCTOU window active)");
+    // The evict_revoked_keychain_txs maintenance task has a 1-second startup delay,
+    // then monitors storage changes on block commits and evicts transactions signed
+    // with revoked keys. Wait for the task to fully initialize and process the commit event.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Advance another block to trigger the commit notification
+    setup.node.advance_block().await?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // ========================================
-    // STEP 4: Advance time past valid_after and try to mine
+    // STEP 4: Verify transaction is evicted from the pool
     // ========================================
-    println!("\n=== STEP 4: Advance past valid_after and attempt mining ===");
+    println!("\n=== STEP 4: Verify transaction is evicted from pool ===");
 
-    // Advance blocks until we're past valid_after
-    loop {
-        let payload = setup.node.advance_block().await?;
-        let block_timestamp = payload.block().header().timestamp();
-        println!(
-            "  Block {} timestamp: {}",
-            payload.block().inner.number,
-            block_timestamp
-        );
-
-        if block_timestamp > valid_after_time {
-            println!("Now past valid_after time");
-            break;
-        }
-    }
-
-    // ========================================
-    // STEP 5: Verify transaction status
-    // ========================================
-    println!("\n=== STEP 5: Verify transaction status ===");
-
-    // Mine additional blocks to give the system time to process
-    for _ in 0..5 {
-        let payload = setup.node.advance_block().await?;
-        let block_txs = payload.block().body().transactions.len();
-        println!(
-            "  Block {} mined with {} transactions",
-            payload.block().inner.number,
-            block_txs
-        );
-    }
-
-    // Wait a bit for async pool maintenance
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    // Check pool state and transaction receipt
+    // Check pool state immediately after revocation
     let tx_still_in_pool = setup.node.inner.pool.contains(&delayed_tx_hash);
 
-    // Check if transaction was mined
+    // Check if transaction was mined (should not be, since it had valid_after in future)
     let receipt: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [delayed_tx_hash])
         .await?;
