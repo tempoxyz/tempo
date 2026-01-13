@@ -80,7 +80,7 @@ This applies to all storage slot writes that transition from zero to non-zero, i
 **Proposed Behavior:**
 - Contract creation replaces the existing EVM per-byte cost with a new pricing model:
   - Each byte: 1,000 gas per byte (linear pricing)
-  - Additional state elements: 2 × 250,000 gas = 500,000 gas for keccak hash and codesize fields
+  - TX create cost: 2 × 250,000 gas = 500,000 gas for keccak hash and nonce fields
 - This pricing applies to the contract code size (the bytecode being deployed)
 
 **Implementation Details:**
@@ -90,6 +90,26 @@ This applies to all storage slot writes that transition from zero to non-zero, i
 - This replaces the existing EVM per-byte cost for contract creation (not an additional charge)
 - Applies to both CREATE and CREATE2 operations
 - The account creation cost (250,000 gas) is separate and still applies when the contract account's nonce transitions from 0 to 1
+
+### Intrinsic transaction gas 
+
+A transaction is invalid if the minimal costs of a (reverting) transaction can't be covered by caller's balance. Those checks are done in the transaction pool as a DOS prevention measure as well as when a transaction is first executed as part of a block.
+
+* Transaction with `nonce == 0` require an additional 250,000 gas
+* Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+* Changes to EIP-7702 authorization lists:
+   * EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+   * The base cost per authorization is reduced to 12,500 gas
+   * There is no refund if the account already exists
+* The additional initial cost for CREATE transactions that deploy a contract is increased to 500,000 from currently 32,000 (to reflect the upfront cost in contract creation)
+  * If the first transaction in a batch is a CREATE transaction, the additional cost of 500,000 needs to be charged
+
+
+### Other changes
+
+The transaction gas cap is changed from 16M to 30M to accommodate the deployment of 24kb contracts.
+
+Tempo transaction key authorisations can't determine whether it is going to create new storage or not. If the transaction cannot pay for the key authorization storage costs, the transaction reverts any authorization key that has been set.
 
 ## Gas Schedule Summary
 
