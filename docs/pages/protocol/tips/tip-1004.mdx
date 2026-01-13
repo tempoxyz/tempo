@@ -1,0 +1,251 @@
+# Permit for TIP-20
+
+This document specifies the addition of EIP-2612 permit functionality to TIP-20 tokens, enabling gasless approvals via off-chain signatures.
+
+- **TIP ID**: TIP-1004
+- **Authors/Owners**: Dan Robinson
+- **Status**: Draft
+- **Related Specs/TIPs**: [TIP-20](/protocol/tip20/spec), [EIP-2612](https://eips.ethereum.org/EIPS/eip-2612), [EIP-712](https://eips.ethereum.org/EIPS/eip-712), [EIP-1271](https://eips.ethereum.org/EIPS/eip-1271)
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+TIP-1004 adds EIP-2612 compatible `permit()` functionality to TIP-20 tokens, enabling gasless approvals via off-chain signatures. This allows users to approve token spending without submitting an on-chain transaction, with the approval being executed by any third party who submits the signed permit.
+
+## Motivation
+
+The standard ERC-20 approval flow requires users to submit a transaction to approve a spender before that spender can transfer tokens on their behalf. This creates friction in user experiences and requires users to hold native tokens for gas.
+
+EIP-2612 introduced the `permit()` function which allows approvals to be granted via a signed message rather than an on-chain transaction. This enables:
+
+- **Gasless approvals**: Users can sign a permit off-chain, and a relayer or the spender can submit the transaction
+- **Single-transaction flows**: DApps can batch the permit with the subsequent action (e.g., approve + swap) in one transaction
+- **Improved UX**: Users don't need to wait for or pay for a separate approval transaction
+
+Since TIP-20 aims to be a superset of ERC-20 with additional functionality, adding EIP-2612 permit support ensures TIP-20 tokens work seamlessly with existing DeFi protocols and tooling that expect permit functionality.
+
+---
+
+# Specification
+
+## New functions
+
+The following functions are added to the TIP-20 interface:
+
+```solidity
+interface ITIP20Permit {
+    /// @notice Approves `spender` to spend `value` tokens on behalf of `owner` via a signed permit
+    /// @param owner The address granting the approval
+    /// @param spender The address being approved to spend tokens
+    /// @param value The amount of tokens to approve
+    /// @param deadline Unix timestamp after which the permit is no longer valid
+    /// @param v The recovery byte of the signature
+    /// @param r Half of the ECDSA signature pair
+    /// @param s Half of the ECDSA signature pair
+    /// @dev The permit is valid only if:
+    ///      - The current block timestamp is <= deadline
+    ///      - The signature is valid and was signed by `owner`
+    ///      - The nonce in the signature matches the current nonce for `owner`
+    ///      Upon successful execution, increments the nonce for `owner` by 1.
+    ///      Emits an {Approval} event.
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    /// @notice Returns the current nonce for an address
+    /// @param owner The address to query
+    /// @return The current nonce, which must be included in any permit signature for this owner
+    /// @dev The nonce starts at 0 and increments by 1 each time a permit is successfully used
+    function nonces(address owner) external view returns (uint256);
+
+    /// @notice Returns the EIP-712 domain separator for this token
+    /// @return The domain separator bytes32 value
+    /// @dev The domain separator is computed dynamically on each call as:
+    ///      keccak256(abi.encode(
+    ///          keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+    ///          keccak256(bytes(name())),
+    ///          keccak256(bytes("1")),
+    ///          block.chainid,
+    ///          address(this)
+    ///      ))
+    ///      Dynamic computation ensures correct behavior after chain forks where chainId changes.
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+}
+```
+
+## EIP-712 Typed Data
+
+The permit signature must conform to EIP-712 typed structured data signing. The domain and message types are defined as follows:
+
+### Domain Separator
+
+The domain separator is computed using the following parameters:
+
+| Parameter | Value |
+|-----------|-------|
+| name | The token's `name()` |
+| version | `"1"` |
+| chainId | The chain ID where the token is deployed |
+| verifyingContract | The TIP-20 token contract address |
+
+```solidity
+bytes32 DOMAIN_SEPARATOR = keccak256(abi.encode(
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+    keccak256(bytes(name())),
+    keccak256(bytes("1")),
+    block.chainid,
+    address(this)
+));
+```
+
+### Permit Typehash
+
+The permit message type is:
+
+```solidity
+bytes32 constant PERMIT_TYPEHASH = keccak256(
+    "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+);
+```
+
+### Signature Construction
+
+To create a valid permit signature, the signer must sign the following EIP-712 digest:
+
+```solidity
+bytes32 structHash = keccak256(abi.encode(
+    PERMIT_TYPEHASH,
+    owner,
+    spender,
+    value,
+    nonces[owner],
+    deadline
+));
+
+bytes32 digest = keccak256(abi.encodePacked(
+    "\x19\x01",
+    DOMAIN_SEPARATOR,
+    structHash
+));
+```
+
+The signature `(v, r, s)` must be produced by signing `digest` with the private key of `owner`.
+
+## Behavior
+
+### Nonces
+
+Each address has an associated nonce that:
+- Starts at `0` for all addresses
+- Increments by `1` each time a permit is successfully executed for that address
+- Must be included in the permit signature to prevent replay attacks
+
+### Deadline
+
+The `deadline` parameter is a Unix timestamp. The permit is only valid if `block.timestamp <= deadline`. This allows signers to limit the validity window of their permits.
+
+### Pause State
+
+The `permit()` function follows the same pause behavior as `approve()`. Since setting an allowance does not move tokens, `permit()` is allowed to execute even when the token is paused.
+
+### TIP-403 Transfer Policy
+
+The `permit()` function does not perform TIP-403 authorization checks, consistent with the behavior of `approve()`. Transfer policy checks are only enforced when tokens are actually transferred.
+
+### Signature Validation
+
+The implementation must:
+1. Verify that `block.timestamp <= deadline`, otherwise revert with `PermitExpired`
+2. Attempt to validate the signature:
+   - First, use `ecrecover` to recover a signer address from the signature
+   - If `ecrecover` returns a non-zero address that equals `owner`, the signature is valid (EOA case)
+   - Otherwise, if `owner` has code, call `owner.isValidSignature(digest, signature)` per [EIP-1271](https://eips.ethereum.org/EIPS/eip-1271)
+   - If `isValidSignature` returns the magic value `0x1626ba7e`, the signature is valid (smart contract wallet case)
+   - Otherwise, revert with `InvalidSignature`
+3. Verify the nonce matches `nonces[owner]`
+4. Increment `nonces[owner]`
+5. Set `allowance[owner][spender] = value`
+6. Emit an `Approval(owner, spender, value)` event
+
+### Smart Contract Wallet Support (EIP-1271)
+
+TIP-1004 supports permits signed by smart contract wallets via [EIP-1271](https://eips.ethereum.org/EIPS/eip-1271). When the `owner` address has code deployed, the implementation calls:
+
+```solidity
+bytes4 constant EIP1271_MAGIC_VALUE = 0x1626ba7e;
+
+// Pack signature for EIP-1271 call
+bytes memory signature = abi.encodePacked(r, s, v);
+
+// Call isValidSignature on the owner contract
+(bool success, bytes memory result) = owner.staticcall(
+    abi.encodeWithSelector(
+        IERC1271.isValidSignature.selector,
+        digest,
+        signature
+    )
+);
+
+// Signature is valid if call succeeds and returns magic value
+bool isValid = success 
+    && result.length == 32 
+    && abi.decode(result, (bytes4)) == EIP1271_MAGIC_VALUE;
+```
+
+This enables multisigs, smart contract wallets (e.g., Safe, Argent), and account abstraction wallets to use gasless permits.
+
+## New errors
+
+```solidity
+/// @notice The permit signature has expired (block.timestamp > deadline)
+error PermitExpired();
+
+/// @notice The permit signature is invalid (wrong signer, malformed, or zero address recovered)
+error InvalidSignature();
+```
+
+## New events
+
+None. Successful permit execution emits the existing `Approval` event from TIP-20.
+
+---
+
+# Invariants
+
+- `nonces(owner)` must only ever increase, never decrease
+- `nonces(owner)` must increment by exactly 1 on each successful `permit()` call for that owner
+- A permit signature can only be used once (enforced by nonce increment)
+- A permit with a deadline in the past must always revert
+- The recovered signer from a valid permit signature must exactly match the `owner` parameter
+- After a successful `permit(owner, spender, value, ...)`, `allowance(owner, spender)` must equal `value`
+- `DOMAIN_SEPARATOR()` must be computed dynamically and reflect the current `block.chainid`
+
+## Test Cases
+
+The test suite must cover:
+
+1. **Happy path**: Valid permit sets allowance correctly
+2. **Expired permit**: Reverts with `PermitExpired` when `deadline < block.timestamp`
+3. **Invalid signature**: Reverts with `InvalidSignature` for malformed signatures
+4. **Wrong signer**: Reverts with `InvalidSignature` when signature is valid but signer ≠ owner
+5. **Replay protection**: Second use of same signature reverts (nonce already incremented)
+6. **Nonce tracking**: Verify nonce increments correctly after each permit
+7. **Zero address recovery**: Reverts with `InvalidSignature` if ecrecover returns zero address
+8. **Pause state**: Permit works when token is paused
+9. **Domain separator**: Verify correct EIP-712 domain separator computation
+10. **Domain separator chain ID**: Verify domain separator changes if chain ID changes
+11. **Max allowance**: Permit with `type(uint256).max` value works correctly
+12. **Allowance override**: Permit can override existing allowance (including to zero)
+13. **EIP-1271 smart contract wallet**: Permit works with smart contract wallet that implements `isValidSignature`
+14. **EIP-1271 rejection**: Reverts with `InvalidSignature` if smart contract wallet returns wrong magic value
+15. **EIP-1271 revert**: Reverts with `InvalidSignature` if `isValidSignature` call reverts
