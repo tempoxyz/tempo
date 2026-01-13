@@ -198,9 +198,8 @@ contract FeeAMMInvariantTest is BaseTest {
         vm.assume(userToken != validatorToken);
 
         // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
-        uint64 policyId = validatorToken == address(pathUSD)
-            ? _pathUsdPolicyId
-            : _tokenPolicyIds[validatorToken];
+        uint64 policyId =
+            validatorToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[validatorToken];
         vm.assume(registry.isAuthorized(policyId, actor));
 
         // Bound amount to reasonable range (must be > 2 * MIN_LIQUIDITY for first mint)
@@ -515,10 +514,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
             _log(
                 string.concat(
-                    "SET_VALIDATOR_TOKEN: ",
-                    _getActorIndex(actor),
-                    " -> ",
-                    _getTokenSymbol(token)
+                    "SET_VALIDATOR_TOKEN: ", _getActorIndex(actor), " -> ", _getTokenSymbol(token)
                 )
             );
         } catch (bytes memory reason) {
@@ -574,9 +570,8 @@ contract FeeAMMInvariantTest is BaseTest {
         vm.assume(userToken != validatorToken);
 
         // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
-        uint64 policyId = validatorToken == address(pathUSD)
-            ? _pathUsdPolicyId
-            : _tokenPolicyIds[validatorToken];
+        uint64 policyId =
+            validatorToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[validatorToken];
         vm.assume(registry.isAuthorized(policyId, actor));
 
         amount = bound(amount, MIN_LIQUIDITY * 3, 100_000);
@@ -624,9 +619,8 @@ contract FeeAMMInvariantTest is BaseTest {
         vm.assume(userToken != validatorToken);
 
         // Skip if actor is blacklisted for validatorToken (can't mint funds to them)
-        uint64 policyId = validatorToken == address(pathUSD)
-            ? _pathUsdPolicyId
-            : _tokenPolicyIds[validatorToken];
+        uint64 policyId =
+            validatorToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[validatorToken];
         vm.assume(registry.isAuthorized(policyId, actor));
 
         IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
@@ -869,21 +863,8 @@ contract FeeAMMInvariantTest is BaseTest {
                 _ghostFeeSwapTheoreticalDust += (feeAmount * (SCALE - M)) / SCALE;
                 _ghostFeeSwapActualDust += feeAmount - expectedOut;
 
-                _log(
-                    string.concat(
-                        "FEE_COLLECTION: ",
-                        _getActorIndex(user),
-                        " paid ",
-                        vm.toString(feeAmount),
-                        " ",
-                        _getTokenSymbol(userToken),
-                        " -> ",
-                        _getActorIndex(validator),
-                        " receives ",
-                        vm.toString(expectedOut),
-                        " ",
-                        _getTokenSymbol(validatorToken)
-                    )
+                _logFeeCollection(
+                    user, validator, feeAmount, expectedOut, userToken, validatorToken
                 );
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
@@ -908,23 +889,60 @@ contract FeeAMMInvariantTest is BaseTest {
                 _ghostTotalFeesCollected += feeAmount; // Track for TEMPO-AMM29
                 // No dust for same-token transfers
 
-                _log(
-                    string.concat(
-                        "FEE_COLLECTION: ",
-                        _getActorIndex(user),
-                        " paid ",
-                        vm.toString(feeAmount),
-                        " ",
-                        _getTokenSymbol(userToken),
-                        " -> ",
-                        _getActorIndex(validator),
-                        " (same token, no swap)"
-                    )
-                );
+                _logFeeCollectionSameToken(user, validator, feeAmount, userToken);
             } catch (bytes memory reason) {
                 _assertKnownError(reason);
             }
         }
+    }
+
+    /// @dev Logs a cross-token fee collection
+    function _logFeeCollection(
+        address user,
+        address validator,
+        uint256 feeAmount,
+        uint256 expectedOut,
+        address userToken,
+        address validatorToken
+    ) internal {
+        _log(
+            string.concat(
+                "FEE_COLLECTION: ",
+                _getActorIndex(user),
+                " paid ",
+                vm.toString(feeAmount),
+                " ",
+                _getTokenSymbol(userToken),
+                " -> ",
+                _getActorIndex(validator),
+                " receives ",
+                vm.toString(expectedOut),
+                " ",
+                _getTokenSymbol(validatorToken)
+            )
+        );
+    }
+
+    /// @dev Logs a same-token fee collection
+    function _logFeeCollectionSameToken(
+        address user,
+        address validator,
+        uint256 feeAmount,
+        address token
+    ) internal {
+        _log(
+            string.concat(
+                "FEE_COLLECTION: ",
+                _getActorIndex(user),
+                " paid ",
+                vm.toString(feeAmount),
+                " ",
+                _getTokenSymbol(token),
+                " -> ",
+                _getActorIndex(validator),
+                " (same token, no swap)"
+            )
+        );
     }
 
     /// @dev Stores pool reserves directly using vm.store
@@ -1548,9 +1566,7 @@ contract FeeAMMInvariantTest is BaseTest {
         }
 
         assertEq(
-            remainingLP,
-            0,
-            "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
+            remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
         );
 
         _log("EXIT CHECK - Phase 2 complete: all frozen balances recovered after unblacklist");
