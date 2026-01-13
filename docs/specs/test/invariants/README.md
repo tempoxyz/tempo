@@ -85,6 +85,10 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 
   - **Solvency**: AMM balance >= tracked reserves (LPs cannot extract more than exists)
   - **No value creation**: AMM balance does not exceed reserves by more than tracked dust sources
+  - **MIN_LIQUIDITY preserved**: Even if all LP holders burn their entire balances pro-rata, MIN_LIQUIDITY worth of reserves remains permanently locked. This is guaranteed by the combination of:
+    1. First mint locks MIN_LIQUIDITY in totalSupply but assigns it to no one (TEMPO-AMM15)
+    2. Pro-rata burn formula `(liquidity * reserve) / totalSupply` can only extract `userLiquidity / totalSupply` fraction
+    3. Since `sum(userBalances) = totalSupply - MIN_LIQUIDITY`, full exit leaves `(MIN_LIQUIDITY / totalSupply) * reserves` in the pool
 
   Note: Fee swap dust (0.30% fee) and rebalance +1 rounding go INTO reserves and are distributed pro-rata to LPs when they burn. This is the intended fee mechanism - LPs earn revenue from fee swaps. The invariant verifies no value is created (balance ≤ reserves + tracked dust) rather than requiring dust to remain, since dust legitimately flows to LPs.
 
