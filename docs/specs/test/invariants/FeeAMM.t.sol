@@ -154,7 +154,7 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // Initialize log file (cleared at start of test, appends across invariant runs)
         try vm.removeFile(LOG_FILE) {} catch {}
-        _log("=== FeeAMM Invariant Test Log (tempo-foundry) ===");
+        _log("=== FeeAMM Invariant Test Log ===");
         _log(
             string.concat(
                 "Tokens: T1=",
