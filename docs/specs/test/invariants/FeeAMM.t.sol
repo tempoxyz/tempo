@@ -928,6 +928,7 @@ contract FeeAMMInvariantTest is BaseTest {
         _invariantPoolIdUniqueness();
         _invariantNoLpWhenUninitialized();
         _invariantFeeConservation();
+        _invariantPoolInitializationShape();
     }
 
     /// @notice TEMPO-AMM13: Pool solvency - AMM token balances >= sum of reserves
@@ -1226,6 +1227,53 @@ contract FeeAMMInvariantTest is BaseTest {
             _ghostTotalFeesDistributed <= _ghostTotalFeesCollected,
             "TEMPO-AMM29: Fees distributed exceed fees collected - value creation bug"
         );
+    }
+
+    /// @notice TEMPO-AMM30: Pool initialization shape
+    /// A pool is either completely uninitialized (all zeros) OR properly initialized with MIN_LIQUIDITY locked
+    /// No partial/bricked states allowed (e.g., reserves > 0 but totalSupply < MIN_LIQUIDITY)
+    function _invariantPoolInitializationShape() internal view {
+        for (uint256 i = 0; i < _tokens.length; i++) {
+            for (uint256 j = 0; j < _tokens.length; j++) {
+                if (i == j) continue;
+                _verifyPoolShape(address(_tokens[i]), address(_tokens[j]));
+            }
+            // Check pathUSD pools
+            _verifyPoolShape(address(_tokens[i]), address(pathUSD));
+            _verifyPoolShape(address(pathUSD), address(_tokens[i]));
+        }
+    }
+
+    /// @dev Helper to verify pool initialization shape for a single pool
+    function _verifyPoolShape(address userToken, address validatorToken) internal view {
+        bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+        uint256 totalSupply = amm.totalSupply(poolId);
+        IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
+
+        if (totalSupply == 0) {
+            // Uninitialized: reserves must also be zero
+            assertEq(
+                pool.reserveUserToken,
+                0,
+                "TEMPO-AMM30: Uninitialized pool has non-zero user reserve"
+            );
+            assertEq(
+                pool.reserveValidatorToken,
+                0,
+                "TEMPO-AMM30: Uninitialized pool has non-zero validator reserve"
+            );
+        } else {
+            // Initialized: totalSupply must be >= MIN_LIQUIDITY
+            assertTrue(
+                totalSupply >= MIN_LIQUIDITY,
+                "TEMPO-AMM30: Initialized pool has totalSupply < MIN_LIQUIDITY (bricked state)"
+            );
+            // At least validator reserve must be > 0 (mints always deposit validator tokens)
+            assertTrue(
+                pool.reserveValidatorToken > 0,
+                "TEMPO-AMM30: Initialized pool has zero validator reserve"
+            );
+        }
     }
 
     /// @notice TEMPO-AMM24: All participants can exit - verify everyone can withdraw
