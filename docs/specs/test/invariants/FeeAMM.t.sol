@@ -1138,8 +1138,7 @@ contract FeeAMMInvariantTest is BaseTest {
         // So output should always be <= input
         if (_ghostFeeInputSum > 0 && _totalFeeCollections > 0) {
             assertTrue(
-                _ghostFeeOutputSum <= _ghostFeeInputSum,
-                "TEMPO-AMM25: Fee output exceeds fee input"
+                _ghostFeeOutputSum <= _ghostFeeInputSum, "TEMPO-AMM25: Fee output exceeds fee input"
             );
         }
     }
@@ -1210,9 +1209,7 @@ contract FeeAMMInvariantTest is BaseTest {
                     for (uint256 k = 0; k < _actors.length; k++) {
                         uint256 balance = amm.liquidityBalances(poolId, _actors[k]);
                         assertEq(
-                            balance,
-                            0,
-                            "TEMPO-AMM28: Actor has LP tokens in uninitialized pool"
+                            balance, 0, "TEMPO-AMM28: Actor has LP tokens in uninitialized pool"
                         );
                     }
                 }
