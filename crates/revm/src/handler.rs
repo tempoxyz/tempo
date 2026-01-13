@@ -1443,6 +1443,7 @@ mod tests {
     use super::*;
     use crate::{TempoBlockEnv, TempoTxEnv, evm::TempoEvm, tx::TempoBatchCallEnv};
     use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+    use proptest::prelude::*;
     use revm::{
         Context, Journal, MainContext,
         context::CfgEnv,
@@ -1455,7 +1456,10 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
-    use tempo_primitives::transaction::Call;
+    use tempo_primitives::transaction::{
+        Call, TempoSignature,
+        tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
+    };
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -2306,5 +2310,173 @@ mod tests {
             INTRINSIC_GAS + SPENT.0 + SPENT.1 - (REFUND.0 + REFUND.1) as u64,
             "used() should be spent - refund"
         );
+    }
+
+    /// Strategy for optional u64 timestamps.
+    fn arb_opt_timestamp() -> impl Strategy<Value = Option<u64>> {
+        prop_oneof![Just(None), any::<u64>().prop_map(Some)]
+    }
+
+    /// Helper to create a secp256k1 signature for testing.
+    fn secp256k1_sig() -> TempoSignature {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            alloy_primitives::Signature::test_signature(),
+        ))
+    }
+
+    /// Helper to create a TempoBatchCallEnv with specified calls.
+    fn make_aa_env(calls: Vec<Call>) -> TempoBatchCallEnv {
+        TempoBatchCallEnv {
+            signature: secp256k1_sig(),
+            aa_calls: calls,
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        }
+    }
+
+    /// Helper to create a single-call TempoBatchCallEnv with given calldata.
+    fn make_single_call_env(calldata: Bytes) -> TempoBatchCallEnv {
+        make_aa_env(vec![Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: calldata,
+        }])
+    }
+
+    /// Helper to create a multi-call TempoBatchCallEnv with N empty calls.
+    fn make_multi_call_env(num_calls: usize) -> TempoBatchCallEnv {
+        make_aa_env(
+            (0..num_calls)
+                .map(|_| Call {
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ZERO,
+                    input: Bytes::new(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Helper to compute AA batch gas with no access list.
+    fn compute_aa_gas(env: &TempoBatchCallEnv) -> InitialAndFloorGas {
+        calculate_aa_batch_intrinsic_gas(env, None::<std::iter::Empty<&AccessListItem>>).unwrap()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// Property: validate_time_window returns Ok iff (after <= ts < before)
+        #[test]
+        fn proptest_validate_time_window_correctness(
+            valid_after in arb_opt_timestamp(),
+            valid_before in arb_opt_timestamp(),
+            block_timestamp in any::<u64>(),
+        ) {
+            let result = validate_time_window(valid_after, valid_before, block_timestamp);
+
+            let after_ok = valid_after.is_none_or(|after| block_timestamp >= after);
+            let before_ok = valid_before.is_none_or(|before| block_timestamp < before);
+            let expected_valid = after_ok && before_ok;
+
+            prop_assert_eq!(result.is_ok(), expected_valid,
+                "valid_after={:?}, valid_before={:?}, block_ts={}, result={:?}",
+                valid_after, valid_before, block_timestamp, result);
+        }
+
+        /// Property: validate_time_window with None constraints always succeeds
+        #[test]
+        fn proptest_validate_time_window_none_always_valid(block_timestamp in any::<u64>()) {
+            prop_assert!(validate_time_window(None, None, block_timestamp).is_ok());
+        }
+
+        /// Property: validate_time_window with valid_after=0 is equivalent to None
+        #[test]
+        fn proptest_validate_time_window_zero_after_equivalent_to_none(
+            valid_before in arb_opt_timestamp(),
+            block_timestamp in any::<u64>(),
+        ) {
+            let with_zero = validate_time_window(Some(0), valid_before, block_timestamp);
+            let with_none = validate_time_window(None, valid_before, block_timestamp);
+            prop_assert_eq!(with_zero.is_ok(), with_none.is_ok());
+        }
+
+        /// Property: validate_time_window - if before <= after, the window is empty
+        #[test]
+        fn proptest_validate_time_window_empty_window(
+            valid_after in 1u64..=u64::MAX,
+            offset in 0u64..1000u64,
+        ) {
+            let valid_before = valid_after.saturating_sub(offset);
+            let ts_in_range = valid_after;
+            let result = validate_time_window(Some(valid_after), Some(valid_before), ts_in_range);
+            prop_assert!(result.is_err(), "Empty window should reject all timestamps");
+        }
+
+        /// Property: signature gas ordering is consistent: secp256k1 <= p256 <= webauthn
+        #[test]
+        fn proptest_signature_gas_ordering(webauthn_data_len in 0usize..1000) {
+            let secp_sig = PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature());
+            let p256_sig = PrimitiveSignature::P256(P256SignatureWithPreHash {
+                r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO, pre_hash: false,
+            });
+            let webauthn_sig = PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO,
+                webauthn_data: Bytes::from(vec![0u8; webauthn_data_len]),
+            });
+
+            let secp_gas = primitive_signature_verification_gas(&secp_sig);
+            let p256_gas = primitive_signature_verification_gas(&p256_sig);
+            let webauthn_gas = primitive_signature_verification_gas(&webauthn_sig);
+
+            prop_assert!(secp_gas <= p256_gas, "secp256k1 should be <= p256");
+            prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");
+        }
+
+        /// Property: gas calculation monotonicity - more calldata means more gas
+        #[test]
+        fn proptest_gas_monotonicity_calldata(
+            calldata_len1 in 0usize..1000,
+            calldata_len2 in 0usize..1000,
+        ) {
+            let gas1 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len1])));
+            let gas2 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len2])));
+
+            if calldata_len1 <= calldata_len2 {
+                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                    "More calldata should mean more gas: len1={}, gas1={}, len2={}, gas2={}",
+                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+            } else {
+                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                    "Less calldata should mean less gas: len1={}, gas1={}, len2={}, gas2={}",
+                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+            }
+        }
+
+        /// Property: gas calculation monotonicity - more calls means more gas
+        #[test]
+        fn proptest_gas_monotonicity_call_count(
+            num_calls1 in 1usize..10,
+            num_calls2 in 1usize..10,
+        ) {
+            let gas1 = compute_aa_gas(&make_multi_call_env(num_calls1));
+            let gas2 = compute_aa_gas(&make_multi_call_env(num_calls2));
+
+            if num_calls1 <= num_calls2 {
+                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                    "More calls should mean more gas: calls1={}, gas1={}, calls2={}, gas2={}",
+                    num_calls1, gas1.initial_gas, num_calls2, gas2.initial_gas);
+            } else {
+                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                    "Fewer calls should mean less gas: calls1={}, gas1={}, calls2={}, gas2={}",
+                    num_calls1, gas1.initial_gas, num_calls2, gas2.initial_gas);
+            }
+        }
+
+        /// Property: base gas is always at least 21000
+        #[test]
+        fn proptest_gas_minimum_base_stipend(num_calls in 1usize..5) {
+            let gas = compute_aa_gas(&make_multi_call_env(num_calls));
+            prop_assert!(gas.initial_gas >= 21_000, "Base gas stipend should be at least 21k");
+        }
     }
 }

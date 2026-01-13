@@ -74,3 +74,101 @@ impl BlockEnvironment for TempoBlockEnv {
         &mut self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Helper to create a TempoBlockEnv with the given timestamp and millis_part.
+    fn make_block_env(timestamp: U256, millis_part: u64) -> TempoBlockEnv {
+        TempoBlockEnv {
+            inner: BlockEnv {
+                timestamp,
+                ..Default::default()
+            },
+            timestamp_millis_part: millis_part,
+        }
+    }
+
+    /// Strategy for random U256 values.
+    fn arb_u256() -> impl Strategy<Value = U256> {
+        any::<[u64; 4]>().prop_map(U256::from_limbs)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// Property: timestamp_millis never panics (uses saturating arithmetic)
+        #[test]
+        fn proptest_timestamp_millis_no_panic(
+            timestamp in arb_u256(),
+            millis_part in any::<u64>(),
+        ) {
+            let block = make_block_env(timestamp, millis_part);
+            let _ = block.timestamp_millis();
+        }
+
+        /// Property: timestamp_millis >= timestamp * 1000 (saturation means >= not >)
+        #[test]
+        fn proptest_timestamp_millis_ge_scaled_timestamp(
+            timestamp in arb_u256(),
+            millis_part in any::<u64>(),
+        ) {
+            let block = make_block_env(timestamp, millis_part);
+            let result = block.timestamp_millis();
+            let scaled = timestamp.saturating_mul(uint!(1000_U256));
+
+            prop_assert!(result >= scaled,
+                "timestamp_millis ({}) should be >= timestamp * 1000 ({})",
+                result, scaled);
+        }
+
+        /// Property: for small timestamps, timestamp_millis == timestamp * 1000 + millis_part
+        #[test]
+        fn proptest_timestamp_millis_exact_for_small_values(
+            timestamp in 0u64..u64::MAX / 1000,
+            millis_part in 0u64..1000,
+        ) {
+            let block = make_block_env(U256::from(timestamp), millis_part);
+            let expected = U256::from(timestamp) * uint!(1000_U256) + U256::from(millis_part);
+            prop_assert_eq!(block.timestamp_millis(), expected);
+        }
+
+        /// Property: timestamp_millis is monotonic in both inputs
+        #[test]
+        fn proptest_timestamp_millis_monotonicity(
+            ts1 in 0u64..u64::MAX / 1000,
+            ts2 in 0u64..u64::MAX / 1000,
+            mp1 in 0u64..1000,
+            mp2 in 0u64..1000,
+        ) {
+            let block1 = make_block_env(U256::from(ts1), mp1);
+            let block2 = make_block_env(U256::from(ts2), mp2);
+
+            let result1 = block1.timestamp_millis();
+            let result2 = block2.timestamp_millis();
+
+            if ts1 < ts2 || (ts1 == ts2 && mp1 <= mp2) {
+                prop_assert!(result1 <= result2,
+                    "Monotonicity violated: ts1={}, mp1={}, result1={}, ts2={}, mp2={}, result2={}",
+                    ts1, mp1, result1, ts2, mp2, result2);
+            }
+        }
+
+        /// Property: millis_part < 1000 means it doesn't overflow into the next second
+        #[test]
+        fn proptest_timestamp_millis_sub_second(
+            timestamp in 0u64..u64::MAX / 1000,
+            millis_part in 0u64..1000,
+        ) {
+            let block = make_block_env(U256::from(timestamp), millis_part);
+            let result = block.timestamp_millis();
+            let next_second = U256::from(timestamp + 1) * uint!(1000_U256);
+
+            prop_assert!(result < next_second,
+                "result ({}) should be < next_second ({})",
+                result, next_second);
+        }
+    }
+}
