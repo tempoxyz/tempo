@@ -160,22 +160,16 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // Initialize log file (cleared at start of test, appends across invariant runs)
         try vm.removeFile(LOG_FILE) { } catch { }
-        _log("=== FeeAMM Invariant Test Log ===");
+        _log("================================================================================");
+        _log("                         FeeAMM Invariant Test Log");
+        _log("================================================================================");
         _log(
             string.concat(
-                "Tokens: T1=",
-                token1.symbol(),
-                ", T2=",
-                token2.symbol(),
-                ", T3=",
-                token3.symbol(),
-                ", T4=",
-                token4.symbol()
+                "Actors: ", vm.toString(_actors.length), " | Tokens: pathUSD, T1, T2, T3, T4"
             )
         );
-        _log(string.concat("Actors: ", vm.toString(_actors.length)));
+        _log("--------------------------------------------------------------------------------");
         _log("");
-        _logBalances();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -989,7 +983,9 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @notice Called after each invariant run to log final state
     function afterInvariant() public {
         _log("");
-        _log("=== Final State ===");
+        _log("--------------------------------------------------------------------------------");
+        _log("                              Final State Summary");
+        _log("--------------------------------------------------------------------------------");
         _log(string.concat("Total mints: ", vm.toString(_totalMints)));
         _log(string.concat("Total burns: ", vm.toString(_totalBurns)));
         _log(string.concat("Total rebalance swaps: ", vm.toString(_totalRebalanceSwaps)));
@@ -1043,9 +1039,6 @@ contract FeeAMMInvariantTest is BaseTest {
 
         // TEMPO-AMM24: All participants can exit - simulate full withdrawal
         _verifyAllCanExit();
-
-        _log("");
-        _log("");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1405,7 +1398,10 @@ contract FeeAMMInvariantTest is BaseTest {
     /// @dev After all operations, all LPs should be able to burn their positions and
     ///      all validators should be able to claim their fees. Only dust should remain.
     function _verifyAllCanExit() internal {
-        _log("=== EXIT CHECK PHASE 1: Exit with blacklisted actors frozen ===");
+        _log("");
+        _log("--------------------------------------------------------------------------------");
+        _log("              EXIT CHECK PHASE 1: Exit with blacklisted actors frozen");
+        _log("--------------------------------------------------------------------------------");
 
         // Step 1: Distribute all pending fees to validators (tracks frozen fees from blacklisted)
         _exitDistributeAllFees();
@@ -1417,10 +1413,16 @@ contract FeeAMMInvariantTest is BaseTest {
         _exitVerifyOnlyDustRemains();
 
         _log("");
-        _log("=== EXIT CHECK PHASE 2: Unblacklist all actors and verify complete recovery ===");
+        _log("--------------------------------------------------------------------------------");
+        _log("         EXIT CHECK PHASE 2: Unblacklist all actors and verify recovery");
+        _log("--------------------------------------------------------------------------------");
 
         // Step 4: TEMPO-AMM34 - Unblacklist all actors and verify frozen balances are recoverable
         _exitVerifyCleanExitAfterUnblacklist();
+
+        _log("");
+        _log("================================================================================");
+        _log("");
     }
 
     /// @dev Unblacklist ALL actors and verify they can cleanly exit
@@ -1558,7 +1560,7 @@ contract FeeAMMInvariantTest is BaseTest {
             remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
         );
 
-        _log("EXIT CHECK - Phase 2 complete: all frozen balances recovered after unblacklist");
+        _log("All frozen balances recovered - blacklisting is temporary freeze, not permanent loss");
     }
 
     /// @dev Track frozen fees per token from blacklisted actors that cannot exit
