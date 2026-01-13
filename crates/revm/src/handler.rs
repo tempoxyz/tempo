@@ -500,7 +500,21 @@ where
         );
 
         // Check if this is an AA transaction by checking for tempo_tx_env
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        let evm_ctx = evm.ctx();
+        if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
+            // [T0] Ensure gas limit covers 2D nonce cost
+            let spec = evm_ctx.cfg().spec();
+            if spec.is_t0() {
+                let gas_limit = evm_ctx.tx().gas_limit();
+                if gas_limit < adjusted_gas.initial_gas {
+                    return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit,
+                        intrinsic_gas: adjusted_gas.initial_gas,
+                    }
+                    .into());
+                }
+            }
+
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, &adjusted_gas, calls)
@@ -552,12 +566,18 @@ where
             // because pre_execution::apply_eip7702_auth_list returns early for non-0x04 tx types
 
             let chain_id = ctx.cfg().chain_id();
+            let spec = ctx.cfg().spec();
+
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
+                if spec.is_t0() && authorization.signature().is_keychain() {
+                    continue;
+                }
+
                 let Some(authority) = authorization.authority() else {
                     // invalid signature, we need to skip
                     continue;
@@ -1371,7 +1391,21 @@ where
         );
 
         // Check if this is an AA transaction by checking for tempo_tx_env
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        let evm_ctx = evm.ctx();
+        if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
+            // [T0] Ensure gas limit covers 2D nonce cost
+            let spec = evm_ctx.cfg().spec();
+            if spec.is_t0() {
+                let gas_limit = evm_ctx.tx().gas_limit();
+                if gas_limit < adjusted_gas.initial_gas {
+                    return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit,
+                        intrinsic_gas: adjusted_gas.initial_gas,
+                    }
+                    .into());
+                }
+            }
+
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
@@ -1405,6 +1439,7 @@ pub fn validate_time_window(
     }
 
     // Validate validBefore constraint
+    // IMPORTANT: must be aligned with `fn has_expired_transactions` in `tempo-payload-builder`.
     if let Some(before) = valid_before
         && block_timestamp >= before
     {
@@ -1420,12 +1455,13 @@ pub fn validate_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoBlockEnv, TempoTxEnv};
-    use alloy_primitives::{Address, B256, U256};
+    use crate::{TempoBlockEnv, TempoTxEnv, evm::TempoEvm, tx::TempoBatchCallEnv};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use revm::{
         Context, Journal, MainContext,
         context::CfgEnv,
         database::{CacheDB, EmptyDB},
+        handler::Handler,
         interpreter::instructions::utility::IntoU256,
         primitives::hardfork::SpecId,
     };
@@ -1433,6 +1469,7 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+    use tempo_primitives::transaction::Call;
 
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
@@ -2126,6 +2163,69 @@ mod tests {
         })
         .unwrap();
         assert_eq!(gas, EXISTING_NONCE_KEY_GAS);
+    }
+
+    #[test]
+    fn test_2d_nonce_gas_limit_validation() {
+        const INTRINSIC_GAS: u64 = 21_000;
+
+        // Test cases: (gas_limit, should_succeed)
+        let cases = [
+            (INTRINSIC_GAS + 10_000, false), // Insufficient for 2D nonce
+            (INTRINSIC_GAS + NEW_NONCE_KEY_GAS + 1000, true), // Sufficient
+        ];
+
+        for (gas_limit, should_succeed) in cases {
+            let db = CacheDB::new(EmptyDB::default());
+            let journal = Journal::new(db);
+            // Use T0 hardfork to enable gas limit validation
+            let cfg = CfgEnv::<TempoHardfork>::default().with_spec(TempoHardfork::T0);
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit,
+                        ..Default::default()
+                    },
+                    // Set tempo_tx_env with a call to trigger AA path
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(Address::random()),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            evm.nonce_2d_gas = NEW_NONCE_KEY_GAS;
+
+            let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let init_and_floor_gas = InitialAndFloorGas::new(INTRINSIC_GAS, 0);
+
+            let result = handler.execution(&mut evm, &init_and_floor_gas);
+
+            if should_succeed {
+                assert!(result.is_ok());
+            } else {
+                let err = result.expect_err("gas_limit={gas_limit}: should fail");
+                match err.as_invalid_tx_err() {
+                    Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                        gas_limit: gl,
+                        intrinsic_gas,
+                    }) => {
+                        assert_eq!(*gl, gas_limit);
+                        assert_eq!(*intrinsic_gas, INTRINSIC_GAS + NEW_NONCE_KEY_GAS);
+                    }
+                    _ => panic!("Expected InsufficientGasForIntrinsicCost, got: {err:?}"),
+                }
+            }
+        }
     }
 
     #[test]

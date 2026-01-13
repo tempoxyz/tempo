@@ -8,7 +8,7 @@ pub use tempo_contracts::precompiles::{
 };
 
 use crate::{
-    TIP_FEE_MANAGER_ADDRESS,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
@@ -244,6 +244,10 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
+        if self.address == PATH_USD_ADDRESS {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
         // Verify the new quote token is a valid TIP20 token that has been deployed
         // use factory's `is_tip20()` which checks both prefix and counter
         if !TIP20Factory::new().is_tip20(call.newQuoteToken)? {
@@ -267,15 +271,19 @@ impl TIP20Token {
         }))
     }
 
-    pub fn complete_quote_token_update(&mut self, msg_sender: Address) -> Result<()> {
+    pub fn complete_quote_token_update(
+        &mut self,
+        msg_sender: Address,
+        _call: ITIP20::completeQuoteTokenUpdateCall,
+    ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root
+        // Loop through quote tokens until we reach the root (pathUSD)
         let mut current = next_quote_token;
-        while current != Address::ZERO {
+        while current != PATH_USD_ADDRESS {
             if current == self.address {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
@@ -1343,7 +1351,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_complete_quote_token_update() -> eyre::Result<()> {
+    fn test_finalize_quote_token_update() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1360,7 +1368,7 @@ pub(crate) mod tests {
             )?;
 
             // Complete the update
-            token.complete_quote_token_update(admin)?;
+            token.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
 
             // Verify quote token was updated
             assert_eq!(token.quote_token()?, quote_token_address);
@@ -1380,7 +1388,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_complete_quote_token_update_detects_cycle() -> eyre::Result<()> {
+    fn test_finalize_quote_token_update_detects_loop() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
 
@@ -1401,7 +1409,8 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete the update - should fail due to loop detection
-            let result = token_b.complete_quote_token_update(admin);
+            let result =
+                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
 
             assert!(matches!(
                 result,
@@ -1415,7 +1424,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_complete_quote_token_update_requires_admin() -> eyre::Result<()> {
+    fn test_finalize_quote_token_update_requires_admin() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
         let non_admin = Address::random();
@@ -1433,7 +1442,8 @@ pub(crate) mod tests {
             )?;
 
             // Try to complete update as non-admin
-            let result = token.complete_quote_token_update(non_admin);
+            let result = token
+                .complete_quote_token_update(non_admin, ITIP20::completeQuoteTokenUpdateCall {});
 
             assert!(matches!(
                 result,
@@ -1441,48 +1451,6 @@ pub(crate) mod tests {
                     RolesAuthError::Unauthorized(_)
                 ))
             ));
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_complete_quote_token_update_detects_path_usd_cycle() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            // Create PATH_USD with quote_token = Address::ZERO (root)
-            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
-
-            // Create USDToken with quote_token = PATH_USD (default for USD tokens)
-            let usd_token = TIP20Setup::create("USDToken", "USDT", admin).apply()?;
-
-            // Verify initial state
-            assert_eq!(path_usd.quote_token()?, Address::ZERO);
-            assert_eq!(usd_token.quote_token()?, PATH_USD_ADDRESS);
-
-            // Set next quote token creating a cycle (PATH_USD → USDToken → PATH_USD)
-            // Succeeds as it only stages the change.
-            path_usd.set_next_quote_token(
-                admin,
-                ITIP20::setNextQuoteTokenCall {
-                    newQuoteToken: usd_token.address,
-                },
-            )?;
-
-            // Completing the update fails due to cycle detection
-            let result = path_usd.complete_quote_token_update(admin);
-
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
-                    _
-                )))
-            ));
-
-            // Verify quote token was NOT updated
-            assert_eq!(path_usd.quote_token()?, Address::ZERO);
 
             Ok(())
         })
@@ -1921,6 +1889,76 @@ pub(crate) mod tests {
                 assert!(result.is_ok());
                 assert_eq!(token.transfer_policy_id()?, policy_id);
             }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_next_quote_token_rejects_path_usd() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let other_token = TIP20Setup::create("Test", "T", admin).apply()?;
+
+            // pathUSD cannot update its quote token
+            let result = path_usd.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: other_token.address,
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_non_path_usd_cycle_detection() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::path_usd(admin).apply()?;
+
+            let mut token_b = TIP20Setup::create("TokenB", "TKNB", admin).apply()?;
+            let token_a = TIP20Setup::create("TokenA", "TKNA", admin)
+                .quote_token(token_b.address)
+                .apply()?;
+
+            // Verify chain where token_a -> token_b -> PATH_USD
+            assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
+
+            // Try to create cycle where token_b -> token_a
+            token_b.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: token_a.address,
+                },
+            )?;
+
+            let result =
+                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // assert that quote tokens are unchanged
+            assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
 
             Ok(())
         })

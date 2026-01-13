@@ -34,9 +34,9 @@
     "tailwind-merge": "^3.3.1",
     "tailwindcss": "^4.1.14",
     "tempo.ts": "~0.13.0",
-    "viem": "^2.44.0",
+    "viem": "https://pkg.pr.new/viem@e5bd0c8",
     "vocs": "^1.4.1",
-    "wagmi": "^3.2.0",
+    "wagmi": "https://pkg.pr.new/wagmi@017b6c6",
     "zod": "^4.1.12"
   },
   "devDependencies": {
@@ -51,10 +51,7 @@
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "unplugin-auto-import": "^20.2.0",
-    "unplugin-icons": "^22.5.0"
-  },
-  "simple-git-hooks": {
-    "pre-commit": "bun run check && (git diff --cached --name-only | grep -q '^specs/' && bun run gen-specs || true)"
-  },
-  "packageManager": "pnpm@10.24.0+sha512.01ff8ae71b4419903b65c60fb2dc9d34cf8bb6e06d03bde112ef38f7a34d6904c424ba66bea5cdcf12890230bf39f9580473140ed9c946fef328b6e5238a345a"
+    "unplugin-icons": "^22.5.0",
+    "vercel": "^50.1.6"
+  }
 }

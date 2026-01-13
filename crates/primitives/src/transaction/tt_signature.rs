@@ -230,11 +230,11 @@ impl PrimitiveSignature {
 
     /// Get the in-memory size of the signature
     pub fn size(&self) -> usize {
-        match self {
-            Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
-            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
-            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
-        }
+        size_of::<Self>()
+            + match self {
+                Self::Secp256k1(_) | Self::P256(_) => 0,
+                Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+            }
     }
 
     /// Recover the signer address from the signature
@@ -593,6 +593,10 @@ impl TempoSignature {
     ///
     /// For Keychain signatures, this performs full validation of the inner signature.
     /// The access key address is cached in the KeychainSignature for later use.
+    /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
+    /// that the signature is valid for the keychain. They also need to check the access key is authorized
+    /// in the keychain precompile.
+    /// We cannot check this here, as we don't have access to the keychain precompile.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,

@@ -28,6 +28,9 @@ pub struct TempoGenesisInfo {
     /// The epoch length used by consensus.
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch_length: Option<u64>,
+    /// Activation timestamp for T0 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t0_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -42,6 +45,10 @@ impl TempoGenesisInfo {
 
     pub fn epoch_length(&self) -> Option<u64> {
         self.epoch_length
+    }
+
+    pub fn t0_time(&self) -> Option<u64> {
+        self.t0_time
     }
 }
 
@@ -121,15 +128,18 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo { t0_time, .. } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
 
-        // Add the Genesis hardfork at timestamp 0
-        base_spec
-            .hardforks
-            .insert(TempoHardfork::Genesis, ForkCondition::Timestamp(0));
+        let tempo_forks = vec![
+            (TempoHardfork::Genesis, Some(0)),
+            (TempoHardfork::T0, t0_time),
+        ]
+        .into_iter()
+        .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
+        base_spec.hardforks.extend(tempo_forks);
 
         Self {
             inner: base_spec.map_header(|inner| TempoHeader {

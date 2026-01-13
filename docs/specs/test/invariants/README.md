@@ -14,6 +14,7 @@
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
 - **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
 - **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
+- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by 1.
 
 ### Balance Invariants
 
@@ -21,11 +22,12 @@
 
 ### Orderbook Structure Invariants
 
-- **TEMPO-DEX7**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head must be non-zero.
+- **TEMPO-DEX7**: Total liquidity at a tick level equals the sum of remaining amounts of all orders at that tick. If liquidity > 0, head and tail must be non-zero.
 - **TEMPO-DEX8**: Best bid tick points to the highest tick with non-empty bid liquidity, or `type(int16).min` if no bids exist.
 - **TEMPO-DEX9**: Best ask tick points to the lowest tick with non-empty ask liquidity, or `type(int16).max` if no asks exist.
 - **TEMPO-DEX10**: Order linked list is consistent - `prev.next == current` and `next.prev == current`. If head is zero, tail must also be zero.
 - **TEMPO-DEX11**: Tick bitmap accurately reflects which ticks have liquidity (bit set iff tick has orders).
+- **TEMPO-DEX17**: Linked list head/tail is terminal - `head.prev == None` and `tail.next == None`
 
 ### Flip Order Invariants
 
