@@ -39,10 +39,10 @@ hardfork!(
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// Default hardfork (genesis)
-        #[default]
+        /// Genesis hardfork
         Genesis,
-        /// T0 hardfork
+        #[default]
+        /// T0 hardfork (default)
         T0,
     }
 );
