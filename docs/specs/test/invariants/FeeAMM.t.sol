@@ -943,14 +943,18 @@ contract FeeAMMInvariantTest is BaseTest {
     function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator)
         internal
     {
-        // TipFeeManager storage layout (Rust struct order):
-        // slot 0: validator_tokens
-        // slot 1: user_tokens
-        // slot 2: collected_fees
-        // slot 3: pools
-        // slot 4: total_supply
-        // slot 5: liquidity_balances
-        bytes32 poolSlot = keccak256(abi.encode(poolId, uint256(3)));
+        // Storage layout differs between Rust and Solidity implementations:
+        // Rust (isTempo=true):
+        //   slot 0: validator_tokens
+        //   slot 1: user_tokens
+        //   slot 2: collected_fees
+        //   slot 3: pools
+        //   slot 4: total_supply
+        //   slot 5: liquidity_balances
+        // Solidity (isTempo=false):
+        //   slot 0: pools
+        uint256 poolsSlot = isTempo ? 3 : 0;
+        bytes32 poolSlot = keccak256(abi.encode(poolId, poolsSlot));
 
         // Pack: lower 128 bits = reserveUserToken, upper 128 bits = reserveValidatorToken
         bytes32 newPoolValue = bytes32(uint256(reserveUser) | (uint256(reserveValidator) << 128));
@@ -959,16 +963,25 @@ contract FeeAMMInvariantTest is BaseTest {
 
     /// @dev Stores/increments collected fees using vm.store
     function _storeCollectedFees(address validator, address token, uint256 amount) internal {
-        // TipFeeManager storage layout (Rust struct order):
-        // slot 0: validator_tokens
-        // slot 1: user_tokens
-        // slot 2: collected_fees
-        // slot 3: pools
-        // slot 4: total_supply
-        // slot 5: liquidity_balances
+        // Storage layout differs between Rust and Solidity implementations:
+        // Rust (isTempo=true):
+        //   slot 0: validator_tokens
+        //   slot 1: user_tokens
+        //   slot 2: collected_fees
+        //   slot 3: pools
+        //   slot 4: total_supply
+        //   slot 5: liquidity_balances
+        // Solidity (isTempo=false) - FeeManager inherits FeeAMM:
+        //   slot 0: pools (from FeeAMM)
+        //   slot 1: totalSupply (from FeeAMM)
+        //   slot 2: liquidityBalances (from FeeAMM)
+        //   slot 3: validatorTokens (from FeeManager)
+        //   slot 4: userTokens (from FeeManager)
+        //   slot 5: collectedFees (from FeeManager)
         // collected_fees is mapping(address => mapping(address => uint256))
-        // slot = keccak256(token, keccak256(validator, 2))
-        bytes32 innerSlot = keccak256(abi.encode(validator, uint256(2)));
+        // slot = keccak256(token, keccak256(validator, collectedFeesSlot))
+        uint256 collectedFeesSlot = isTempo ? 2 : 5;
+        bytes32 innerSlot = keccak256(abi.encode(validator, collectedFeesSlot));
         bytes32 feeSlot = keccak256(abi.encode(token, innerSlot));
 
         // Read current value and add
