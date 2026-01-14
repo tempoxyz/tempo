@@ -11,7 +11,7 @@ use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use futures::{
     StreamExt as _,
     channel::{
