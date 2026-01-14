@@ -318,6 +318,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
             context.sleep(Duration::from_secs(1)).await;
         }
 
+        std::fs::write("metrics-dump", context.encode()).unwrap();
         context.auditor().state()
     })
 }
