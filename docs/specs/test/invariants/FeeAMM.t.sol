@@ -196,15 +196,16 @@ contract FeeAMMInvariantTest is BaseTest {
             validatorToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[validatorToken];
         vm.assume(registry.isAuthorized(policyId, actor));
 
-        // Bound amount to reasonable range (must be > 2 * MIN_LIQUIDITY for first mint)
-        amount = bound(amount, MIN_LIQUIDITY * 3, 10_000_000_000);
+        bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+        uint256 totalSupplyBefore = amm.totalSupply(poolId);
+
+        // First mint requires >= MIN_LIQUIDITY to avoid wasting budget on known rejections
+        // Subsequent mints allow smaller amounts to test edge cases
+        amount = bound(amount, totalSupplyBefore == 0 ? MIN_LIQUIDITY : 1, 10_000_000_000);
 
         // Ensure actor has funds
         _ensureFunds(actor, TIP20(validatorToken), amount);
-
-        bytes32 poolId = amm.getPoolId(userToken, validatorToken);
         IFeeAMM.Pool memory poolBefore = amm.getPool(userToken, validatorToken);
-        uint256 totalSupplyBefore = amm.totalSupply(poolId);
         uint256 actorLiquidityBefore = amm.liquidityBalances(poolId, actor);
 
         vm.startPrank(actor);
@@ -568,7 +569,7 @@ contract FeeAMMInvariantTest is BaseTest {
             validatorToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[validatorToken];
         vm.assume(registry.isAuthorized(policyId, actor));
 
-        amount = bound(amount, MIN_LIQUIDITY * 3, 100_000);
+        amount = bound(amount, 1, 100_000);
         _ensureFunds(actor, TIP20(validatorToken), amount);
 
         uint256 actorBalBefore = TIP20(validatorToken).balanceOf(actor);
