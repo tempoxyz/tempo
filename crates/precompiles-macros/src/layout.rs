@@ -114,8 +114,8 @@ pub(crate) fn gen_struct(
     quote! {
         #vis struct #name {
             #(#handler_fields,)*
-            address: ::alloy::primitives::Address,
-            storage: crate::storage::StorageCtx,
+            pub(super) address: ::alloy::primitives::Address,
+            pub(super) storage: crate::storage::StorageCtx,
         }
     }
 }
@@ -172,7 +172,7 @@ pub(crate) fn gen_constructor(
             }
 
             #[inline(always)]
-            fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
+            pub(super) fn emit_event(&mut self, event: impl ::alloy::primitives::IntoLogData) -> crate::error::Result<()> {
                 self.storage.emit_event(self.address, event.into_log_data())
             }
 

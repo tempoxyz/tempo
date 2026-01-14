@@ -34,8 +34,8 @@ use crate::utils::extract_attributes;
 struct ContractConfig {
     /// Optional address expression for generating `Self::new()` and `Default`.
     address: Option<Expr>,
-    /// Solidity modules to compose into unified Calls/Error/Event enums.
-    solidity_modules: Vec<Path>,
+    /// Single solidity module containing all ABI types.
+    abi_module: Option<Path>,
 }
 
 impl Parse for ContractConfig {
@@ -52,10 +52,20 @@ impl Parse for ContractConfig {
                 "abi" => {
                     let content;
                     syn::parenthesized!(content in input);
-                    config.solidity_modules =
+                    let modules: Vec<Path> =
                         Punctuated::<Path, Token![,]>::parse_terminated(&content)?
                             .into_iter()
                             .collect();
+
+                    if modules.len() != 1 {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "abi() expects exactly one module; use multiple interface traits \
+                             within a single #[solidity] module instead of multiple modules",
+                        ));
+                    }
+
+                    config.abi_module = modules.into_iter().next();
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -84,7 +94,7 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 ///
 /// - `#[contract]` - Basic contract with storage accessors
 /// - `#[contract(addr = EXPR)]` - Contract with fixed address (generates `new()` and `Default`)
-/// - `#[contract(abi(mod1, mod2, ...))]` - Compose multiple `#[solidity]` modules into unified types
+/// - `#[contract(abi(module))]` - Link to a `#[solidity]` module for ABI types (Calls, Error, Event)
 ///
 /// # Storage Layout Example
 ///
@@ -350,11 +360,16 @@ fn gen_contract_output(
     let fields = parse_fields(input)?;
 
     let storage_output = gen_contract_storage(&ident, &vis, &fields, config.address.as_ref())?;
-    let composition_output = composition::generate_composition(&ident, &config.solidity_modules)?;
+
+    let abi_aliases = if let Some(ref module) = config.abi_module {
+        composition::generate_abi_aliases(&ident, module)?
+    } else {
+        proc_macro2::TokenStream::new()
+    };
 
     Ok(quote! {
         #storage_output
-        #composition_output
+        #abi_aliases
     })
 }
 

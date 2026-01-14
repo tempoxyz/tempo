@@ -54,7 +54,7 @@ pub(super) fn empty_module() -> SolidityModule {
         unit_enums: vec![],
         error: None,
         event: None,
-        interface: None,
+        interfaces: vec![],
         other_items: vec![],
     }
 }
@@ -87,8 +87,9 @@ pub(super) fn make_variant(name: &str, fields: Vec<FieldDef>) -> EnumVariantDef 
     }
 }
 
-pub(super) fn make_interface(methods: Vec<MethodDef>) -> InterfaceDef {
+pub(super) fn make_interface(name: &str, methods: Vec<MethodDef>) -> InterfaceDef {
     InterfaceDef {
+        name: format_ident!("{}", name),
         methods,
         attrs: vec![],
         vis: Visibility::Public(syn::token::Pub {

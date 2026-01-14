@@ -312,7 +312,7 @@ mod tests {
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
-    use crate::tip20::ITip20 as ITIP20;
+    use crate::tip20::ITIP20;
 
     #[test]
     fn test_precompile_delegatecall() {

@@ -77,8 +77,8 @@ pub(super) struct SolidityModule {
     pub error: Option<SolEnumDef>,
     /// Event enum (optional, must be named `Event`)
     pub event: Option<SolEnumDef>,
-    /// Interface trait (optional, must be named `Interface`)
-    pub interface: Option<InterfaceDef>,
+    /// Interface traits (any trait becomes an interface)
+    pub interfaces: Vec<InterfaceDef>,
     /// Other items passed through unchanged
     pub other_items: Vec<Item>,
 }
@@ -98,7 +98,7 @@ impl SolidityModule {
         let mut unit_enums = Vec::new();
         let mut error: Option<SolEnumDef> = None;
         let mut event: Option<SolEnumDef> = None;
-        let mut interface: Option<InterfaceDef> = None;
+        let mut interfaces = Vec::new();
         let mut other_items = Vec::new();
 
         for item in &content.1 {
@@ -136,24 +136,7 @@ impl SolidityModule {
                     }
                 }
                 Item::Trait(trait_item) => {
-                    if trait_item.ident == "Interface" {
-                        if interface.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                trait_item,
-                                "duplicate `Interface` trait",
-                            ));
-                        }
-                        interface = Some(InterfaceDef::parse(trait_item)?);
-                    } else {
-                        return Err(syn::Error::new_spanned(
-                            &trait_item.ident,
-                            format!(
-                                "only a single trait named `Interface` is supported in `#[solidity]` modules; \
-                                 found `{}`; other traits should be defined outside the module",
-                                trait_item.ident
-                            ),
-                        ));
-                    }
+                    interfaces.push(InterfaceDef::parse(trait_item)?);
                 }
                 _ => {
                     other_items.push(item.clone());
@@ -169,7 +152,7 @@ impl SolidityModule {
             unit_enums,
             error,
             event,
-            interface,
+            interfaces,
             other_items,
         })
     }
@@ -473,13 +456,14 @@ impl FieldAccessors for EnumVariantDef {
 ///
 /// # Invariants
 ///
-/// - Must be named `Interface`
 /// - All methods must return `Result<T, _>`
 /// - `&mut self` methods get `msg_sender: Address` auto-injected as first param
 /// - Parameter named `msg_sender` is reserved and rejected
 /// - Generics are not supported
 #[derive(Debug, Clone)]
 pub(super) struct InterfaceDef {
+    /// Trait name
+    pub name: Ident,
     /// Methods
     pub methods: Vec<MethodDef>,
     /// Original attributes to preserve
@@ -491,13 +475,6 @@ pub(super) struct InterfaceDef {
 impl InterfaceDef {
     fn parse(item: &ItemTrait) -> syn::Result<Self> {
         check_generics(&item.generics)?;
-
-        if item.ident != "Interface" {
-            return Err(syn::Error::new_spanned(
-                &item.ident,
-                "interface trait must be named `Interface`",
-            ));
-        }
 
         let methods: Vec<MethodDef> = item
             .items
@@ -515,13 +492,17 @@ impl InterfaceDef {
         if methods.is_empty() {
             return Err(syn::Error::new_spanned(
                 item,
-                "`Interface` trait must have at least one method",
+                format!(
+                    "trait `{}` must have at least one method",
+                    item.ident
+                ),
             ));
         }
 
         let (_, other_attrs) = extract_derive_attrs(&item.attrs);
 
         Ok(Self {
+            name: item.ident.clone(),
             methods,
             attrs: other_attrs,
             vis: item.vis.clone(),
@@ -700,7 +681,7 @@ mod tests {
         // Empty module
         let module = parse_module(quote! { pub mod test {} })?;
         assert_eq!(module.name.to_string(), "test");
-        assert!(module.structs.is_empty() && module.error.is_none() && module.interface.is_none());
+        assert!(module.structs.is_empty() && module.error.is_none() && module.interfaces.is_empty());
 
         // Struct with derives
         let module = parse_module(quote! {
@@ -736,19 +717,36 @@ mod tests {
         assert!(event.variants[0].fields[0].indexed);
         assert!(!event.variants[0].fields[1].indexed);
 
-        // Interface trait
+        // Interface trait (any trait name is accepted)
         let module = parse_module(quote! {
             pub mod test {
-                pub trait Interface {
+                pub trait MyInterface {
                     fn get(&self, id: U256) -> Result<Address>;
                     fn set(&mut self, id: U256, val: Address) -> Result<()>;
                 }
             }
         })?;
-        let interface = module.interface.unwrap();
+        assert_eq!(module.interfaces.len(), 1);
+        let interface = &module.interfaces[0];
+        assert_eq!(interface.name.to_string(), "MyInterface");
         assert!(!interface.methods[0].is_mutable);
         assert!(interface.methods[1].is_mutable);
         assert_eq!(interface.methods[0].sol_name, "get");
+
+        // Multiple interface traits
+        let module = parse_module(quote! {
+            pub mod test {
+                pub trait Token {
+                    fn transfer(&mut self, to: Address, amount: U256) -> Result<bool>;
+                }
+                pub trait Roles {
+                    fn grant_role(&mut self, role: B256, account: Address) -> Result<()>;
+                }
+            }
+        })?;
+        assert_eq!(module.interfaces.len(), 2);
+        assert_eq!(module.interfaces[0].name.to_string(), "Token");
+        assert_eq!(module.interfaces[1].name.to_string(), "Roles");
         Ok(())
     }
 
@@ -773,14 +771,6 @@ mod tests {
             pub mod test { pub trait Interface { fn f(&mut self, msg_sender: Address) -> Result<()>; } }
         }).unwrap_err().to_string();
         assert!(err.contains("reserved") && err.contains("msg_sender"));
-
-        // Non-Interface trait name
-        let err = parse_module(quote! {
-            pub mod test { pub trait Other { fn f(&self) -> Result<()>; } }
-        })
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("only a single trait named `Interface`"));
 
         // Duplicate Error enum
         let err = parse_module(quote! {
@@ -836,7 +826,7 @@ mod tests {
         assert_eq!(module.imports.len(), 1);
         assert_eq!(module.structs.len(), 1);
         assert_eq!(module.unit_enums.len(), 1);
-        assert!(module.error.is_some() && module.event.is_some() && module.interface.is_some());
+        assert!(module.error.is_some() && module.event.is_some() && !module.interfaces.is_empty());
         Ok(())
     }
 }

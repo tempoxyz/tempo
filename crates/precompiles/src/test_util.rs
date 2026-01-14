@@ -5,12 +5,10 @@ use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-    tip20::{
-        self, TIP20Error, TIP20Token, rewards::rewards::Interface as IRewards,
-        tip20::Interface as _,
-    },
+    tip20::{self, TIP20Error, TIP20Token, abi},
     tip20_factory::{self, TIP20Factory},
 };
+use abi::{IRewards as _, IToken as _};
 use alloy::{
     primitives::{Address, B256, U256},
     sol_types::SolError,

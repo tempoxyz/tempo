@@ -17,7 +17,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
-    tip20::{ITIP20Interface, TIP20Token, is_tip20_prefix, validate_usd_currency},
+    tip20::{TIP20Token, abi::IToken as _, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };

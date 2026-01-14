@@ -55,6 +55,7 @@ use std::{
 };
 use tempo_contracts::precompiles::{
     IFeeManager::IFeeManagerInstance,
+    IRolesAuth,
     IStablecoinDEX::IStablecoinDEXInstance,
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
@@ -63,7 +64,7 @@ use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip_fee_manager::DEFAULT_FEE_TOKEN,
-    tip20::{IRolesAuth, ISSUER_ROLE},
+    tip20::ISSUER_ROLE,
 };
 use tokio::{
     select,

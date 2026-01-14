@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use crate::tip20::{RolesAuthError, TIP20Error};
+use crate::tip20::abi::Error as TIP20Error;
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
@@ -30,10 +30,6 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 factory
     #[error("TIP20 factory error: {0:?}")]
     TIP20Factory(TIP20FactoryError),
-
-    /// Error from roles auth
-    #[error("Roles auth error: {0:?}")]
-    RolesAuthError(RolesAuthError),
 
     /// Error from 403 registry
     #[error("TIP403 registry error: {0:?}")]
@@ -90,7 +86,6 @@ impl TempoPrecompileError {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
-            Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
             Self::FeeManagerError(e) => e.abi_encode().into(),
             Self::TIPFeeAMMError(e) => e.abi_encode().into(),
@@ -159,7 +154,6 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::FeeManagerError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIPFeeAMMError);

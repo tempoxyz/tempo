@@ -38,7 +38,9 @@ impl<'a> MethodCodegen<'a> {
     }
 }
 
-/// Generate code for the Interface trait.
+/// Generate code for a single interface trait.
+///
+/// Returns the transformed trait, method call structs, and the `{TraitName}Calls` enum.
 pub(super) fn generate_interface(
     def: &InterfaceDef,
     registry: &TypeRegistry,
@@ -54,7 +56,8 @@ pub(super) fn generate_interface(
         .map(generate_method_code)
         .collect::<syn::Result<Vec<_>>>()?;
 
-    let calls_enum = generate_calls_enum(&methods);
+    let calls_enum_name = format_ident!("{}Calls", def.name);
+    let calls_enum = generate_calls_enum(&calls_enum_name, &methods);
 
     let transformed_trait = generate_transformed_trait(def);
 
@@ -65,9 +68,181 @@ pub(super) fn generate_interface(
     })
 }
 
+/// Generate the unified `Calls` enum that composes all interface Calls enums.
+pub(super) fn generate_unified_calls(interfaces: &[InterfaceDef]) -> TokenStream {
+    if interfaces.is_empty() {
+        return quote! {
+            #[derive(Clone, Debug, PartialEq, Eq)]
+            pub enum Calls {}
+
+            impl Calls {
+                /// Function selectors (empty).
+                pub const SELECTORS: &'static [[u8; 4]] = &[];
+
+                #[inline]
+                pub fn valid_selector(_: [u8; 4]) -> bool { false }
+            }
+
+            impl ::alloy_sol_types::SolInterface for Calls {
+                const NAME: &'static str = "Calls";
+                const MIN_DATA_LENGTH: usize = 0;
+                const COUNT: usize = 0;
+                #[inline] fn selector(&self) -> [u8; 4] { match *self {} }
+                #[inline] fn selector_at(_i: usize) -> Option<[u8; 4]> { None }
+                #[inline] fn valid_selector(_s: [u8; 4]) -> bool { false }
+                #[inline] fn abi_decode_raw(_s: [u8; 4], _d: &[u8]) -> ::alloy_sol_types::Result<Self> {
+                    Err(::alloy_sol_types::Error::Other("no variants".into()))
+                }
+                #[inline] fn abi_decode_raw_validate(s: [u8; 4], d: &[u8]) -> ::alloy_sol_types::Result<Self> { Self::abi_decode_raw(s, d) }
+                #[inline] fn abi_encoded_size(&self) -> usize { match *self {} }
+                #[inline] fn abi_encode_raw(&self, _o: &mut Vec<u8>) { match *self {} }
+            }
+        };
+    }
+
+    // If there's only one interface, just alias Calls to {TraitName}Calls
+    if interfaces.len() == 1 {
+        let calls_name = format_ident!("{}Calls", interfaces[0].name);
+        return quote! {
+            pub type Calls = #calls_name;
+        };
+    }
+
+    // Multiple interfaces: compose them
+    let variant_names: Vec<_> = interfaces.iter().map(|i| i.name.clone()).collect();
+    let calls_names: Vec<_> = interfaces
+        .iter()
+        .map(|i| format_ident!("{}Calls", i.name))
+        .collect();
+    let n = interfaces.len();
+
+    let decls: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| quote! { #v(#c) })
+        .collect();
+
+    let selectors: Vec<_> = calls_names
+        .iter()
+        .map(|c| quote! { #c::SELECTORS })
+        .collect();
+
+    let counts: Vec<_> = calls_names
+        .iter()
+        .map(|c| quote! { <#c as ::alloy_sol_types::SolInterface>::COUNT })
+        .collect();
+
+    let decode: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| {
+            quote! {
+                if <#c as ::alloy_sol_types::SolInterface>::valid_selector(sel) {
+                    return <#c as ::alloy_sol_types::SolInterface>::abi_decode(data).map(Self::#v);
+                }
+            }
+        })
+        .collect();
+
+    let sel_match: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| {
+            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::selector(inner) }
+        })
+        .collect();
+
+    let size_match: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| {
+            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::abi_encoded_size(inner) }
+        })
+        .collect();
+
+    let enc_match: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| {
+            quote! { Self::#v(inner) => <#c as ::alloy_sol_types::SolInterface>::abi_encode_raw(inner, out) }
+        })
+        .collect();
+
+    let from_impls: Vec<_> = variant_names
+        .iter()
+        .zip(&calls_names)
+        .map(|(v, c)| {
+            quote! {
+                impl From<#c> for Calls {
+                    #[inline]
+                    fn from(c: #c) -> Self { Self::#v(c) }
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        #[doc(hidden)]
+        mod __calls_compose_helpers {
+            pub const fn concat_4<const N: usize, const M: usize>(
+                a: [&'static [[u8; 4]]; N]
+            ) -> [[u8; 4]; M] {
+                let mut r = [[0u8; 4]; M];
+                let (mut i, mut n_idx) = (0, 0);
+                while n_idx < N {
+                    let s = a[n_idx];
+                    let mut j = 0;
+                    while j < s.len() { r[i] = s[j]; i += 1; j += 1; }
+                    n_idx += 1;
+                }
+                r
+            }
+        }
+
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        #[allow(non_camel_case_types, clippy::large_enum_variant)]
+        pub enum Calls { #(#decls),* }
+
+        impl Calls {
+            pub const SELECTORS: &'static [[u8; 4]] = &{
+                const TOTAL: usize = #(#selectors.len())+*;
+                __calls_compose_helpers::concat_4::<#n, TOTAL>([#(#selectors),*])
+            };
+
+            #[inline]
+            pub fn valid_selector(s: [u8; 4]) -> bool { Self::SELECTORS.contains(&s) }
+
+            pub fn abi_decode(data: &[u8]) -> ::alloy_sol_types::Result<Self> {
+                let sel: [u8; 4] = data.get(..4).and_then(|s| s.try_into().ok())
+                    .ok_or_else(|| ::alloy_sol_types::Error::Other("calldata too short".into()))?;
+                #(#decode)*
+                Err(::alloy_sol_types::Error::unknown_selector(<Self as ::alloy_sol_types::SolInterface>::NAME, sel))
+            }
+        }
+
+        impl ::alloy_sol_types::SolInterface for Calls {
+            const NAME: &'static str = "Calls";
+            const MIN_DATA_LENGTH: usize = 0;
+            const COUNT: usize = #(#counts)+*;
+            #[inline] fn selector(&self) -> [u8; 4] { match self { #(#sel_match),* } }
+            #[inline] fn selector_at(i: usize) -> Option<[u8; 4]> { Self::SELECTORS.get(i).copied() }
+            #[inline] fn valid_selector(s: [u8; 4]) -> bool { Self::valid_selector(s) }
+            #[inline] fn abi_decode_raw(sel: [u8; 4], data: &[u8]) -> ::alloy_sol_types::Result<Self> {
+                let mut buf = Vec::with_capacity(4 + data.len()); buf.extend_from_slice(&sel); buf.extend_from_slice(data);
+                Self::abi_decode(&buf)
+            }
+            #[inline] fn abi_decode_raw_validate(sel: [u8; 4], data: &[u8]) -> ::alloy_sol_types::Result<Self> { Self::abi_decode_raw(sel, data) }
+            #[inline] fn abi_encoded_size(&self) -> usize { match self { #(#size_match),* } }
+            #[inline] fn abi_encode_raw(&self, out: &mut Vec<u8>) { match self { #(#enc_match),* } }
+        }
+
+        #(#from_impls)*
+    }
+}
+
 /// Generate the transformed trait with msg_sender injection.
 fn generate_transformed_trait(def: &InterfaceDef) -> TokenStream {
-    let trait_name = format_ident!("Interface");
+    let trait_name = &def.name;
     let vis = &def.vis;
     let attrs = &def.attrs;
 
@@ -213,7 +388,7 @@ fn generate_method_code(mc: &MethodCodegen<'_>) -> syn::Result<TokenStream> {
 }
 
 /// Generate the container enum for all calls using precomputed metadata.
-fn generate_calls_enum(methods: &[MethodCodegen<'_>]) -> TokenStream {
+fn generate_calls_enum(enum_name: &Ident, methods: &[MethodCodegen<'_>]) -> TokenStream {
     let (variants, types, signatures, field_counts): (Vec<_>, Vec<_>, Vec<_>, Vec<_>) = methods
         .iter()
         .map(|mc| {
@@ -227,7 +402,7 @@ fn generate_calls_enum(methods: &[MethodCodegen<'_>]) -> TokenStream {
         .unzip4();
 
     common::generate_sol_interface_container(
-        "Calls",
+        &enum_name.to_string(),
         &variants,
         &types,
         &signatures,

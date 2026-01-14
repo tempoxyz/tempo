@@ -113,7 +113,7 @@ fn test_stablecoin_dex_layout() {
 
 #[test]
 fn test_tip20_layout() {
-    use tempo_precompiles::tip20::{rewards::rewards::__packing_user_reward_info::*, slots};
+    use tempo_precompiles::tip20::{abi::__packing_user_reward_info::*, slots};
 
     let sol_path = testdata("tip20.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -284,7 +284,7 @@ fn export_all_storage_constants() {
 
     // TIP20 Token
     {
-        use tempo_precompiles::tip20::{rewards::rewards::__packing_user_reward_info::*, slots};
+        use tempo_precompiles::tip20::{abi::__packing_user_reward_info::*, slots};
 
         let fields = layout_fields!(
             // RolesAuth

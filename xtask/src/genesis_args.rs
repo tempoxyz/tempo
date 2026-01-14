@@ -52,7 +52,7 @@ use tempo_precompiles::{
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
     tip_fee_manager::{IFeeManager, TipFeeManager},
-    tip20::{ISSUER_ROLE, ITIP20Interface, TIP20Token},
+    tip20::{ISSUER_ROLE, TIP20Token, abi::IToken as _},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
     validator_config::ValidatorConfig,

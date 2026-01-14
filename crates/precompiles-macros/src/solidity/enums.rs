@@ -187,13 +187,13 @@ pub(super) fn generate_variant_enum(
     let container_name = match kind {
         AbiType::Error => format_ident!("Error"),
         AbiType::Event => format_ident!("Event"),
-        AbiType::Calls => unreachable!(),
+        
     };
 
     let container = match kind {
         AbiType::Error => common::generate_error_container(&def.variants, registry)?,
         AbiType::Event => common::generate_event_container(&def.variants),
-        AbiType::Calls => unreachable!(),
+        
     };
 
     let constructors = generate_constructors(&container_name, &def.variants, kind)?;
@@ -274,7 +274,7 @@ fn generate_variant(
     let (doc_kind, sol_kind, use_full_hash) = match kind {
         AbiType::Error => ("Custom error", "error", false),
         AbiType::Event => ("Event", "event", true),
-        AbiType::Calls => unreachable!(),
+        
     };
 
     let doc = common::signature_doc(
@@ -297,7 +297,7 @@ fn generate_variant(
             let impl_ts = generate_sol_error_impl(variant, &signature)?;
             (struct_ts, impl_ts)
         }
-        AbiType::Calls => unreachable!(),
+        
     };
 
     Ok(quote! {
@@ -438,7 +438,7 @@ fn generate_constructor(variant: &EnumVariantDef, kind: AbiType) -> syn::Result<
             .iter()
             .map(|f| (f.name.clone(), f.ty.clone()))
             .unzip(),
-        AbiType::Calls => unreachable!(),
+        
     };
 
     Ok(quote! {

@@ -304,7 +304,7 @@ impl TypeRegistry {
     /// Check for 4-byte selector collisions across functions and errors.
     pub(super) fn check_selector_collisions(&self, module: &SolidityModule) -> syn::Result<()> {
         // Calculate capacity; early-return if nothing to check
-        let method_count = module.interface.as_ref().map_or(0, |i| i.methods.len());
+        let method_count: usize = module.interfaces.iter().map(|i| i.methods.len()).sum();
         let error_count = module.error.as_ref().map_or(0, |e| e.variants.len());
         let capacity = method_count + error_count;
         if capacity == 0 {
@@ -314,14 +314,14 @@ impl TypeRegistry {
         let mut seen = HashSet::with_capacity(capacity);
         let mut collision: Option<[u8; 4]> = None;
 
-        // Detect collisions
-        if let Some(ref interface) = module.interface {
+        // Detect collisions across all interfaces
+        'outer: for interface in &module.interfaces {
             for method in &interface.methods {
                 let sig = self.compute_signature(&method.sol_name, &method.field_raw_types())?;
                 let selector = selector(&sig);
                 if !seen.insert(selector) {
                     collision = Some(selector);
-                    break;
+                    break 'outer;
                 }
             }
         }
@@ -348,12 +348,15 @@ impl TypeRegistry {
         let mut colliders = Vec::new();
         let mut first_span = None;
 
-        if let Some(ref interface) = module.interface {
+        for interface in &module.interfaces {
             for method in &interface.methods {
                 let sig = self.compute_signature(&method.sol_name, &method.field_raw_types())?;
                 if selector(&sig) == colliding {
                     first_span.get_or_insert(method.name.span());
-                    colliders.push(format!("  function `{}`: `{}`", method.sol_name, sig));
+                    colliders.push(format!(
+                        "  function `{}::{}`: `{}`",
+                        interface.name, method.sol_name, sig
+                    ));
                 }
             }
         }
@@ -893,10 +896,10 @@ mod tests {
     fn test_selector_collision_detected() {
         // Two methods with identical signatures collide
         let mut module = empty_module();
-        module.interface = Some(make_interface(vec![
-            make_method("foo", vec![]),
-            make_method("foo", vec![]),
-        ]));
+        module.interfaces.push(make_interface(
+            "TestInterface",
+            vec![make_method("foo", vec![]), make_method("foo", vec![])],
+        ));
         let registry = TypeRegistry::from_module(&module).unwrap();
         let result = registry.check_selector_collisions(&module);
         assert!(result.is_err());
@@ -909,7 +912,9 @@ mod tests {
     fn test_function_error_cross_collision() {
         // Function and error with same signature collide
         let mut module = empty_module();
-        module.interface = Some(make_interface(vec![make_method("transfer", vec![])]));
+        module
+            .interfaces
+            .push(make_interface("TestInterface", vec![make_method("transfer", vec![])]));
         module.error = Some(make_error_enum(vec![make_variant("transfer", vec![])]));
 
         let registry = TypeRegistry::from_module(&module).unwrap();
@@ -918,5 +923,23 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("function"));
         assert!(err.contains("error"));
+    }
+
+    #[test]
+    fn test_cross_interface_collision() {
+        // Same method signature in two different interfaces should collide
+        let mut module = empty_module();
+        module
+            .interfaces
+            .push(make_interface("Token", vec![make_method("foo", vec![])]));
+        module
+            .interfaces
+            .push(make_interface("Roles", vec![make_method("foo", vec![])]));
+
+        let registry = TypeRegistry::from_module(&module).unwrap();
+        let result = registry.check_selector_collisions(&module);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("selector collision"));
     }
 }

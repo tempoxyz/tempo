@@ -358,17 +358,15 @@ pub(super) fn wrap_const_block(inner: TokenStream) -> TokenStream {
 /// Kind of Solidity container enum (Error, Event, or Calls).
 ///
 /// Used for:
-/// - Dummy container generation (modules missing Error/Event/Interface)
+/// - Dummy container generation (modules missing Error/Event)
 /// - Variant enum generation (Error/Event enums with fields)
-/// - Composition generation (unified enums across multiple modules)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AbiType {
+pub(super) enum AbiType {
     Error,
     Event,
-    Calls,
 }
 
-/// Generate a dummy container enum for modules missing Error/Event/Interface.
+/// Generate a dummy container enum for modules missing Error/Event.
 pub(super) fn generate_dummy_container(kind: AbiType) -> TokenStream {
     match kind {
         AbiType::Error => {
@@ -409,33 +407,6 @@ pub(super) fn generate_dummy_container(kind: AbiType) -> TokenStream {
                     fn to_log_data(&self) -> ::alloy::primitives::LogData { match *self {} }
                     fn into_log_data(self) -> ::alloy::primitives::LogData { match self {} }
                 }
-            }
-        }
-        AbiType::Calls => {
-            let name = format_ident!("Calls");
-            let sol_interface = empty_sol_interface_impl(&name);
-            quote! {
-                /// Dummy calls enum (no interface methods defined).
-                #[derive(Clone, Debug, PartialEq, Eq)]
-                pub enum Calls {}
-
-                impl Calls {
-                    /// Function selectors (empty).
-                    pub const SELECTORS: &'static [[u8; 4]] = &[];
-
-                    #[inline]
-                    pub fn valid_selector(_: [u8; 4]) -> bool { false }
-
-                    #[inline]
-                    pub fn abi_decode(data: &[u8]) -> alloy_sol_types::Result<Self> {
-                        ::core::result::Result::Err(alloy_sol_types::Error::unknown_selector(
-                            <Self as alloy_sol_types::SolInterface>::NAME,
-                            data.get(..4).and_then(|s| <[u8; 4]>::try_from(s).ok()).unwrap_or_default(),
-                        ))
-                    }
-                }
-
-                #sol_interface
             }
         }
     }

@@ -3,16 +3,16 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::{TIP20Error, TIP20Event, TIP20Token},
+    tip20::{ACC_PRECISION, TIP20Error, TIP20Event, TIP20Token, abi},
 };
 use alloy::primitives::{Address, U256};
 
-// Re-export types from types.rs for backwards compatibility
-pub use super::types::{rewards, IRewards, UserRewardInfo, ACC_PRECISION};
+// Re-export types for backwards compatibility
+pub use super::{IRewards, abi::UserRewardInfo};
 
-use rewards::Interface as _;
+use abi::IRewards as _;
 
-impl rewards::Interface for TIP20Token {
+impl abi::IRewards for TIP20Token {
     /// Allows an authorized user to distribute reward tokens to opted-in recipients.
     fn distribute_reward(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
         self.check_not_paused()?;
@@ -43,7 +43,7 @@ impl rewards::Interface for TIP20Token {
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event for immediate payout
-        self.emit_event(rewards::Event::reward_distributed(msg_sender, amount))?;
+        self.emit_event(abi::Event::reward_distributed(msg_sender, amount))?;
 
         Ok(())
     }
@@ -89,7 +89,7 @@ impl rewards::Interface for TIP20Token {
         self.user_reward_info[msg_sender].write(info)?;
 
         // Emit reward recipient set event
-        self.emit_event(rewards::Event::reward_recipient_set(msg_sender, recipient))?;
+        self.emit_event(abi::Event::reward_recipient_set(msg_sender, recipient))?;
 
         Ok(())
     }
@@ -139,7 +139,11 @@ impl rewards::Interface for TIP20Token {
                 )?;
             }
 
-            self.emit_event(TIP20Event::transfer(contract_address, msg_sender, max_amount))?;
+            self.emit_event(TIP20Event::transfer(
+                contract_address,
+                msg_sender,
+                max_amount,
+            ))?;
         }
 
         Ok(max_amount)
@@ -319,9 +323,10 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip20::{ITIP20Interface, PolicyForbids},
+        tip20::{PolicyForbids, abi},
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
+    use abi::IToken as _;
     use alloy::primitives::{Address, U256};
 
     #[test]

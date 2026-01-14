@@ -4,7 +4,7 @@ use std::hint::black_box;
 use tempo_precompiles::{
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
-    tip20::{ISSUER_ROLE, ITIP20Interface, PAUSE_ROLE, UNPAUSE_ROLE},
+    tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE, abi::IToken as _},
     tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
