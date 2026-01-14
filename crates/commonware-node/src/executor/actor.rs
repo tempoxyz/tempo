@@ -3,9 +3,6 @@
 //! This agent forwards finalized blocks from the consensus layer to the
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
-//!
-//! If the agent detects that the execution layer is missing blocks it attempts
-//! to backfill them from the consensus layer.
 
 use std::{pin::pin, sync::Arc, time::Duration};
 
@@ -396,29 +393,6 @@ where
         .await
         .wrap_err("failed canonicalizing finalized block")?;
 
-        if let Ok(execution_height) = self
-            .execution_node
-            .provider
-            .best_block_number()
-            .map_err(Report::new)
-            .inspect_err(|error| {
-                warn!(
-                    %error,
-                    "failed getting last finalized block from execution layer, will \
-                    finalize forward block to execution layer without extra checks, \
-                    but it might fail"
-                )
-            })
-            && execution_height + 1 < block.height()
-        {
-            info!(
-                execution.finalized_height = execution_height,
-                "hole detected; consensus attempts to finalize block with gaps \
-                on the execution layer; filling them in first",
-            );
-            let _ = self.fill_holes(execution_height + 1, block.height()).await;
-        }
-
         let block = block.into_inner();
         let payload_status = self
             .execution_node
@@ -444,52 +418,6 @@ where
 
         acknowledgment.acknowledge();
 
-        Ok(())
-    }
-
-    /// Reads all blocks heights `from..to` and forwards them to the execution layer.
-    #[instrument(
-        skip_all,
-        fields(from, to),
-        err(level = Level::WARN),
-    )]
-    async fn fill_holes(&mut self, from: u64, to: u64) -> eyre::Result<()> {
-        ensure!(from <= to, "backfill range is negative");
-
-        for height in from..to {
-            let block = self.marshal.get_block(height).await.ok_or_else(|| {
-                eyre!(
-                    "marshal actor does not know about block `{height}`, but \
-                    this function expects that it has all blocks in the provided \
-                    range",
-                )
-            })?;
-
-            let digest = block.digest();
-
-            let payload_status = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .new_payload(TempoExecutionData {
-                    block: Arc::new(block.into_inner()),
-                    // can be omitted for finalized blocks
-                    validator_set: None,
-                })
-                .pace(&self.context, Duration::from_millis(20))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution engine to \
-                    query payload status of finalized block",
-                )?;
-
-            ensure!(
-                payload_status.is_valid() || payload_status.is_syncing(),
-                "this is a problem: payload status of block `{digest}` we are \
-                trying to backfill is neither valid nor syncing: \
-                `{payload_status}`"
-            );
-        }
         Ok(())
     }
 }
