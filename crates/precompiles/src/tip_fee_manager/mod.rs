@@ -240,9 +240,6 @@ impl TipFeeManager {
         }
     }
 
-    // -----------------------------------------------------------------
-    // Transaction context methods
-    // -----------------------------------------------------------------
 
     /// Set the current transaction's fee token (transient storage)
     ///
