@@ -224,6 +224,19 @@ struct AmmLiquidityCacheInner {
     slot_to_validator: HashMap<U256, Address>,
 }
 
+#[cfg(any(test, feature = "test-utils"))]
+impl AmmLiquidityCache {
+    /// Creates a new [`AmmLiquidityCache`] with pre-populated unique tokens for testing.
+    pub fn with_unique_tokens(unique_tokens: Vec<Address>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
+                unique_tokens,
+                ..Default::default()
+            })),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

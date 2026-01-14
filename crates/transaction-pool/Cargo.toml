@@ -11,6 +11,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-utils = []
+
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
