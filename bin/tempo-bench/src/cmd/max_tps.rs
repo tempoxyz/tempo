@@ -15,7 +15,7 @@ use tempo_alloy::{
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -23,7 +23,7 @@ use alloy::{
     },
     rpc::client::NoParams,
     signers::local::{
-        PrivateKeySigner,
+        Secp256k1Signer,
         coins_bip39::{English, Mnemonic, MnemonicError},
     },
     transports::http::reqwest::Url,
@@ -186,7 +186,7 @@ impl MaxTpsArgs {
                 .fetch_chain_id()
                 .with_gas_estimation()
                 .with_nonce_management(cached_nonce_manager)
-                .wallet(signer)
+                .wallet(EthereumWallet::from(signer))
                 .connect_http(target_url)
                 .erased()
         });
