@@ -22,7 +22,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     uint128 private _nextOrderId;
 
     /// @dev Log file path for recording exchange actions
-    string private constant LOG_FILE = "exchange.log";
+    string private constant LOG_FILE = "stablecoin_dex.log";
 
     /// @dev Maximum amount of dust that can be left in the protocol. This is used to verify TEMPO-DEX19.
     uint64 private _maxDust;

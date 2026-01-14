@@ -11,7 +11,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "tip403.log";
+    string private constant LOG_FILE = "tip403_registry.log";
 
     /// @dev Ghost variables for tracking operations
     uint256 private _totalPoliciesCreated;

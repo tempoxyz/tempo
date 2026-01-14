@@ -14,7 +14,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording amm actions
-    string private constant LOG_FILE = "amm.log";
+    string private constant LOG_FILE = "fee_amm.log";
 
     /// @dev Constants from Rust tip_fee_manager/amm.rs
     uint256 private constant M = 9970; // Fee swap rate (0.997 = 0.30% fee)

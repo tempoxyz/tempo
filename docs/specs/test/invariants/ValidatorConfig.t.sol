@@ -2,15 +2,12 @@
 pragma solidity ^0.8.13;
 
 import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { BaseTest } from "../BaseTest.t.sol";
+import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title ValidatorConfig Invariant Tests
 /// @notice Fuzz-based invariant tests for the ValidatorConfig precompile
 /// @dev Tests invariants TEMPO-VAL1 through TEMPO-VAL15 for validator management
-contract ValidatorConfigInvariantTest is BaseTest {
-
-    /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "validator.log";
+contract ValidatorConfigInvariantTest is InvariantBaseTest {
 
     /// @dev Array of potential validator addresses
     address[] private _potentialValidators;
@@ -43,10 +40,12 @@ contract ValidatorConfigInvariantTest is BaseTest {
 
         targetContract(address(this));
 
+        _setupInvariantBase();
+        _actors = _buildActors(10);
         _potentialValidators = _buildPotentialValidators(20);
         _ghostOwner = admin;
 
-        _initLogFile();
+        _initLogFile("validator_config.log", "ValidatorConfig Invariant Test Log");
     }
 
     /// @dev Creates potential validator addresses
@@ -56,22 +55,6 @@ contract ValidatorConfigInvariantTest is BaseTest {
             validators[i] = address(uint160(0x2000 + i));
         }
         return validators;
-    }
-
-    /// @dev Initializes the log file
-    function _initLogFile() internal {
-        try vm.removeFile(LOG_FILE) { } catch { }
-        _log("================================================================================");
-        _log("                     ValidatorConfig Invariant Test Log");
-        _log("================================================================================");
-        _log(string.concat("Potential validators: ", vm.toString(_potentialValidators.length)));
-        _log("--------------------------------------------------------------------------------");
-        _log("");
-    }
-
-    /// @dev Logs a message to the log file
-    function _log(string memory message) internal {
-        vm.writeLine(LOG_FILE, message);
     }
 
     /// @dev Selects a potential validator address based on seed
@@ -150,7 +133,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -233,7 +216,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -308,7 +291,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -365,7 +348,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -514,7 +497,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -537,7 +520,7 @@ contract ValidatorConfigInvariantTest is BaseTest {
             _log(string.concat("SET_DKG_CEREMONY: epoch=", vm.toString(epoch)));
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            _assertKnownValidatorError(reason);
         }
     }
 
@@ -647,8 +630,8 @@ contract ValidatorConfigInvariantTest is BaseTest {
                               HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Checks if an error is known/expected
-    function _assertKnownError(bytes memory reason) internal pure {
+    /// @dev Checks if an error is known/expected for ValidatorConfig
+    function _assertKnownValidatorError(bytes memory reason) internal pure {
         bytes4 selector = bytes4(reason);
         bool isKnown = selector == IValidatorConfig.Unauthorized.selector
             || selector == IValidatorConfig.ValidatorAlreadyExists.selector

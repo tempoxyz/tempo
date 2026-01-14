@@ -13,7 +13,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "factory.log";
+    string private constant LOG_FILE = "tip20_factory.log";
 
     /// @dev Ghost variables for tracking operations
     uint256 private _totalTokensCreated;

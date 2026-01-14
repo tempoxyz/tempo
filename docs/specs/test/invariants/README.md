@@ -231,3 +231,107 @@ The TIP403Registry manages transfer policies (whitelists and blacklists) that co
 
 - **TEMPO-REG15**: Counter monotonicity - `policyIdCounter` only increases and equals `2 + totalPoliciesCreated`.
 - **TEMPO-REG16**: Policy type immutability - a policy's type cannot change after creation.
+
+## Nonce
+
+The Nonce precompile manages 2D nonces for accounts, enabling multiple independent nonce sequences per account identified by a nonce key.
+
+### Nonce Increment Invariants
+
+- **TEMPO-NON1**: Monotonic increment - nonces only ever increase by exactly 1 per increment operation.
+- **TEMPO-NON2**: Ghost state consistency - actual nonce values always match tracked ghost state.
+- **TEMPO-NON3**: Read consistency - `getNonce` returns the correct value after any number of increments.
+
+### Protocol Nonce Invariants
+
+- **TEMPO-NON4**: Protocol nonce rejection - nonce key 0 is reserved for protocol nonces and reverts with `ProtocolNonceNotSupported` when accessed through the precompile.
+
+### Independence Invariants
+
+- **TEMPO-NON5**: Account independence - incrementing one account's nonce does not affect any other account's nonces.
+- **TEMPO-NON6**: Key independence - incrementing one nonce key does not affect any other nonce key for the same account.
+
+### Edge Case Invariants
+
+- **TEMPO-NON7**: Large nonce key support - `type(uint256).max` works correctly as a nonce key.
+- **TEMPO-NON8**: Strict monotonicity - multiple sequential increments produce strictly increasing values with no gaps.
+
+## ValidatorConfig
+
+The ValidatorConfig precompile manages the set of validators that participate in consensus, including their public keys, addresses, and active status.
+
+### Owner Authorization Invariants
+
+- **TEMPO-VAL1**: Owner-only add - only the owner can add new validators (non-owners revert with `Unauthorized`).
+- **TEMPO-VAL7**: Owner transfer - `changeOwner` correctly updates the owner address.
+- **TEMPO-VAL8**: New owner authority - only the current owner can transfer ownership.
+
+### Validator Index Invariants
+
+- **TEMPO-VAL2**: Index assignment - new validators receive sequential indices starting from 0; indices are unique and within bounds.
+
+### Validator Update Invariants
+
+- **TEMPO-VAL3**: Validator self-update - validators can update their own public key, inbound address, and outbound address.
+- **TEMPO-VAL4**: Update restriction - only the validator themselves can call `updateValidator` (owner cannot update validators).
+
+### Status Management Invariants
+
+- **TEMPO-VAL5**: Owner-only status change - only the owner can change validator active status (validators cannot change their own status).
+- **TEMPO-VAL6**: Status toggle - `changeValidatorStatus` correctly updates the validator's active flag.
+
+### Validator Creation Invariants
+
+- **TEMPO-VAL9**: Duplicate rejection - adding a validator that already exists reverts with `ValidatorAlreadyExists`.
+- **TEMPO-VAL10**: Zero public key rejection - adding a validator with zero public key reverts with `InvalidPublicKey`.
+
+### Validator Rotation Invariants
+
+- **TEMPO-VAL11**: Address rotation - validators can rotate to a new address while preserving their index and active status.
+
+### DKG Ceremony Invariants
+
+- **TEMPO-VAL12**: DKG epoch setting - `setNextFullDkgCeremony` correctly stores the epoch value.
+- **TEMPO-VAL13**: Owner-only DKG - only the owner can set the DKG ceremony epoch.
+
+### Global Invariants
+
+- **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
+- **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key) matches ghost state.
+
+## AccountKeychain
+
+The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
+
+### Key Authorization Invariants
+
+- **TEMPO-KEY1**: Key authorization - `authorizeKey` correctly stores key info (keyId, expiry, signatureType, enforceLimits).
+- **TEMPO-KEY2**: Spending limit initialization - initial spending limits are correctly stored when `enforceLimits` is true.
+
+### Key Revocation Invariants
+
+- **TEMPO-KEY3**: Key revocation - `revokeKey` marks key as revoked and clears expiry.
+- **TEMPO-KEY4**: Revocation finality - revoked keys cannot be reauthorized (reverts with `KeyAlreadyRevoked`).
+
+### Spending Limit Invariants
+
+- **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
+- **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+
+### Input Validation Invariants
+
+- **TEMPO-KEY7**: Zero key rejection - authorizing a key with `keyId=address(0)` reverts with `ZeroPublicKey`.
+- **TEMPO-KEY8**: Duplicate key rejection - authorizing a key that already exists reverts with `KeyAlreadyExists`.
+- **TEMPO-KEY9**: Non-existent key revocation - revoking a key that doesn't exist reverts with `KeyNotFound`.
+
+### Isolation Invariants
+
+- **TEMPO-KEY10**: Account isolation - keys are scoped per account; the same keyId can be authorized for different accounts with different settings.
+- **TEMPO-KEY11**: Transaction key context - `getTransactionKey` returns `address(0)` when called outside of a transaction signed by an access key.
+- **TEMPO-KEY12**: Non-existent key defaults - `getKey` for a non-existent key returns default values (keyId=0, expiry=0, enforceLimits=false).
+
+### Global Invariants
+
+- **TEMPO-KEY13**: Key data consistency - all key data (expiry, enforceLimits, signatureType) matches ghost state for tracked keys.
+- **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
+- **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).

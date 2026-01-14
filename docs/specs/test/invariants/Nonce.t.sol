@@ -2,21 +2,15 @@
 pragma solidity ^0.8.13;
 
 import { INonce } from "../../src/interfaces/INonce.sol";
-import { BaseTest } from "../BaseTest.t.sol";
+import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title Nonce Invariant Tests
 /// @notice Fuzz-based invariant tests for the Nonce precompile
 /// @dev Tests invariants TEMPO-NON1 through TEMPO-NON8 for the 2D nonce system
-contract NonceInvariantTest is BaseTest {
-
-    /// @dev Log file path for recording actions
-    string private constant LOG_FILE = "nonce.log";
+contract NonceInvariantTest is InvariantBaseTest {
 
     /// @dev Storage slot for nonces mapping (slot 0)
     uint256 private constant NONCES_SLOT = 0;
-
-    /// @dev Array of test actors
-    address[] private _actors;
 
     /// @dev Ghost variables for tracking nonce state
     /// Maps account => nonceKey => expected nonce value
@@ -44,44 +38,14 @@ contract NonceInvariantTest is BaseTest {
 
         targetContract(address(this));
 
+        _setupInvariantBase();
         _actors = _buildActors(10);
 
-        _initLogFile();
-    }
-
-    /// @dev Creates test actors
-    function _buildActors(uint256 count) internal pure returns (address[] memory) {
-        address[] memory actors = new address[](count);
-        for (uint256 i = 0; i < count; i++) {
-            actors[i] = address(uint160(0x1000 + i));
-        }
-        return actors;
-    }
-
-    /// @dev Initializes the log file
-    function _initLogFile() internal {
-        try vm.removeFile(LOG_FILE) { } catch { }
-        _log("================================================================================");
-        _log("                         Nonce Invariant Test Log");
-        _log("================================================================================");
-        _log(string.concat("Actors: ", vm.toString(_actors.length)));
-        _log("--------------------------------------------------------------------------------");
-        _log("");
-    }
-
-    /// @dev Logs a message to the log file
-    function _log(string memory message) internal {
-        vm.writeLine(LOG_FILE, message);
-    }
-
-    /// @dev Selects an actor based on seed
-    function _selectActor(uint256 seed) internal view returns (address) {
-        return _actors[seed % _actors.length];
+        _initLogFile("nonce.log", "Nonce Invariant Test Log");
     }
 
     /// @dev Gets a valid nonce key (1 to max)
     function _selectNonceKey(uint256 seed) internal pure returns (uint256) {
-        // Use modulo to get a reasonable range, but ensure key > 0
         return (seed % 1000) + 1;
     }
 
@@ -91,7 +55,6 @@ contract NonceInvariantTest is BaseTest {
 
     /// @dev Calculate storage slot for nonces[account][nonceKey]
     function _getNonceSlot(address account, uint256 nonceKey) internal pure returns (bytes32) {
-        // For nested mapping: keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, baseSlot))))
         return keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
     }
 
@@ -151,7 +114,7 @@ contract NonceInvariantTest is BaseTest {
         _log(
             string.concat(
                 "INCREMENT: ",
-                vm.toString(actor),
+                _getActorIndex(actor),
                 " key=",
                 vm.toString(nonceKey),
                 " ",
@@ -193,7 +156,7 @@ contract NonceInvariantTest is BaseTest {
             );
         }
 
-        _log(string.concat("TRY_PROTOCOL_NONCE: ", vm.toString(actor), " correctly rejected"));
+        _log(string.concat("TRY_PROTOCOL_NONCE: ", _getActorIndex(actor), " correctly rejected"));
     }
 
     /// @notice Handler for verifying account independence
@@ -225,9 +188,9 @@ contract NonceInvariantTest is BaseTest {
         _log(
             string.concat(
                 "ACCOUNT_INDEPENDENCE: ",
-                vm.toString(actor1),
+                _getActorIndex(actor1),
                 " incremented, ",
-                vm.toString(actor2),
+                _getActorIndex(actor2),
                 " unchanged at ",
                 vm.toString(nonce2After)
             )
@@ -261,7 +224,7 @@ contract NonceInvariantTest is BaseTest {
         _log(
             string.concat(
                 "KEY_INDEPENDENCE: ",
-                vm.toString(actor),
+                _getActorIndex(actor),
                 " key=",
                 vm.toString(key1),
                 " incremented, key=",
@@ -296,7 +259,10 @@ contract NonceInvariantTest is BaseTest {
 
         _log(
             string.concat(
-                "LARGE_KEY: ", vm.toString(actor), " key=MAX_UINT256 nonce=", vm.toString(newNonce)
+                "LARGE_KEY: ",
+                _getActorIndex(actor),
+                " key=MAX_UINT256 nonce=",
+                vm.toString(newNonce)
             )
         );
     }
@@ -332,7 +298,7 @@ contract NonceInvariantTest is BaseTest {
         _log(
             string.concat(
                 "MULTI_INCREMENT: ",
-                vm.toString(actor),
+                _getActorIndex(actor),
                 " key=",
                 vm.toString(nonceKey),
                 " count=",
@@ -372,9 +338,6 @@ contract NonceInvariantTest is BaseTest {
 
     /// @notice TEMPO-NON1: Nonces should never decrease (implicit from increment-only)
     function _invariantNonceNeverDecrease() internal view {
-        // This is implicitly tested by ghost state tracking
-        // All ghost values are only ever incremented, never decremented
-        // If actual != ghost, it means a decrease happened
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
             uint256[] memory keys = _accountNonceKeys[actor];
@@ -382,25 +345,9 @@ contract NonceInvariantTest is BaseTest {
             for (uint256 k = 0; k < keys.length; k++) {
                 uint256 nonceKey = keys[k];
                 uint64 actual = nonce.getNonce(actor, nonceKey);
-                // Nonce should be >= 0 (always true for uint64)
-                // More importantly, it should match our tracked increments
                 assertTrue(actual >= 0, "TEMPO-NON1: Nonce should be non-negative");
             }
         }
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                              HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Gets actor index for logging
-    function _getActorIndex(address actor) internal view returns (string memory) {
-        for (uint256 i = 0; i < _actors.length; i++) {
-            if (_actors[i] == actor) {
-                return string.concat("Actor", vm.toString(i));
-            }
-        }
-        return vm.toString(actor);
     }
 
 }
