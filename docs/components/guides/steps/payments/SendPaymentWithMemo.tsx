@@ -1,10 +1,22 @@
 import * as React from 'react'
-import { isAddress, pad, parseUnits, stringToHex } from 'viem'
-import { useConnection, useConnectionEffect } from 'wagmi'
+import { fromHex, isAddress, pad, parseUnits, stringToHex } from 'viem'
+import { Abis } from 'viem/tempo'
+import {
+  useConnection,
+  useConnectionEffect,
+  useWatchContractEvent,
+} from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
+
+interface MemoEvent {
+  from: `0x${string}`
+  to: `0x${string}`
+  value: bigint
+  memo: string
+}
 
 export function SendPaymentWithMemo(props: DemoStepProps) {
   const { stepNumber, last = false } = props
@@ -13,6 +25,7 @@ export function SendPaymentWithMemo(props: DemoStepProps) {
   const [memo, setMemo] = React.useState<string>('CUST-12345')
   const [memoError, setMemoError] = React.useState<string | null>(null)
   const [expanded, setExpanded] = React.useState(false)
+  const [memoEvents, setMemoEvents] = React.useState<MemoEvent[]>([])
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
     token: alphaUsd,
@@ -28,7 +41,34 @@ export function SendPaymentWithMemo(props: DemoStepProps) {
     onDisconnect() {
       setExpanded(false)
       setMemoError(null)
+      setMemoEvents([])
       sendPayment.reset()
+    },
+  })
+
+  useWatchContractEvent({
+    address: alphaUsd,
+    abi: Abis.tip20,
+    eventName: 'TransferWithMemo',
+    enabled: sendPayment.isSuccess,
+    onLogs: (logs) => {
+      for (const log of logs) {
+        if (log.args.from === address) {
+          const memoStr = fromHex(
+            log.args.memo as `0x${string}`,
+            'string',
+          ).replace(/\0/g, '')
+          setMemoEvents((prev) => [
+            ...prev,
+            {
+              from: log.args.from as `0x${string}`,
+              to: log.args.to as `0x${string}`,
+              value: log.args.amount as bigint,
+              memo: memoStr,
+            },
+          ])
+        }
+      }
     },
   })
 
@@ -181,6 +221,21 @@ export function SendPaymentWithMemo(props: DemoStepProps) {
                 <p className="text-[11px] text-gray9 mt-1">
                   Memo "{memo}" attached to transaction
                 </p>
+                {memoEvents.length > 0 && (
+                  <div className="mt-3 p-2 bg-gray2 rounded-lg">
+                    <p className="text-[11px] text-gray9 mb-1">
+                      TransferWithMemo event detected:
+                    </p>
+                    {memoEvents.map((event) => (
+                      <div
+                        key={`${event.from}-${event.to}-${event.memo}`}
+                        className="text-[11px] font-mono text-gray11"
+                      >
+                        <span className="text-gray9">memo:</span> "{event.memo}"
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
