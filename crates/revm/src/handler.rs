@@ -1243,20 +1243,29 @@ where
     // Calculate batch intrinsic gas using helper
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, tx.access_list())?;
 
+    let spec = evm.ctx_ref().cfg().spec();
+
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    if !aa_env.nonce_key.is_zero() {
+    let nonce_2d_gas = if !aa_env.nonce_key.is_zero() {
         if tx.nonce() == 0 {
             // New key - cold SLOAD + SSTORE set (0 -> non-zero)
-            batch_gas.initial_gas += NEW_NONCE_KEY_GAS;
+            NEW_NONCE_KEY_GAS
         } else {
             // Existing key - cold SLOAD + warm SSTORE reset
-            batch_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
+            EXISTING_NONCE_KEY_GAS
         }
-    }
+    } else {
+        0
+    };
 
     if evm.ctx.cfg.is_eip7623_disabled() {
         batch_gas.floor_gas = 0u64;
+    }
+
+    // For T0, include 2D nonce gas in the validation
+    if spec.is_t0() {
+        batch_gas.initial_gas += nonce_2d_gas;
     }
 
     // Validate gas limit is sufficient for initial gas
@@ -1266,6 +1275,11 @@ where
             intrinsic_gas: batch_gas.initial_gas,
         }
         .into());
+    }
+
+    // For pre-T0, add 2D nonce gas after validation
+    if !spec.is_t0() {
+        batch_gas.initial_gas += nonce_2d_gas;
     }
 
     // Validate floor gas (Prague+)
