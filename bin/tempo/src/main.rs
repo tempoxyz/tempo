@@ -258,7 +258,9 @@ fn main() -> eyre::Result<()> {
             node,
             node_exit_future,
         } = builder
-            .node(TempoNode::new(&args.node_args, validator_key))
+            .node(
+                TempoNode::new(&args.node_args, validator_key).set_follower(args.follow.is_some()),
+            )
             .apply(|mut builder: WithLaunchContext<_>| {
                 // Resolve the follow URL:
                 // --follow or --follow=auto -> use chain-specific default
