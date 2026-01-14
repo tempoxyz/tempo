@@ -6,58 +6,16 @@ use alloy_primitives::TxHash;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
-use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
+use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
-
-pub use reorg::handle_reorg;
-
-mod reorg {
-    use super::*;
-    use reth_provider::Chain;
-    use std::collections::HashSet;
-
-    /// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
-    /// that are not in the new chain.
-    pub fn handle_reorg<F>(
-        old_chain: Arc<Chain<TempoPrimitives>>,
-        new_chain: Arc<Chain<TempoPrimitives>>,
-        is_in_pool: F,
-    ) -> Vec<TempoPooledTransaction>
-    where
-        F: Fn(&TxHash) -> bool,
-    {
-        // Get inner chain blocks for iteration
-        let (new_blocks, _) = new_chain.inner();
-        let (old_blocks, _) = old_chain.inner();
-
-        // Collect transaction hashes from the new chain to identify what's still mined
-        let new_mined_hashes: HashSet<TxHash> = new_blocks.transaction_hashes().collect();
-
-        // Find AA 2D transactions from the old chain that are NOT in the new chain
-        old_blocks
-            .transactions_ecrecovered()
-            .filter(|tx| !new_mined_hashes.contains(tx.tx_hash()))
-            .filter_map(|tx| {
-                let aa_tx = tx.as_aa()?;
-                // Only process 2D nonce transactions (nonce_key > 0)
-                if aa_tx.tx().nonce_key.is_zero() {
-                    return None;
-                }
-                let pooled_tx = TempoPooledTransaction::new(tx);
-                // Skip if already in pool
-                if is_in_pool(pooled_tx.hash()) {
-                    return None;
-                }
-                Some(pooled_tx)
-            })
-            .collect()
-    }
-}
 
 /// Spawns a background task that evicts expired AA transactions.
 ///
@@ -202,6 +160,43 @@ where
     }
 }
 
+/// Handles a reorg event by identifying orphaned AA 2D transactions from the old chain
+/// that are not in the new chain.
+pub fn handle_reorg<F>(
+    old_chain: Arc<Chain<TempoPrimitives>>,
+    new_chain: Arc<Chain<TempoPrimitives>>,
+    is_in_pool: F,
+) -> Vec<TempoPooledTransaction>
+where
+    F: Fn(&TxHash) -> bool,
+{
+    // Get inner chain blocks for iteration
+    let (new_blocks, _) = new_chain.inner();
+    let (old_blocks, _) = old_chain.inner();
+
+    // Collect transaction hashes from the new chain to identify what's still mined
+    let new_mined_hashes: HashSet<TxHash> = new_blocks.transaction_hashes().collect();
+
+    // Find AA 2D transactions from the old chain that are NOT in the new chain
+    old_blocks
+        .transactions_ecrecovered()
+        .filter(|tx| !new_mined_hashes.contains(tx.tx_hash()))
+        .filter_map(|tx| {
+            let aa_tx = tx.as_aa()?;
+            // Only process 2D nonce transactions (nonce_key > 0)
+            if aa_tx.tx().nonce_key.is_zero() {
+                return None;
+            }
+            let pooled_tx = TempoPooledTransaction::new(tx);
+            // Skip if already in pool
+            if is_in_pool(pooled_tx.hash()) {
+                return None;
+            }
+            Some(pooled_tx)
+        })
+        .collect()
+}
+
 /// An endless future that updates the [`crate::amm::AmmLiquidityCache`] based
 /// on the storage changes of the `FeeManager` precompile.
 pub async fn maintain_amm_cache<Client>(pool: TempoTransactionPool<Client>)
@@ -228,17 +223,19 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::handle_reorg;
+    use super::*;
     use crate::test_utils::TxBuilder;
     use alloy_primitives::{Address, TxHash, U256};
     use reth_primitives_traits::RecoveredBlock;
-    use reth_provider::{Chain, ExecutionOutcome};
     use reth_transaction_pool::PoolTransaction;
-    use std::{collections::HashSet, sync::Arc};
-    use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoTxEnvelope};
+    use std::collections::HashSet;
+    use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
-    /// Creates a test chain from a list of blocks.
-    fn create_test_chain(blocks: Vec<RecoveredBlock<Block>>) -> Arc<Chain<TempoPrimitives>> {
+    fn create_test_chain(
+        blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
+    ) -> Arc<Chain<TempoPrimitives>> {
+        use reth_provider::{Chain, ExecutionOutcome};
+
         Arc::new(Chain::new(blocks, ExecutionOutcome::default(), None))
     }
 
@@ -268,33 +265,39 @@ mod tests {
         tx.inner().clone().into_inner()
     }
 
+    /// Tests all reorg handling scenarios:
+    /// 1. AA 2D tx orphaned in reorg -> should be re-injected
+    /// 2. AA tx with nonce_key=0 -> should NOT be re-injected (handled by vanilla pool)
+    /// 3. EIP-1559 tx -> should NOT be re-injected (not AA)
+    /// 4. AA 2D tx in both old and new chain -> should NOT be re-injected
+    /// 5. AA 2D tx already in pool -> should NOT be re-injected
     #[test]
     fn handle_reorg_correctly_identifies_orphaned_aa_2d_transactions() {
-        let sender = Address::random();
+        let sender_2d = Address::random();
 
         // AA 2D tx that will be orphaned (should be re-injected)
-        let tx_2d_orphaned = TxBuilder::aa(sender).nonce_key(U256::from(1)).build();
+        let tx_2d_orphaned = TxBuilder::aa(sender_2d).nonce_key(U256::from(1)).build();
         let hash_2d_orphaned = *tx_2d_orphaned.hash();
         let envelope_2d_orphaned = extract_envelope(&tx_2d_orphaned);
 
         // AA 2D tx that will be re-included in new chain (should NOT be re-injected)
-        let tx_2d_reincluded = TxBuilder::aa(sender).nonce_key(U256::from(2)).build();
+        let tx_2d_reincluded = TxBuilder::aa(sender_2d).nonce_key(U256::from(2)).build();
         let envelope_2d_reincluded = extract_envelope(&tx_2d_reincluded);
 
         // AA 2D tx that's already in the pool (should NOT be re-injected)
-        let tx_2d_in_pool = TxBuilder::aa(sender).nonce_key(U256::from(3)).build();
+        let tx_2d_in_pool = TxBuilder::aa(sender_2d).nonce_key(U256::from(3)).build();
         let hash_2d_in_pool = *tx_2d_in_pool.hash();
         let envelope_2d_in_pool = extract_envelope(&tx_2d_in_pool);
 
         // AA tx with nonce_key=0 (should NOT be re-injected - vanilla pool handles it)
-        let tx_non_2d = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let tx_non_2d = TxBuilder::aa(sender_2d).nonce_key(U256::ZERO).build();
         let envelope_non_2d = extract_envelope(&tx_non_2d);
 
         // EIP-1559 tx (should NOT be re-injected - not AA)
         let tx_eip1559 = TxBuilder::eip1559(Address::random()).build();
         let envelope_eip1559 = extract_envelope(&tx_eip1559);
 
-        // Create old chain with all 5 transactions (all from same sender for simplicity)
+        // Create old chain with all 5 transactions
         let old_block = create_block_with_txs(
             1,
             vec![
@@ -304,12 +307,12 @@ mod tests {
                 envelope_non_2d,
                 envelope_eip1559,
             ],
-            vec![sender; 5],
+            vec![sender_2d; 5],
         );
         let old_chain = create_test_chain(vec![old_block]);
 
         // Create new chain with only the re-included tx
-        let new_block = create_block_with_txs(1, vec![envelope_2d_reincluded], vec![sender]);
+        let new_block = create_block_with_txs(1, vec![envelope_2d_reincluded], vec![sender_2d]);
         let new_chain = create_test_chain(vec![new_block]);
 
         // Simulate pool containing the "already in pool" tx
