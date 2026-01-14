@@ -762,18 +762,12 @@ where
                     // Get the access key address (recovered during Tx->TxEnv conversion and cached)
                     keychain_sig
                         .key_id(&tempo_tx_env.signature_hash)
-                        .map_err(|_| TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                            reason: "Failed to recover access key address from Keychain signature"
-                                .to_string(),
-                        })?
+                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                 };
 
                 // Only allow if authorizing the same key that's being used (same-tx auth+use)
                 if access_key_addr != key_auth.key_id {
-                    return Err(
-                            TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                                reason: "Access keys cannot authorize other keys. Only the root key can authorize new keys.".to_string(),
-                            }.into());
+                    return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into());
                 }
             }
 
@@ -781,20 +775,17 @@ where
             let root_account = &tx.caller;
 
             // Recover the signer of the KeyAuthorization
-            let auth_signer = key_auth.recover_signer().map_err(|_| {
-                TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                    reason: "Failed to recover signer from KeyAuthorization signature".to_string(),
-                }
-            })?;
+            let auth_signer = key_auth
+                .recover_signer()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             // Verify the KeyAuthorization is signed by the root account
             if auth_signer != *root_account {
-                return Err(
-                    TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!(
-                            "KeyAuthorization must be signed by root account {root_account}, but was signed by {auth_signer}",
-                        ),
-                    }.into());
+                return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                    expected: *root_account,
+                    actual: auth_signer,
+                }
+                .into());
             }
 
             // Validate KeyAuthorization chain_id (following EIP-7702 pattern)
@@ -826,11 +817,11 @@ where
                 // Validate expiry is not in the past
                 let current_timestamp = block.timestamp().saturating_to::<u64>();
                 if expiry <= current_timestamp {
-                    return Err(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!(
-                            "Key expiry {expiry} is in the past (current timestamp: {current_timestamp})"
-                        ),
-                    }.into());
+                    return Err(TempoInvalidTransaction::AccessKeyExpiryInPast {
+                        expiry,
+                        current_timestamp,
+                    }
+                    .into());
                 }
 
                 // Handle limits: None means unlimited spending (enforce_limits=false)
@@ -865,7 +856,7 @@ where
                     .authorize_key(*root_account, authorize_call)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        err => TempoInvalidTransaction::AccessKeyAuthorizationFailed {
+                        err => TempoInvalidTransaction::KeychainPrecompileError {
                             reason: err.to_string(),
                         }
                         .into(),
@@ -888,11 +879,9 @@ where
 
                 // Sanity check: user_address should match tx.caller
                 if *user_address != tx.caller {
-                    return Err(TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: format!(
-                            "Keychain user_address {} does not match transaction caller {}",
-                            user_address, tx.caller
-                        ),
+                    return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
+                        user_address: *user_address,
+                        caller: tx.caller,
                     }
                     .into());
                 }
@@ -900,10 +889,7 @@ where
                 // Get the access key address (recovered during pool validation and cached)
                 keychain_sig
                     .key_id(&tempo_tx_env.signature_hash)
-                    .map_err(|_| TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                        reason: "Failed to recover access key address from inner signature"
-                            .to_string(),
-                    })?
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
             };
 
             // Check if this transaction includes a KeyAuthorization for the same key
@@ -926,8 +912,8 @@ where
                             access_key_addr,
                             block.timestamp().to::<u64>(),
                         )
-                        .map_err(|e| TempoInvalidTransaction::AccessKeyAuthorizationFailed {
-                            reason: format!("Keychain validation failed: {e:?}"),
+                        .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: format!("{e:?}"),
                         })?;
                 }
 
