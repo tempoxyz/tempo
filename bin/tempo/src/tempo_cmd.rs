@@ -30,6 +30,8 @@ pub(crate) enum ConsensusSubcommand {
     GeneratePrivateKey(GeneratePrivateKey),
     /// Calculates the public key from an ed25519 signing key.
     CalculatePublicKey(CalculatePublicKey),
+    /// Deletes a consensus signing share file.
+    DeleteSigningShare(DeleteSigningShare),
 }
 
 impl ConsensusSubcommand {
@@ -84,5 +86,49 @@ impl CalculatePublicKey {
         let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
         Ok(())
+    }
+}
+
+#[derive(Debug, clap::Args)]
+struct DeleteSigningShare {
+    /// Path to the signing share file to delete.
+    #[arg(long, short, value_name = "FILE")]
+    path: PathBuf,
+}
+
+impl DeleteSigningShare {
+    fn run(self) -> eyre::Result<()> {
+        let Self { path } = self;
+
+        if !path.exists() {
+            println!("Signing share file does not exist at: {}", path.display());
+            return Ok(());
+        }
+
+        std::fs::remove_file(&path).wrap_err_with(|| {
+            format!("failed deleting signing share at `{}`", path.display())
+        })?;
+
+        println!("Successfully deleted signing share at: {}", path.display());
+        Ok(())
+    }
+}
+
+pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
+    match TempoCli::try_parse() {
+        Ok(cli) => match cli.command {
+            TempoCommand::Consensus(cmd) => match cmd.command {
+                ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
+                ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
+                ConsensusSubcommand::DeleteSigningShare(args) => Some(args.run()),
+            },
+        },
+        Err(e) => match e.kind() {
+            ErrorKind::InvalidSubcommand => None,
+            _ => {
+                e.print().expect("should be able to write to STDOUT");
+                Some(Ok(()))
+            }
+        },
     }
 }
