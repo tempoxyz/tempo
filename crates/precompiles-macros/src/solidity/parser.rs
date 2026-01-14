@@ -15,8 +15,9 @@ use crate::utils::to_camel_case;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use syn::{
-    Attribute, Fields, FnArg, GenericArgument, Item, ItemEnum, ItemMod, ItemStruct, ItemTrait,
-    ItemUse, Pat, PathArguments, ReturnType, Signature, TraitItem, Type, Visibility,
+    Attribute, Expr, Fields, FnArg, GenericArgument, Item, ItemConst, ItemEnum, ItemMod,
+    ItemStatic, ItemStruct, ItemTrait, ItemUse, Pat, PathArguments, ReturnType, Signature,
+    TraitItem, Type, Visibility,
 };
 
 /// Trait for types that expose a list of (name, type) pairs.
@@ -79,6 +80,8 @@ pub(super) struct SolidityModule {
     pub event: Option<SolEnumDef>,
     /// Interface traits (any trait becomes an interface)
     pub interfaces: Vec<InterfaceDef>,
+    /// Constants (const and static items, exposed as view functions)
+    pub constants: Vec<ConstantDef>,
     /// Other items passed through unchanged
     pub other_items: Vec<Item>,
 }
@@ -99,6 +102,7 @@ impl SolidityModule {
         let mut error: Option<SolEnumDef> = None;
         let mut event: Option<SolEnumDef> = None;
         let mut interfaces = Vec::new();
+        let mut constants = Vec::new();
         let mut other_items = Vec::new();
 
         for item in &content.1 {
@@ -138,6 +142,12 @@ impl SolidityModule {
                 Item::Trait(trait_item) => {
                     interfaces.push(InterfaceDef::parse(trait_item)?);
                 }
+                Item::Const(const_item) => {
+                    constants.push(ConstantDef::from_const(const_item)?);
+                }
+                Item::Static(static_item) => {
+                    constants.push(ConstantDef::from_static(static_item)?);
+                }
                 _ => {
                     other_items.push(item.clone());
                 }
@@ -153,6 +163,7 @@ impl SolidityModule {
             error,
             event,
             interfaces,
+            constants,
             other_items,
         })
     }
@@ -241,6 +252,85 @@ pub(super) struct FieldDef {
     pub indexed: bool,
     /// Field visibility
     pub vis: Visibility,
+}
+
+/// Constant definition (const or static items exposed as view functions).
+///
+/// # Invariants
+///
+/// - Must be a `const` or `static` item
+/// - For `static` items with `LazyLock<T>`, the inner type `T` is used
+/// - The type must be a valid Solidity ABI type
+#[derive(Debug, Clone)]
+pub(super) struct ConstantDef {
+    /// Original constant name (e.g., `PAUSE_ROLE`)
+    pub name: Ident,
+    /// The value type (for LazyLock<T>, this is T)
+    pub ty: Type,
+    /// The initializer expression
+    pub expr: Expr,
+    /// Whether this is a static (true) or const (false)
+    pub is_static: bool,
+    /// Whether wrapped in LazyLock
+    pub is_lazy: bool,
+    /// Original attributes
+    pub attrs: Vec<Attribute>,
+    /// Visibility
+    pub vis: Visibility,
+}
+
+impl ConstantDef {
+    /// Parse a `const` item into a ConstantDef.
+    pub(super) fn from_const(item: &ItemConst) -> syn::Result<Self> {
+        Ok(Self {
+            name: item.ident.clone(),
+            ty: (*item.ty).clone(),
+            expr: (*item.expr).clone(),
+            is_static: false,
+            is_lazy: false,
+            attrs: item.attrs.clone(),
+            vis: item.vis.clone(),
+        })
+    }
+
+    /// Parse a `static` item into a ConstantDef.
+    /// Handles `LazyLock<T>` by extracting the inner type.
+    pub(super) fn from_static(item: &ItemStatic) -> syn::Result<Self> {
+        let (inner_ty, is_lazy) = extract_lazy_lock_inner(&item.ty);
+
+        Ok(Self {
+            name: item.ident.clone(),
+            ty: inner_ty.unwrap_or_else(|| (*item.ty).clone()),
+            expr: (*item.expr).clone(),
+            is_static: true,
+            is_lazy,
+            attrs: item.attrs.clone(),
+            vis: item.vis.clone(),
+        })
+    }
+
+    /// Returns the Solidity function name for this constant.
+    /// Constants use SCREAMING_SNAKE_CASE in Solidity too.
+    pub(super) fn sol_name(&self) -> String {
+        self.name.to_string()
+    }
+}
+
+/// Extract the inner type from `LazyLock<T>` or similar wrapper types.
+/// Returns (Some(inner_type), true) if it's a LazyLock, otherwise (None, false).
+fn extract_lazy_lock_inner(ty: &Type) -> (Option<Type>, bool) {
+    if let Type::Path(type_path) = ty {
+        if let Some(seg) = type_path.path.segments.last() {
+            if seg.ident == "LazyLock" || seg.ident == "Lazy" || seg.ident == "OnceCell" {
+                if let PathArguments::AngleBracketed(args) = &seg.arguments {
+                    if let Some(GenericArgument::Type(inner)) = args.args.first() {
+                        return (Some(inner.clone()), true);
+                    }
+                }
+            }
+        }
+    }
+    (None, false)
 }
 
 /// Unit enum definition (encoded as u8).
@@ -827,6 +917,57 @@ mod tests {
         assert_eq!(module.structs.len(), 1);
         assert_eq!(module.unit_enums.len(), 1);
         assert!(module.error.is_some() && module.event.is_some() && !module.interfaces.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_constants_parsing() -> syn::Result<()> {
+        let module = parse_module(quote! {
+            pub mod test {
+                use std::sync::LazyLock;
+                use alloy::primitives::{B256, keccak256};
+
+                pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
+                pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+            }
+        })?;
+
+        assert_eq!(module.constants.len(), 2);
+
+        // First constant: const
+        let const_def = &module.constants[0];
+        assert_eq!(const_def.name.to_string(), "DEFAULT_ADMIN_ROLE");
+        assert!(!const_def.is_static);
+        assert!(!const_def.is_lazy);
+
+        // Second constant: static with LazyLock
+        let static_def = &module.constants[1];
+        assert_eq!(static_def.name.to_string(), "PAUSE_ROLE");
+        assert!(static_def.is_static);
+        assert!(static_def.is_lazy);
+        // The type should be B256 (extracted from LazyLock<B256>)
+        let ty_str = quote!(#(static_def.ty)).to_string();
+        assert!(ty_str.contains("B256") || static_def.ty == syn::parse_quote!(B256));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_constants_with_interface() -> syn::Result<()> {
+        let module = parse_module(quote! {
+            pub mod roles {
+                use super::*;
+
+                pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
+
+                pub trait Interface {
+                    fn has_role(&self, account: Address, role: B256) -> Result<bool>;
+                }
+            }
+        })?;
+
+        assert_eq!(module.constants.len(), 1);
+        assert_eq!(module.interfaces.len(), 1);
         Ok(())
     }
 }

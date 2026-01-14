@@ -11,7 +11,8 @@ pub mod roles;
 pub mod token;
 
 use crate::{error::Result, storage::Mapping};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{Address, B256, U256, keccak256};
+use std::sync::LazyLock;
 use tempo_precompiles_macros::{Storable, contract, solidity};
 
 pub use roles::*;
@@ -48,8 +49,14 @@ pub struct TIP20Token {
 }
 
 #[solidity]
+#[rustfmt::skip]
 pub mod abi {
     use super::*;
+
+    pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
+    pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
+    pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
+    pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
 
     pub trait IToken {
         // View functions
@@ -65,10 +72,6 @@ pub mod abi {
         fn supply_cap(&self) -> Result<U256>;
         fn paused(&self) -> Result<bool>;
         fn transfer_policy_id(&self) -> Result<u64>;
-        fn PAUSE_ROLE(&self) -> Result<B256>;
-        fn UNPAUSE_ROLE(&self) -> Result<B256>;
-        fn ISSUER_ROLE(&self) -> Result<B256>;
-        fn BURN_BLOCKED_ROLE(&self) -> Result<B256>;
 
         // Mutating functions
         fn transfer(&mut self, to: Address, amount: U256) -> Result<bool>;
@@ -80,13 +83,7 @@ pub mod abi {
         fn mint_with_memo(&mut self, to: Address, amount: U256, memo: B256) -> Result<()>;
         fn burn_with_memo(&mut self, amount: U256, memo: B256) -> Result<()>;
         fn transfer_with_memo(&mut self, to: Address, amount: U256, memo: B256) -> Result<()>;
-        fn transfer_from_with_memo(
-            &mut self,
-            from: Address,
-            to: Address,
-            amount: U256,
-            memo: B256,
-        ) -> Result<bool>;
+        fn transfer_from_with_memo(&mut self, from: Address, to: Address, amount: U256, memo: B256 ) -> Result<bool>;
         fn change_transfer_policy_id(&mut self, new_policy_id: u64) -> Result<()>;
         fn set_supply_cap(&mut self, new_supply_cap: U256) -> Result<()>;
         fn pause(&mut self) -> Result<()>;
@@ -123,11 +120,7 @@ pub mod abi {
 
     pub enum Error {
         // TIP20 errors
-        InsufficientBalance {
-            available: U256,
-            required: U256,
-            token: Address,
-        },
+        InsufficientBalance { available: U256, required: U256, token: Address, },
         InsufficientAllowance,
         SupplyCapExceeded,
         InvalidSupplyCap,
@@ -151,105 +144,25 @@ pub mod abi {
 
     pub enum Event {
         // TIP20 events
-        Transfer {
-            #[indexed]
-            from: Address,
-            #[indexed]
-            to: Address,
-            amount: U256,
-        },
-        Approval {
-            #[indexed]
-            owner: Address,
-            #[indexed]
-            spender: Address,
-            amount: U256,
-        },
-        Mint {
-            #[indexed]
-            to: Address,
-            amount: U256,
-        },
-        Burn {
-            #[indexed]
-            from: Address,
-            amount: U256,
-        },
-        BurnBlocked {
-            #[indexed]
-            from: Address,
-            amount: U256,
-        },
-        TransferWithMemo {
-            #[indexed]
-            from: Address,
-            #[indexed]
-            to: Address,
-            amount: U256,
-            #[indexed]
-            memo: B256,
-        },
-        TransferPolicyUpdate {
-            #[indexed]
-            updater: Address,
-            #[indexed]
-            new_policy_id: u64,
-        },
-        SupplyCapUpdate {
-            #[indexed]
-            updater: Address,
-            #[indexed]
-            new_supply_cap: U256,
-        },
-        PauseStateUpdate {
-            #[indexed]
-            updater: Address,
-            is_paused: bool,
-        },
-        NextQuoteTokenSet {
-            #[indexed]
-            updater: Address,
-            #[indexed]
-            next_quote_token: Address,
-        },
-        QuoteTokenUpdate {
-            #[indexed]
-            updater: Address,
-            #[indexed]
-            new_quote_token: Address,
-        },
+        Transfer { #[indexed] from: Address, #[indexed] to: Address, amount: U256 },
+        Approval { #[indexed] owner: Address, #[indexed] spender: Address, amount: U256 },
+        Mint { #[indexed] to: Address, amount: U256 },
+        Burn { #[indexed] from: Address, amount: U256 },
+        BurnBlocked { #[indexed] from: Address, amount: U256 },
+        TransferWithMemo { #[indexed] from: Address, #[indexed] to: Address, amount: U256, #[indexed] memo: B256 },
+        TransferPolicyUpdate { #[indexed] updater: Address, #[indexed] new_policy_id: u64 },
+        SupplyCapUpdate { #[indexed] updater: Address, #[indexed] new_supply_cap: U256 },
+        PauseStateUpdate { #[indexed] updater: Address, is_paused: bool },
+        NextQuoteTokenSet { #[indexed] updater: Address, #[indexed] next_quote_token: Address },
+        QuoteTokenUpdate { #[indexed] updater: Address, #[indexed] new_quote_token: Address },
 
         // RolesAuth events
-        RoleMembershipUpdated {
-            #[indexed]
-            role: B256,
-            #[indexed]
-            account: Address,
-            #[indexed]
-            sender: Address,
-            has_role: bool,
-        },
-        RoleAdminUpdated {
-            #[indexed]
-            role: B256,
-            #[indexed]
-            new_admin_role: B256,
-            #[indexed]
-            sender: Address,
-        },
+        RoleMembershipUpdated { #[indexed] role: B256, #[indexed] account: Address, #[indexed] sender: Address, has_role: bool },
+        RoleAdminUpdated { #[indexed] role: B256, #[indexed] new_admin_role: B256, #[indexed] sender: Address },
 
         // Rewards events
-        RewardDistributed {
-            #[indexed]
-            funder: Address,
-            amount: U256,
-        },
-        RewardRecipientSet {
-            #[indexed]
-            holder: Address,
-            #[indexed]
-            recipient: Address,
-        },
+        RewardDistributed { #[indexed] funder: Address, amount: U256 },
+        RewardRecipientSet { #[indexed] holder: Address, #[indexed] recipient: Address },
     }
 }
 

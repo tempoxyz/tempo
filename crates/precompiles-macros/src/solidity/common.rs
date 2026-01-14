@@ -535,6 +535,27 @@ fn extract_array_len(expr: &syn::Expr) -> Option<usize> {
     }
 }
 
+/// Helper trait to unzip an iterator of 4-tuples.
+pub(super) trait Unzip4<A, B, C, D> {
+    fn unzip4(self) -> (Vec<A>, Vec<B>, Vec<C>, Vec<D>);
+}
+
+impl<I, A, B, C, D> Unzip4<A, B, C, D> for I
+where
+    I: Iterator<Item = (A, B, C, D)>,
+{
+    fn unzip4(self) -> (Vec<A>, Vec<B>, Vec<C>, Vec<D>) {
+        let (mut a, mut b, mut c, mut d) = (vec![], vec![], vec![], vec![]);
+        for (w, x, y, z) in self {
+            a.push(w);
+            b.push(x);
+            c.push(y);
+            d.push(z);
+        }
+        (a, b, c, d)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

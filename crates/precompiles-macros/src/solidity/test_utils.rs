@@ -55,6 +55,7 @@ pub(super) fn empty_module() -> SolidityModule {
         error: None,
         event: None,
         interfaces: vec![],
+        constants: vec![],
         other_items: vec![],
     }
 }

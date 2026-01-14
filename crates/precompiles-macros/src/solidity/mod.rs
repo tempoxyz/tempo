@@ -52,6 +52,7 @@
 //! ```
 
 mod common;
+mod constants;
 mod enums;
 mod interface;
 mod parser;
@@ -119,8 +120,13 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
         .map(|def| interface::generate_interface(def, &registry))
         .collect::<syn::Result<Vec<_>>>()?;
 
-    // Generate unified Calls enum that composes all interface Calls
-    let unified_calls = interface::generate_unified_calls(&module.interfaces);
+    // Generate constants (const/static items as view functions)
+    let constants_impl = constants::generate_constants(&module.constants, &registry)?;
+    let has_constants = !module.constants.is_empty();
+
+    // Generate unified Calls enum that composes all interface Calls and constants
+    let unified_calls =
+        interface::generate_unified_calls(&module.interfaces, has_constants);
 
     // Generate instance impl for first interface (for backward compatibility)
     // TODO: Consider generating instances for all interfaces
@@ -167,6 +173,8 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
             #event_impl
 
             #(#interface_impls)*
+
+            #constants_impl
 
             #unified_calls
 

@@ -1,22 +1,19 @@
 //! TIP20 Role-based access control implementation.
 
-use alloy::primitives::{Address, B256, keccak256};
-use std::sync::LazyLock;
+use alloy::primitives::{Address, B256};
 
 use crate::{error::Result, storage::Handler, tip20::TIP20Token};
 
 // Re-export types for backwards compatibility
 pub use super::{
     IRolesAuth, RoleAdminUpdated, RoleMembershipUpdated, RolesAuthError, RolesAuthEvent,
-    Unauthorized, abi,
+    Unauthorized,
+    abi::{self, BURN_BLOCKED_ROLE, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
 };
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
 pub const UNGRANTABLE_ROLE: B256 = B256::new([0xff; 32]);
-pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
-pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_ROLE"));
-pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
-pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+
 
 impl abi::IRolesAuth for TIP20Token {
     fn has_role(&self, account: Address, role: B256) -> Result<bool> {

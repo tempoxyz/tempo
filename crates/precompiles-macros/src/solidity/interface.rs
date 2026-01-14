@@ -13,7 +13,7 @@ use proc_macro2::{Ident, TokenStream};
 use quote::{format_ident, quote};
 
 use super::{
-    common::{self, SynSolType},
+    common::{self, SynSolType, Unzip4},
     parser::{FieldAccessors, InterfaceDef, MethodDef},
     registry::TypeRegistry,
 };
@@ -69,8 +69,13 @@ pub(super) fn generate_interface(
 }
 
 /// Generate the unified `Calls` enum that composes all interface Calls enums.
-pub(super) fn generate_unified_calls(interfaces: &[InterfaceDef]) -> TokenStream {
-    if interfaces.is_empty() {
+pub(super) fn generate_unified_calls(
+    interfaces: &[InterfaceDef],
+    has_constants: bool,
+) -> TokenStream {
+    let total_sources = interfaces.len() + if has_constants { 1 } else { 0 };
+
+    if total_sources == 0 {
         return quote! {
             #[derive(Clone, Debug, PartialEq, Eq)]
             pub enum Calls {}
@@ -100,21 +105,34 @@ pub(super) fn generate_unified_calls(interfaces: &[InterfaceDef]) -> TokenStream
         };
     }
 
-    // If there's only one interface, just alias Calls to {TraitName}Calls
-    if interfaces.len() == 1 {
-        let calls_name = format_ident!("{}Calls", interfaces[0].name);
-        return quote! {
-            pub type Calls = #calls_name;
-        };
+    // If there's only one source, just alias Calls to that
+    if total_sources == 1 {
+        if has_constants {
+            return quote! {
+                pub type Calls = ConstantsCalls;
+            };
+        } else {
+            let calls_name = format_ident!("{}Calls", interfaces[0].name);
+            return quote! {
+                pub type Calls = #calls_name;
+            };
+        }
     }
 
-    // Multiple interfaces: compose them
-    let variant_names: Vec<_> = interfaces.iter().map(|i| i.name.clone()).collect();
-    let calls_names: Vec<_> = interfaces
+    // Multiple sources: compose them
+    let mut variant_names: Vec<_> = interfaces.iter().map(|i| i.name.clone()).collect();
+    let mut calls_names: Vec<_> = interfaces
         .iter()
         .map(|i| format_ident!("{}Calls", i.name))
         .collect();
-    let n = interfaces.len();
+
+    // Add constants if present
+    if has_constants {
+        variant_names.push(format_ident!("Constants"));
+        calls_names.push(format_ident!("ConstantsCalls"));
+    }
+
+    let n = total_sources;
 
     let decls: Vec<_> = variant_names
         .iter()
@@ -409,28 +427,6 @@ fn generate_calls_enum(enum_name: &Ident, methods: &[MethodCodegen<'_>]) -> Toke
         &field_counts,
         SolInterfaceKind::Call,
     )
-}
-
-/// Helper trait to unzip an iterator of 4-tuples.
-trait Unzip4<A, B, C, D> {
-    fn unzip4(self) -> (Vec<A>, Vec<B>, Vec<C>, Vec<D>);
-}
-
-impl<I, A, B, C, D> Unzip4<A, B, C, D> for I
-where
-    I: Iterator<Item = (A, B, C, D)>,
-{
-    fn unzip4(self) -> (Vec<A>, Vec<B>, Vec<C>, Vec<D>) {
-        let (mut a_vec, mut b_vec, mut c_vec, mut d_vec) = (vec![], vec![], vec![], vec![]);
-        for (a, b, c, d) in self {
-            a_vec.push(a);
-            b_vec.push(b);
-            c_vec.push(c);
-            d_vec.push(d);
-        }
-
-        (a_vec, b_vec, c_vec, d_vec)
-    }
 }
 
 /// Generate provider-bound instance struct for RPC interactions.

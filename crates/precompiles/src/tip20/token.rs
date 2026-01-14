@@ -265,22 +265,6 @@ impl abi::IToken for TIP20Token {
         self.transfer_policy_id.read()
     }
 
-    fn PAUSE_ROLE(&self) -> Result<B256> {
-        Ok(Self::pause_role())
-    }
-
-    fn UNPAUSE_ROLE(&self) -> Result<B256> {
-        Ok(Self::unpause_role())
-    }
-
-    fn ISSUER_ROLE(&self) -> Result<B256> {
-        Ok(Self::issuer_role())
-    }
-
-    fn BURN_BLOCKED_ROLE(&self) -> Result<B256> {
-        Ok(Self::burn_blocked_role())
-    }
-
     fn transfer(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<bool> {
         trace!(%msg_sender, %to, %amount, "transferring TIP20");
         self.check_not_paused()?;

@@ -63,16 +63,16 @@ impl Precompile for TIP20Token {
             TIP20TokenCalls::IToken(abi::ITokenCalls::nextQuoteToken(call)) => {
                 view(call, |_| self.next_quote_token())
             }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::PAUSE_ROLE(call)) => {
+            TIP20TokenCalls::Constants(abi::ConstantsCalls::PAUSE_ROLE(call)) => {
                 view(call, |_| Ok(Self::pause_role()))
             }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::UNPAUSE_ROLE(call)) => {
+            TIP20TokenCalls::Constants(abi::ConstantsCalls::UNPAUSE_ROLE(call)) => {
                 view(call, |_| Ok(Self::unpause_role()))
             }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::ISSUER_ROLE(call)) => {
+            TIP20TokenCalls::Constants(abi::ConstantsCalls::ISSUER_ROLE(call)) => {
                 view(call, |_| Ok(Self::issuer_role()))
             }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::BURN_BLOCKED_ROLE(call)) => {
+            TIP20TokenCalls::Constants(abi::ConstantsCalls::BURN_BLOCKED_ROLE(call)) => {
                 view(call, |_| Ok(Self::burn_blocked_role()))
             }
 
