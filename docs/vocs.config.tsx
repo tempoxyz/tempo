@@ -15,9 +15,9 @@ export default defineConfig({
         name="viewport"
       />
       {process.env['VERCEL_ENV'] === 'production' ? (
-        <meta name="robot" content="index, follow" />
+        <meta name="robots" content="index, follow" />
       ) : (
-        <meta name="robot" content="noindex, nofollow" />
+        <meta name="robots" content="noindex, nofollow" />
       )}
       <link rel="icon" href="/favicon.ico" sizes="32x32" />
       <link
@@ -79,16 +79,11 @@ export default defineConfig({
   ),
   ogImageUrl: {
     '/': '/og-docs.png',
-    '/learn':
-      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/quickstart':
-      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/guide':
-      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/protocol':
-      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/sdk':
-      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/learn': '/api/og?title=%title&description=%description',
+    '/quickstart': '/api/og?title=%title&description=%description',
+    '/guide': '/api/og?title=%title&description=%description',
+    '/protocol': '/api/og?title=%title&description=%description',
+    '/sdk': '/api/og?title=%title&description=%description',
   },
   title: 'Tempo',
   titleTemplate: '%s | Tempo Docs',

@@ -1,12 +1,11 @@
-import type { VercelRequest } from '@vercel/node'
 import { ImageResponse } from '@vercel/og'
 
 export const config = {
   runtime: 'edge',
 }
 
-export default async function handler(req: VercelRequest) {
-  const { searchParams } = new URL(req.url ?? '', 'https://docs.tempo.xyz')
+export default async function handler(req: Request) {
+  const { searchParams } = new URL(req.url)
   const title = searchParams.get('title') || 'Tempo Docs'
   const description =
     searchParams.get('description') ||
