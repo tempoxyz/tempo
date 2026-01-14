@@ -30,7 +30,7 @@ use commonware_utils::{TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
-use tempo_commonware_node::consensus;
+use tempo_commonware_node::{consensus, feed::FeedStateHandle};
 
 pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
@@ -178,14 +178,23 @@ pub async fn setup_validators(
 
     // The port here does not matter because it will be ignored in simulated p2p.
     // Still nice, because sometimes nodes can be better identified in logs.
-    let validators =
-        ordered::Map::try_from_iter(shares.keys().iter().enumerate().map(|(i, key)| {
-            (
-                key.clone(),
-                SocketAddr::from(([127, 0, 0, 1], i as u16 + 1)),
-            )
-        }))
-        .unwrap();
+    let network_addresses = (1..)
+        .map(|port| SocketAddr::from(([127, 0, 0, 1], port)))
+        .take((how_many_signers + how_many_verifiers) as usize)
+        .collect::<Vec<_>>();
+    let chain_addresses = (0..)
+        .map(crate::execution_runtime::validator)
+        .take((how_many_signers + how_many_verifiers) as usize)
+        .collect::<Vec<_>>();
+
+    let validators = ordered::Map::try_from_iter(
+        shares
+            .iter()
+            .zip(&network_addresses)
+            .zip(&chain_addresses)
+            .map(|((key, net_addr), chain_addr)| (key.clone(), (*net_addr, *chain_addr))),
+    )
+    .unwrap();
 
     let execution_runtime = ExecutionRuntime::builder()
         .with_epoch_length(epoch_length)
@@ -200,28 +209,32 @@ pub async fn setup_validators(
         .generate();
 
     let mut nodes = vec![];
-    for ((private_key, share), mut execution_config) in signer_keys
-        .into_iter()
-        .zip_eq(shares)
-        .map(|(signing_key, (verifying_key, share))| {
-            assert_eq!(signing_key.public_key(), verifying_key);
-            (signing_key, Some(share))
-        })
-        .chain(verifier_keys.into_iter().map(|key| (key, None)))
-        .zip_eq(execution_configs)
+    for ((((private_key, share), mut execution_config), network_address), chain_address) in
+        signer_keys
+            .into_iter()
+            .zip_eq(shares)
+            .map(|(signing_key, (verifying_key, share))| {
+                assert_eq!(signing_key.public_key(), verifying_key);
+                (signing_key, Some(share))
+            })
+            .chain(verifier_keys.into_iter().map(|key| (key, None)))
+            .zip_eq(execution_configs)
+            .zip_eq(network_addresses)
+            .zip_eq(chain_addresses)
     {
         let oracle = oracle.clone();
         let uid = format!("{CONSENSUS_NODE_PREFIX}_{}", private_key.public_key());
+        let feed_state = FeedStateHandle::new();
 
         execution_config.validator_key = Some(
             private_key
                 .public_key()
                 .encode()
-                .freeze()
                 .as_ref()
                 .try_into()
                 .unwrap(),
         );
+        execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
@@ -243,6 +256,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            feed_state,
         };
 
         nodes.push(TestingNode::new(
@@ -252,6 +266,8 @@ pub async fn setup_validators(
             engine_config,
             execution_runtime.handle(),
             execution_config,
+            network_address,
+            chain_address,
         ));
     }
 

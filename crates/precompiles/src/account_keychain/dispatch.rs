@@ -1,7 +1,8 @@
-use super::{AccountKeychain, IAccountKeychain};
-use crate::{Precompile, fill_precompile_output, input_cost, mutate_void, unknown_selector, view};
-use alloy::{primitives::Address, sol_types::SolCall};
+use super::AccountKeychain;
+use crate::{Precompile, dispatch_call, input_cost, mutate_void, view};
+use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::{PrecompileError, PrecompileResult};
+use tempo_contracts::precompiles::IAccountKeychain::IAccountKeychainCalls;
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -9,58 +10,57 @@ impl Precompile for AccountKeychain {
             .deduct_gas(input_cost(calldata.len()))
             .map_err(|_| PrecompileError::OutOfGas)?;
 
-        let selector: [u8; 4] = calldata
-            .get(..4)
-            .ok_or_else(|| {
-                PrecompileError::Other("Invalid input: missing function selector".into())
-            })?
-            .try_into()
-            .unwrap();
+        dispatch_call(
+            calldata,
+            IAccountKeychainCalls::abi_decode,
+            |call| match call {
+                IAccountKeychainCalls::authorizeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                }
+                IAccountKeychainCalls::revokeKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
+                }
+                IAccountKeychainCalls::updateSpendingLimit(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.update_spending_limit(sender, c)
+                    })
+                }
+                IAccountKeychainCalls::getKey(call) => view(call, |c| self.get_key(c)),
+                IAccountKeychainCalls::getRemainingLimit(call) => {
+                    view(call, |c| self.get_remaining_limit(c))
+                }
+                IAccountKeychainCalls::getTransactionKey(call) => {
+                    view(call, |c| self.get_transaction_key(c, msg_sender))
+                }
+            },
+        )
+    }
+}
 
-        let result = match selector {
-            IAccountKeychain::authorizeKeyCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::authorizeKeyCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.authorize_key(sender, call),
-                )
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::{assert_full_coverage, check_selector_coverage},
+    };
 
-            IAccountKeychain::revokeKeyCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::revokeKeyCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.revoke_key(sender, call),
-                )
-            }
+    #[test]
+    fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = AccountKeychain::new();
 
-            IAccountKeychain::updateSpendingLimitCall::SELECTOR => {
-                mutate_void::<IAccountKeychain::updateSpendingLimitCall>(
-                    calldata,
-                    msg_sender,
-                    |sender, call| self.update_spending_limit(sender, call),
-                )
-            }
+            let unsupported = check_selector_coverage(
+                &mut fee_manager,
+                IAccountKeychainCalls::SELECTORS,
+                "IAccountKeychain",
+                IAccountKeychainCalls::name_by_selector,
+            );
 
-            IAccountKeychain::getKeyCall::SELECTOR => {
-                view::<IAccountKeychain::getKeyCall>(calldata, |call| self.get_key(call))
-            }
+            assert_full_coverage([unsupported]);
 
-            IAccountKeychain::getRemainingLimitCall::SELECTOR => {
-                view::<IAccountKeychain::getRemainingLimitCall>(calldata, |call| {
-                    self.get_remaining_limit(call)
-                })
-            }
-
-            IAccountKeychain::getTransactionKeyCall::SELECTOR => {
-                view::<IAccountKeychain::getTransactionKeyCall>(calldata, |call| {
-                    self.get_transaction_key(call, msg_sender)
-                })
-            }
-
-            _ => unknown_selector(selector, self.storage.gas_used()),
-        };
-
-        result.map(|res| fill_precompile_output(res, &mut self.storage))
+            Ok(())
+        })
     }
 }

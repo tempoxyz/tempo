@@ -185,3 +185,422 @@ pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
 
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{
+        Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
+        transaction::TxHashRef,
+    };
+    use alloy_primitives::{Address, B256, Signature, TxKind, U256};
+    use reth_primitives_traits::SealedHeader;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tempo_chainspec::spec::ANDANTINO;
+
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[derive(Default)]
+    struct TestHeaderBuilder {
+        gas_limit: u64,
+        timestamp: u64,
+        timestamp_millis_part: u64,
+        number: u64,
+        parent_hash: B256,
+        shared_gas_limit: Option<u64>,
+        general_gas_limit: Option<u64>,
+    }
+
+    impl TestHeaderBuilder {
+        fn gas_limit(mut self, gas_limit: u64) -> Self {
+            self.gas_limit = gas_limit;
+            self
+        }
+
+        fn timestamp(mut self, timestamp: u64) -> Self {
+            self.timestamp = timestamp;
+            self
+        }
+
+        fn timestamp_millis_part(mut self, millis: u64) -> Self {
+            self.timestamp_millis_part = millis;
+            self
+        }
+
+        fn number(mut self, number: u64) -> Self {
+            self.number = number;
+            self
+        }
+
+        fn parent_hash(mut self, hash: B256) -> Self {
+            self.parent_hash = hash;
+            self
+        }
+
+        fn shared_gas_limit(mut self, limit: u64) -> Self {
+            self.shared_gas_limit = Some(limit);
+            self
+        }
+
+        fn general_gas_limit(mut self, limit: u64) -> Self {
+            self.general_gas_limit = Some(limit);
+            self
+        }
+
+        fn build(self) -> TempoHeader {
+            let shared_gas_limit = self
+                .shared_gas_limit
+                .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
+            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
+                (self.gas_limit - self.gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+                    / TEMPO_GENERAL_GAS_DIVISOR
+            });
+
+            TempoHeader {
+                inner: Header {
+                    gas_limit: self.gas_limit,
+                    timestamp: self.timestamp,
+                    number: self.number,
+                    parent_hash: self.parent_hash,
+                    base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
+                    withdrawals_root: Some(EMPTY_ROOT_HASH),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                shared_gas_limit,
+                general_gas_limit,
+                timestamp_millis_part: self.timestamp_millis_part,
+            }
+        }
+    }
+
+    fn create_valid_block(header: TempoHeader, transactions: Vec<TempoTxEnvelope>) -> Block {
+        let transactions_root = calculate_transaction_root(&transactions);
+        let mut header = header;
+        header.inner.transactions_root = transactions_root;
+
+        Block {
+            header,
+            body: BlockBody {
+                transactions,
+                withdrawals: Some(Default::default()),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn create_system_tx(chain_id: u64, to: Address) -> TempoTxEnvelope {
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 0,
+            gas_price: 0,
+            gas_limit: 0,
+            to: TxKind::Call(to),
+            value: U256::ZERO,
+            input: Default::default(),
+        };
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
+    }
+
+    fn create_tx(chain_id: u64) -> TempoTxEnvelope {
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 1,
+            gas_price: 1_000_000_000,
+            gas_limit: 21000,
+            to: TxKind::Call(Address::repeat_byte(0x42)),
+            value: U256::from(100),
+            input: Default::default(),
+        };
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    #[test]
+    fn test_validate_header() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(500)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    #[test]
+    fn test_validate_header_timestamp_in_the_future() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let future_timestamp = current_timestamp() + ALLOWED_FUTURE_BLOCK_TIME_SECONDS + 10;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(future_timestamp)
+            .timestamp_millis_part(500)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        assert!(
+            matches!(result, Err(ConsensusError::TimestampIsInFuture { timestamp, .. }) if timestamp == future_timestamp)
+        );
+    }
+
+    #[test]
+    fn test_validate_header_shared_gas_mismatch() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .shared_gas_limit(999)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Shared gas limit does not match header gas limit".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_header_non_payment_gas_mismatch() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .general_gas_limit(999)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Non-payment gas limit does not match header gas limit".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_header_timestamp_milli_gte_1000() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+
+        // Test timestamp equal to 1000
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(1000)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Timestamp milliseconds part must be less than 1000".to_string()
+            ))
+        );
+
+        // Test timestamp > 1000
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .timestamp_millis_part(1001)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        let result = consensus.validate_header(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Timestamp milliseconds part must be less than 1000".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_header_against_parent() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let parent_ts = current_timestamp() - 1;
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_timestamp_not_increasing() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let parent_ts = current_timestamp();
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(500)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(parent_ts)
+            .timestamp_millis_part(400)
+            .number(1)
+            .parent_hash(parent_sealed.hash())
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let parent_timestamp_millis = parent_ts * 1000 + 500;
+        let child_timestamp_millis = parent_ts * 1000 + 400;
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::TimestampIsInPast {
+                parent_timestamp: parent_timestamp_millis,
+                timestamp: child_timestamp_millis,
+            })
+        );
+    }
+
+    #[test]
+    fn test_validate_body_against_header() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        let body = BlockBody {
+            withdrawals: Some(Default::default()),
+            ..Default::default()
+        };
+
+        assert!(
+            consensus
+                .validate_body_against_header(&body, &sealed)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![user_tx, system_tx]);
+        let sealed = reth_primitives_traits::SealedBlock::seal_slow(block);
+
+        assert!(consensus.validate_block_pre_execution(&sealed).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_invalid_system_tx() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let tx = TxLegacy {
+            chain_id: Some(chain_id),
+            nonce: 0,
+            gas_price: 1_000_000_000,
+            gas_limit: 21000,
+            to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Default::default(),
+        };
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
+        let tx_hash = *invalid_system_tx.tx_hash();
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![invalid_system_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(format!(
+                "Invalid system transaction: {tx_hash}"
+            )))
+        );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_no_system_tx() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let user_tx = create_tx(chain_id);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![user_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Block must contain end-of-block system txs".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_block_pre_execution_system_tx_out_of_order() {
+        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let chain_id = ANDANTINO.chain().id();
+
+        let wrong_addr = Address::repeat_byte(0xFF);
+        let system_tx = create_system_tx(chain_id, wrong_addr);
+
+        let header = TestHeaderBuilder::default()
+            .gas_limit(30_000_000)
+            .timestamp(current_timestamp())
+            .build();
+        let block = create_valid_block(header, vec![system_tx]);
+        let sealed = SealedBlock::seal_slow(block);
+
+        let result = consensus.validate_block_pre_execution(&sealed);
+        assert_eq!(
+            result,
+            Err(ConsensusError::Other(
+                "Invalid end-of-block system tx order".to_string()
+            ))
+        );
+    }
+}

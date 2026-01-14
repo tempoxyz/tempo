@@ -1,12 +1,15 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
-    num::{NonZeroU32, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU32, NonZeroUsize},
 };
 
 use alloy_consensus::BlockHeader as _;
-use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write, varint::UInt};
-use commonware_consensus::{Block as _, types::Epoch};
+use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
+use commonware_consensus::{
+    Block as _, Heightable as _,
+    types::{Epoch, Height},
+};
 use commonware_cryptography::{
     Signer as _,
     bls12381::{
@@ -17,16 +20,17 @@ use commonware_cryptography::{
     transcript::{Summary, Transcript},
 };
 use commonware_p2p::Address;
+use commonware_parallel::Strategy;
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
-use commonware_utils::{NZU32, NZU64, NZUsize, ordered};
+use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
-const PAGE_SIZE: NonZeroUsize = NZUsize!(1 << 12);
+const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
 const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 20);
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1 << 12);
 const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
@@ -93,15 +97,6 @@ where
     /// Returns the DKG outcome for the current epoch.
     pub(super) fn current(&self) -> State {
         self.current.clone()
-    }
-
-    /// Returns the DKG outcome for the previous epoch, if there is one.
-    pub(super) async fn previous(&self) -> Option<State> {
-        let previous_epoch = self.current().epoch.previous()?;
-
-        let segment = self.states.size().checked_sub(2)?;
-        let previous = self.states.read(segment).await.ok()?;
-        (previous_epoch == previous.epoch).then_some(previous)
     }
 
     /// Appends the outcome of a DKG ceremony to state
@@ -439,7 +434,7 @@ where
     pub(super) fn get_latest_finalized_block_for_epoch(
         &self,
         epoch: &Epoch,
-    ) -> Option<(&u64, &FinalizedBlockInfo)> {
+    ) -> Option<(&Height, &FinalizedBlockInfo)> {
         self.cache
             .get(epoch)
             .and_then(|cache| cache.finalized.last_key_value())
@@ -461,10 +456,30 @@ where
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-        self.states
-            .prune(up_to_epoch.get())
-            .await
-            .wrap_err("unable to prune outcomes journal")?;
+
+        // Cannot map epochs directly to segments like in the events journal.
+        // Need to first check what the epoch of the state is and go from there.
+        //
+        // size-2 to ensure that there is always something at the tip.
+        if let Some(previous_segment) = self.states.size().checked_sub(2)
+            && let Ok(previous_state) = self.states.read(previous_segment).await
+        {
+            // NOTE: this does not cover the segment at size-3. In theory it
+            // could be state-3.epoch >= up_to_epoch, but that's ok as long
+            // as state-2 does not get pruned.
+            let to_prune = if previous_state.epoch >= up_to_epoch {
+                previous_segment
+            } else {
+                self.states
+                    .size()
+                    .checked_sub(1)
+                    .expect("there must be at least one segment")
+            };
+            self.states
+                .prune(to_prune)
+                .await
+                .wrap_err("unable to prune state journal")?;
+        }
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
         Ok(())
     }
@@ -677,7 +692,7 @@ impl Read for State {
 )]
 #[derive(Clone, Debug)]
 pub(super) struct FinalizedBlockInfo {
-    pub(super) height: u64,
+    pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) parent: Digest,
 }
@@ -688,7 +703,7 @@ struct Events {
     acks: BTreeMap<PublicKey, PlayerAck<PublicKey>>,
     dealings: BTreeMap<PublicKey, (DealerPubMsg<MinSig>, DealerPrivMsg)>,
     logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
-    finalized: BTreeMap<u64, FinalizedBlockInfo>,
+    finalized: BTreeMap<Height, FinalizedBlockInfo>,
 
     notarized_blocks: HashMap<Digest, ReducedBlock>,
     dkg_outcomes: HashMap<Digest, (Output<MinSig, PublicKey>, Option<Share>)>,
@@ -752,7 +767,7 @@ enum Event {
     Finalized {
         digest: Digest,
         parent: Digest,
-        height: u64,
+        height: Height,
     },
 }
 
@@ -773,7 +788,7 @@ impl EncodeSize for Event {
                 digest,
                 parent,
                 height,
-            } => digest.encode_size() + parent.encode_size() + UInt(*height).encode_size(),
+            } => digest.encode_size() + parent.encode_size() + height.encode_size(),
         }
     }
 }
@@ -812,7 +827,7 @@ impl Write for Event {
                 3u8.write(buf);
                 digest.write(buf);
                 parent.write(buf);
-                UInt(*height).write(buf);
+                height.write(buf);
             }
         }
     }
@@ -843,7 +858,7 @@ impl Read for Event {
             3 => Ok(Self::Finalized {
                 digest: ReadExt::read(buf)?,
                 parent: ReadExt::read(buf)?,
-                height: UInt::read(buf)?.into(),
+                height: ReadExt::read(buf)?,
             }),
             other => Err(commonware_codec::Error::InvalidEnum(other)),
         }
@@ -1083,9 +1098,9 @@ impl Player {
     pub(super) fn finalize(
         self,
         logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
-        concurrency: usize,
+        strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
-        self.player.finalize(logs, concurrency)
+        self.player.finalize(logs, strategy)
     }
 }
 
@@ -1093,7 +1108,7 @@ impl Player {
 #[derive(Clone, Debug)]
 pub(super) struct ReducedBlock {
     // The block height.
-    pub(super) height: u64,
+    pub(super) height: Height,
 
     // The block parent.
     pub(super) parent: Digest,
@@ -1116,7 +1131,7 @@ impl ReducedBlock {
             )
             .inspect(|_| {
                 info!(
-                    height = block.height(),
+                    height = %block.height(),
                     digest = %block.digest(),
                     "found dealer log in block"
                 )

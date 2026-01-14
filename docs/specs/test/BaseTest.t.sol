@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { AccountKeychain } from "../src/AccountKeychain.sol";
 import { FeeManager } from "../src/FeeManager.sol";
 import { Nonce } from "../src/Nonce.sol";
-import { StablecoinExchange } from "../src/StablecoinExchange.sol";
+import { StablecoinDEX } from "../src/StablecoinDEX.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
+import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
 import { INonce } from "../src/interfaces/INonce.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
 import { Test, console } from "forge-std/Test.sol";
 
 /// @notice Base test framework for all spec tests
-/// PathUSD is just a TIP20 at a special address (0x20C0...) with token_id=0
+/// pathUSD is just a TIP20 at a special address (0x20C0...) with token_id=0
 contract BaseTest is Test {
 
     // Registry precompiles
+    address internal constant _ACCOUNT_KEYCHAIN = 0xaAAAaaAA00000000000000000000000000000000;
     address internal constant _TIP403REGISTRY = 0x403c000000000000000000000000000000000000;
     address internal constant _TIP20FACTORY = 0x20Fc000000000000000000000000000000000000;
     address internal constant _PATH_USD = 0x20C0000000000000000000000000000000000000;
@@ -40,9 +43,10 @@ contract BaseTest is Test {
     address public pathUSDAdmin = address(0xb4c79daB8f259C7Aee6E5b2Aa729821864227e84);
 
     // Common test contracts
+    IAccountKeychain public keychain = IAccountKeychain(_ACCOUNT_KEYCHAIN);
     TIP20Factory public factory = TIP20Factory(_TIP20FACTORY);
-    TIP20 public pathUSD = TIP20(_PATH_USD); // PathUSD is just a TIP20 at token_id=0
-    StablecoinExchange public exchange = StablecoinExchange(_STABLECOIN_DEX);
+    TIP20 public pathUSD = TIP20(_PATH_USD); // pathUSD is just a TIP20 at token_id=0
+    StablecoinDEX public exchange = StablecoinDEX(_STABLECOIN_DEX);
     FeeManager public amm = FeeManager(_FEE_AMM);
     TIP403Registry public registry = TIP403Registry(_TIP403REGISTRY);
     INonce public nonce = INonce(_NONCE);
@@ -57,17 +61,19 @@ contract BaseTest is Test {
     function setUp() public virtual {
         // Is this tempo chain?
         isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length > 0;
+                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
+            > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
         // Deploy contracts if not tempo
         if (!isTempo) {
+            deployCodeTo("AccountKeychain", _ACCOUNT_KEYCHAIN);
             deployCodeTo("TIP403Registry", _TIP403REGISTRY);
-            deployCodeTo("StablecoinExchange", _STABLECOIN_DEX);
+            deployCodeTo("StablecoinDEX", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
             deployCodeTo("TIP20Factory", _TIP20FACTORY);
-            // Deploy PathUSD as a TIP20 at the special address
+            // Deploy pathUSD as a TIP20 at the special address
             deployCodeTo(
                 "TIP20.sol",
                 abi.encode("pathUSD", "pathUSD", "USD", address(0), pathUSDAdmin),
@@ -79,6 +85,9 @@ contract BaseTest is Test {
         }
 
         if (isTempo) {
+            if (_ACCOUNT_KEYCHAIN.code.length == 0) {
+                revert MissingPrecompile("AccountKeychain", _ACCOUNT_KEYCHAIN);
+            }
             if (_TIP403REGISTRY.code.length == 0) {
                 revert MissingPrecompile("TIP403Registry", _TIP403REGISTRY);
             }
@@ -86,7 +95,7 @@ contract BaseTest is Test {
                 revert MissingPrecompile("TIP20Factory", _TIP20FACTORY);
             }
             if (_PATH_USD.code.length == 0) {
-                revert MissingPrecompile("PathUSD", _PATH_USD);
+                revert MissingPrecompile("pathUSD", _PATH_USD);
             }
             if (_STABLECOIN_DEX.code.length == 0) {
                 revert MissingPrecompile("StablecoinDEX", _STABLECOIN_DEX);

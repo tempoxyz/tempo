@@ -1,7 +1,7 @@
-import { Actions, Addresses } from 'viem/tempo'
-import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, parseUnits } from 'viem'
+import { Actions, Addresses } from 'viem/tempo'
 import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 import { Button, ExplorerLink } from '../../Demo'
 import { alphaUsd, betaUsd } from '../../tokens'
@@ -50,7 +50,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
 
   const calls = [
     Actions.token.approve.call({
-      spender: Addresses.stablecoinExchange,
+      spender: Addresses.stablecoinDex,
       amount,
       token: alphaUsd,
     }),

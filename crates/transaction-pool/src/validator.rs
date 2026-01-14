@@ -573,7 +573,7 @@ mod tests {
         PoolTransaction, blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
     };
     use std::sync::Arc;
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::spec::MODERATO;
     use tempo_precompiles::tip403_registry::TIP403Registry;
     use tempo_primitives::TempoTxEnvelope;
 
@@ -667,7 +667,7 @@ mod tests {
         MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
     > {
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_account(
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
@@ -858,7 +858,7 @@ mod tests {
 
         // Setup provider with storage
         let provider =
-            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(ANDANTINO.clone()));
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
         provider.add_block(B256::random(), Block::default());
 
         // Add sender account
@@ -1001,6 +1001,156 @@ mod tests {
                 !err.to_string()
                     .contains("Insufficient gas for AA transaction"),
                 "Unexpected InsufficientGasForAAIntrinsicCost: {err}"
+            );
+        }
+    }
+
+    // ============================================
+    // Non-zero value rejection tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_non_zero_value_in_eip1559_rejected() {
+        let transaction = get_transaction(Some(U256::from(1)));
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                let error_msg = err.to_string();
+                assert!(
+                    error_msg.contains("Native transfers are not supported"),
+                    "Expected NonZeroValue error, got: {error_msg}"
+                );
+            }
+            other => panic!("Expected Invalid outcome, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zero_value_passes_value_check() {
+        let transaction = get_transaction(None);
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = &outcome {
+            let error_msg = err.to_string();
+            assert!(
+                !error_msg.contains("Native transfers are not supported"),
+                "Should not fail with NonZeroValue error, got: {error_msg}"
+            );
+        }
+    }
+
+    // ============================================
+    // Invalid fee token tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_invalid_fee_token_rejected() {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let invalid_fee_token = address!("1234567890123456789012345678901234567890");
+
+        let tx_aa = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![Call {
+                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(invalid_fee_token),
+            fee_payer_signature: None,
+            valid_after: None,
+            valid_before: None,
+            access_list: Default::default(),
+            tempo_authorization_list: vec![],
+            key_authorization: None,
+        };
+
+        let signed_tx = AASigned::new_unhashed(
+            tx_aa,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+        let envelope: TempoTxEnvelope = signed_tx.into();
+        let recovered = envelope.try_into_recovered().unwrap();
+        let transaction = TempoPooledTransaction::new(recovered);
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                let error_msg = err.to_string();
+                assert!(
+                    error_msg.contains("fee token") || error_msg.contains("InvalidFeeToken"),
+                    "Expected InvalidFeeToken error, got: {error_msg}"
+                );
+            }
+            other => panic!("Expected Invalid outcome for invalid fee token, got: {other:?}"),
+        }
+    }
+
+    // ============================================
+    // Combined valid_after and valid_before tests
+    // ============================================
+
+    #[tokio::test]
+    async fn test_aa_valid_after_and_valid_before_both_valid() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let valid_after = current_time + 60;
+        let valid_before = current_time + 3600;
+
+        let transaction = create_aa_transaction(Some(valid_after), Some(valid_before));
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        if let TransactionValidationOutcome::Invalid(_, err) = &outcome {
+            let error_msg = err.to_string();
+            assert!(
+                !error_msg.contains("valid_after") && !error_msg.contains("valid_before"),
+                "Should not fail with validity window errors, got: {error_msg}"
             );
         }
     }

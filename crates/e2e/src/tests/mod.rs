@@ -4,6 +4,7 @@ use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as
 use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
+mod consensus_rpc;
 mod dkg;
 mod linkage;
 mod restart;
@@ -38,6 +39,7 @@ fn spawning_execution_node_works() {
             trusted_peers: vec![],
             port: 0,
             validator_key: None,
+            feed_state: None,
         };
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");

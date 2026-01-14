@@ -1,6 +1,6 @@
 import * as React from 'react'
-import { tempoTestnet } from 'viem/chains'
 import { isAddress, isHash } from 'viem'
+import { tempoModerato } from 'viem/chains'
 import type * as z from 'zod/mini'
 import LucideExternalLink from '~icons/lucide/external-link'
 import { Container } from './Container'
@@ -70,7 +70,7 @@ function getExplorerHost() {
   if (VITE_ENVIRONMENT !== 'testnet' && VITE_EXPLORER_OVERRIDE !== undefined) {
     return VITE_EXPLORER_OVERRIDE
   }
-  return tempoTestnet.blockExplorers.default.url
+  return tempoModerato.blockExplorers.default.url
 }
 
 function classifyHash(value: string | number | boolean | null): {

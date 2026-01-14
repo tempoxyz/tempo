@@ -2,7 +2,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::STABLECOIN_EXCHANGE_ADDRESS;
+use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event,
 };
@@ -244,6 +244,10 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
+        if self.address == PATH_USD_ADDRESS {
+            return Err(TIP20Error::invalid_quote_token().into());
+        }
+
         // Verify the new quote token is a valid TIP20 token that has been deployed
         // use factory's `is_tip20()` which checks both prefix and counter
         if !TIP20Factory::new().is_tip20(call.newQuoteToken)? {
@@ -277,7 +281,7 @@ impl TIP20Token {
         let next_quote_token = self.next_quote_token()?;
 
         // Check that this does not create a loop
-        // Loop through quote tokens until we reach the root (PathUSD)
+        // Loop through quote tokens until we reach the root (pathUSD)
         let mut current = next_quote_token;
         while current != PATH_USD_ADDRESS {
             if current == self.address {
@@ -402,11 +406,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinExchange` to protect accounting invariants
-        if matches!(
-            call.from,
-            TIP_FEE_MANAGER_ADDRESS | STABLECOIN_EXCHANGE_ADDRESS
-        ) {
+        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
+        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -595,15 +596,10 @@ impl TIP20Token {
         Ok(Self::__new(address))
     }
 
-    /// Returns true if the token has been initialized (has bytecode deployed).
-    pub fn is_initialized(&self) -> Result<bool> {
-        self.storage
-            .with_account_info(self.address, |info| Ok(!info.is_empty_code_hash()))
-    }
-
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,
+        msg_sender: Address,
         name: &str,
         symbol: &str,
         currency: &str,
@@ -629,7 +625,7 @@ impl TIP20Token {
 
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
-        self.grant_default_admin(admin)
+        self.grant_default_admin(msg_sender, admin)
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
@@ -857,6 +853,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
@@ -940,6 +937,7 @@ pub(crate) mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
+                .clear_events()
                 .apply()?;
 
             token.mint_with_memo(admin, ITIP20::mintWithMemoCall { to, amount, memo })?;
@@ -1511,7 +1509,7 @@ pub(crate) mod tests {
                 "from_address should use the provided address directly"
             );
 
-            // Test with reserved token (PathUSD)
+            // Test with reserved token (pathUSD)
             let _path_usd = TIP20Setup::path_usd(admin).apply()?;
             let via_from_address_reserved = TIP20Token::from_address(PATH_USD_ADDRESS)?.address;
 
@@ -1684,8 +1682,8 @@ pub(crate) mod tests {
                 .with_role(burner, *BURN_BLOCKED_ROLE)
                 // Simulate collected fees
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                // Mint tokens to StablecoinExchange
-                .with_mint(STABLECOIN_EXCHANGE_ADDRESS, amount)
+                // Mint tokens to StablecoinDEX
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
                 .apply()?;
 
             // Attempt to burn from FeeManager
@@ -1708,11 +1706,11 @@ pub(crate) mod tests {
             })?;
             assert_eq!(balance, amount);
 
-            // Attempt to burn from StablecoinExchange
+            // Attempt to burn from StablecoinDEX
             let result = token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: STABLECOIN_EXCHANGE_ADDRESS,
+                    from: STABLECOIN_DEX_ADDRESS,
                     amount: amount / U256::from(2),
                 },
             );
@@ -1722,9 +1720,9 @@ pub(crate) mod tests {
                 Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
             ));
 
-            // Verify StablecoinExchange balance is unchanged
+            // Verify StablecoinDEX balance is unchanged
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_EXCHANGE_ADDRESS,
+                account: STABLECOIN_DEX_ADDRESS,
             })?;
             assert_eq!(balance, amount);
 
@@ -1751,23 +1749,6 @@ pub(crate) mod tests {
                 .quote_token(eur_token.address)
                 .expect_tip20_err(TIP20Error::invalid_quote_token());
 
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_deploy_path_usd_directly() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
-        let admin = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            // PathUSD is at a reserved address, so we initialize it directly (not via factory)
-            let mut path_usd = TIP20Token::from_address(PATH_USD_ADDRESS)?;
-            path_usd.initialize("PathUSD", "PUSD", "USD", PATH_USD_ADDRESS, admin)?;
-
-            assert_eq!(path_usd.currency()?, "USD");
-            // PathUSD uses itself as quote token
-            assert_eq!(path_usd.quote_token()?, PATH_USD_ADDRESS);
             Ok(())
         })
     }
@@ -1908,6 +1889,76 @@ pub(crate) mod tests {
                 assert!(result.is_ok());
                 assert_eq!(token.transfer_policy_id()?, policy_id);
             }
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_next_quote_token_rejects_path_usd() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut path_usd = TIP20Setup::path_usd(admin).apply()?;
+            let other_token = TIP20Setup::create("Test", "T", admin).apply()?;
+
+            // pathUSD cannot update its quote token
+            let result = path_usd.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: other_token.address,
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_non_path_usd_cycle_detection() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            TIP20Setup::path_usd(admin).apply()?;
+
+            let mut token_b = TIP20Setup::create("TokenB", "TKNB", admin).apply()?;
+            let token_a = TIP20Setup::create("TokenA", "TKNA", admin)
+                .quote_token(token_b.address)
+                .apply()?;
+
+            // Verify chain where token_a -> token_b -> PATH_USD
+            assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
+
+            // Try to create cycle where token_b -> token_a
+            token_b.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: token_a.address,
+                },
+            )?;
+
+            let result =
+                token_b.complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {});
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            // assert that quote tokens are unchanged
+            assert_eq!(token_a.quote_token()?, token_b.address);
+            assert_eq!(token_b.quote_token()?, PATH_USD_ADDRESS);
 
             Ok(())
         })

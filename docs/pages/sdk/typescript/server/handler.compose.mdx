@@ -7,7 +7,7 @@ Composes multiple handlers into a single handler. This is useful when you want t
 ```ts twoslash [server.ts]
 // @noErrors
 import { Handler, Kv } from 'tempo.ts/server'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -15,7 +15,7 @@ const handler = Handler.compose([
   // Create a fee payer handler
   Handler.feePayer({
     account: privateKeyToAccount('0x...'),
-    chain: tempoTestnet.extend({ 
+    chain: tempoModerato.extend({ 
       feeToken: '0x20c0...0001' 
     }),
     transport: http(),

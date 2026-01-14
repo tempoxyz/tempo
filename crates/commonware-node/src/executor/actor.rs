@@ -6,9 +6,8 @@
 
 use std::{pin::pin, sync::Arc, time::Duration};
 
-use alloy_primitives::B256;
 use alloy_rpc_types_engine::ForkchoiceState;
-use commonware_consensus::{Block as _, marshal::Update};
+use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
 use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
@@ -43,12 +42,12 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LastCanonicalized {
     forkchoice: ForkchoiceState,
-    head_height: u64,
-    finalized_height: u64,
+    head_height: Height,
+    finalized_height: Height,
 }
 
 impl LastCanonicalized {
-    /// Updates the finalized height and finalized block hash to `height` and `hash`.
+    /// Updates the finalized height and finalized block hash to `height` and `digest`.
     ///
     /// `height` must be ahead of the latest canonicalized finalized height. If
     /// it is not, then this is a no-op.
@@ -58,21 +57,21 @@ impl LastCanonicalized {
     ///
     /// This is to ensure that the finalized block hash is never ahead of the
     /// head hash.
-    fn update_finalized(self, height: u64, hash: B256) -> Self {
+    fn update_finalized(self, height: Height, digest: Digest) -> Self {
         let mut this = self;
         if height > this.finalized_height {
             this.finalized_height = height;
-            this.forkchoice.safe_block_hash = hash;
-            this.forkchoice.finalized_block_hash = hash;
+            this.forkchoice.safe_block_hash = digest.0;
+            this.forkchoice.finalized_block_hash = digest.0;
         }
         if height >= this.head_height {
             this.head_height = height;
-            this.forkchoice.head_block_hash = hash;
+            this.forkchoice.head_block_hash = digest.0;
         }
         this
     }
 
-    /// Updates the head height and head block hash to `height` and `hash`.
+    /// Updates the head height and head block hash to `height` and `digest`.
     ///
     /// If `height > self.finalized_height`, this method will return a new
     /// canonical state with `self.head_height = height` and
@@ -80,11 +79,11 @@ impl LastCanonicalized {
     ///
     /// If `height <= self.finalized_height`, then this method will return
     /// `self` unchanged.
-    fn update_head(self, height: u64, hash: B256) -> Self {
+    fn update_head(self, height: Height, digest: Digest) -> Self {
         let mut this = self;
         if height > this.finalized_height {
             this.head_height = height;
-            this.forkchoice.head_block_hash = hash;
+            this.forkchoice.head_block_hash = digest.0;
         }
         this
     }
@@ -97,8 +96,8 @@ pub(crate) struct Actor<TContext> {
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: TempoFullNode,
 
-    last_consensus_finalized_height: u64,
-    last_execution_finalized_height: u64,
+    last_consensus_finalized_height: Height,
+    last_execution_finalized_height: Height,
 
     /// The channel over which the agent will receive new commands from the
     /// application actor.
@@ -140,7 +139,7 @@ where
             context: ContextCell::new(context),
             execution_node,
             last_consensus_finalized_height: last_finalized_height,
-            last_execution_finalized_height,
+            last_execution_finalized_height: Height::new(last_execution_finalized_height),
             mailbox,
             marshal,
             last_canonicalized: LastCanonicalized {
@@ -149,8 +148,8 @@ where
                     safe_block_hash: last_finalized_block_hash,
                     finalized_block_hash: last_finalized_block_hash,
                 },
-                head_height: 0,
-                finalized_height: 0,
+                head_height: Height::zero(),
+                finalized_height: Height::zero(),
             },
         })
     }
@@ -163,8 +162,8 @@ where
         let mut backfill_on_start = {
             if self.last_consensus_finalized_height > self.last_execution_finalized_height {
                 info!(
-                    last_finalized_consensus_height = self.last_consensus_finalized_height,
-                    last_finalized_execution_height = self.last_execution_finalized_height,
+                    last_finalized_consensus_height = %self.last_consensus_finalized_height,
+                    last_finalized_execution_height = %self.last_execution_finalized_height,
                     "the last finalized height according to the consensus layer \
                     is ahead of the execution layer, will backfill blocks",
                 );
@@ -173,11 +172,12 @@ where
             let marshal = self.marshal.clone();
             pin!(
                 futures::stream::iter(
-                    self.last_execution_finalized_height + 1..=self.last_consensus_finalized_height,
+                    self.last_execution_finalized_height.get() + 1
+                        ..=self.last_consensus_finalized_height.get(),
                 )
                 .then(move |height| {
                     let mut marshal = marshal.clone();
-                    async move { (height, marshal.get_block(height).await) }
+                    async move { (height, marshal.get_block(Height::new(height)).await) }
                 })
                 .fuse()
             )
@@ -261,7 +261,7 @@ where
         skip_all,
         parent = &cause,
         fields(
-            head.height = height,
+            head.height = %height,
             head.digest = %digest,
             %head_or_finalized,
         ),
@@ -271,15 +271,13 @@ where
         &mut self,
         cause: Span,
         head_or_finalized: HeadOrFinalized,
-        height: u64,
+        height: Height,
         digest: Digest,
         ack: oneshot::Sender<()>,
     ) -> eyre::Result<()> {
         let new_canonicalized = match head_or_finalized {
-            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest.0),
-            HeadOrFinalized::Finalized => {
-                self.last_canonicalized.update_finalized(height, digest.0)
-            }
+            HeadOrFinalized::Head => self.last_canonicalized.update_head(height, digest),
+            HeadOrFinalized::Finalized => self.last_canonicalized.update_finalized(height, digest),
         };
 
         if new_canonicalized == self.last_canonicalized {
@@ -290,9 +288,9 @@ where
 
         info!(
             head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
-            head_block_height = new_canonicalized.head_height,
+            head_block_height = %new_canonicalized.head_height,
             finalized_block_hash = %new_canonicalized.forkchoice.finalized_block_hash,
-            finalized_block_height = new_canonicalized.finalized_height,
+            finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
         let fcu_response = self
@@ -372,7 +370,7 @@ where
         parent = &cause,
         fields(
             block.digest = %block.digest(),
-            block.height = block.height(),
+            block.height = %block.height(),
         ),
         err(level = Level::WARN),
         ret,

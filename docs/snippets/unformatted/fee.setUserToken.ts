@@ -12,7 +12,7 @@ console.log('Transaction hash:', receipt.transactionHash)
 
 // [!region wagmi-hooks]
 // @errors: 2307
-import { Hooks } from 'tempo.ts/wagmi'
+import { Hooks } from 'wagmi/tempo'
 
 const { data: result, mutate } = Hooks.fee.useSetUserTokenSync()
 

@@ -4,10 +4,10 @@ use alloy_consensus::BlockHeader as _;
 use bytes::{Buf, BufMut, Bytes};
 use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
-    Block as _,
+    Heightable as _,
     marshal::{self, Update},
     simplex::scheme::bls12381_threshold::Scheme,
-    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher},
+    types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -23,6 +23,7 @@ use commonware_p2p::{
     Address, Receiver, Recipients, Sender,
     utils::mux::{self, MuxHandle},
 };
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, NZU32, ordered};
 
@@ -35,7 +36,7 @@ use rand_core::CryptoRngCore;
 use reth_provider::{BlockNumReader, HeaderProvider};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
-use tracing::{Span, debug, error, info, info_span, instrument, warn, warn_span};
+use tracing::{Level, Span, debug, error, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::{Digest, block::Block},
@@ -197,35 +198,8 @@ where
         mux.start();
 
         let reason = loop {
-            match self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
-                Ok(new_state) => {
-                    let (new_state, prune_previous) = match new_state {
-                        NewState::FromSkip(new_state) => {
-                            let prune_previous = new_state.epoch.previous();
-                            (new_state, prune_previous)
-                        }
-                        NewState::Normal(new_state) => (new_state, None),
-                    };
-                    if let Err(error) = storage
-                        .append_state(new_state)
-                        .await
-                        .wrap_err("failed appending state to journal")
-                    {
-                        break error;
-                    }
-                    // If the new state was obtained by skipping a round, all
-                    // previous epochs historical and will not observe any
-                    // activity. Usually an old epoch is exited on observing the
-                    // first finalized height of the new epoch. This is done to
-                    // help straggling nodes observe finalizations of the
-                    // boundary height. But since the network has already
-                    // advanced past the new epoch, there is no need for that.
-                    if let Some(prune_previous) = prune_previous {
-                        let _ = self.config.epoch_manager.exit(prune_previous);
-                        let _ = storage.prune(prune_previous.next()).await;
-                    }
-                }
-                Err(error) => break error,
+            if let Err(error) = self.run_dkg_loop(&mut storage, &mut dkg_mux).await {
+                break error;
             }
         };
 
@@ -241,26 +215,13 @@ where
         &mut self,
         storage: &mut state::Storage<TStorageContext>,
         mux: &mut MuxHandle<TSender, TReceiver>,
-    ) -> eyre::Result<NewState>
+    ) -> eyre::Result<()>
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
         let state = storage.current();
-
-        if storage
-            .get_latest_finalized_block_for_epoch(&state.epoch)
-            .is_none()
-            && let Some(previous) = storage.previous().await
-        {
-            // On restarts:
-            // If there is no finalized block for this epoch, then we must not
-            // have observed the first one. Therefore we need to start a
-            // consensus engine to ensure we register peers, schemes, etc.
-            self.enter_epoch(&previous)
-                .wrap_err("could not instruct epoch manager to enter the previous epoch")?;
-        }
 
         self.metrics.reset();
 
@@ -320,15 +281,14 @@ where
 
         let mut ancestry_stream = AncestorStream::new();
 
-        info_span!("run_dkg_loop").in_scope(|| {
+        info_span!("run_dkg_loop", epoch = %state.epoch).in_scope(|| {
             info!(
                 me = %self.config.me.public_key(),
-                epoch = %round.epoch(),
                 dealers = ?state.dealers,
                 players = ?state.players,
                 syncers = ?state.syncers,
                 as_dealer = dealer_state.is_some(),
-                as_player= player_state.is_some(),
+                as_player = player_state.is_some(),
                 "entering a new DKG ceremony",
             )
         });
@@ -381,38 +341,54 @@ where
                                         }
                                     }
                                 }
-                                Update::Block(block, ack) if skip_to_boundary => {
-                                    let maybe_new_state = match self.handle_finalized_boundary(
-                                        msg.cause,
-                                        &round,
-                                        block,
-                                    ).await {
-                                        Ok(maybe_state) => maybe_state,
-                                        Err(err) => break Err(err).wrap_err("failed handling finalized block"),
-                                    };
-                                    ack.acknowledge();
-                                    if let Some(new_state) = maybe_new_state {
-                                        break Ok(new_state);
-                                    }
-                                }
-
                                 Update::Block(block, ack) => {
-                                    let maybe_new_state = match self.handle_finalized_block(
-                                        msg.cause,
-                                        &state,
-                                        &round,
-                                        &mut round_sender,
-                                        storage,
-                                        &mut dealer_state,
-                                        &mut player_state,
-                                        block,
-                                    ).await {
-                                        Ok(maybe_state) => maybe_state,
+                                    let res = if skip_to_boundary {
+                                        self.handle_finalized_boundary(
+                                            msg.cause,
+                                            &round,
+                                            block,
+                                        ).await
+                                    } else {
+                                        self.handle_finalized_block(
+                                            msg.cause,
+                                            &state,
+                                            &round,
+                                            &mut round_sender,
+                                            storage,
+                                            &mut dealer_state,
+                                            &mut player_state,
+                                            block,
+                                        ).await
+                                    };
+                                    let should_break = match res {
+                                        Ok(Some(new_state)) => {
+                                            info_span!(
+                                                "run_dkg_loop",
+                                                epoch = %state.epoch
+                                            ).in_scope(|| info!(
+                                                "constructed a new epoch state; \
+                                                persisting new state and exiting \
+                                                current epoch",
+                                            ));
+
+                                            if let Err(err) = storage
+                                                .append_state(new_state)
+                                                .await
+                                                .wrap_err("failed appending new state to journal")
+                                            {
+                                                break Err(err);
+                                            }
+                                            // Emits an error event.
+                                            let _ = self.exit_epoch(&state);
+
+                                            true
+                                        }
+                                        Ok(None) => false,
                                         Err(err) => break Err(err).wrap_err("failed handling finalized block"),
                                     };
                                     ack.acknowledge();
-                                    if let Some(new_state) = maybe_new_state {
-                                        break Ok(new_state);
+                                    if should_break {
+                                        break Ok(());
                                     }
                                 }
                             }
@@ -499,7 +475,6 @@ where
                         }
                     }
                 }
-
             )
         }
     }
@@ -552,11 +527,11 @@ where
         skip_all,
         fields(
             round.epoch = %round.epoch(),
-            finalized.tip = finalized_tip,
+            finalized.tip = %finalized_tip,
             finalized.epoch = tracing::field::Empty,
         ),
     )]
-    async fn should_skip_round(&mut self, round: &state::Round, finalized_tip: u64) -> bool {
+    async fn should_skip_round(&mut self, round: &state::Round, finalized_tip: Height) -> bool {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -577,7 +552,7 @@ where
                 .last(round.epoch())
                 .expect("epoch strategy is valid for all epochs");
             info!(
-                boundary_height,
+                %boundary_height,
                 "confirmed that the network is at least 2 epochs aheads of us; \
                 setting synchronization floor to boundary height of our DKG's \
                 epoch and reporting that the rest of the DKG round should be \
@@ -586,7 +561,9 @@ where
 
             // NOTE: `set_floor(height)` implies that the next block sent by
             // marshal will be height + 1.
-            self.config.marshal.set_floor(boundary_height - 1).await;
+            if let Some(one_before_boundary) = boundary_height.previous() {
+                self.config.marshal.set_floor(one_before_boundary).await;
+            }
         }
         should_skip_round
     }
@@ -619,7 +596,7 @@ where
         skip_all,
         fields(
             dkg.epoch = %round.epoch(),
-            block.height = block.height(),
+            block.height = %block.height(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -639,7 +616,7 @@ where
         dealer_state: &mut Option<state::Dealer>,
         player_state: &mut Option<state::Player>,
         block: Block,
-    ) -> eyre::Result<Option<NewState>>
+    ) -> eyre::Result<Option<State>>
     where
         TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
         TSender: Sender<PublicKey = PublicKey>,
@@ -655,15 +632,6 @@ where
             "block was not for this epoch; must observe all blocks epoch by \
             epoch; cannot deal with observing blocks out-of-order"
         );
-
-        if block.height() == epoch_info.first()
-            && let Some(previous) = round.epoch().previous()
-        {
-            self.config
-                .epoch_manager
-                .exit(previous)
-                .wrap_err("failed to instruct epoch manager to exit the previous epoch")?;
-        }
 
         match epoch_info.phase() {
             EpochPhase::Early => {
@@ -759,7 +727,7 @@ where
                 // that they are not revealed), that it must have the shares
                 // available. Upon restart, the shares must be replayed against
                 // the player state.
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, new_share)) => {
                         info!("local DKG ceremony was a success");
                         (new_output, Some(new_share))
@@ -773,7 +741,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, None)
@@ -814,7 +782,7 @@ where
             self.metrics.successes.inc();
         }
 
-        Ok(Some(NewState::Normal(state::State {
+        Ok(Some(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -828,7 +796,7 @@ where
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
-        })))
+        }))
     }
 
     /// Looks for and handles a finalized boundary block.
@@ -841,7 +809,7 @@ where
         skip_all,
         fields(
             dkg.epoch = %round.epoch(),
-            block.height = block.height(),
+            block.height = %block.height(),
             block.extra_data.bytes = block.header().extra_data().len(),
         ),
         err,
@@ -851,7 +819,7 @@ where
         cause: Span,
         round: &state::Round,
         block: Block,
-    ) -> eyre::Result<Option<NewState>> {
+    ) -> eyre::Result<Option<State>> {
         let epoch_info = self
             .config
             .epoch_strategy
@@ -886,7 +854,7 @@ where
         )
         .await;
 
-        Ok(Some(NewState::FromSkip(state::State {
+        Ok(Some(state::State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -900,7 +868,7 @@ where
                     .map(|(k, v)| (k.clone(), v.inbound)),
             ),
             is_full_dkg: onchain_outcome.is_next_full_dkg,
-        })))
+        }))
     }
 
     #[instrument(skip_all, fields(me = %self.config.me.public_key(), %epoch))]
@@ -938,7 +906,7 @@ where
                 }
             } else {
                 // Send to remote player
-                let payload = Message::Dealer(pub_msg, priv_msg).encode().freeze();
+                let payload = Message::Dealer(pub_msg, priv_msg).encode();
                 match round_channel
                     .send(Recipients::One(player.clone()), payload, true)
                     .await
@@ -1003,7 +971,7 @@ where
                     if let Err(error) = round_channel
                         .send(
                             Recipients::One(from.clone()),
-                            Message::Ack(ack).encode().freeze(),
+                            Message::Ack(ack).encode(),
                             true,
                         )
                         .await
@@ -1135,7 +1103,7 @@ where
             );
 
             let (output, share) = if let Some(player_state) = player_state {
-                match player_state.finalize(logs, 1) {
+                match player_state.finalize(logs, &Sequential) {
                     Ok((new_output, share)) => {
                         info!("DKG ceremony was a success");
                         (new_output, Some(share))
@@ -1149,7 +1117,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, 1) {
+                match observe(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("DKG ceremony was a success");
                         (output, None)
@@ -1195,6 +1163,7 @@ where
         None
     }
 
+    #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
     fn enter_epoch(&mut self, state: &state::State) -> eyre::Result<()> {
         self.config
             .epoch_manager
@@ -1206,11 +1175,14 @@ where
             )
             .wrap_err("could not instruct epoch manager to enter epoch")
     }
-}
 
-enum NewState {
-    FromSkip(state::State),
-    Normal(state::State),
+    #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
+    fn exit_epoch(&mut self, state: &state::State) -> eyre::Result<()> {
+        self.config
+            .epoch_manager
+            .exit(state.epoch)
+            .wrap_err("could not instruct epoch manager to enter epoch")
+    }
 }
 
 #[instrument(skip_all, err)]
@@ -1227,6 +1199,7 @@ where
     let newest_height = node
         .provider
         .best_block_number()
+        .map(Height::new)
         .wrap_err("failed reading newest block number from database")?;
 
     let epoch_info = epoch_strategy
@@ -1236,22 +1209,25 @@ where
     let last_boundary = if epoch_info.last() == newest_height {
         newest_height
     } else {
-        epoch_info.epoch().previous().map_or(0, |previous| {
-            epoch_strategy
-                .last(previous)
-                .expect("epoch strategy is for all epochs")
-        })
+        epoch_info
+            .epoch()
+            .previous()
+            .map_or_else(Height::zero, |previous| {
+                epoch_strategy
+                    .last(previous)
+                    .expect("epoch strategy is for all epochs")
+            })
     };
     info!(
-        newest_height,
-        last_boundary,
+        %newest_height,
+        %last_boundary,
         "execution layer reported newest available block, reading on-chain \
         DKG outcome from last boundary height, and validator state from newest \
         block"
     );
     let header = node
         .provider
-        .header_by_number(last_boundary)
+        .header_by_number(last_boundary.get())
         .map_or_else(
             |e| Err(eyre::Report::new(e)),
             |header| header.ok_or_eyre("execution layer reported it had no header"),
@@ -1270,7 +1246,7 @@ where
         tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(&mut header.extra_data().as_ref())
             .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
 
-    let all_validators = validators::read_from_contract_at_block(0, node, newest_height)
+    let all_validators = validators::read_from_contract_at_height(0, node, newest_height)
         .await
         .wrap_err_with(|| {
             format!("failed reading validator config from block height `{newest_height}`")
@@ -1297,7 +1273,7 @@ where
         Some(share)
     };
 
-    info!(newest_height, "setting sync floor");
+    info!(%newest_height, "setting sync floor");
     marshal.set_floor(newest_height).await;
 
     Ok(State {
@@ -1504,7 +1480,7 @@ async fn read_validator_config_with_retry<C: commonware_runtime::Clock>(
     loop {
         metric.inc();
         attempts += 1;
-        if let Ok(validators) = validators::read_from_contract_at_block(attempts, node, last).await
+        if let Ok(validators) = validators::read_from_contract_at_height(attempts, node, last).await
         {
             break validators;
         }

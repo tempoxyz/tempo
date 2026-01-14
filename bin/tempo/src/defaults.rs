@@ -2,13 +2,14 @@ use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
 use std::{borrow::Cow, time::Duration};
 
-pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/42429";
+pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/42431";
 
 fn init_download_urls() {
     let download_defaults = DownloadDefaults {
-        available_snapshots: vec![Cow::Borrowed(
-            "https://snapshots.tempoxyz.dev/42429 (andantino-1)",
-        )],
+        available_snapshots: vec![
+            Cow::Borrowed("https://snapshots.tempoxyz.dev/42431 (moderato)"),
+            Cow::Borrowed("https://snapshots.tempoxyz.dev/42429 (andantino)"),
+        ],
         default_base_url: Cow::Borrowed(DEFAULT_DOWNLOAD_URL),
         long_help: None,
     };

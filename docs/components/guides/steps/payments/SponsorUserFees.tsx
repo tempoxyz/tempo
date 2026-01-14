@@ -1,7 +1,7 @@
 import * as React from 'react'
-import { Hooks } from 'tempo.ts/wagmi'
 import { formatUnits, isAddress, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
+import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
 import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
@@ -102,7 +102,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
                 </div>
               </div>
               <div className="text-gray9 text-[12px] mt-2 pt-2 border-t border-gray4">
-                The testnet fee payer at https://sponsor.testnet.tempo.xyz will
+                The testnet fee payer at https://sponsor.moderato.tempo.xyz will
                 pay the transaction fees.
               </div>
             </div>

@@ -2,10 +2,11 @@
 // biome-ignore-all lint: snippet
 // biome-ignore-all format: snippet
 
-// [!region setup]
-import { tempoTestnet } from 'viem/chains'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+// [!region setup]
+import { tempoModerato } from 'viem/chains'
 import { createConfig, http } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   connectors: [
@@ -13,20 +14,21 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(),
     }),
   ],
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoTestnet.id]: http(),
+    [tempoModerato.id]: http(),
   },
 })
 
 // [!endregion setup]
 
-// [!region withFeePayer]
-import { tempoTestnet } from 'viem/chains'
-import { withFeePayer } from 'viem/tempo'
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
+// [!region withFeePayer]
+import { tempoModerato } from 'viem/chains'
+import { withFeePayer } from 'viem/tempo'
 import { createConfig, http } from 'wagmi'
+import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
   connectors: [
@@ -34,10 +36,13 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(),
     }),
   ],
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoTestnet.id]: withFeePayer(http(), http('https://sponsor.testnet.tempo.xyz')),
+    [tempoModerato.id]: withFeePayer(
+      http(),
+      http('https://sponsor.moderato.tempo.xyz'),
+    ),
   },
 })
 // [!endregion withFeePayer]

@@ -53,6 +53,8 @@ jobs:
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: taiki-e/install-action@nextest
+      - name: Build and compile tests
+        run: cargo nextest run --no-run -j num-cpus
       - name: Run tests
         run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
 
@@ -64,7 +66,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.88" # MSRV
+          toolchain: "1.91" # MSRV
       - uses: rui314/setup-mold@v1
       - uses: mozilla-actions/sccache-action@v0.0.9
       - name: Build with MSRV
@@ -72,56 +74,54 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
-  # TODO: Re-enable snapshot re-execution when needed
-  # snapshot-re-execute:
-  #   name: Snapshot re-execution
-  #   runs-on: depot-ubuntu-latest-16
-  #   timeout-minutes: 60
-  #   steps:
-  #     - uses: actions/checkout@v5
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: rui314/setup-mold@v1
-  #     - uses: mozilla-actions/sccache-action@v0.0.9
-  #     - name: Get latest filename from API
-  #       id: latest
-  #       run: |
-  #         # FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42429/latest.txt)
-  #         FILENAME=tempo-42429-4554136-1765286766.tar.lz4
-  #         echo "Latest filename: $FILENAME"
-  #         echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
-  #
-  #     - name: Restore cached file
-  #       id: cache-file
-  #       uses: actions/cache@v4
-  #       with:
-  #         path: .cache/snapshots
-  #         key: snapshots-${{ steps.latest.outputs.filename }}
-  #
-  #     - name: Download file if cache miss
-  #       if: steps.cache-file.outputs.cache-hit != 'true'
-  #       run: |
-  #         mkdir -p .cache/snapshots
-  #
-  #         FILE_NAME='${{ steps.latest.outputs.filename }}'
-  #         curl -L "https://snapshots.tempoxyz.dev/42429/$FILE_NAME" \
-  #           -o ".cache/snapshots/$FILE_NAME"
-  #
-  #         ls -l .cache/snapshots
-  #
-  #     - name: Use the file
-  #       run: |
-  #         FILE_NAME='${{ steps.latest.outputs.filename }}'
-  #         FILE_PATH=".cache/snapshots/$FILE_NAME"
-  #
-  #         if [ ! -f "$FILE_PATH" ]; then
-  #           echo "File not found: $FILE_PATH"
-  #           exit 1
-  #         fi
-  #
-  #         mkdir snap-rexec
-  #         lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
-  #     - name: Re-execute snapshot
-  #       run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc) --to 4500000
+  snapshot-re-execute:
+    name: Snapshot re-execution
+    runs-on: depot-ubuntu-latest-16
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@v1
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Get latest filename from API
+        id: latest
+        run: |
+          FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42431/latest.txt)
+          echo "Latest filename: $FILENAME"
+          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached file
+        id: cache-file
+        uses: actions/cache@v4
+        with:
+          path: .cache/snapshots
+          key: snapshots-${{ steps.latest.outputs.filename }}
+
+      - name: Download file if cache miss
+        if: steps.cache-file.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .cache/snapshots
+
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          curl -L "https://snapshots.tempoxyz.dev/42431/$FILE_NAME" \
+            -o ".cache/snapshots/$FILE_NAME"
+
+          ls -l .cache/snapshots
+
+      - name: Use the file
+        run: |
+          FILE_NAME='${{ steps.latest.outputs.filename }}'
+          FILE_PATH=".cache/snapshots/$FILE_NAME"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "File not found: $FILE_PATH"
+            exit 1
+          fi
+
+          mkdir snap-rexec
+          lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
+      - name: Re-execute snapshot
+        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc) --to 4500000
 
   test-success:
     name: test success

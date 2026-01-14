@@ -15,7 +15,7 @@ use tempo_alloy::{
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -23,7 +23,7 @@ use alloy::{
     },
     rpc::client::NoParams,
     signers::local::{
-        PrivateKeySigner,
+        Secp256k1Signer,
         coins_bip39::{English, Mnemonic, MnemonicError},
     },
     transports::http::reqwest::Url,
@@ -56,13 +56,13 @@ use std::{
 use tempo_contracts::precompiles::{
     IFeeManager::IFeeManagerInstance,
     IRolesAuth,
-    IStablecoinExchange::IStablecoinExchangeInstance,
+    IStablecoinDEX::IStablecoinDEXInstance,
     ITIP20::{self, ITIP20Instance},
-    ITIP20Factory, STABLECOIN_EXCHANGE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    ITIP20Factory, STABLECOIN_DEX_ADDRESS, TIP20_FACTORY_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    stablecoin_exchange::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
+    stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
     tip_fee_manager::DEFAULT_FEE_TOKEN,
     tip20::ISSUER_ROLE,
 };
@@ -186,7 +186,7 @@ impl MaxTpsArgs {
                 .fetch_chain_id()
                 .with_gas_estimation()
                 .with_nonce_management(cached_nonce_manager)
-                .wallet(signer)
+                .wallet(EthereumWallet::from(signer))
                 .connect_http(target_url)
                 .erased()
         });
@@ -577,10 +577,8 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 }
                 1 => {
                     swaps.fetch_add(1, Ordering::Relaxed);
-                    let exchange = IStablecoinExchangeInstance::new(
-                        STABLECOIN_EXCHANGE_ADDRESS,
-                        provider.clone(),
-                    );
+                    let exchange =
+                        IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Swap minimum possible amount
                     exchange
@@ -589,10 +587,8 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                 }
                 2 => {
                     orders.fetch_add(1, Ordering::Relaxed);
-                    let exchange = IStablecoinExchangeInstance::new(
-                        STABLECOIN_EXCHANGE_ADDRESS,
-                        provider.clone(),
-                    );
+                    let exchange =
+                        IStablecoinDEXInstance::new(STABLECOIN_DEX_ADDRESS, provider.clone());
 
                     // Place an order at a random tick that's a multiple of `TICK_SPACING`
                     let tick =

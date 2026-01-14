@@ -40,7 +40,7 @@ Pairs are identified deterministically from the two token addresses (the base to
 
 #### Quote tokens
 
-Each TIP‑20 token specifies a single quote token in its metadata via `quoteToken()`. A trading pair on the stablecoin exchange exists only between a base token and its designated quote token, and prices for the pair are denominated in units of the quote token.
+Each TIP‑20 token specifies a single quote token in its metadata via `quoteToken()`. A trading pair on the Stablecoin DEX exists only between a base token and its designated quote token, and prices for the pair are denominated in units of the quote token.
 
 This design reduces liquidity fragmentation by giving every token exactly one paired asset.
 
@@ -227,8 +227,7 @@ Executes an exact‑out swap. Deducts the actual input from the caller’s inter
 
 ```solidity
 event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
-event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick);
-event FlipOrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, int16 flipTick);
+event OrderPlaced(uint128 indexed orderId, address indexed maker, address indexed token, uint128 amount, bool isBid, int16 tick, bool isFlipOrder, int16 flipTick);
 event OrderCancelled(uint128 indexed orderId);
 event OrderFilled(uint128 indexed orderId, address indexed maker, address indexed taker, uint128 amountFilled, bool partialFill);
 ```

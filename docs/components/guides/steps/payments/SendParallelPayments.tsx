@@ -1,6 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
 import * as React from 'react'
-import { Actions, Hooks } from 'tempo.ts/wagmi'
 import { parseUnits } from 'viem'
 import {
   useConfig,
@@ -8,6 +7,7 @@ import {
   useConnectionEffect,
   useTransaction,
 } from 'wagmi'
+import { Actions, Hooks } from 'wagmi/tempo'
 import {
   Button,
   ExplorerLink,
