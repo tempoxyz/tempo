@@ -1508,4 +1508,47 @@ mod tests {
             "key_id should return access key address"
         );
     }
+
+    #[test]
+    fn test_webauthn_rejects_challenge_injection() {
+        let (tx_hash, attack_hash) = (B256::from([0xAA; 32]), B256::from([0xFF; 32]));
+        let (challenge, attack_challenge) = (
+            URL_SAFE_NO_PAD.encode(tx_hash.as_slice()),
+            URL_SAFE_NO_PAD.encode(attack_hash.as_slice()),
+        );
+
+        // Ensure that the happy path works
+        let valid_payload = format!(r#"{{"type":"webauthn.get","challenge":"{challenge}"}}"#);
+
+        let mut auth_data = vec![0u8; 37];
+        auth_data[32] = 0x01;
+        let mut webauthn_data = auth_data;
+        webauthn_data.extend_from_slice(valid_payload.as_bytes());
+
+        let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
+        assert!(result.is_ok());
+
+        // Ensure that malicious payloads cannot pass validation
+        let attack_variants = [
+            format!(
+                r#"{{"type":"webauthn.get","challenge":"{attack_challenge}","extra":{{"challenge":"{challenge}"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"webauthn.get","data":[{{"challenge":"{challenge}"}}],"challenge":"{attack_challenge}"}}"#
+            ),
+        ];
+
+        for (i, attack_json) in attack_variants.iter().enumerate() {
+            let mut auth_data = vec![0u8; 37];
+            auth_data[32] = 0x01;
+            let mut webauthn_data = auth_data;
+            webauthn_data.extend_from_slice(attack_json.as_bytes());
+
+            let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
+            assert!(
+                result.is_err(),
+                "Attack variant {i} should be rejected: {attack_json}"
+            );
+        }
+    }
 }
