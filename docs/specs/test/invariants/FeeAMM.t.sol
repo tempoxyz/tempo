@@ -825,11 +825,11 @@ contract FeeAMMInvariantTest is BaseTest {
             // Skip if adding feeAmount would overflow uint128
             vm.assume(uint256(pool.reserveUserToken) + feeAmount <= type(uint128).max);
 
-            // Transfer userToken to AMM first (may fail due to blacklist)
+            // Transfer userToken to AMM first
             _ensureFunds(user, TIP20(userToken), feeAmount);
             vm.prank(user);
             try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
-                if (!success) return;
+                assertTrue(success);
 
                 // Simulate fee swap: update pool reserves
                 bytes32 poolId = amm.getPoolId(userToken, validatorToken);
@@ -865,7 +865,7 @@ contract FeeAMMInvariantTest is BaseTest {
             _ensureFunds(user, TIP20(userToken), feeAmount);
             vm.prank(user);
             try TIP20(userToken).transfer(address(amm), feeAmount) returns (bool success) {
-                if (!success) return;
+                assertTrue(success);
 
                 _storeCollectedFees(validator, validatorToken, feeAmount);
                 _hasPendingFees[validator][validatorToken] = true;
