@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
-use clap::{Parser, Subcommand, error::ErrorKind};
+use clap::{CommandFactory as _, Parser, Subcommand, error::ErrorKind};
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use eyre::Context;
@@ -79,7 +79,24 @@ impl CalculatePublicKey {
     }
 }
 
+fn should_parse_tempo_subcommand(args: &[String]) -> bool {
+    let first_positional = args.iter().skip(1).find(|arg| !arg.starts_with('-'));
+    let subcommands = TempoCli::command()
+        .get_subcommands()
+        .map(|cmd| cmd.get_name().to_string())
+        .collect::<std::collections::HashSet<_>>();
+    match first_positional {
+        Some(first_positional) => subcommands.contains(first_positional.as_str()),
+        None => false,
+    }
+}
+
 pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
+    let args: Vec<String> = env::args().collect();
+    if !should_parse_tempo_subcommand(&args) {
+        return None;
+    }
+
     match TempoCli::try_parse() {
         Ok(cli) => match cli.command {
             TempoCommand::Consensus(cmd) => match cmd.command {
