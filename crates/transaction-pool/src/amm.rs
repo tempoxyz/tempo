@@ -66,13 +66,6 @@ impl AmmLiquidityCache {
         {
             let inner = self.inner.read();
             for validator_token in &inner.unique_tokens {
-                // If user token matches one of the recently seen validator tokens,
-                // short circuit and return true. We assume that validators are willing to
-                // accept transactions that pay fees in their token directly.
-                if validator_token == &user_token {
-                    return Ok(true);
-                }
-
                 if let Some(validator_reserve) = inner.cache.get(&(user_token, *validator_token)) {
                     if *validator_reserve >= amount_out {
                         return Ok(true);
@@ -253,7 +246,10 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_has_enough_liquidity_user_token_matches_validator_token() {
+    fn test_has_enough_liquidity_user_token_matches_validator_token_no_bypass() {
+        // Even if user_token matches a validator_token, we no longer bypass the liquidity check.
+        // This prevents DoS attacks where a malicious validator could pause their token after
+        // transactions pass validation (CHAIN-440).
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner {
                 unique_tokens: vec![address!("1111111111111111111111111111111111111111")],
@@ -269,8 +265,8 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(
-            result.unwrap(),
-            "Should return true when user token matches validator token"
+            !result.unwrap(),
+            "Should return false when no liquidity is cached, even if user token matches validator token"
         );
     }
 

@@ -1986,9 +1986,10 @@ mod tests {
         );
     }
 
-    /// Paused validator tokens should be rejected even though they would bypass the liquidity check.
+    /// Paused validator tokens should be rejected. The validator token bypass was removed
+    /// to prevent CHAIN-440 DoS attacks, so now all tokens require liquidity AND pause checks.
     #[test]
-    fn test_paused_validator_token_rejected_before_liquidity_bypass() {
+    fn test_paused_validator_token_rejected() {
         // Use a TIP20-prefixed address for the fee token
         let paused_validator_token = address!("20C0000000000000000000000000000000000001");
 
@@ -2012,31 +2013,31 @@ mod tests {
         let spec = provider.chain_spec().tempo_hardfork_at(0);
 
         // Create AMM cache with the paused token in unique_tokens (simulating a validator's
-        // preferred token). This would normally cause has_enough_liquidity() to return true
-        // immediately at the bypass check.
+        // preferred token). Previously this would bypass liquidity checks, but the bypass
+        // was removed to prevent CHAIN-440 DoS attacks.
         let amm_cache = AmmLiquidityCache::with_unique_tokens(vec![paused_validator_token]);
 
-        // Verify the bypass would apply: the token IS in unique_tokens
+        // Verify the token IS in unique_tokens
         assert!(
             amm_cache.contains_unique_token(&paused_validator_token),
             "Token should be in unique_tokens for this test"
         );
 
-        // Verify has_enough_liquidity would bypass (return true) for this token
-        // because it matches a validator token. This confirms the vulnerability we're testing.
+        // After removing the bypass, has_enough_liquidity returns false without cached liquidity,
+        // even for validator tokens (CHAIN-440 fix)
         let liquidity_result =
             amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
-            liquidity_result.is_ok() && liquidity_result.unwrap(),
-            "Token in unique_tokens should bypass liquidity check and return true"
+            liquidity_result.is_ok() && !liquidity_result.unwrap(),
+            "Validator token should NOT bypass liquidity check after CHAIN-440 fix"
         );
 
-        // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
+        // The pause check also catches it
         let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
         assert!(is_paused.is_ok());
         assert!(
             is_paused.unwrap(),
-            "Paused validator token should be detected by is_fee_token_paused BEFORE reaching has_enough_liquidity"
+            "Paused validator token should be detected by is_fee_token_paused"
         );
     }
 }
