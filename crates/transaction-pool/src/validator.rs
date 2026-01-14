@@ -23,7 +23,10 @@ use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix,
     transaction::{RecoveredTempoAuthorization, TempoTransaction},
 };
-use tempo_revm::{TempoBatchCallEnv, TempoStateAccess, calculate_aa_batch_intrinsic_gas};
+use tempo_revm::{
+    EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
+    calculate_aa_batch_intrinsic_gas,
+};
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -200,6 +203,7 @@ where
     /// - Signature verification gas (P256/WebAuthn signatures)
     /// - Per-call CREATE costs
     /// - Key authorization costs
+    /// - 2D nonce gas (if nonce_key != 0)
     ///
     /// Without this validation, malicious transactions could clog the mempool at zero cost by
     /// passing pool validation (which only sees the first call's input) but failing at execution time.
@@ -232,9 +236,21 @@ where
         };
 
         // Calculate the intrinsic gas for the AA transaction
-        let init_and_floor_gas =
+        let mut init_and_floor_gas =
             calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+
+        // Add 2D nonce gas if nonce_key is non-zero
+        // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
+        if !tx.nonce_key.is_zero() {
+            if tx.nonce == 0 {
+                // New key - cold SLOAD + SSTORE set (0 -> non-zero)
+                init_and_floor_gas.initial_gas += NEW_NONCE_KEY_GAS;
+            } else {
+                // Existing key - cold SLOAD + warm SSTORE reset
+                init_and_floor_gas.initial_gas += EXISTING_NONCE_KEY_GAS;
+            }
+        }
 
         let gas_limit = tx.gas_limit;
 

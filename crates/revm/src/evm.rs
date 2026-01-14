@@ -35,8 +35,6 @@ pub struct TempoEvm<DB: Database, I> {
     pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
-    /// 2D nonce gas cost calculated during validation.
-    pub(crate) nonce_2d_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -70,7 +68,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             logs: Vec::new(),
             collected_fee: U256::ZERO,
-            nonce_2d_gas: 0,
         }
     }
 }
