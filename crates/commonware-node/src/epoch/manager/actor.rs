@@ -504,10 +504,6 @@ where
         };
 
         if reference_epoch >= their_epoch {
-            trace!(
-                %reference_epoch,
-                "message is for current or past epoch; no action necessary",
-            );
             return;
         }
 
