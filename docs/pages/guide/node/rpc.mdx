@@ -23,6 +23,17 @@ tempo node \
 Daily snapshots for the persistent testnet can be found at [https://snapshots.tempoxyz.dev](https://snapshots.tempoxyz.dev). You can extract them either using
 `tempo download --url <snapshot_url>` or downloading them manually and extracting them using `curl <snapshot_url> | lz4 -d | tar -xzf -`.
 
+> **⚠️ Important: Testnet Configuration**
+>
+> When using a snapshot for the **Testnet** (Chain ID 42429), you must start the node with the `--chain testnet` flag.
+>
+> If you omit this flag, the node will default to Mainnet configuration, causing a `genesis hash mismatch` panic.
+>
+> **Correct usage:**
+> ```bash
+> tempo node --chain testnet --follow ...
+> ```
+
 ## Example Systemd Service
 
 ```bash /dev/null/systemd.sh#L1-55
