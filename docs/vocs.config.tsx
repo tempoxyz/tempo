@@ -78,12 +78,12 @@ export default defineConfig({
     </>
   ),
   ogImageUrl: {
-    '/': '/og-docs.png',
-    '/learn': '/api/og?title=%title&description=%description',
-    '/quickstart': '/api/og?title=%title&description=%description',
-    '/guide': '/api/og?title=%title&description=%description',
-    '/protocol': '/api/og?title=%title&description=%description',
-    '/sdk': '/api/og?title=%title&description=%description',
+    '/': 'https://docs.tempo.xyz/og-docs.png',
+    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
   },
   title: 'Tempo',
   titleTemplate: '%s | Tempo Docs',
