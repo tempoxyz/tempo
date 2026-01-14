@@ -218,14 +218,23 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(false);
         }
 
-        // Ensure the currency is USD and token is not paused
+        // Ensure the currency is USD
         // load fee token account to ensure that we can load storage for it.
         self.with_read_only_storage_ctx(spec, || {
             // SAFETY: prefix already checked above
             let token = TIP20Token::from_address(fee_token)?;
-            let is_usd = token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD";
-            let is_paused = token.paused()?;
-            Ok(is_usd && !is_paused)
+            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
+        })
+    }
+
+    /// Checks if a fee token is paused.
+    fn is_fee_token_paused(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            let token = TIP20Token::from_address(fee_token)?;
+            token.paused()
         })
     }
 
@@ -426,7 +435,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{address, uint};
+    use alloy_primitives::address;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
@@ -628,48 +637,33 @@ mod tests {
     }
 
     #[test]
-    fn test_is_valid_fee_token_rejects_paused_token() -> eyre::Result<()> {
-        // Use PATH_USD_ADDRESS as a valid TIP20 token with USD currency
+    fn test_is_fee_token_paused_returns_true_for_paused_token() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
 
-        // Set up CacheDB with currency="USD" and paused=true
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-
-        // Set currency to "USD" (short string encoding: data left-aligned, LSB = len*2)
-        // "USD" = 0x555344, stored in high bytes with length 6 (3*2) in LSB
-        let usd_currency_value =
-            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
-        db.insert_account_storage(token_address, tip20_slots::CURRENCY, usd_currency_value)?;
 
         // Set paused=true
         db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
 
-        // Token should be invalid when paused
-        let is_valid = db.is_valid_fee_token(TempoHardfork::Genesis, token_address)?;
-        assert!(!is_valid, "Paused tokens should not be valid fee tokens");
+        let is_paused = db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?;
+        assert!(is_paused, "Paused tokens should be detected as paused");
 
         Ok(())
     }
 
     #[test]
-    fn test_is_valid_fee_token_accepts_unpaused_token() -> eyre::Result<()> {
-        // Use PATH_USD_ADDRESS as a valid TIP20 token with USD currency
+    fn test_is_fee_token_paused_returns_false_for_unpaused_token() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
 
-        // Set up CacheDB with currency="USD" and paused=false
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
-
-        // Set currency to "USD" (short string encoding: data left-aligned, LSB = len*2)
-        // "USD" = 0x555344, stored in high bytes with length 6 (3*2) in LSB
-        let usd_currency_value =
-            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
-        db.insert_account_storage(token_address, tip20_slots::CURRENCY, usd_currency_value)?;
 
         // paused=false is the default (zero), no need to set
 
-        // Token should be valid when not paused
-        let is_valid = db.is_valid_fee_token(TempoHardfork::Genesis, token_address)?;
-        assert!(is_valid, "Unpaused tokens should be valid fee tokens");
+        let is_paused = db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?;
+        assert!(
+            !is_paused,
+            "Unpaused tokens should not be detected as paused"
+        );
 
         Ok(())
     }

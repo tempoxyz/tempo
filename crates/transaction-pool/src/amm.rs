@@ -235,6 +235,11 @@ impl AmmLiquidityCache {
             })),
         }
     }
+
+    /// Returns true if the given token is in the unique_tokens list (validator tokens).
+    pub fn contains_unique_token(&self, token: &Address) -> bool {
+        self.inner.read().unique_tokens.contains(token)
+    }
 }
 
 #[cfg(test)]
