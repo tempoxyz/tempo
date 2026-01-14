@@ -5,7 +5,7 @@ pub use tempo_contracts::precompiles::{ITIP20Factory, TIP20FactoryError, TIP20Fa
 use tempo_precompiles_macros::contract;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::{Result, TempoPrecompileError},
     tip20::{TIP20Error, TIP20Token, USD_CURRENCY, is_tip20_prefix},
 };
@@ -165,7 +165,9 @@ impl TIP20Factory {
 
         // quote_token must be address(0) or a valid TIP20
         if !quote_token.is_zero() {
-            if !self.is_tip20(quote_token)? {
+            // pathUSD must set address(0) as the quote token
+            // or the tip20 must be a valid deployed token
+            if address == PATH_USD_ADDRESS || !self.is_tip20(quote_token)? {
                 return Err(TIP20Error::invalid_quote_token().into());
             }
             // If token is USD, its quote token must also be USD
@@ -686,6 +688,54 @@ mod tests {
                 Address::ZERO,
                 admin,
             )?;
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_path_usd_requires_zero_quote_token() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut factory = TIP20Factory::new();
+            factory.initialize()?;
+
+            let other_usd = factory.create_token_reserved_address(
+                address!("20C0000000000000000000000000000000000001"),
+                "testUSD",
+                "testUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            let result = factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                other_usd,
+                admin,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidQuoteToken(
+                    _
+                )))
+            ));
+
+            factory.create_token_reserved_address(
+                PATH_USD_ADDRESS,
+                "pathUSD",
+                "pathUSD",
+                "USD",
+                Address::ZERO,
+                admin,
+            )?;
+
+            assert!(TIP20Token::from_address(PATH_USD_ADDRESS)?.is_initialized()?);
 
             Ok(())
         })

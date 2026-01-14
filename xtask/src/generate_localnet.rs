@@ -2,7 +2,6 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
-use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
@@ -38,15 +37,12 @@ impl GenerateLocalnet {
             genesis_args,
         } = self;
 
-        // Copy the seed here before genesis_args are consumed.
-        let seed = genesis_args.seed;
-
         let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
 
-        let consensus_config = consensus_config
+        let mut consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
@@ -82,13 +78,12 @@ impl GenerateLocalnet {
             );
         }
 
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
         let mut trusted_peers = vec![];
 
         let mut all_configs = vec![];
         for validator in &consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
-                let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
+                let (sk, pk) = SECP256K1.generate_keypair(&mut consensus_config.rng);
                 (sk, pk2id(&pk))
             };
 
@@ -104,9 +99,10 @@ impl GenerateLocalnet {
                 validator.clone(),
                 ConfigOutput {
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator
-                        .signing_share
-                        .to_hex(&validator.signing_share_encryption_key, &mut rng),
+                    consensus_on_disk_signing_share: validator.signing_share.to_hex(
+                        &validator.signing_share_encryption_key,
+                        &mut consensus_config.rng,
+                    ),
                     consensus_on_disk_encryption_key: validator
                         .signing_share_encryption_key
                         .to_hex(),
