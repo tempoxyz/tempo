@@ -11674,7 +11674,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bootnode"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 dependencies = [
  "axum",
  "const-hex",
@@ -11696,7 +11696,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bootnode-bin"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 dependencies = [
  "clap",
  "const-hex",
