@@ -172,3 +172,62 @@ TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, me
 - **TEMPO-TIP20**: Balance sum equals supply - sum of all holder balances equals `totalSupply`.
 - **TEMPO-TIP21**: Decimals constant - `decimals()` always returns 6.
 - **TEMPO-TIP22**: Supply cap enforced - `totalSupply <= supplyCap` always holds.
+
+## TIP20Factory
+
+The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
+
+### Token Creation Invariants
+
+- **TEMPO-FAC1**: Deterministic addresses - `createToken` deploys to the exact address returned by `getTokenAddress` for the same sender/salt combination.
+- **TEMPO-FAC2**: TIP20 recognition - all tokens created by the factory are recognized as TIP-20 by `isTIP20()`.
+- **TEMPO-FAC3**: Address uniqueness - attempting to create a token at an existing address reverts with `TokenAlreadyExists`.
+- **TEMPO-FAC4**: Quote token validation - `createToken` reverts with `InvalidQuoteToken` if the quote token is not a valid TIP-20.
+- **TEMPO-FAC5**: Reserved address enforcement - addresses in the reserved range (lower 64 bits < 1024) revert with `AddressReserved`.
+- **TEMPO-FAC6**: Token properties - created tokens have correct name, symbol, and currency as specified.
+- **TEMPO-FAC7**: Currency consistency - USD tokens must have USD quote tokens; non-USD tokens can have any valid quote token.
+
+### Address Prediction Invariants
+
+- **TEMPO-FAC8**: isTIP20 consistency - created tokens return true, non-TIP20 addresses return false.
+- **TEMPO-FAC9**: Address determinism - `getTokenAddress(sender, salt)` always returns the same address for the same inputs.
+- **TEMPO-FAC10**: Sender differentiation - different senders with the same salt produce different token addresses.
+
+### Global Invariants
+
+- **TEMPO-FAC11**: Address format - all created tokens have addresses with the correct TIP-20 prefix (`0x20C0...`).
+
+## TIP403Registry
+
+The TIP403Registry manages transfer policies (whitelists and blacklists) that control which addresses can send or receive tokens.
+
+### Policy Creation Invariants
+
+- **TEMPO-REG1**: Policy ID assignment - newly created policy ID equals `policyIdCounter` before creation.
+- **TEMPO-REG2**: Counter increment - `policyIdCounter` increments by 1 after each policy creation.
+- **TEMPO-REG3**: Policy existence - all created policies return true for `policyExists()`.
+- **TEMPO-REG4**: Policy data accuracy - `policyData()` returns the correct type and admin as specified during creation.
+- **TEMPO-REG5**: Bulk creation - `createPolicyWithAccounts` correctly initializes all provided accounts in the policy.
+
+### Admin Management Invariants
+
+- **TEMPO-REG6**: Admin transfer - `setPolicyAdmin` correctly updates the policy admin.
+- **TEMPO-REG7**: Admin-only enforcement - non-admins cannot modify policy admin (reverts with `Unauthorized`).
+
+### Policy Modification Invariants
+
+- **TEMPO-REG8**: Whitelist modification - adding an account to a whitelist makes `isAuthorized` return true for that account.
+- **TEMPO-REG9**: Blacklist modification - adding an account to a blacklist makes `isAuthorized` return false for that account.
+- **TEMPO-REG10**: Policy type enforcement - `modifyPolicyWhitelist` on a blacklist (or vice versa) reverts with `IncompatiblePolicyType`.
+
+### Special Policy Invariants
+
+- **TEMPO-REG11**: Always-reject policy - policy ID 0 returns false for all `isAuthorized` checks.
+- **TEMPO-REG12**: Always-allow policy - policy ID 1 returns true for all `isAuthorized` checks.
+- **TEMPO-REG13**: Special policy existence - policies 0 and 1 always exist (return true for `policyExists`).
+- **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
+
+### Global Invariants
+
+- **TEMPO-REG15**: Counter monotonicity - `policyIdCounter` only increases and equals `2 + totalPoliciesCreated`.
+- **TEMPO-REG16**: Policy type immutability - a policy's type cannot change after creation.
