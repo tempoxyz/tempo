@@ -10,7 +10,7 @@ use tempo_precompiles::tip20::U128_MAX;
 /// * Mints user tokens for all signers and approves unlimited spending for DEX.
 /// * Seeds initial liquidity by placing DEX flip orders.
 pub(super) async fn setup(
-    signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
+    signer_providers: &[(Secp256k1Signer, DynProvider<TempoNetwork>)],
     user_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,

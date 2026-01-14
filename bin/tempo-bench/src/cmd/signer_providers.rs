@@ -5,7 +5,7 @@ use alloy::{
         DynProvider, Provider, ProviderBuilder, RootProvider,
         fillers::{CachedNonceManager, FillProvider, TxFiller},
     },
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    signers::local::{MnemonicBuilder, Secp256k1Signer},
     transports::http::reqwest::Url,
 };
 use indicatif::ProgressIterator;
@@ -16,7 +16,7 @@ type BenchProvider<F> = FillProvider<F, RootProvider<TempoNetwork>, TempoNetwork
 type UnsignedProviderFactory<F> =
     Box<dyn Fn(Url, CachedNonceManager) -> BenchProvider<F> + Send + Sync>;
 type SignedProviderFactory = Box<
-    dyn Fn(PrivateKeySigner, Url, CachedNonceManager) -> DynProvider<TempoNetwork> + Send + Sync,
+    dyn Fn(Secp256k1Signer, Url, CachedNonceManager) -> DynProvider<TempoNetwork> + Send + Sync,
 >;
 
 /// Manages signers and target URLs for creating providers.
@@ -27,14 +27,14 @@ pub(crate) struct SignerProviderManager<F: TxFiller<TempoNetwork>>(
 
 #[derive(Debug)]
 struct SignerProviderManagerInner<F: TxFiller<TempoNetwork>> {
-    /// List of private key signers.
-    signers: Vec<PrivateKeySigner>,
+    /// List of secp256k1 signers (faster than k256-based PrivateKeySigner).
+    signers: Vec<Secp256k1Signer>,
     /// List of target URLs.
     target_urls: Vec<Url>,
     /// Providers without signing capabilities.
     unsigned_providers: Vec<BenchProvider<F>>,
     /// List of providers (one per signer) with random target URLs.
-    signer_providers: Vec<(PrivateKeySigner, DynProvider<TempoNetwork>)>,
+    signer_providers: Vec<(Secp256k1Signer, DynProvider<TempoNetwork>)>,
 }
 
 impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
@@ -53,11 +53,12 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
         signed_provider_factory: SignedProviderFactory,
     ) -> Self {
         let cached_nonce_manager = CachedNonceManager::default();
-        let signers = (from_mnemonic_index..)
+        // Use Secp256k1Signer for better performance (libsecp256k1 bindings vs pure-Rust k256)
+        let signers: Vec<Secp256k1Signer> = (from_mnemonic_index..)
             .take(accounts as usize)
             .progress_count(accounts)
-            .map(|i| MnemonicBuilder::from_phrase_nth(&mnemonic, i))
-            .collect::<Vec<_>>();
+            .map(|i| MnemonicBuilder::from_phrase_nth(&mnemonic, i).into_secp256k1())
+            .collect();
         let unsigned_providers = target_urls
             .iter()
             .cloned()
@@ -100,7 +101,7 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
     }
 
     /// Returns a list of providers (one per signer) with random target URLs.
-    pub fn signer_providers(&self) -> &[(PrivateKeySigner, DynProvider<TempoNetwork>)] {
+    pub fn signer_providers(&self) -> &[(Secp256k1Signer, DynProvider<TempoNetwork>)] {
         &self.0.signer_providers
     }
 
@@ -114,7 +115,7 @@ impl<F: TxFiller<TempoNetwork> + 'static> SignerProviderManager<F> {
     }
 
     /// Returns a random signer.
-    pub fn random_signer(&self) -> &PrivateKeySigner {
+    pub fn random_signer(&self) -> &Secp256k1Signer {
         self.0.signers.choose(&mut rand::rng()).unwrap()
     }
 }
