@@ -1,14 +1,15 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{TempoTransactionPool, transaction::TempoPooledTransaction};
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::TxHash;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::TransactionPool;
-use std::collections::BTreeMap;
+use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
+use std::collections::{BTreeMap, HashSet};
 use tempo_chainspec::TempoChainSpec;
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
@@ -100,6 +101,13 @@ where
 ///
 /// where each slot tracks the current nonce for a nonce key assigned to the transaction.
 /// The next executable nonce is the current value of in the contract's state.
+///
+/// # Reorg Handling
+///
+/// During a reorg, this function:
+/// 1. Identifies AA 2D transactions that were mined in the old chain but NOT in the new chain
+/// 2. Re-injects those orphaned transactions back into the pool
+/// 3. Updates the nonce state based on the new canonical chain
 pub async fn maintain_2d_nonce_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
@@ -109,9 +117,64 @@ where
 {
     let mut events = pool.client().canonical_state_stream();
     while let Some(notification) = events.next().await {
-        pool.notify_aa_pool_on_state_updates(
-            notification.committed().execution_outcome().state().state(),
-        );
+        match notification {
+            CanonStateNotification::Commit { new } => {
+                // Simple commit: just update nonce state from the new chain
+                pool.notify_aa_pool_on_state_updates(new.execution_outcome().state().state());
+            }
+            CanonStateNotification::Reorg { old, new } => {
+                // Get inner chain blocks for iteration
+                let (new_blocks, _) = new.inner();
+                let (old_blocks, _) = old.inner();
+
+                // Collect transaction hashes from the new chain to identify what's still mined
+                let new_mined_hashes: HashSet<TxHash> = new_blocks.transaction_hashes().collect();
+
+                // Find AA 2D transactions from the old chain that are NOT in the new chain
+                let orphaned_txs: Vec<_> = old_blocks
+                    .transactions_ecrecovered()
+                    .filter(|tx| !new_mined_hashes.contains(tx.tx_hash()))
+                    .filter_map(|tx| {
+                        let aa_tx = tx.as_aa()?;
+                        if aa_tx.tx().nonce_key.is_zero() {
+                            return None;
+                        }
+                        let pooled_tx = TempoPooledTransaction::new(tx);
+                        if pool.contains(pooled_tx.hash()) {
+                            return None;
+                        }
+                        Some(pooled_tx)
+                    })
+                    .collect();
+
+                if !orphaned_txs.is_empty() {
+                    let count = orphaned_txs.len();
+                    debug!(
+                        target: "txpool",
+                        count,
+                        "Re-injecting orphaned AA 2D transactions after reorg"
+                    );
+
+                    let pool_clone = pool.clone();
+                    tokio::spawn(async move {
+                        let results = pool_clone
+                            .add_transactions(TransactionOrigin::Local, orphaned_txs)
+                            .await;
+                        let failed = results.iter().filter(|r| r.is_err()).count();
+                        if failed > 0 {
+                            debug!(
+                                target: "txpool",
+                                failed,
+                                "Some orphaned AA 2D transactions failed to re-inject"
+                            );
+                        }
+                    });
+                }
+
+                // Update nonce state based on the new canonical chain
+                pool.notify_aa_pool_on_state_updates(new.execution_outcome().state().state());
+            }
+        }
     }
 }
 
