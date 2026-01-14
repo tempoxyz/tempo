@@ -228,7 +228,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         address token = _selectToken(tokenRnd);
 
         uint128 balance = exchange.balanceOf(actor, token);
-        if (balance == 0) return;
+        vm.assume(balance > 0);
 
         amount = uint128(bound(amount, 1, balance));
 
@@ -489,9 +489,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         address tokenOut = _selectToken(tokenOutRnd);
 
         // Skip if same token (can't swap token for itself)
-        if (tokenIn == tokenOut) {
-            return;
-        }
+        vm.assume(tokenIn != tokenOut);
 
         // Ensure swapper has enough of tokenIn
         _ensureFunds(swapper, TIP20(tokenIn), amount);
@@ -540,9 +538,7 @@ contract StablecoinDEXInvariantTest is BaseTest {
         vm.assume(canceller != blacklistedActor);
 
         // Skip if the actor has no orders
-        if (_placedOrders[blacklistedActor].length == 0) {
-            return;
-        }
+        vm.assume(_placedOrders[blacklistedActor].length > 0);
 
         // Blacklist the actor in the appropriate token(s)
         if (forBids) {

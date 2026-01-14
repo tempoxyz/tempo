@@ -7,77 +7,82 @@ import { loadEnv } from 'vite'
 import { defineConfig } from 'vocs'
 
 export default defineConfig({
-  head() {
-    return (
-      <>
-        <meta
-          content="width=device-width, initial-scale=1, maximum-scale=1"
-          name="viewport"
-        />
-        <meta content="Documentation ⋅ Tempo" property="og:title" />
-        <meta content="/og-docs.png" property="og:image" />
-        <meta content="image/png" property="og:image:type" />
-        <meta content="1200" property="og:image:width" />
-        <meta content="630" property="og:image:height" />
-        <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Documentation ⋅ Tempo" />
-        <meta name="twitter:image" content="/og-docs.png" />
-        <link rel="icon" href="/favicon.ico" sizes="32x32" />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-light.svg"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-dark.svg"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-light.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-dark.png"
-          media="(prefers-color-scheme: dark)"
-        />
-      </>
-    )
-  },
+  head: () => (
+    <>
+      <meta
+        content="width=device-width, initial-scale=1, maximum-scale=1"
+        name="viewport"
+      />
+      {process.env['VERCEL_ENV'] === 'production' ? (
+        <meta name="robot" content="index, follow" />
+      ) : (
+        <meta name="robot" content="noindex, nofollow" />
+      )}
+      <meta content="/og-docs.png" property="og:image" />
+      <meta content="image/png" property="og:image:type" />
+      <meta content="1200" property="og:image:width" />
+      <meta content="630" property="og:image:height" />
+      <meta name="twitter:card" content="summary_large_image" />
+      <meta name="twitter:title" content="Documentation ⋅ Tempo" />
+      <meta name="twitter:image" content="/og-docs.png" />
+      <link rel="icon" href="/favicon.ico" sizes="32x32" />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-light.svg"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-dark.svg"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-light.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-dark.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      {process.env['VERCEL_ENV'] === 'production' && (
+        <script src="/ph.js" type="text/javascript"></script>
+      )}
+    </>
+  ),
   title: 'Documentation ⋅ Tempo',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
