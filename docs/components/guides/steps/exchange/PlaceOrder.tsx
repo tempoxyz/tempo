@@ -5,7 +5,7 @@ import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd, pathUsd } from '../../tokens'
+import { DONOTUSE, pathUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function PlaceOrder(props: DemoStepProps) {
@@ -16,7 +16,7 @@ export function PlaceOrder(props: DemoStepProps) {
   const orderId = getData('orderId')
 
   const { data: metadata } = Hooks.token.useGetMetadata({
-    token: alphaUsd,
+    token: DONOTUSE,
   })
 
   const sendCalls = useSendCallsSync()
@@ -56,7 +56,7 @@ export function PlaceOrder(props: DemoStepProps) {
     Actions.dex.place.call({
       amount,
       tick: 0,
-      token: alphaUsd,
+      token: DONOTUSE,
       type: 'buy',
     }),
   ]
@@ -87,7 +87,7 @@ export function PlaceOrder(props: DemoStepProps) {
         </Button>
       }
       number={stepNumber}
-      title="Approve spend and place buy order for 100 AlphaUSD"
+      title="Approve spend and place buy order for 100 DONOTUSE"
     >
       {sendCalls.isSuccess && sendCalls.data && (
         <div className="flex mx-6 flex-col gap-3 pb-4">

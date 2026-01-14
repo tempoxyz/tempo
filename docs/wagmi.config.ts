@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/react-query'
-import { tempoDevnet, tempoLocalnet, tempoModerato } from 'viem/chains'
+import { tempo, tempoDevnet, tempoLocalnet } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
 import {
   type CreateConfigParameters,
@@ -10,7 +10,7 @@ import {
 } from 'wagmi'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
-const feeToken = '0x20c0000000000000000000000000000000000001'
+const feeToken = '0x20c000000000000000000000033abb6ac7d235e5'
 
 export function getConfig(options: getConfig.Options = {}) {
   const { multiInjectedProviderDiscovery } = options
@@ -23,7 +23,7 @@ export function getConfig(options: getConfig.Options = {}) {
         ? tempoLocalnet.extend({ feeToken })
         : import.meta.env.VITE_ENVIRONMENT === 'devnet'
           ? tempoDevnet.extend({ feeToken })
-          : tempoModerato.extend({ feeToken }),
+          : tempo.extend({ feeToken }),
     ],
     connectors: [
       webAuthn({
@@ -37,11 +37,9 @@ export function getConfig(options: getConfig.Options = {}) {
       key: 'tempo-docs',
     }),
     transports: {
-      [tempoModerato.id]: withFeePayer(
-        webSocket('wss://rpc.moderato.tempo.xyz', {
-          keepAlive: { interval: 1_000 },
-        }),
-        http('https://sponsor.moderato.tempo.xyz'),
+      [tempo.id]: withFeePayer(
+        http(`https://${import.meta.env.VITE_RPC_CREDENTIALS}@rpc.tempo.xyz`),
+        http('https://sponsor.tempo.xyz'),
         { policy: 'sign-only' },
       ),
       [tempoDevnet.id]: withFeePayer(

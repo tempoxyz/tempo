@@ -55,7 +55,7 @@ export function GrantIssuerRole() {
       token: tokenAddress, // [!code hl]
       roles: ['issuer'], // [!code hl]
       to: issuerAddress, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+      feeToken: '0x20c000000000000000000000033abb6ac7d235e5', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -73,19 +73,7 @@ export function GrantIssuerRole() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -138,7 +126,7 @@ export function MintToken() {
       to: recipient as `0x${string}`, // [!code hl]
       token: tokenAddress, // [!code hl]
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+      feeToken: '0x20c000000000000000000000033abb6ac7d235e5', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -176,19 +164,7 @@ export function MintToken() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 ```solidity [Solidity]
@@ -306,7 +282,7 @@ export function BurnToken() {
       amount: parseUnits('100', metadata.decimals), // [!code hl]
       token: tokenAddress, // [!code hl]
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined, // [!code hl]
-      feeToken: '0x20c0000000000000000000000000000000000001', // [!code hl]
+      feeToken: '0x20c000000000000000000000033abb6ac7d235e5', // [!code hl]
     }) // [!code hl]
   } // [!code hl]
 
@@ -335,19 +311,7 @@ export function BurnToken() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 ```solidity [Solidity]

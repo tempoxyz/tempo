@@ -4,11 +4,11 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-// Current validator token on testnet
-const validatorToken = alphaUsd
+// Current validator token on mainnet
+const validatorToken = DONOTUSE
 
 export function PayWithIssuedToken(props: DemoStepProps) {
   const { stepNumber, last = false } = props
@@ -19,11 +19,11 @@ export function PayWithIssuedToken(props: DemoStepProps) {
   const { getData } = useDemoContext()
   const feeToken = getData('tokenAddress')
 
-  // Balance for the payment token (AlphaUSD)
+  // Balance for the payment token (DONOTUSE)
   const { data: alphaBalance, refetch: alphaBalanceRefetch } =
     Hooks.token.useGetBalance({
       account: address,
-      token: alphaUsd,
+      token: DONOTUSE,
     })
 
   // Balance for the fee token (dynamic based on selection)
@@ -67,7 +67,7 @@ export function PayWithIssuedToken(props: DemoStepProps) {
     sendPayment.mutate({
       amount: parseUnits('100', 6),
       to: recipient as `0x${string}`,
-      token: alphaUsd,
+      token: DONOTUSE,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
       feeToken,
     })
@@ -118,7 +118,7 @@ export function PayWithIssuedToken(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title={`Send 100 AlphaUSD and pay fees in ${feeTokenMetadata ? feeTokenMetadata.name : 'your token'}.`}
+      title={`Send 100 DONOTUSE and pay fees in ${feeTokenMetadata ? feeTokenMetadata.name : 'your token'}.`}
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -128,7 +128,7 @@ export function PayWithIssuedToken(props: DemoStepProps) {
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">
-                    Payment Token: AlphaUSD
+                    Payment Token: DONOTUSE
                   </span>
                   <span className="text-gray12">
                     balance: {formatUnits(alphaBalance ?? 0n, 6)}

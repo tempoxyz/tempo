@@ -3,7 +3,7 @@ import { useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function LinkTokenPolicy(props: DemoStepProps) {
@@ -39,7 +39,7 @@ export function LinkTokenPolicy(props: DemoStepProps) {
     await linkPolicy.mutateAsync({
       policyId,
       token: tokenAddress,
-      feeToken: alphaUsd,
+      feeToken: DONOTUSE,
     })
   }
 

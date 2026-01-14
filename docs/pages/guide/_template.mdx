@@ -40,16 +40,16 @@ export function Component() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempoModerato],
+  chains: [tempo],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
   transports: {
-    [tempoModerato.id]: http(),
+    [tempo.id]: http('https://username:password@rpc.tempo.xyz'),
   },
 })
 ```
@@ -72,16 +72,16 @@ export function Component() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempoModerato],
+  chains: [tempo],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
   transports: {
-    [tempoModerato.id]: http(),
+    [tempo.id]: http('https://username:password@rpc.tempo.xyz'),
   },
 })
 ```

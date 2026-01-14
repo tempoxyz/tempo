@@ -30,14 +30,14 @@ Ensure that you have set up your project with Wagmi and integrated accounts by f
 - [Embed Passkey accounts](/guide/use-accounts/embed-passkeys)
 - [Connect to wallets](/guide/use-accounts/connect-to-wallets)
 
-### Add testnet funds¹
+### Add funds¹
 
-Before we send off a transaction to deploy our stablecoin to the Tempo testnet, we need to make sure our account is funded with a stablecoin to cover the transaction fee. 
+Before we send off a transaction to deploy our stablecoin to Tempo, we need to make sure our account is funded with a stablecoin to cover the transaction fee. 
 
-As we have configured our project to use `AlphaUSD` (`0x20c000…0001`) 
-as the [default fee token](/quickstart/integrate-tempo#default-fee-token), we will need to add some `AlphaUSD` to our account.
+As we have configured our project to use `DONOTUSE` (`0x20c000…33abb6ac7d235e5`) 
+as the [default fee token](/quickstart/integrate-tempo#default-fee-token), we will need to add some `DONOTUSE` to our account.
 
-Luckily, the built-in Tempo testnet faucet supports funding accounts with `AlphaUSD`.
+Luckily, the built-in Tempo faucet supports funding accounts with `DONOTUSE`.
 
 <Demo.Container name="Add Funds" footerVariant="balances" showBadge={false}>
   <Step.AddFunds stepNumber={1} last />
@@ -64,19 +64,7 @@ export function AddFunds() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -125,19 +113,7 @@ export function CreateStablecoin() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -189,19 +165,7 @@ export function CreateStablecoin() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -257,19 +221,7 @@ export function CreateStablecoin() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::

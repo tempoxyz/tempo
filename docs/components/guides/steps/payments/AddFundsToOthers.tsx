@@ -7,7 +7,7 @@ import { Actions } from 'viem/tempo'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function AddFundsToOthers(props: DemoStepProps) {
@@ -30,7 +30,7 @@ export function AddFundsToOthers(props: DemoStepProps) {
 
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: targetAddress as Address | undefined,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const { data: blockNumber } = useBlockNumber({
     query: {
@@ -62,7 +62,7 @@ export function AddFundsToOthers(props: DemoStepProps) {
             ),
             amount: parseUnits('10000', 6),
             to: targetAddress as Address,
-            token: alphaUsd,
+            token: DONOTUSE,
           },
         )
         receipts = [result.receipt]
@@ -114,7 +114,7 @@ export function AddFundsToOthers(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to an address."
+      title="Add funds to an address."
     >
       <div className="flex mx-6 flex-col gap-3 pb-4">
         <div className="ps-5 border-gray4 border-s-2">

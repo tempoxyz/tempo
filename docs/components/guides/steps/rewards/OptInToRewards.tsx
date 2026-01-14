@@ -4,7 +4,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function OptInToRewards(props: DemoStepProps) {
@@ -74,7 +74,7 @@ export function OptInToRewards(props: DemoStepProps) {
               setRecipient.mutate({
                 recipient: address,
                 token: tokenAddress,
-                feeToken: alphaUsd,
+                feeToken: DONOTUSE,
               })
             }}
           >

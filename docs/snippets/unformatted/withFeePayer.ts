@@ -1,14 +1,15 @@
+// @ts-nocheck
 // [!region client]
 import { createClient, http, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
 
 const client = createClient({
   account: privateKeyToAccount('0x...'),
-  chain: tempoModerato,
+  chain: tempo,
   transport: withFeePayer( // [!code hl]
-    http(), // [!code hl]
+    http('https://username:password@rpc.tempo.xyz'), // [!code hl]
     http('http://localhost:3000'), // [!code hl]
     { policy: 'sign-only' }, // [!code hl]
   ), // [!code hl]
@@ -31,14 +32,14 @@ const receipt2 = await client.sendTransactionSync({ // [!code hl]
 // [!region server]
 import { createClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { Handler } from 'tempo.ts/server'
 
 const client = createClient({
-  chain: tempoModerato.extend({ 
-    feeToken: '0x20c0000000000000000000000000000000000001' 
+  chain: tempo.extend({ 
+    feeToken: '0x20c000000000000000000000033abb6ac7d235e5' 
   }),
-  transport: http(),
+  transport: http('https://username:password@rpc.tempo.xyz'),
 })
 
 const handler = Handler.feePayer({ // [!code hl]

@@ -4,7 +4,7 @@ import { Addresses } from 'viem/tempo'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd, pathUsd } from '../../tokens'
+import { DONOTUSE, pathUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function ApproveSpend(props: DemoStepProps) {
@@ -40,7 +40,7 @@ export function ApproveSpend(props: DemoStepProps) {
               amount,
               spender: Addresses.stablecoinDex,
               token: pathUsd,
-              feeToken: alphaUsd,
+              feeToken: DONOTUSE,
             })
           }}
           type="button"

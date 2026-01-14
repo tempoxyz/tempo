@@ -4,7 +4,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function SetSupplyCap(props: DemoStepProps) {
@@ -42,7 +42,7 @@ export function SetSupplyCap(props: DemoStepProps) {
     setSupplyCap.mutate({
       token: tokenAddress,
       supplyCap: parseUnits('1000', metadata?.decimals || 6),
-      feeToken: alphaUsd,
+      feeToken: DONOTUSE,
     })
   }
 

@@ -15,7 +15,7 @@ import {
   FAKE_RECIPIENT_2,
   Step,
 } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 type TransferState = {
@@ -89,7 +89,7 @@ export function SendParallelPayments(props: DemoStepProps) {
 
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
 
   useConnectionEffect({
@@ -130,7 +130,7 @@ export function SendParallelPayments(props: DemoStepProps) {
       {
         amount: parseUnits('50', 6),
         to: FAKE_RECIPIENT,
-        token: alphaUsd,
+        token: DONOTUSE,
         nonceKey: 1n,
         nonce: Number(nonce1),
       },
@@ -141,7 +141,7 @@ export function SendParallelPayments(props: DemoStepProps) {
       {
         amount: parseUnits('50', 6),
         to: FAKE_RECIPIENT_2,
-        token: alphaUsd,
+        token: DONOTUSE,
         nonceKey: 2n,
         nonce: Number(nonce2),
       },
@@ -191,7 +191,7 @@ export function SendParallelPayments(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title="Send 50 AlphaUSD to two recipients in parallel."
+      title="Send 50 DONOTUSE to two recipients in parallel."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">

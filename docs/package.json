@@ -34,7 +34,7 @@
     "tailwind-merge": "^3.3.1",
     "tailwindcss": "^4.1.14",
     "tempo.ts": "~0.13.0",
-    "viem": "https://pkg.pr.new/viem@e5bd0c8",
+    "viem": "https://pkg.pr.new/viem@1c01cb7",
     "vocs": "^1.4.1",
     "wagmi": "https://pkg.pr.new/wagmi@017b6c6",
     "zod": "^4.1.12"

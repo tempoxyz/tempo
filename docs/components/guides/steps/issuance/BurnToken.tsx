@@ -5,7 +5,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function BurnToken(props: DemoStepProps) {
@@ -55,7 +55,7 @@ export function BurnToken(props: DemoStepProps) {
       amount: parseUnits('100', metadata.decimals),
       token: tokenAddress,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
-      feeToken: alphaUsd,
+      feeToken: DONOTUSE,
     })
   }
 

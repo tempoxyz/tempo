@@ -4,7 +4,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 import { REWARD_AMOUNT } from './Constants'
 
@@ -83,7 +83,7 @@ export function ClaimReward(props: DemoStepProps) {
               if (!tokenAddress) return
               claim.mutate({
                 token: tokenAddress,
-                feeToken: alphaUsd,
+                feeToken: DONOTUSE,
               })
             }}
           >

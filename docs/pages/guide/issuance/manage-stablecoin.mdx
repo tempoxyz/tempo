@@ -70,19 +70,7 @@ export function GrantRoles() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -149,19 +137,7 @@ export function GrantRoles() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -262,19 +238,7 @@ export function RevokeRoles() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -333,19 +297,7 @@ export function SetSupplyCap() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -442,19 +394,7 @@ export function LinkTokenPolicy() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -522,19 +462,7 @@ export function PauseUnpauseTransfers() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -596,19 +524,7 @@ export function BurnBlocked() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::

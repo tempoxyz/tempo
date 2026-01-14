@@ -3,7 +3,7 @@ import { formatUnits, isAddress, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function SendRelayerSponsoredPayment(props: DemoStepProps) {
@@ -16,7 +16,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
   const { data: userBalance, refetch: userBalanceRefetch } =
     Hooks.token.useGetBalance({
       account: address,
-      token: alphaUsd,
+      token: DONOTUSE,
     })
 
   const sendPayment = Hooks.token.useTransferSync({
@@ -42,7 +42,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
     sendPayment.mutate({
       amount: parseUnits('100', 6),
       to: recipient as `0x${string}`,
-      token: alphaUsd,
+      token: DONOTUSE,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
       feePayer: true,
     })
@@ -85,7 +85,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title="Send 100 AlphaUSD with fees sponsored by the testnet fee payer."
+      title="Send 100 DONOTUSE with fees sponsored by the fee payer."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -94,7 +94,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">
-                    Payment Token: AlphaUSD
+                    Payment Token: DONOTUSE
                   </span>
                   <span className="text-gray12">
                     balance: {formatUnits(userBalance ?? 0n, 6)}
@@ -102,7 +102,7 @@ export function SendRelayerSponsoredPayment(props: DemoStepProps) {
                 </div>
               </div>
               <div className="text-gray9 text-[12px] mt-2 pt-2 border-t border-gray4">
-                The testnet fee payer at https://sponsor.moderato.tempo.xyz will
+                The fee payer at https://sponsor.tempo.xyz will
                 pay the transaction fees.
               </div>
             </div>

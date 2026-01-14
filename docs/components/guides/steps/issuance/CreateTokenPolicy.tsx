@@ -3,7 +3,7 @@ import { useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function CreateTokenPolicy(props: DemoStepProps) {
@@ -34,7 +34,7 @@ export function CreateTokenPolicy(props: DemoStepProps) {
     await createPolicy.mutateAsync({
       addresses: [FAKE_RECIPIENT],
       type: 'blacklist',
-      feeToken: alphaUsd,
+      feeToken: DONOTUSE,
     })
   }
 

@@ -3,7 +3,7 @@ import { isAddress, pad, parseUnits, stringToHex } from 'viem'
 import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function SendPayment(props: DemoStepProps) {
@@ -15,7 +15,7 @@ export function SendPayment(props: DemoStepProps) {
   const [expanded, setExpanded] = React.useState(false)
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const sendPayment = Hooks.token.useTransferSync({
     mutation: {
@@ -53,7 +53,7 @@ export function SendPayment(props: DemoStepProps) {
     sendPayment.mutate({
       amount: parseUnits('100', 6),
       to: recipient as `0x${string}`,
-      token: alphaUsd,
+      token: DONOTUSE,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
     })
   }
@@ -94,7 +94,7 @@ export function SendPayment(props: DemoStepProps) {
         )
       }
       number={stepNumber}
-      title="Send 100 AlphaUSD to a recipient."
+      title="Send 100 DONOTUSE to a recipient."
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">

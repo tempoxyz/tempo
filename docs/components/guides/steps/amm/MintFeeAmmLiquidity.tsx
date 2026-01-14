@@ -5,10 +5,10 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-const validatorToken = alphaUsd
+const validatorToken = DONOTUSE
 
 export function MintFeeAmmLiquidity(
   props: DemoStepProps & { waitForBalance: boolean },
@@ -70,7 +70,7 @@ export function MintFeeAmmLiquidity(
               validatorTokenAddress: validatorToken,
               validatorTokenAmount: parseUnits('100', 6),
               to: address,
-              feeToken: alphaUsd,
+              feeToken: DONOTUSE,
             })
           }}
           type="button"

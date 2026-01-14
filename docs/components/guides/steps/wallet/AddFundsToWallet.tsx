@@ -7,7 +7,7 @@ import { Actions } from 'viem/tempo'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function AddFundsToWallet(props: DemoStepProps) {
@@ -18,7 +18,7 @@ export function AddFundsToWallet(props: DemoStepProps) {
 
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
     query: {
       enabled: hasNonWebAuthnWallet,
     },
@@ -52,7 +52,7 @@ export function AddFundsToWallet(props: DemoStepProps) {
             ),
             amount: parseUnits('10000', 6),
             to: address,
-            token: alphaUsd,
+            token: DONOTUSE,
           },
         )
       }
@@ -102,7 +102,7 @@ export function AddFundsToWallet(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to your wallet."
+      title="Add funds to your wallet."
     />
   )
 }

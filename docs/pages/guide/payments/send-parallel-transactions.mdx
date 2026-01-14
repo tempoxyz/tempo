@@ -34,7 +34,7 @@ For simple cases where you don't need to track keys. This approach is recommende
 
 By the end of this guide you will understand how to send parallel payments using nonce keys.
 
-<Demo.Container name="Send Parallel Payments" footerVariant="balances" tokens={[Token.alphaUsd]}>
+<Demo.Container name="Send Parallel Payments" footerVariant="balances" tokens={[Token.DONOTUSE]}>
   <Step.Connect stepNumber={1} />
   <Step.AddFunds stepNumber={2} />
   <Step.SendParallelPayments stepNumber={3} />
@@ -100,7 +100,7 @@ import { config } from './wagmi.config'
 
 // @noErrors
 const account = '0x...' // your sender account
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 const [nonce1, nonce2] = await Promise.all([
   Actions.nonce.getNonce(config, { account, nonceKey: 1n }),
@@ -112,14 +112,14 @@ const [hash1, hash2] = await Promise.all([
   Actions.token.transfer(config, {
     amount: parseUnits('100', 6),
     to: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
-    token: alphaUsd,
+    token: DONOTUSE,
     nonceKey: 1n, // [!code hl]
     nonce: Number(nonce1), // [!code hl]
   }),
   Actions.token.transfer(config, {
     amount: parseUnits('50', 6),
     to: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
-    token: alphaUsd,
+    token: DONOTUSE,
     nonceKey: 2n, // [!code hl]
     nonce: Number(nonce2), // [!code hl]
   }),
@@ -156,7 +156,7 @@ import { config } from './wagmi.config'
 const hash = await Actions.token.transfer(config, {
   amount: parseUnits('100', 6),
   to: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
-  token: '0x20c0000000000000000000000000000000000001',
+  token: '0x20c000000000000000000000033abb6ac7d235e5',
   nonceKey: 'random', // [!code hl]
 })
 

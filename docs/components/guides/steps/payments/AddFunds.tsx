@@ -7,7 +7,7 @@ import { Actions } from 'viem/tempo'
 import { useBlockNumber, useClient, useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, Login, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function AddFunds(props: DemoStepProps) {
@@ -16,7 +16,7 @@ export function AddFunds(props: DemoStepProps) {
   const queryClient = useQueryClient()
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const { data: blockNumber } = useBlockNumber({
     query: {
@@ -47,7 +47,7 @@ export function AddFunds(props: DemoStepProps) {
             ),
             amount: parseUnits('10000', 6),
             to: address,
-            token: alphaUsd,
+            token: DONOTUSE,
           },
         )
       }
@@ -103,7 +103,7 @@ export function AddFunds(props: DemoStepProps) {
       actions={actions}
       error={fundAccount.error}
       number={stepNumber}
-      title="Add testnet funds to your account."
+      title="Add funds to your account."
     />
   )
 }

@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { tempo } from 'viem/chains'
 import {
   useChains,
   useConnect,
@@ -63,14 +64,15 @@ export function ConnectWallet({
           variant="accent"
           onClick={() =>
             switchChain.switchChain({
-              chainId: chains[0].id,
+              chainId: tempo.id as never,
               addEthereumChainParameter: {
                 nativeCurrency: {
                   name: 'USD',
                   decimals: 18,
                   symbol: 'USD',
                 },
-                blockExplorerUrls: ['https://explore.tempo.xyz'],
+                blockExplorerUrls: [tempo.blockExplorers.default.url],
+                rpcUrls: [tempo.rpcUrls.default.http[0]],
               },
             })
           }

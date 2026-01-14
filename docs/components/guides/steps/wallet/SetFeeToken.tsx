@@ -3,7 +3,7 @@ import { type Address, isAddress } from 'viem'
 import { useChainId, useConfig, useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { Button, ExplorerLink, Step, StringFormatter } from '../../Demo'
-import { alphaUsd, betaUsd, thetaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 type FeeTokenOption =
@@ -15,7 +15,7 @@ type FeeTokenOption =
   | { value: 'other'; label: string }
 
 const FEE_TOKEN_OPTIONS = [
-  { value: 'alpha', label: 'AlphaUSD', address: alphaUsd },
+  { value: 'alpha', label: 'DONOTUSE', address: DONOTUSE },
   { value: 'beta', label: 'BetaUSD', address: betaUsd },
   { value: 'theta', label: 'ThetaUSD', address: thetaUsd },
   { value: 'other', label: 'Other (custom)' },
@@ -37,7 +37,7 @@ export function SetFeeToken(props: DemoStepProps) {
 
   const { data: balance } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
 
   const userToken = Hooks.fee.useUserToken({

@@ -4,7 +4,7 @@ import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 
 import { Button, ExplorerLink } from '../../Demo'
-import { alphaUsd, betaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE } from '../../tokens'
 
 export function BuySwap({ onSuccess }: { onSuccess?: () => void }) {
   const { address } = useConnection()
@@ -13,14 +13,14 @@ export function BuySwap({ onSuccess }: { onSuccess?: () => void }) {
     token: betaUsd,
   })
   const { data: tokenOutMetadata } = Hooks.token.useGetMetadata({
-    token: alphaUsd,
+    token: DONOTUSE,
   })
 
   const amount = parseUnits('10', tokenInMetadata?.decimals || 6)
 
   const { data: quote } = Hooks.dex.useBuyQuote({
     tokenIn: betaUsd,
-    tokenOut: alphaUsd,
+    tokenOut: DONOTUSE,
     amountOut: amount,
     query: {
       enabled: !!address,
@@ -58,14 +58,14 @@ export function BuySwap({ onSuccess }: { onSuccess?: () => void }) {
       amountOut: amount,
       maxAmountIn,
       tokenIn: betaUsd,
-      tokenOut: alphaUsd,
+      tokenOut: DONOTUSE,
     }),
   ]
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Buy 10 AlphaUSD with BetaUSD</h3>
+        <h3 className="text-sm font-semibold">Buy 10 DONOTUSE with BetaUSD</h3>
         <Button
           variant={sendCalls.isSuccess ? 'default' : 'accent'}
           disabled={!address}

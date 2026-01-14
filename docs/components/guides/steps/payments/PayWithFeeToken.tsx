@@ -5,11 +5,11 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { TokenSelector } from '../../../TokenSelector'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd, betaUsd, pathUsd, thetaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE, pathUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-// Current validator token on testnet
-const validatorToken = alphaUsd
+// Current validator token on mainnet
+const validatorToken = DONOTUSE
 
 export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
   const { stepNumber, last = false } = props
@@ -21,11 +21,11 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
     props.feeToken || betaUsd,
   )
 
-  // Balance for the payment token (AlphaUSD)
+  // Balance for the payment token (DONOTUSE)
   const { data: alphaBalance, refetch: alphaBalanceRefetch } =
     Hooks.token.useGetBalance({
       account: address,
-      token: alphaUsd,
+      token: DONOTUSE,
     })
 
   // Balance for the fee token (dynamic based on selection)
@@ -40,12 +40,12 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
     token: feeToken,
   })
   // Pool details. Fees are paid in feeToken, so it's the userToken
-  // validator token is a testnet property set at top of file
+  // validator token is a mainnet property set at top of file
   const { data: pool } = Hooks.amm.usePool({
     userToken: feeToken,
     validatorToken,
     query: {
-      enabled: feeToken !== alphaUsd,
+      enabled: feeToken !== DONOTUSE,
     },
   })
 
@@ -72,7 +72,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
     sendPayment.mutate({
       amount: parseUnits('100', 6),
       to: recipient as `0x${string}`,
-      token: alphaUsd,
+      token: DONOTUSE,
       memo: memo ? pad(stringToHex(memo), { size: 32 }) : undefined,
       feeToken,
     })
@@ -85,7 +85,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
         alphaBalance > 0n &&
         feeTokenBalance &&
         feeTokenBalance > 0n &&
-        (feeToken !== alphaUsd
+        (feeToken !== DONOTUSE
           ? pool && pool.reserveValidatorToken > 0n
           : true),
     )
@@ -124,7 +124,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
         )
       }
       number={stepNumber}
-      title={`Send 100 AlphaUSD and pay fees in ${feeTokenMetadata ? feeTokenMetadata.name : 'another token'}.`}
+      title={`Send 100 DONOTUSE and pay fees in ${feeTokenMetadata ? feeTokenMetadata.name : 'another token'}.`}
     >
       {expanded && (
         <div className="flex mx-6 flex-col gap-3 pb-4">
@@ -134,7 +134,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">
-                    Payment Token: AlphaUSD
+                    Payment Token: DONOTUSE
                   </span>
                   <span className="text-gray12">
                     balance: {formatUnits(alphaBalance ?? 0n, 6)}
@@ -143,7 +143,7 @@ export function PayWithFeeToken(props: DemoStepProps & { feeToken?: Address }) {
                 <div className="flex items-center justify-between">
                   <span className="text-gray10 font-medium">Fee Token</span>
                   <TokenSelector
-                    tokens={[alphaUsd, betaUsd, thetaUsd, pathUsd]}
+                    tokens={[DONOTUSE, betaUsd, thetaUsd, pathUsd]}
                     value={feeToken}
                     onChange={setFeeToken}
                     name="feeToken"

@@ -3,7 +3,7 @@
 import { client } from './viem.config'
 
 const { receipt } = await client.fee.setUserTokenSync({
-  token: '0x20c0000000000000000000000000000000000001',
+  token: '0x20c000000000000000000000033abb6ac7d235e5',
 })
 
 console.log('Transaction hash:', receipt.transactionHash)
@@ -18,7 +18,7 @@ const { data: result, mutate } = Hooks.fee.useSetUserTokenSync()
 
 // Call `mutate` in response to user action (e.g. button click, form submission)
 mutate({
-  token: '0x20c0000000000000000000000000000000000001',
+  token: '0x20c000000000000000000000033abb6ac7d235e5',
 })
 
 console.log('Transaction hash:', result.receipt.transactionHash)

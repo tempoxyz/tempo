@@ -4,7 +4,7 @@
 
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 // [!region setup]
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { createConfig, http } from 'wagmi'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
@@ -14,10 +14,10 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(),
     }),
   ],
-  chains: [tempoModerato],
+  chains: [tempo],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoModerato.id]: http(),
+    [tempo.id]: http('https://{user}:{pass}@rpc.tempo.xyz'),
   },
 })
 
@@ -25,7 +25,7 @@ export const config = createConfig({
 
 import { KeyManager, webAuthn } from 'tempo.ts/wagmi'
 // [!region withFeePayer]
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { withFeePayer } from 'viem/tempo'
 import { createConfig, http } from 'wagmi'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
@@ -36,12 +36,12 @@ export const config = createConfig({
       keyManager: KeyManager.localStorage(),
     }),
   ],
-  chains: [tempoModerato],
+  chains: [tempo],
   multiInjectedProviderDiscovery: false,
   transports: {
-    [tempoModerato.id]: withFeePayer(
-      http(),
-      http('https://sponsor.moderato.tempo.xyz'),
+    [tempo.id]: withFeePayer(
+      http('https://{user}:{pass}@rpc.tempo.xyz'),
+      http('https://sponsor.tempo.xyz'),
     ),
   },
 })

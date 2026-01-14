@@ -17,15 +17,15 @@ In this guide, we use [Index Supply](https://www.indexsupply.net) as our indexin
 
 Query the best bid and ask prices to calculate the current spread for a token pair.
 
-Find the highest bid prices (buyers) for AlphaUSD. This query filters out fully filled and cancelled orders, groups by price level (tick), and shows the top 5 bid prices with their total liquidity.
+Find the highest bid prices (buyers) for DONOTUSE. This query filters out fully filled and cancelled orders, groups by price level (tick), and shows the top 5 bid prices with their total liquidity.
 
 <IndexSupplyQuery
-  title={'Best Bid Prices for AlphaUSD'}
+  title={'Best Bid Prices for DONOTUSE'}
   query={`SELECT
     tick as price,
     SUM(amount) as total_liquidity
   FROM orderplaced
-  WHERE token = '0x20c0000000000000000000000000000000000001'
+  WHERE token = '0x20c000000000000000000000033abb6ac7d235e5'
     AND "isBid" = true
     AND NOT EXISTS (
       SELECT 1 FROM orderfilled
@@ -42,15 +42,15 @@ Find the highest bid prices (buyers) for AlphaUSD. This query filters out fully 
   signatures={["OrderPlaced", "OrderFilled", "OrderCancelled"]}
 />
 
-Find the lowest ask prices (sellers) for AlphaUSD. The spread is the difference between the highest bid and lowest ask price.
+Find the lowest ask prices (sellers) for DONOTUSE. The spread is the difference between the highest bid and lowest ask price.
 
 <IndexSupplyQuery
-  title={'Best Ask Prices for AlphaUSD'}
+  title={'Best Ask Prices for DONOTUSE'}
   query={`SELECT
     tick as price,
     SUM(amount) as total_liquidity
   FROM orderplaced
-  WHERE token = '0x20c0000000000000000000000000000000000001'
+  WHERE token = '0x20c000000000000000000000033abb6ac7d235e5'
     AND "isBid" = false
     AND NOT EXISTS (
       SELECT 1 FROM orderfilled
@@ -103,7 +103,7 @@ This query shows all active orders for BetaUSD, including both regular and flip 
 
 Get detailed information about a specific order including its placement details, fill history, and cancellation status.
 
-This query inspects the details of the most recent order for AlphaUSD. It shows when the order was created, at what price (tick), the order size, and who placed it.
+This query inspects the details of the most recent order for DONOTUSE. It shows when the order was created, at what price (tick), the order size, and who placed it.
 
 <IndexSupplyQuery
   title={'Order Placement Details'}
@@ -119,7 +119,7 @@ This query inspects the details of the most recent order for AlphaUSD. It shows 
     block_num,
     tx_hash
   FROM orderplaced
-  WHERE token = '0x20c0000000000000000000000000000000000001'
+  WHERE token = '0x20c000000000000000000000033abb6ac7d235e5'
   ORDER BY block_num DESC
   LIMIT 1`}
   signatures={["OrderPlaced"]}
@@ -146,7 +146,7 @@ Check if an order has been partially or fully filled. This query shows up to 5 f
 
 #### Cancelled orders
 
-Check if an order has been cancelled. This query returns an order for AlphaUSD that was explicitly cancelled by the maker before being fully filled.
+Check if an order has been cancelled. This query returns an order for DONOTUSE that was explicitly cancelled by the maker before being fully filled.
 
 <IndexSupplyQuery
   title={'Order Cancellation Status'}
@@ -156,7 +156,7 @@ Check if an order has been cancelled. This query returns an order for AlphaUSD t
     oc.tx_hash
   FROM ordercancelled oc
   INNER JOIN orderplaced op ON oc."orderId" = op."orderId"
-  WHERE op.token = '0x20c0000000000000000000000000000000000001'
+  WHERE op.token = '0x20c000000000000000000000033abb6ac7d235e5'
   ORDER BY op.block_num DESC
   LIMIT 1`}
   signatures={["OrderCancelled", "OrderPlaced"]}
@@ -169,7 +169,7 @@ View the last prices a token traded at to understand recent market activity.
 This query joins order fill events with their corresponding placement details to show the price tick and amount for recent trades.
 
 <IndexSupplyQuery
-  title={'Recent Trade Prices for AlphaUSD'}
+  title={'Recent Trade Prices for DONOTUSE'}
   query={`SELECT
     ofl.block_num,
     ofl."orderId",
@@ -179,7 +179,7 @@ This query joins order fill events with their corresponding placement details to
   FROM orderfilled ofl
   INNER JOIN orderplaced o
     ON ofl."orderId" = o."orderId"
-  WHERE o.token = '0x20c0000000000000000000000000000000000001'
+  WHERE o.token = '0x20c000000000000000000000033abb6ac7d235e5'
   ORDER BY ofl.block_num DESC
   LIMIT 10`}
   signatures={["OrderFilled", "OrderPlaced"]}

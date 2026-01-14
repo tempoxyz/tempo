@@ -33,11 +33,11 @@ Ensure that you have set up your client by following the [guide](/sdk/typescript
 To place an order, you need to approve the Stablecoin DEX contract to spend the order's "spend" token.
 
 :::info
-The code samples in this guide will place orders on the `AlphaUSD` / `pathUSD` pair.
+The code samples in this guide will place orders on the `DONOTUSE` / `pathUSD` pair.
 
 The "spend" token is the token that will be spent to place the order.
-- buying `AlphaUSD` spends `pathUSD`
-- selling `AlphaUSD` spends `AlphaUSD`
+- buying `DONOTUSE` spends `pathUSD`
+- selling `DONOTUSE` spends `DONOTUSE`
 :::
 
 <Demo.Container name="Approve Spend">
@@ -54,12 +54,12 @@ import { Addresses } from 'viem/tempo'
 import { Hooks } from 'wagmi/tempo'
 
 const pathUsd = '0x20c0000000000000000000000000000000000000'
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 function ApproveSpend(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend pathUSD // [!code hl]
-  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd // [!code hl]
+  // buying DONOTUSE requires we spend pathUSD // [!code hl]
+  const spendToken = orderType === 'buy' ? pathUsd : DONOTUSE // [!code hl]
   // [!code hl]
   const { mutate: approve } = Hooks.token.useApproveSync() // [!code hl]
 
@@ -106,12 +106,12 @@ import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi' // [!code hl]
 
 const pathUsd = '0x20c0000000000000000000000000000000000000'
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 function PlaceOrder(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend pathUSD
-  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd
+  // buying DONOTUSE requires we spend pathUSD
+  const spendToken = orderType === 'buy' ? pathUsd : DONOTUSE
 
   const sendCalls = useSendCallsSync() // [!code hl]
 
@@ -124,7 +124,7 @@ function PlaceOrder(props: { orderType: 'buy' | 'sell' }) {
           token: spendToken, // [!code hl]
         }), // [!code hl]
         Actions.dex.place.call({ // [!code hl]
-          token: alphaUsd, // [!code hl]
+          token: DONOTUSE, // [!code hl]
           amount: parseUnits('100', 6), // [!code hl]
           type: orderType, // [!code hl]
           tick: 0, // [!code hl]
@@ -209,7 +209,7 @@ import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
 const pathUsd = '0x20c0000000000000000000000000000000000000'
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 function ManageOrder() {
   const sendCalls = useSendCallsSync()
@@ -223,7 +223,7 @@ function ManageOrder() {
         token: pathUsd,
       }),
       Actions.dex.place.call({
-        token: alphaUsd,
+        token: DONOTUSE,
         amount: parseUnits('100', 6),
         type: 'buy',
         tick: 0,
@@ -284,11 +284,11 @@ declare module 'wagmi' {
 import { Hooks } from 'wagmi/tempo'
 
 const { data: metadata } = Hooks.token.useGetMetadata({ // [!code focus]
-  token: '0x20c0000000000000000000000000000000000001', // AlphaUSD // [!code focus]
+  token: '0x20c0000000000000000000000000000000000001', // DONOTUSE // [!code focus]
 }) // [!code focus]
 
 console.log('Token:', metadata?.symbol)
-// @log: Token: AlphaUSD
+// @log: Token: DONOTUSE
 console.log('Quote Token:', metadata?.quoteToken) // returns `pathUSD` address 
 // @log: Quote Token: 0x20c0000000000000000000000000000000000000
 ```
@@ -312,12 +312,12 @@ import { parseUnits } from 'viem'
 import { useSendCallsSync } from 'wagmi'
 
 const pathUsd = '0x20c0000000000000000000000000000000000000'
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 function PlaceFlipOrder(props: { orderType: 'buy' | 'sell' }) {
   const { orderType } = props
-  // buying AlphaUSD requires we spend pathUSD
-  const spendToken = orderType === 'buy' ? pathUsd : alphaUsd
+  // buying DONOTUSE requires we spend pathUSD
+  const spendToken = orderType === 'buy' ? pathUsd : DONOTUSE
 
   const sendCalls = useSendCallsSync()
 
@@ -330,7 +330,7 @@ function PlaceFlipOrder(props: { orderType: 'buy' | 'sell' }) {
           token: spendToken,
         }),
         Actions.dex.placeFlip.call({ // [!code focus]
-          token: alphaUsd,
+          token: DONOTUSE,
           amount: parseUnits('100', 6),
           type: orderType,
           tick: 0,
@@ -366,11 +366,11 @@ Use the `Tick` utility to convert between prices and ticks:
 import { Actions, Tick } from 'viem/tempo' // [!code hl]
 import { parseUnits } from 'viem'
 
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 // buy order at $0.9990 (tick: -10) // [!code hl]
 const buyCall = Actions.dex.place.call({ // [!code hl]
-  token: alphaUsd, // [!code hl]
+  token: DONOTUSE, // [!code hl]
   amount: parseUnits('100', 6), // [!code hl]
   type: 'buy', // [!code hl]
   tick: Tick.fromPrice('0.9990'), // -10 // [!code hl]
@@ -378,7 +378,7 @@ const buyCall = Actions.dex.place.call({ // [!code hl]
 
 // sell order at $1.0010 (tick: 10) // [!code hl]
 const sellCall = Actions.dex.place.call({ // [!code hl]
-  token: alphaUsd, // [!code hl]
+  token: DONOTUSE, // [!code hl]
   amount: parseUnits('100', 6), // [!code hl]
   type: 'sell', // [!code hl]
   tick: Tick.fromPrice('1.0010'), // 10 // [!code hl]

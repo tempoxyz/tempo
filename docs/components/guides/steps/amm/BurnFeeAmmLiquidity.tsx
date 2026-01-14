@@ -5,10 +5,10 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-const validatorToken = alphaUsd
+const validatorToken = DONOTUSE
 
 export function BurnFeeAmmLiquidity(props: DemoStepProps) {
   const { stepNumber, last = false } = props
@@ -73,7 +73,7 @@ export function BurnFeeAmmLiquidity(props: DemoStepProps) {
               validatorToken,
               liquidity: parseUnits('10', validatorMetadata?.decimals || 6),
               to: address,
-              feeToken: alphaUsd,
+              feeToken: DONOTUSE,
             })
           }}
           type="button"

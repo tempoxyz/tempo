@@ -33,7 +33,7 @@ import (
 )
 
 func main() {
-    c, err := client.New("https://rpc.moderato.tempo.xyz") // [!code focus]
+    c, err := client.New("https://rpc.tempo.xyz") // [!code focus]
     if err != nil { // [!code focus]
         panic(err) // [!code focus]
     } // [!code focus]
@@ -57,7 +57,7 @@ import (
 )
 
 func main() {
-    c, _ := client.New("https://rpc.moderato.tempo.xyz")
+    c, _ := client.New("https://rpc.tempo.xyz")
 
     s, err := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80") // [!code focus]
     if err != nil { // [!code focus]
@@ -86,7 +86,7 @@ import (
 )
 
 func main() {
-    c, _ := client.New("https://rpc.moderato.tempo.xyz")
+    c, _ := client.New("https://rpc.tempo.xyz")
     s, _ := signer.NewSigner("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
 
     recipient := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
@@ -100,7 +100,7 @@ func main() {
     tx.MaxPriorityFeePerGas = big.NewInt(1000000000)
     tx.Gas = 100000
     tx.Calls = []transaction.Call{{
-        To:    &transaction.AlphaUSDAddress,
+        To:    &transaction.DONOTUSEAddress,
         Value: big.NewInt(0),
         Data:  transferData,
     }}

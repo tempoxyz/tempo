@@ -4,7 +4,7 @@ import { Hooks } from 'wagmi/tempo'
 import { cx } from '../../../../cva.config'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Login, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function CreateToken(props: DemoStepProps) {
@@ -13,7 +13,7 @@ export function CreateToken(props: DemoStepProps) {
   const { setData } = useDemoContext()
   const { data: balance, refetch: balanceRefetch } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const create = Hooks.token.useCreateSync({
     mutation: {
@@ -52,7 +52,7 @@ export function CreateToken(props: DemoStepProps) {
       completed={create.isSuccess}
       number={stepNumber}
       actions={showLogin && <Login />}
-      title="Create & deploy a token to testnet."
+      title="Create & deploy a token to mainnet."
     >
       {(active || create.isSuccess) && (
         <div className="flex ml-6 flex-col gap-3 py-4">
@@ -67,7 +67,7 @@ export function CreateToken(props: DemoStepProps) {
                   name,
                   symbol,
                   currency: 'USD',
-                  feeToken: alphaUsd,
+                  feeToken: DONOTUSE,
                 })
               }}
               className="flex gap-2 flex-col md:items-end md:flex-row -mt-2.5"

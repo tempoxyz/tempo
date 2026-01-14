@@ -1,14 +1,15 @@
+// @ts-nocheck
 // [!region setup]
 
 import { createClient, http, publicActions, walletActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 import { tempoActions } from 'viem/tempo'
 
 export const client = createClient({
   account: privateKeyToAccount('0x...'),
-  chain: tempoModerato,
-  transport: http(),
+  chain: tempo,
+  transport: http('https://username:password@rpc.tempo.xyz'),
 })
   .extend(publicActions)
   .extend(walletActions)

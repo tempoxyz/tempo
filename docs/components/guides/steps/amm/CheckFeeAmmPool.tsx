@@ -4,10 +4,10 @@ import { useConnection } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
-const validatorToken = alphaUsd
+const validatorToken = DONOTUSE
 
 export function CheckFeeAmmPool(props: DemoStepProps) {
   const { stepNumber } = props
@@ -70,7 +70,7 @@ export function CheckFeeAmmPool(props: DemoStepProps) {
                       pool.reserveValidatorToken,
                       validatorMetadata?.decimals || 6,
                     )}{' '}
-                    AlphaUSD
+                    DONOTUSE
                   </span>
                 </div>
                 <div className="flex items-center justify-between">

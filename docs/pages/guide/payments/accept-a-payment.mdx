@@ -12,7 +12,7 @@ Payments are automatically credited to the recipient's address when a transfer i
 
 In this basic receiving demo you can see the balances update after you add funds to your account, using the `getBalance` and `watchEvent` calls documented below.
 
-<Demo.Container name="Receive a Payment" footerVariant="balances" tokens={[Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
+<Demo.Container name="Receive a Payment" footerVariant="balances" tokens={[Token.DONOTUSE, Token.betaUsd, Token.thetaUsd]} src="tempoxyz/tempo-ts/tree/main/examples/payments">
   <Step.Connect stepNumber={1} />
   <Step.AddFunds stepNumber={2} last />
 </Demo.Container>
@@ -29,7 +29,7 @@ Check if a payment has been received by querying the token balance or listening 
 import { client } from './viem.config'
 
 const balance = await client.token.getBalance({
-  token: '0x20c0000000000000000000000000000000000001', // AlphaUSD
+  token: '0x20c000000000000000000000033abb6ac7d235e5', // DONOTUSE
   address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb',
 })
 
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     let balance = ITIP20::new( // [!code focus]
-        address!("0x20c0000000000000000000000000000000000001"), // Alpha USD // [!code focus]
+        address!("0x20c000000000000000000000033abb6ac7d235e5"), // DONOTUSE // [!code focus]
         &provider, // [!code focus]
     ) // [!code focus]
     .balanceOf(address!("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbb")) // [!code focus]
@@ -71,7 +71,7 @@ import { watchEvent } from 'viem'
 
 // Watch for incoming transfers
 const unwatch = watchEvent(client, {
-  address: '0x20c0000000000000000000000000000000000001',
+  address: '0x20c000000000000000000000033abb6ac7d235e5',
   event: {
     type: 'event',
     name: 'Transfer',

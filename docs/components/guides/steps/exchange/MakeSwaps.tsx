@@ -4,7 +4,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 
 import { Step } from '../../Demo'
-import { alphaUsd, betaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 import { BuySwap } from './BuySwap'
 import { SellSwap } from './SellSwap'
@@ -14,15 +14,15 @@ export function MakeSwaps({ stepNumber, last = false }: DemoStepProps) {
   const [buyCompleted, setBuyCompleted] = React.useState(false)
   const [sellCompleted, setSellCompleted] = React.useState(false)
 
-  const { data: alphaUsdMetadata } = Hooks.token.useGetMetadata({
-    token: alphaUsd,
+  const { data: DONOTUSEMetadata } = Hooks.token.useGetMetadata({
+    token: DONOTUSE,
   })
   const { data: betaUsdMetadata } = Hooks.token.useGetMetadata({
     token: betaUsd,
   })
-  const { data: alphaUsdBalance } = Hooks.token.useGetBalance({
+  const { data: DONOTUSEBalance } = Hooks.token.useGetBalance({
     account: address,
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const { data: betaUsdBalance } = Hooks.token.useGetBalance({
     account: address,
@@ -32,15 +32,15 @@ export function MakeSwaps({ stepNumber, last = false }: DemoStepProps) {
   const active = React.useMemo(() => {
     return (
       !!address &&
-      (alphaUsdBalance || 0n) >
-        parseUnits('11', alphaUsdMetadata?.decimals || 6) &&
+      (DONOTUSEBalance || 0n) >
+        parseUnits('11', DONOTUSEMetadata?.decimals || 6) &&
       (betaUsdBalance || 0n) > parseUnits('11', betaUsdMetadata?.decimals || 6)
     )
   }, [
     address,
-    alphaUsdBalance,
+    DONOTUSEBalance,
     betaUsdBalance,
-    alphaUsdMetadata?.decimals,
+    DONOTUSEMetadata?.decimals,
     betaUsdMetadata?.decimals,
   ])
 

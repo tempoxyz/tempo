@@ -84,7 +84,7 @@ export default defineConfig({
     </>
   ),
   title: 'Documentation ⋅ Tempo',
-  description: 'Documentation for Tempo testnet and protocol specifications',
+  description: 'Documentation for Tempo and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
     dark: '/lockup-dark.svg',
@@ -96,11 +96,17 @@ export default defineConfig({
   rootDir: '.',
   banner: {
     content: (
-        <div>
-          <strong>Testnet migration:</strong> We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th.{' '}
-          <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>Learn more →</a>
-        </div>
-      ),
+      <div>
+        <strong>Mainnet Candidate:</strong> We've launched the Tempo Mainnet
+        Candidate for partners to test integrations.{' '}
+        <a
+          href="/quickstart/integrate-tempo"
+          style={{ textDecoration: 'underline' }}
+        >
+          Get started →
+        </a>
+      </div>
+    ),
     dismissable: true,
   },
   socials: [
@@ -120,28 +126,20 @@ export default defineConfig({
         link: '/',
       },
       {
-        text: 'Integrate Tempo Testnet',
+        text: 'Integrate Tempo',
         items: [
           {
             text: 'Overview',
             link: '/quickstart/integrate-tempo',
           },
           {
-            text: 'Network Upgrades',
-            link: '/network-upgrades',
-          },
-          {
             text: 'Connect to the Network',
             link: '/quickstart/connection-details',
           },
-          {
-            text: 'Get Faucet Funds',
-            link: '/quickstart/faucet',
-          },
-          {
-            text: 'Developer Tools',
-            link: '/quickstart/developer-tools',
-          },
+          // {
+          //   text: 'Developer Tools',
+          //   link: '/quickstart/developer-tools',
+          // },
           {
             text: 'EVM Differences',
             link: '/quickstart/evm-compatibility',

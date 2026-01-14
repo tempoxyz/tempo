@@ -2,41 +2,105 @@
 mipd: true
 ---
 
-import * as Demo from '../../components/guides/Demo.tsx'
 import { ConnectWallet } from '../../components/ConnectWallet.tsx'
 
-## Connect to the Network
+# Connect to Tempo Mainnet
 
-You can connect with the Tempo Testnet like you would with any other EVM chain.
+This page provides instructions on how to interact with the Tempo Mainnet Candidate through:
 
-### Connect using a Browser Wallet
+- [Direct Connection](#direct-connection-details)
+- [Foundry (`forge`/`cast`)](#interact-via-foundry-forgecast)
+- [Viem (TypeScript)](#interact-via-viem-typescript)
+- [Wagmi (TypeScript)](#interact-via-wagmi-typescript)
+- [Alloy (Rust)](#interact-via-alloy-rust)
 
-Click on your browser wallet below to automatically connect it to the Tempo Testnet.
+## Direct Connection Details
 
-<ConnectWallet />
-
-:::warning
-Note that on some wallets, you might see an unusually high "balance". This is because, historically, blockchain wallets have always assumed that a blockchain has a "native gas token". On Tempo, there is no native gas token, and so the value shown is a placeholder. See [EVM Differences](/quickstart/evm-compatibility#handling-eth-balance-checks) for more information on this quirk.
-:::
-
-### Connect via CLI
-
-To connect via CLI, we recommend using [`cast`](https://getfoundry.sh/cast/overview/), which is a command-line tool for interacting with Ethereum networks. To install cast, you can read more in the [Foundry SDK docs](/sdk/foundry#get-started-with-foundry).
-
-```bash /dev/null/monitor.sh#L1-11
-# Check block height (should be steadily increasing)
-cast block-number --rpc-url https://rpc.moderato.tempo.xyz
-```
-
-### Direct Connection Details
-
-If you're manually connecting to Tempo Testnet, you can use the following details:
+If you wish to directly connect to the network, you can use the following details:
 
 | **Property** | **Value** |
 |-------------------|-------|
-| **Network Name** | Tempo Testnet (Moderato) |
+| **Network Name** | Tempo Mainnet |
 | **Currency** | `USD` |
-| **Chain ID** | `42431` |
-| **HTTP URL** | `https://rpc.moderato.tempo.xyz` |
-| **WebSocket URL** | `wss://rpc.moderato.tempo.xyz` |
-| **Block Explorer** | [`https://explore.tempo.xyz`](https://explore.tempo.xyz) |
+| **Chain ID** | `4217` |
+| **HTTP URL** | `https://rpc.tempo.xyz` |
+| **WebSocket URL** | `wss://rpc.tempo.xyz` |
+| **Block Explorer** | [`https://explore.mainnet.tempo.xyz`](https://explore.mainnet.tempo.xyz) |
+
+The Mainnet Candidate RPC is currently gated via basic authentication. In order to interact with the URLs, 
+you will need to provide your username and password credentials.
+
+## Interact via Foundry (`cast`/`forge`)
+
+Use the `--rpc-url` argument with your RPC credentials to the end of your Foundry commands.
+
+```bash
+cast block-number \ 
+  --rpc-url https://{username}:{password}@rpc.tempo.xyz # // [!code hl]
+
+forge create src/Mail.sol:Mail \
+  --interactive \
+  --broadcast \
+  --verify \
+  --constructor-args 0x20c000000000000000000000033abb6ac7d235e5 \
+  --rpc-url https://{username}:{password}@rpc.tempo.xyz # // [!code hl]
+```
+
+When using Forge contract verification, ensure that your `VERIFIER_URL` or `--verifier-url` argument
+contains your mainnet RPC credentials.
+
+```bash
+export VERIFIER_URL=https://{username}:{password}@contracts.tempo.xyz/v2/contract
+```
+
+## Interact via Viem (TypeScript)
+
+When using Viem, you can pass your RPC credentials embedded in the URL on the `http` transport function.
+
+```ts twoslash
+import { createClient, http } from 'viem'
+import { tempo } from 'viem/chains'
+
+const client = createClient({
+  chain: tempo,
+  transport: http('https://username:password@rpc.tempo.xyz'), // [!code hl]
+})
+```
+
+## Interact via Wagmi (TypeScript)
+
+When using Wagmi, you can pass your RPC credentials embedded in the URL on the `http` transport function.
+
+```ts twoslash
+// @noErrors
+import { createConfig, http } from 'wagmi'
+import { tempo } from 'viem/chains'
+
+export const config = createConfig({
+  chains: [tempo],
+  transports: { 
+    [tempo.id]: http('https://username:password@rpc.tempo.xyz'), // [!code hl]
+  },
+})
+```
+
+## Interact via Alloy (Rust)
+
+When using Alloy, you can pass your RPC credentials embedded in the URL on the `connect` method.
+
+```rust
+use alloy::providers::{Provider, ProviderBuilder};
+use tempo_alloy::TempoNetwork;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .connect("https://username:password@rpc.tempo.xyz") // [!code hl]
+        .await?;
+
+    let block_number = provider.get_block_number().await?;
+    println!("Latest block: {block_number}");
+
+    Ok(())
+}
+```

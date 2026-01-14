@@ -2,7 +2,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function PauseUnpauseTransfers(props: DemoStepProps) {
@@ -60,9 +60,9 @@ export function PauseUnpauseTransfers(props: DemoStepProps) {
     if (!tokenAddress) return
 
     if (paused) {
-      unpause.mutate({ token: tokenAddress, feeToken: alphaUsd })
+      unpause.mutate({ token: tokenAddress, feeToken: DONOTUSE })
     } else {
-      pause.mutate({ token: tokenAddress, feeToken: alphaUsd })
+      pause.mutate({ token: tokenAddress, feeToken: DONOTUSE })
     }
   }
 

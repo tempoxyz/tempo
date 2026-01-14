@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useConnection, useWatchAsset } from 'wagmi'
 import { Button, Step } from '../../Demo'
-import { alphaUsd, betaUsd, pathUsd, thetaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE, pathUsd, thetaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 type Token = {
@@ -12,7 +12,7 @@ type Token = {
 }
 
 const TOKENS: Token[] = [
-  { address: alphaUsd, symbol: 'AlphaUSD', decimals: 6 },
+  { address: DONOTUSE, symbol: 'DONOTUSE', decimals: 6 },
   { address: betaUsd, symbol: 'BetaUSD', decimals: 6 },
   { address: thetaUsd, symbol: 'ThetaUSD', decimals: 6 },
   { address: pathUsd, symbol: 'pathUSD', decimals: 6 },

@@ -4,13 +4,13 @@ import { useConnection, useConnectionEffect, useSendCallsSync } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 
 import { Button, ExplorerLink } from '../../Demo'
-import { alphaUsd, betaUsd } from '../../tokens'
+import { betaUsd, DONOTUSE } from '../../tokens'
 
 export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
   const { address } = useConnection()
 
   const { data: tokenInMetadata } = Hooks.token.useGetMetadata({
-    token: alphaUsd,
+    token: DONOTUSE,
   })
   const { data: tokenOutMetadata } = Hooks.token.useGetMetadata({
     token: betaUsd,
@@ -19,7 +19,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
   const amount = parseUnits('10', tokenInMetadata?.decimals || 6)
 
   const { data: quote } = Hooks.dex.useSellQuote({
-    tokenIn: alphaUsd,
+    tokenIn: DONOTUSE,
     tokenOut: betaUsd,
     amountIn: amount,
     query: {
@@ -52,12 +52,12 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
     Actions.token.approve.call({
       spender: Addresses.stablecoinDex,
       amount,
-      token: alphaUsd,
+      token: DONOTUSE,
     }),
     Actions.dex.sell.call({
       amountIn: amount,
       minAmountOut,
-      tokenIn: alphaUsd,
+      tokenIn: DONOTUSE,
       tokenOut: betaUsd,
     }),
   ]
@@ -65,7 +65,7 @@ export function SellSwap({ onSuccess }: { onSuccess?: () => void }) {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Sell 10 AlphaUSD for BetaUSD</h3>
+        <h3 className="text-sm font-semibold">Sell 10 DONOTUSE for BetaUSD</h3>
         <Button
           variant={sendCalls.isSuccess ? 'default' : 'accent'}
           disabled={!address}

@@ -35,7 +35,7 @@ import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function ManageFeeLiquidity() {
   const { data: pool } = Hooks.amm.usePool({ // [!code hl]
@@ -54,22 +54,7 @@ function ManageFeeLiquidity() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -87,7 +72,7 @@ import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function ManageFeeLiquidity() {
   const { address } = useConnection()
@@ -122,22 +107,7 @@ function ManageFeeLiquidity() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -155,7 +125,7 @@ import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function ManageFeeLiquidity() {
   const { address } = useConnection()
@@ -197,22 +167,7 @@ function ManageFeeLiquidity() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -230,7 +185,7 @@ import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function ManageFeeLiquidity() {
   const { address } = useConnection()
@@ -284,22 +239,7 @@ function ManageFeeLiquidity() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -321,7 +261,7 @@ import { Hooks } from 'wagmi/tempo'
 import { formatUnits } from 'viem'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function MonitorSwaps() {
   const [swaps, setSwaps] = React.useState<any[]>([])
@@ -354,22 +294,7 @@ function MonitorSwaps() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -387,7 +312,7 @@ import { formatUnits, parseUnits } from 'viem'
 import { useConnection } from 'wagmi'
 
 const userToken = '0x20c0000000000000000000000000000000000002' // BetaUSD
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
 function RebalancePool() {
   const { address } = useConnection()
@@ -422,22 +347,7 @@ function RebalancePool() {
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-import { createConfig, http } from 'wagmi'
-
-export const config = createConfig({
-  connectors: [
-    webAuthn({
-      keyManager: KeyManager.localStorage(),
-    }),
-  ],
-  chains: [tempoModerato],
-  multiInjectedProviderDiscovery: false,
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::

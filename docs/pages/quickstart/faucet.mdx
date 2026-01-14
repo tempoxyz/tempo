@@ -10,7 +10,7 @@ import { Tabs } from '../../components/Tabs.tsx'
 
 ## Faucet
 
-Get test stablecoins on Tempo testnet.
+Get test stablecoins on Tempo.
 
 <Tabs>
   <Tabs.Tab value="Fund your wallet">
@@ -20,7 +20,7 @@ Get test stablecoins on Tempo testnet.
 Connect your wallet to receive test stablecoins directly.
 
 <div className="h-6"/>
-<Demo.Container name="Connect and fund your wallet" footerVariant="balances" tokens={[Token.pathUsd, Token.alphaUsd, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
+<Demo.Container name="Connect and fund your wallet" footerVariant="balances" tokens={[Token.pathUsd, Token.DONOTUSE, Token.betaUsd, Token.thetaUsd]} balanceSource="wallet">
   <Step.ConnectWallet stepNumber={1} />
   <Step.AddFundsToWallet stepNumber={2} />
   <Step.AddTokensToWallet stepNumber={3} />
@@ -46,6 +46,6 @@ The faucet funds the following assets.
 | Asset | Address |Amount|
 |-------|---------|----:|
 | [pathUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000000) | `0x20c0000000000000000000000000000000000000` | `1M` |
-| [AlphaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000001) | `0x20c0000000000000000000000000000000000001` | `1M` |
+| [DONOTUSE](https://explore.tempo.xyz/address/0x20c000000000000000000000033abb6ac7d235e5) | `0x20c000000000000000000000033abb6ac7d235e5` | `1M` |
 | [BetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000002) | `0x20c0000000000000000000000000000000000002` | `1M` |
 | [ThetaUSD](https://explore.tempo.xyz/address/0x20c0000000000000000000000000000000000003)   | `0x20c0000000000000000000000000000000000003` | `1M` |

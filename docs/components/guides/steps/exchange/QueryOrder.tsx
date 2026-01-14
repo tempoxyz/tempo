@@ -102,7 +102,7 @@ export function QueryOrder(props: DemoStepProps) {
                     Original Amount
                   </div>
                   <div className="font-mono">
-                    {formatUnits(order.amount, 6)} AlphaUSD
+                    {formatUnits(order.amount, 6)} DONOTUSE
                   </div>
                 </div>
                 <div>
@@ -110,7 +110,7 @@ export function QueryOrder(props: DemoStepProps) {
                     Remaining
                   </div>
                   <div className="font-mono">
-                    {formatUnits(order.remaining, 6)} AlphaUSD
+                    {formatUnits(order.remaining, 6)} DONOTUSE
                   </div>
                 </div>
               </div>

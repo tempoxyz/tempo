@@ -63,15 +63,15 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 ### As a user
 
-You can connect to Tempo's public testnet using the following details:
+You can connect to Tempo's public mainnet using the following details:
 
 | Property           | Value                              |
 | ------------------ | ---------------------------------- |
-| **Network Name**   | Tempo Testnet (Moderato)           |
+| **Network Name**   | Tempo Mainnet    |
 | **Currency**       | `USD`                              |
 | **Chain ID**       | `42431`                            |
-| **HTTP URL**       | `https://rpc.moderato.tempo.xyz`   |
-| **WebSocket URL**  | `wss://rpc.moderato.tempo.xyz`     |
+| **HTTP URL**       | `https://rpc.tempo.xyz`   |
+| **WebSocket URL**  | `wss://rpc.tempo.xyz`     |
 | **Block Explorer** | `https://explore.tempo.xyz`        |
 
 Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).

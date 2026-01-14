@@ -5,7 +5,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 import { REWARD_AMOUNT, REWARD_RECIPIENT_UNSET } from './Constants'
 
@@ -99,7 +99,7 @@ export function DistributeReward(props: DemoStepProps) {
               distribute.mutate({
                 amount: parseUnits(REWARD_AMOUNT, metadata.decimals),
                 token: tokenAddress,
-                feeToken: alphaUsd,
+                feeToken: DONOTUSE,
               })
             }}
           >

@@ -31,7 +31,7 @@ First, create and mint your stablecoin by following the [Create a Stablecoin](/g
 
 ### Add fee pool liquidity
 
-Before users can pay fees with your token, ensure there is sufficient liquidity in the fee pool. On the Moderato testnet, all validators expect fees in AlphaUSD, so you need to add AlphaUSD liquidity to your token's fee pool.
+Before users can pay fees with your token, ensure there is sufficient liquidity in the fee pool. On the mainnet candidate, validators expect fees in DONOTUSE, so you need to add DONOTUSE liquidity to your token's fee pool.
 
 Add liquidity to your token's fee pool:
 
@@ -45,11 +45,11 @@ import { useConnection } from 'wagmi'
 
 const { address } = useConnection()
 const yourToken = '0x...' // Your issued token address
-const validatorToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD on testnet
+const validatorToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE token
 
 const mintFeeLiquidity = Hooks.amm.useMintSync() // [!code hl]
 
-// Add 100 AlphaUSD of liquidity to the fee pool // [!code hl]
+// Add 100 DONOTUSE of liquidity to the fee pool // [!code hl]
 mintFeeLiquidity.mutate({ // [!code hl]
   feeToken: validatorToken,
   to: address,
@@ -62,9 +62,9 @@ mintFeeLiquidity.mutate({ // [!code hl]
 ```solidity [Solidity]
 IFeeAMM feeAmm = IFeeAMM(TIP_FEE_AMM_ADDRESS);
 address yourToken = 0x20c0000000000000000000000000000000000004; // Your issued token
-address validatorToken = 0x20c0000000000000000000000000000000000001; // AlphaUSD
+address validatorToken = 0x20c000000000000000000000033abb6ac7d235e5; // DONOTUSE
 
-// Add 100 AlphaUSD of liquidity to the fee pool
+// Add 100 DONOTUSE of liquidity to the fee pool
 feeAmm.mint(
   yourToken,
   validatorToken,
@@ -85,7 +85,7 @@ import { Hooks } from 'wagmi/tempo'
 
 const { data: pool } = Hooks.amm.usePool({
   userToken: yourToken,
-  validatorToken: '0x20c0000000000000000000000000000000000001', // AlphaUSD on testnet
+  validatorToken: '0x20c0000000000000000000000000000000000001', // DONOTUSE token
 })
 
 const hasLiquidity = pool && pool.reserveValidatorToken > 0n
@@ -94,7 +94,7 @@ const hasLiquidity = pool && pool.reserveValidatorToken > 0n
 ```solidity [Solidity]
 IFeeAMM feeAmm = IFeeAMM(TIP_FEE_AMM_ADDRESS);
 address yourToken = 0x20c0000000000000000000000000000000000004; // Your issued token
-address validatorToken = 0x20c0000000000000000000000000000000000001; // AlphaUSD
+address validatorToken = 0x20c000000000000000000000033abb6ac7d235e5; // DONOTUSE
 
 // Get pool reserves
 (uint256 reserveValidator, uint256 reserveUser) = feeAmm.getReserves(yourToken, validatorToken);
@@ -126,7 +126,7 @@ export function PayWithIssuedToken() {
   const [memo, setMemo] = React.useState<string>('')
 
   const feeToken = '0x...' // Your issued token address
-  const paymentToken = '0x20c0000000000000000000000000000000000001' // AlphaUSD
+  const paymentToken = '0x20c000000000000000000000033abb6ac7d235e5' // DONOTUSE
 
   const { data: paymentBalance, refetch: paymentBalanceRefetch } = // [!code hl]
     Hooks.token.useGetBalance({ // [!code hl]
@@ -196,23 +196,11 @@ export function PayWithIssuedToken() {
 
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoModerato } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoModerato],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempo.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 ```solidity [Solidity]
-ITIP20 token = ITIP20(0x20c0000000000000000000000000000000000001); // AlphaUSD
+ITIP20 token = ITIP20(0x20c000000000000000000000033abb6ac7d235e5); // DONOTUSE
 address yourToken = 0x20c0000000000000000000000000000000000004; // Your issued stablecoin
 address recipient = 0xbeefcafe54750903ac1c8909323af7beb21ea2cb;
 
@@ -240,8 +228,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Your issued token
     let your_token = address!("0x20c0000000000000000000000000000000000004"); // [!code focus]
-    // AlphaUSD
-    let validator_token = address!("0x20c0000000000000000000000000000000000001"); // [!code focus]
+    // DONOTUSE
+    let validator_token = address!("0x20c000000000000000000000033abb6ac7d235e5"); // [!code focus]
 
     let fee_amm = ITIPFeeAMM::new( // [!code focus]
         TIP_FEE_MANAGER_ADDRESS, // [!code focus]
@@ -250,7 +238,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let recipient = address!("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // [!code focus]
 
-    // Add 100 AlphaUSD of liquidity to the fee pool
+    // Add 100 DONOTUSE of liquidity to the fee pool
     fee_amm // [!code focus]
         .mint( // [!code focus]
             your_token, // [!code focus]
@@ -304,7 +292,7 @@ Keep sufficient validator token reserves in your fee pool to handle expected tra
 
 ### Test before launch
 
-Before promoting fee payments with your token, thoroughly test the flow on testnet:
+Before promoting fee payments with your token, thoroughly test the flow:
 1. Add liquidity to the fee pool
 2. Verify users can set your token as their fee preference
 3. Execute test transactions with various gas costs

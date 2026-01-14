@@ -5,7 +5,7 @@ import { useConnection, useConnectionEffect } from 'wagmi'
 import { Hooks } from 'wagmi/tempo'
 import { useDemoContext } from '../../../DemoContext'
 import { Button, ExplorerLink, FAKE_RECIPIENT, Step } from '../../Demo'
-import { alphaUsd } from '../../tokens'
+import { DONOTUSE } from '../../tokens'
 import type { DemoStepProps } from '../types'
 
 export function BurnTokenBlocked(props: DemoStepProps) {
@@ -53,7 +53,7 @@ export function BurnTokenBlocked(props: DemoStepProps) {
       amount: parseUnits('100', metadata.decimals),
       from: FAKE_RECIPIENT,
       token: tokenAddress,
-      feeToken: alphaUsd,
+      feeToken: DONOTUSE,
     })
   }
 

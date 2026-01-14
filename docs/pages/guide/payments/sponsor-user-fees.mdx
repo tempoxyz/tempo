@@ -26,7 +26,7 @@ Enable gasless transactions by sponsoring transaction fees for your users. Tempo
 ### Set up the fee payer service
 
 :::tip
-Tempo provides a public testnet fee payer service at `https://sponsor.moderato.tempo.xyz` that you can use for development and testing. If you want to run your own, follow the instructions below.
+Tempo provides a public testnet fee payer service at `https://sponsor.tempo.xyz` that you can use for development and testing. If you want to run your own, follow the instructions below.
 :::
 
 You can stand up a minimal fee payer service using the `Handler.feePayer` handler provided by the Tempo TypeScript SDK ([link](/sdk/typescript/server/handler.feePayer)). To sponsor transactions, you need a funded account that will act as the fee payer.
@@ -62,14 +62,14 @@ import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
-const alphaUsd = '0x20c0000000000000000000000000000000000001'
+const DONOTUSE = '0x20c000000000000000000000033abb6ac7d235e5'
 
 // @noErrors
 function SendSponsoredPayment() {
   const sponsorAccount = privateKeyToAccount('0x...')
   const sendPayment = Hooks.token.useTransferSync() // [!code hl]
   const metadata = Hooks.token.useGetMetadata({
-    token: alphaUsd,
+    token: DONOTUSE,
   })
 
   return (
@@ -85,7 +85,7 @@ function SendSponsoredPayment() {
           amount: parseUnits('100', metadata.data.decimals), // [!code hl]
           feePayer: true, // [!code focus]
           to: recipient, // [!code hl]
-          token: alphaUsd, // [!code hl]
+          token: DONOTUSE, // [!code hl]
         }) // [!code hl]
       }
     }>
@@ -127,11 +127,11 @@ The example above uses a fee payer server to sign and sponsor transactions. If y
 // @noErrors
 import { createClient, http } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { tempoModerato } from 'viem/chains'
+import { tempo } from 'viem/chains'
 
 const client = createClient({
-  chain: tempoModerato,
-  transport: http(),
+  chain: tempo,
+  transport: http('https://username:password@rpc.tempo.xyz'),
 })
 
 const { receipt } = await client.token.transferSync({
