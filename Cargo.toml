@@ -9,8 +9,10 @@ publish = false
 members = [
   "bin/tempo",
   "bin/tempo-bench",
+  "bin/tempo-bootnode",
   "bin/tempo-sidecar",
   "crates/alloy",
+  "crates/bootnode",
   "crates/chainspec",
   "crates/commonware-node",
   "crates/commonware-node-config",

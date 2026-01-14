@@ -11673,6 +11673,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-bootnode"
+version = "1.0.0-rc.5"
+dependencies = [
+ "axum",
+ "const-hex",
+ "eyre",
+ "futures",
+ "parking_lot",
+ "rand 0.8.5",
+ "reqwest",
+ "reth-discv4",
+ "reth-network-peers",
+ "secp256k1 0.30.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+]
+
+[[package]]
+name = "tempo-bootnode-bin"
+version = "1.0.0-rc.5"
+dependencies = [
+ "clap",
+ "const-hex",
+ "eyre",
+ "tempo-bootnode",
+ "tempo-eyre",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+]
+
+[[package]]
 name = "tempo-chainspec"
 version = "1.0.0-rc.6"
 dependencies = [

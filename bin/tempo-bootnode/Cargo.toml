@@ -1,0 +1,27 @@
+[package]
+name = "tempo-bootnode-bin"
+description = "Internal bootnode binary with dynamic peer registration for Kubernetes deployments"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tempo-bootnode = { path = "../../crates/bootnode" }
+tempo-eyre.workspace = true
+
+clap.workspace = true
+const-hex.workspace = true
+eyre.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "tempo-bootnode"
+path = "src/main.rs"
