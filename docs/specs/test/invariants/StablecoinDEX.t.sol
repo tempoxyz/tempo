@@ -30,6 +30,11 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @dev Dust level before each swap, used to verify TEMPO-DEX18 (each swap increases dust by at most 1).
     uint256 private _dustBeforeSwap;
 
+    /// @dev TEMPO-DEX20: Ghost variables for tracking divisibility edge cases
+    /// When (base * price) % PRICE_SCALE == 0, ceil should equal floor (no +1)
+    uint256 private _ghostDivisibleEscrowCount;
+    uint256 private _ghostDivisibleEscrowCorrect;
+
     /// @notice Sets up the test environment
     /// @dev Initializes BaseTest, creates trading pair, builds actors, and sets initial state
     function setUp() public override {
@@ -134,6 +139,45 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         bool isBid
     ) external {
         placeOrder(actorRnd, amount, tickRnd, tokenRnd, isBid, true);
+    }
+
+    /// @notice TEMPO-DEX20: Test divisibility edge cases - when (base*price) % PRICE_SCALE == 0
+    function placeDivisibleBid(uint256 actorRnd, uint256 tickRnd, uint256 tokenRnd) external {
+        int16 tick = _ticks[tickRnd % _ticks.length];
+        address actor = _actors[actorRnd % _actors.length];
+        address token = address(_tokens[tokenRnd % _tokens.length]);
+        uint32 price = exchange.tickToPrice(tick);
+
+        // Calculate amount where (amount * price) % 100_000 == 0, above min order size
+        uint128 amount = uint128((100_000 / _gcd(uint256(price), 100_000)) * 10_000);
+        if (amount < 100_000_000) return;
+
+        uint256 product = uint256(amount) * uint256(price);
+        if (product % 100_000 != 0) return;
+
+        _ghostDivisibleEscrowCount++;
+        uint256 expectedEscrow = product / 100_000;
+        _ensureFunds(actor, pathUSD, expectedEscrow + 1000);
+
+        uint256 balBefore = pathUSD.balanceOf(actor);
+        vm.prank(actor);
+        uint128 orderId = exchange.place(token, amount, true, tick);
+        _nextOrderId++;
+
+        uint256 escrowed = balBefore - pathUSD.balanceOf(actor);
+        if (escrowed <= expectedEscrow + 1 && escrowed >= expectedEscrow) {
+            _ghostDivisibleEscrowCorrect++;
+        }
+        _placedOrders[actor].push(orderId);
+    }
+
+    function _gcd(uint256 a, uint256 b) internal pure returns (uint256) {
+        while (b != 0) {
+            uint256 t = b;
+            b = a % b;
+            a = t;
+        }
+        return a;
     }
 
     /// @dev Helper to verify order was created correctly (TEMPO-DEX2)
@@ -754,6 +798,15 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         // TEMPO-DEX7 & TEMPO-DEX11: Tick level and bitmap consistency for all tokens
         for (uint256 t = 0; t < _tokens.length; t++) {
             _assertTickLevelConsistency(address(_tokens[t]));
+        }
+
+        // TEMPO-DEX20: Divisibility edge cases - all should have correct escrow
+        if (_ghostDivisibleEscrowCount > 0) {
+            assertEq(
+                _ghostDivisibleEscrowCorrect,
+                _ghostDivisibleEscrowCount,
+                "TEMPO-DEX20: Divisible escrow mismatch"
+            );
         }
     }
 

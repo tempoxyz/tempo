@@ -106,7 +106,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     uint256 private _ghostRebalanceRoundingDust;
 
     /// @dev Ghost variables for fee conservation (TEMPO-AMM29)
-    /// Track total fees collected and distributed to ensure fees cannot be created from nothing
     uint256 private _ghostTotalFeesCollected;
     uint256 private _ghostTotalFeesDistributed;
 

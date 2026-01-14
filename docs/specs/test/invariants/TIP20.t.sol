@@ -33,6 +33,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     mapping(address => uint256) private _tokenRewardsDistributed;
     mapping(address => uint256) private _tokenRewardsClaimed;
 
+    /// @dev Track distribution count and opted-in holder count for tighter dust bounds
+    mapping(address => uint256) private _tokenDistributionCount;
+    mapping(address => uint256) private _tokenOptedInHolderCount;
+
     /// @dev Track all addresses that have held tokens (per token)
     mapping(address => mapping(address => bool)) private _tokenHolderSeen;
     mapping(address => address[]) private _tokenHolders;
@@ -503,12 +507,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     optedInSupplyBefore + uint128(actorBalance),
                     "Opted-in supply not increased"
                 );
+                _tokenOptedInHolderCount[address(token)]++;
             } else if (currentRecipient != address(0) && newRecipient == address(0)) {
                 assertEq(
                     optedInSupplyAfter,
                     optedInSupplyBefore - uint128(actorBalance),
                     "Opted-in supply not decreased"
                 );
+                if (_tokenOptedInHolderCount[address(token)] > 0) {
+                    _tokenOptedInHolderCount[address(token)]--;
+                }
             }
 
             if (isDelegation) {
@@ -567,6 +575,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _totalRewardsDistributed++;
             _ghostRewardInputSum += amount;
             _tokenRewardsDistributed[address(token)] += amount;
+            _tokenDistributionCount[address(token)]++;
             _registerHolder(address(token), actor);
             _registerHolder(address(token), address(token));
 
@@ -685,6 +694,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
         try token.burnBlocked(target, amount) {
             vm.stopPrank();
+
+            _totalBurns++;
+            _tokenBurnSum[address(token)] += amount;
+            _registerHolder(address(token), target);
 
             // TEMPO-TIP23: Balance should decrease
             assertEq(
@@ -1061,24 +1074,31 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Rewards conservation: claimed rewards never exceed distributed
+    /// @notice Rewards conservation: claimed <= distributed, dust bounded by O(holders * distributions)
     function _invariantRewardsConservation() internal view {
         for (uint256 i = 0; i < _tokens.length; i++) {
             TIP20 token = _tokens[i];
-            uint256 distributed = _tokenRewardsDistributed[address(token)];
-            uint256 claimed = _tokenRewardsClaimed[address(token)];
+            address tokenAddr = address(token);
+            uint256 distributed = _tokenRewardsDistributed[tokenAddr];
+            uint256 claimed = _tokenRewardsClaimed[tokenAddr];
 
-            // Claimed should never exceed distributed
-            assertLe(claimed, distributed, "Rewards claimed exceeds rewards distributed");
+            assertLe(claimed, distributed, "Rewards claimed exceeds distributed");
+            if (distributed == 0) continue;
 
-            // Token contract balance should hold unclaimed rewards
-            // (balance >= distributed - claimed, accounting for rounding)
             uint256 contractBalance = token.balanceOf(address(token));
-            if (distributed > claimed) {
+            uint256 expectedUnclaimed = distributed - claimed;
+
+            // Max dust = distributions * holders (1 unit per holder per distribution due to floor)
+            uint256 maxDust = _tokenDistributionCount[tokenAddr]
+                * (_tokenOptedInHolderCount[tokenAddr] > 0
+                        ? _tokenOptedInHolderCount[tokenAddr]
+                        : 1);
+
+            if (expectedUnclaimed > maxDust) {
                 assertGe(
                     contractBalance,
-                    (distributed - claimed) * 99 / 100, // 1% tolerance for rounding
-                    "Contract balance insufficient for unclaimed rewards"
+                    expectedUnclaimed - maxDust,
+                    "Reward dust exceeds theoretical bound"
                 );
             }
         }
