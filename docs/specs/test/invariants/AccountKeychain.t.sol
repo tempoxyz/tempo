@@ -63,7 +63,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         _actors = _buildActors(10);
         _potentialKeyIds = _buildKeyIds(20);
 
-        _initLogFile("keychain.log", "AccountKeychain Invariant Test Log");
+        _initLogFile("account_keychain.log", "AccountKeychain Invariant Test Log");
     }
 
     /// @dev Creates potential key IDs
