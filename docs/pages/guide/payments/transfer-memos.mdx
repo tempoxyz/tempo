@@ -63,19 +63,7 @@ export function SendWithMemo() {
 
 ```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoTestnet],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempoTestnet.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -113,19 +101,7 @@ export function WatchMemos({ depositAddress }: { depositAddress: `0x${string}` }
 
 ```tsx twoslash [wagmi.config.ts] filename="wagmi.config.ts"
 // @noErrors
-import { createConfig, http } from 'wagmi'
-import { tempoTestnet } from 'viem/chains'
-import { KeyManager, webAuthn } from 'wagmi/tempo'
-
-export const config = createConfig({
-  chains: [tempoTestnet],
-  connectors: [webAuthn({
-    keyManager: KeyManager.localStorage(),
-  })],
-  transports: {
-    [tempoTestnet.id]: http(),
-  },
-})
+// [!include ~/snippets/wagmi.config.ts:setup]
 ```
 
 :::
@@ -139,12 +115,16 @@ export const config = createConfig({
 As an exchange, use a single master hot wallet for all customer deposits. Customers include their customer ID as the memo, and you credit their account by parsing the event.
 
 ```ts
+import { Actions } from 'viem/tempo'
+import { parseUnits, stringToHex, pad } from 'viem'
+
 // Customer deposits with their customer ID
-await token.write.transferWithMemo([
-  exchangeHotWallet,
-  parseUnits('500', 6),
-  toHex('CUST-12345', { size: 32 })
-])
+await Actions.token.transferSync(walletClient, {
+  token: tokenAddress,
+  to: exchangeHotWallet,
+  amount: parseUnits('500', 6),
+  memo: pad(stringToHex('CUST-12345'), { size: 32 }),
+})
 ```
 
 ### Payroll batch payments
@@ -152,12 +132,15 @@ await token.write.transferWithMemo([
 Batch multiple payments in a single Tempo transaction with employee IDs in each memo for clear accounting records.
 
 ```ts
+import { Abis } from 'viem/tempo'
+import { encodeFunctionData, parseUnits, stringToHex, pad } from 'viem'
+
 const calls = employees.map(emp => ({
   to: tokenAddress,
   data: encodeFunctionData({
-    abi: tip20Abi,
+    abi: Abis.TIP20,
     functionName: 'transferWithMemo',
-    args: [emp.wallet, parseUnits(emp.salary, 6), toHex(emp.id, { size: 32 })]
+    args: [emp.wallet, parseUnits(emp.salary, 6), pad(stringToHex(emp.id), { size: 32 })]
   })
 }))
 
@@ -169,13 +152,17 @@ await walletClient.sendCalls({ calls })
 Include a refund address in the memo so the recipient knows where to send funds if a reversal is needed.
 
 ```ts
-const refundMemo = toHex('REFUND 0x742d35Cc6634C0532925a3b8', { size: 32 })
+import { Actions } from 'viem/tempo'
+import { parseUnits, stringToHex, pad } from 'viem'
 
-await token.write.transferWithMemo([
-  merchantAddress,
-  parseUnits('100', 6),
-  refundMemo
-])
+const refundMemo = pad(stringToHex('REFUND 0x742d35Cc6634C0532925a3b8'), { size: 32 })
+
+await Actions.token.transferSync(walletClient, {
+  token: tokenAddress,
+  to: merchantAddress,
+  amount: parseUnits('100', 6),
+  memo: refundMemo,
+})
 ```
 
 ## Best Practices
@@ -193,10 +180,12 @@ Memos are `bytes32` values. Use `toHex(string, { size: 32 })` to convert strings
 The `TransferWithMemo` event has `memo` as an indexed parameter. Use `getLogs` with the `args` filter to query transactions by memo without scanning all events.
 
 ```ts
+import { parseAbiItem, stringToHex, pad } from 'viem'
+
 const logs = await client.getLogs({
   address: tokenAddress,
   event: parseAbiItem('event TransferWithMemo(address indexed from, address indexed to, uint256 value, bytes32 indexed memo)'),
-  args: { memo: toHex('INV-12345', { size: 32 }) },
+  args: { memo: pad(stringToHex('INV-12345'), { size: 32 }) },
 })
 ```
 
