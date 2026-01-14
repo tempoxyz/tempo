@@ -579,7 +579,6 @@ contract FeeAMMInvariantTest is BaseTest {
                 try amm.burn(userToken, validatorToken, liquidity, actor) returns (
                     uint256, uint256
                 ) {
-                    vm.stopPrank();
                     _totalMintBurnCycles++;
 
                     uint256 actorBalAfter = TIP20(validatorToken).balanceOf(actor);
@@ -588,15 +587,14 @@ contract FeeAMMInvariantTest is BaseTest {
                         actorBalAfter <= actorBalBefore,
                         "TEMPO-AMM17: Actor should not profit from mint/burn cycle"
                     );
-                } catch {
-                    vm.stopPrank();
+                } catch (bytes memory reason) {
+                    _assertKnownError(reason);
                 }
-            } else {
-                vm.stopPrank();
             }
-        } catch {
-            vm.stopPrank();
+        } catch (bytes memory reason) {
+            _assertKnownError(reason);
         }
+        vm.stopPrank();
     }
 
     /// @notice Handler for small rebalance swaps (tests rounding exploitation)
@@ -631,8 +629,6 @@ contract FeeAMMInvariantTest is BaseTest {
         try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (
             uint256 amountIn
         ) {
-            vm.stopPrank();
-
             // TEMPO-AMM18: Small swaps should still pay >= theoretical rate
             uint256 theoretical = (amountOut * N) / SCALE;
             assertTrue(
@@ -640,9 +636,10 @@ contract FeeAMMInvariantTest is BaseTest {
             );
             // TEMPO-AMM19: Small swaps should not allow profit
             assertTrue(amountIn >= 1, "TEMPO-AMM19: Must pay at least 1 for any swap");
-        } catch {
-            vm.stopPrank();
+        } catch (bytes memory reason) {
+            _assertKnownError(reason);
         }
+        vm.stopPrank();
     }
 
     /// @dev Number of actors that can be permanently blacklisted (out of 20)
