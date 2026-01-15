@@ -46,7 +46,7 @@ This role is administered by the `DEFAULT_ADMIN_ROLE` (same as other TIP-20 role
 /// @notice Emitted when tokens are burned from any account.
 /// @param from The address from which tokens were burned.
 /// @param amount The amount of tokens burned.
-event burnAt(address indexed from, uint256 amount);
+event BurnAt(address indexed from, uint256 amount);
 ```
 
 ## New Function
@@ -71,7 +71,7 @@ function burnAt(address from, uint256 amount) external;
    - Decrements `balanceOf[from]` by `amount`
    - Decrements `_totalSupply` by `amount`
    - Updates reward accounting if `from` is opted into rewards
-6. **Events**: Emits `Transfer(from, address(0), amount)` and `burnAt(from, amount)`
+6. **Events**: Emits `Transfer(from, address(0), amount)` and `BurnAt(from, amount)`
 
 ### Interface Addition
 
@@ -109,5 +109,5 @@ The test suite must verify:
 4. Revert when burning from `STABLECOIN_DEX_ADDRESS` (ProtectedAddress)
 5. Successful burn from policy-blocked address (differs from `burnBlocked`)
 6. Revert on insufficient balance
-7. Correct event emissions (`Transfer` and `burnAt`)
+7. Correct event emissions (`Transfer` and `BurnAt`)
 8. Correct reward accounting updates
