@@ -203,6 +203,10 @@ pub enum TempoPoolTransactionError {
         "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
     )]
     InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
+
+    /// Thrown when arithmetic overflow occurs during gas computation.
+    #[error("arithmetic overflow during gas computation")]
+    GasOverflow,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -215,7 +219,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
             | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_) => false,
+            | Self::InsufficientLiquidity(_)
+            | Self::GasOverflow => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. } => true,

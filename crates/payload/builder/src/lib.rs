@@ -109,12 +109,27 @@ impl BlockBuildState {
     }
 
     /// Records a transaction's gas usage and size.
-    fn add_tx(&mut self, gas_used: u64, rlp_length: usize, is_payment: bool) {
-        self.total_gas_used += gas_used;
+    fn add_tx(
+        &mut self,
+        gas_used: u64,
+        rlp_length: usize,
+        is_payment: bool,
+    ) -> Result<(), InvalidPoolTransactionError> {
+        self.total_gas_used = self.total_gas_used.checked_add(gas_used).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
         if !is_payment {
-            self.non_payment_gas_used += gas_used;
+            self.non_payment_gas_used =
+                self.non_payment_gas_used.checked_add(gas_used).ok_or_else(|| {
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::GasOverflow,
+                    ))
+                })?;
         }
-        self.block_size += rlp_length;
+        self.block_size = self.block_size.checked_add(rlp_length).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
+        Ok(())
     }
 
     /// Accounts for additional block size (subblocks, system transactions).
@@ -128,7 +143,10 @@ impl BlockBuildState {
         tx_gas_limit: u64,
         gas_limits: &GasLimits,
     ) -> Result<(), InvalidPoolTransactionError> {
-        if self.total_gas_used + tx_gas_limit > gas_limits.non_shared {
+        let total = self.total_gas_used.checked_add(tx_gas_limit).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
+        if total > gas_limits.non_shared {
             return Err(InvalidPoolTransactionError::ExceedsGasLimit(
                 tx_gas_limit,
                 gas_limits.non_shared.saturating_sub(self.total_gas_used),
@@ -144,10 +162,15 @@ impl BlockBuildState {
         is_payment: bool,
         gas_limits: &GasLimits,
     ) -> Result<(), InvalidPoolTransactionError> {
-        if !is_payment && self.non_payment_gas_used + tx_gas_limit > gas_limits.general {
-            return Err(InvalidPoolTransactionError::Other(Box::new(
-                TempoPoolTransactionError::ExceedsNonPaymentLimit,
-            )));
+        if !is_payment {
+            let total = self.non_payment_gas_used.checked_add(tx_gas_limit).ok_or_else(|| {
+                InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+            })?;
+            if total > gas_limits.general {
+                return Err(InvalidPoolTransactionError::Other(Box::new(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                )));
+            }
         }
         Ok(())
     }
@@ -554,7 +577,10 @@ where
 
             // update and add to total fees
             total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
-            build_state.add_tx(gas_used, tx_rlp_length, is_payment);
+            if let Err(err) = build_state.add_tx(gas_used, tx_rlp_length, is_payment) {
+                best_txs.mark_invalid(&pool_tx, &err);
+                continue;
+            }
         }
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
@@ -929,13 +955,13 @@ mod tests {
         assert_eq!(state.block_size, 1024);
 
         // Add payment tx - doesn't count toward general
-        state.add_tx(21_000, 100, true);
+        state.add_tx(21_000, 100, true).unwrap();
         assert_eq!(state.total_gas_used, 21_000);
         assert_eq!(state.non_payment_gas_used, 0);
         assert_eq!(state.block_size, 1124);
 
         // Add non-payment tx
-        state.add_tx(50_000, 200, false);
+        state.add_tx(50_000, 200, false).unwrap();
         assert_eq!(state.total_gas_used, 71_000);
         assert_eq!(state.non_payment_gas_used, 50_000);
         assert_eq!(state.block_size, 1324);
@@ -943,6 +969,18 @@ mod tests {
         // Add size only
         state.add_size(500);
         assert_eq!(state.block_size, 1824);
+
+        // Overflow tests
+        let mut overflow_state = BlockBuildState::new(0);
+        overflow_state.total_gas_used = u64::MAX;
+        assert!(overflow_state.add_tx(1, 0, true).is_err());
+
+        let mut overflow_state = BlockBuildState::new(0);
+        overflow_state.non_payment_gas_used = u64::MAX;
+        assert!(overflow_state.add_tx(1, 0, false).is_err());
+
+        let mut overflow_state = BlockBuildState::new(usize::MAX);
+        assert!(overflow_state.add_tx(0, 1, true).is_err());
     }
 
     #[test]
