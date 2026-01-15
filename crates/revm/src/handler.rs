@@ -1516,17 +1516,13 @@ mod tests {
 
         let result = handler.validate_against_state_and_deduct_caller(&mut evm);
 
-        assert!(result.is_err(), "Should reject invalid fee token");
-        let err = result.unwrap_err();
-        match err {
-            EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr)) => {
-                assert_eq!(
-                    addr, invalid_token,
-                    "Error should contain the invalid token address"
-                );
-            }
-            other => panic!("Expected InvalidFeeToken error, got: {:?}", other),
-        }
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr))) if addr == invalid_token
+            ),
+            "Should reject invalid fee token with InvalidFeeToken error"
+        );
     }
 
     #[test]
