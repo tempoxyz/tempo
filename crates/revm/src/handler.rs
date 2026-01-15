@@ -2417,8 +2417,7 @@ mod tests {
             offset in 0u64..1000u64,
         ) {
             let valid_before = valid_after.saturating_sub(offset);
-            let ts_in_range = valid_after;
-            let result = validate_time_window(Some(valid_after), Some(valid_before), ts_in_range);
+            let result = validate_time_window(Some(valid_after), Some(valid_before), valid_after);
             prop_assert!(result.is_err(), "Empty window should reject all timestamps");
         }
 
