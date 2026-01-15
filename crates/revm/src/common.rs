@@ -419,9 +419,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_primitives::{address, uint};
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
-    use tempo_precompiles::PATH_USD_ADDRESS;
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS,
+        tip20::{IRolesAuth::*, ITIP20::*, slots as tip20_slots},
+    };
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
@@ -602,8 +605,6 @@ mod tests {
 
     #[test]
     fn test_is_tip20_fee_inference_call() {
-        use tempo_precompiles::tip20::{IRolesAuth::*, ITIP20::*};
-
         // Allowed selectors
         assert!(is_tip20_fee_inference_call(&transferCall::SELECTOR));
         assert!(is_tip20_fee_inference_call(&transferWithMemoCall::SELECTOR));
@@ -617,5 +618,44 @@ mod tests {
         // Edge cases
         assert!(!is_tip20_fee_inference_call(&[]));
         assert!(!is_tip20_fee_inference_call(&[0x00, 0x01, 0x02]));
+    }
+
+    #[test]
+    fn test_is_tip20_usd() -> eyre::Result<()> {
+        let fee_token = PATH_USD_ADDRESS;
+
+        // Short string encoding: left-aligned data + length*2 in LSB
+        let cases: &[(U256, bool, &str)] = &[
+            // "USD" = 0x555344, len=3, LSB=6 -> true
+            (
+                uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256),
+                true,
+                "USD",
+            ),
+            // "EUR" = 0x455552, len=3, LSB=6 -> false (wrong content)
+            (
+                uint!(0x4555520000000000000000000000000000000000000000000000000000000006_U256),
+                false,
+                "EUR",
+            ),
+            // "US" = 0x5553, len=2, LSB=4 -> false (wrong length)
+            (
+                uint!(0x5553000000000000000000000000000000000000000000000000000000000004_U256),
+                false,
+                "US",
+            ),
+            // empty -> false
+            (U256::ZERO, false, "empty"),
+        ];
+
+        for (currency_value, expected, label) in cases {
+            let mut db = revm::database::CacheDB::new(EmptyDB::default());
+            db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
+
+            let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
+            assert_eq!(is_usd, *expected, "currency '{label}' failed");
+        }
+
+        Ok(())
     }
 }
