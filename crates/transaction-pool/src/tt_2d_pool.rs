@@ -620,9 +620,8 @@ impl AA2dPool {
 
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
-                    // Gap detected - remaining transactions should not be pending
+                    // Gap detected - mark this and all remaining transactions as non-pending
                     existing_tx.is_pending = false;
-                    break;
                 }
             }
 
@@ -3517,6 +3516,69 @@ mod tests {
         assert!(
             !pool.independent_transactions.contains_key(&seq_id),
             "independent_transactions should not contain stale entry after reorg"
+        );
+
+        pool.assert_invariants();
+    }
+
+    /// Test that gap demotion marks ALL subsequent transactions as non-pending.
+    ///
+    /// When a transaction is removed creating a gap, all transactions after the gap
+    /// should be marked as queued (is_pending=false), not just the first one.
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn gap_demotion_marks_all_subsequent_transactions_as_queued(nonce_key: U256) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Step 1: Add txs with nonces [5, 6, 7, 8], on_chain_nonce=5
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx6 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build();
+        let tx7 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(7).build();
+        let tx8 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(8).build();
+        let tx6_hash = *tx6.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 5)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx6, TransactionOrigin::Local)), 5)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx7, TransactionOrigin::Local)), 5)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx8, TransactionOrigin::Local)), 5)
+            .unwrap();
+
+        // Verify initial state: all 4 txs pending
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 4, "All transactions should be pending initially");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        pool.assert_invariants();
+
+        // Step 2: Remove tx6 to create a gap at nonce 6
+        // Pool now has: [5, _, 7, 8] where _ is the gap
+        let removed = pool.remove_transactions(std::iter::once(&tx6_hash));
+        assert_eq!(removed.len(), 1, "Should remove exactly tx6");
+
+        // Step 3: Trigger nonce change processing to re-evaluate pending status
+        // The on-chain nonce is still 5
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 5u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        assert!(mined.is_empty(), "No transactions should be mined");
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // Step 4: Verify that tx7 AND tx8 are both queued (not pending)
+        // BUG: Current code only marks tx7 as non-pending, tx8 incorrectly stays pending
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(
+            pending, 1,
+            "Only tx5 should be pending (tx7 and tx8 are after the gap)"
+        );
+        assert_eq!(
+            queued, 2,
+            "tx7 and tx8 should both be queued due to gap at nonce 6"
         );
 
         pool.assert_invariants();
