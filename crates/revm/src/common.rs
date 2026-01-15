@@ -203,7 +203,7 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, || {
             // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address(fee_token)?;
+            let token = TIP20Token::from_address_unchecked(fee_token);
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
         })
     }
