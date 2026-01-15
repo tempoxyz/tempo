@@ -20,8 +20,20 @@ tempo-payload-builder.workspace = true
 tempo-payload-types.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["default"] }
+tempo-dkg-onchain-artifacts.workspace = true
 
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
+commonware-cryptography.workspace = true
+commonware-math.workspace = true
+commonware-parallel.workspace = true
+commonware-utils.workspace = true
+
+bytes.workspace = true
 thiserror.workspace = true
+
+rand.workspace = true
+rand_core.workspace = true
 
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
@@ -43,8 +55,10 @@ reth-engine-local.workspace = true
 alloy-serde.workspace = true
 alloy-eips.workspace = true
 alloy-rpc-types-eth.workspace = true
-alloy.workspace = true
+alloy-rpc-types-engine.workspace = true
+alloy = { workspace = true, features = ["providers", "transport-ws"] }
 alloy-primitives.workspace = true
+alloy-provider.workspace = true
 
 async-trait.workspace = true
 clap.workspace = true

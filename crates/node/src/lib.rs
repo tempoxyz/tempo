@@ -13,6 +13,7 @@ use reth_node_builder::{FullNode, NodeAdapter, RethFullAdapter};
 use std::sync::Arc;
 
 pub mod engine;
+pub mod follow;
 pub mod node;
 pub mod rpc;
 pub use tempo_consensus as consensus;

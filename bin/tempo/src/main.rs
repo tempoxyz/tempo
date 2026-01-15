@@ -31,7 +31,7 @@ use reth_ethereum::{
     evm::revm::primitives::B256,
 };
 use reth_ethereum_cli as _;
-use reth_node_builder::{NodeHandle, WithLaunchContext};
+use reth_node_builder::NodeHandle;
 use std::{sync::Arc, thread};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
@@ -43,6 +43,7 @@ use tempo_faucet::{
 };
 use tempo_node::{
     TempoFullNode, TempoNodeArgs,
+    follow::{FollowSync, FollowSyncConfig},
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
@@ -52,7 +53,9 @@ use tracing::{info, info_span};
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
-    /// Follow this specific RPC node for block hashes.
+    /// Follow this specific RPC node via consensus_subscribe for finalized blocks.
+    /// Connects to the remote node's WebSocket endpoint to receive finalized block events
+    /// with BLS threshold certificates, then fetches full blocks and submits to the engine.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
@@ -141,7 +144,8 @@ fn main() -> eyre::Result<()> {
         )?;
 
         let ret = if node.config.dev.dev || args.follow.is_some() {
-            // When --follow is used (with or without a URL), skip consensus stack
+            // When --follow or --dev is used, skip the local consensus stack.
+            // Follow mode uses FollowSync to receive finalized blocks from a remote node.
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -254,30 +258,28 @@ fn main() -> eyre::Result<()> {
             None
         };
 
+        // Resolve the follow URL:
+        // --follow or --follow=auto -> use chain-specific default
+        // --follow=URL -> use provided URL
+        let follow_url = args.follow.as_ref().and_then(|follow| {
+            if follow == "auto" {
+                builder
+                    .config()
+                    .chain
+                    .default_follow_url()
+                    .map(|s| s.to_string())
+            } else {
+                Some(follow.clone())
+            }
+        });
+
         let NodeHandle {
             node,
             node_exit_future,
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
-            .apply(|mut builder: WithLaunchContext<_>| {
-                // Resolve the follow URL:
-                // --follow or --follow=auto -> use chain-specific default
-                // --follow=URL -> use provided URL
-                if let Some(follow) = &args.follow {
-                    let follow_url = if follow == "auto" {
-                        builder
-                            .config()
-                            .chain
-                            .default_follow_url()
-                            .map(|s| s.to_string())
-                    } else {
-                        Some(follow.clone())
-                    };
-                    builder.config_mut().debug.rpc_consensus_url = follow_url;
-                }
-
-                builder
-            })
+            // Note: We no longer set rpc_consensus_url for reth's debug sync.
+            // Instead, we use our own FollowSync client with consensus_subscribe.
             .extend_rpc_modules(move |ctx| {
                 if faucet_args.enabled {
                     let ext = TempoFaucetExt::new(
@@ -296,9 +298,23 @@ fn main() -> eyre::Result<()> {
 
                 Ok(())
             })
-            .launch_with_debug_capabilities()
+            .launch()
             .await
             .wrap_err("failed launching execution node")?;
+
+        // Spawn follow sync if --follow is enabled
+        let follow_sync_handle = if let Some(url) = follow_url {
+            info!(url = %url, "starting follow sync with consensus subscription");
+            let config = FollowSyncConfig::new(url);
+            let follow_sync = FollowSync::new(config, node.clone());
+            Some(tokio::spawn(async move {
+                if let Err(e) = follow_sync.run().await {
+                    tracing::error!(error = %e, "follow sync failed");
+                }
+            }))
+        } else {
+            None
+        };
 
         let _ = args_and_node_handle_tx.send((node, args));
 
@@ -313,6 +329,11 @@ fn main() -> eyre::Result<()> {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received shutdown signal");
             }
+        }
+
+        // Abort follow sync on shutdown
+        if let Some(handle) = follow_sync_handle {
+            handle.abort();
         }
 
         #[cfg(feature = "pyroscope")]
