@@ -11,9 +11,12 @@ use tokio::sync::broadcast;
 pub struct CertifiedBlock {
     pub epoch: u64,
     pub view: u64,
+    /// The view of the parent block this proposal builds on.
+    pub parent_view: u64,
     /// Block height, if known. May be `None` if the block hasn't been stored yet.
     pub height: Option<u64>,
     pub digest: B256,
+    /// Hex-encoded BLS threshold signature (vote_signature || seed_signature).
     pub certificate: String,
 }
 

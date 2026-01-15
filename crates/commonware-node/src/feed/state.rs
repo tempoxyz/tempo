@@ -118,6 +118,7 @@ impl ConsensusFeed for FeedStateHandle {
                 Some(CertifiedBlock {
                     epoch: finalization.proposal.round.epoch().get(),
                     view: finalization.proposal.round.view().get(),
+                    parent_view: finalization.proposal.parent.get(),
                     height: Some(height),
                     digest: finalization.proposal.payload.0,
                     certificate: hex::encode(finalization.certificate.encode()),

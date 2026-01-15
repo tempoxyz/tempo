@@ -84,6 +84,7 @@ impl<TContext: Spawner> Actor<TContext> {
         &mut self,
         view: u64,
         epoch: u64,
+        parent_view: u64,
         digest: Digest,
         certificate: &impl Encode,
     ) -> CertifiedBlock {
@@ -97,6 +98,7 @@ impl<TContext: Spawner> Actor<TContext> {
         CertifiedBlock {
             epoch,
             view,
+            parent_view,
             height,
             digest: digest.0,
             certificate,
@@ -109,11 +111,13 @@ impl<TContext: Spawner> Actor<TContext> {
             Activity::Notarization(notarization) => {
                 let seen = now_millis();
                 let view = notarization.proposal.round.view().get();
+                let parent_view = notarization.proposal.parent.get();
 
                 let block = self
                     .create_certified_block(
                         view,
                         notarization.proposal.round.epoch().get(),
+                        parent_view,
                         notarization.proposal.payload,
                         &notarization.certificate,
                     )
@@ -142,11 +146,13 @@ impl<TContext: Spawner> Actor<TContext> {
             Activity::Finalization(finalization) => {
                 let seen = now_millis();
                 let view = finalization.proposal.round.view().get();
+                let parent_view = finalization.proposal.parent.get();
 
                 let block = self
                     .create_certified_block(
                         view,
                         finalization.proposal.round.epoch().get(),
+                        parent_view,
                         finalization.proposal.payload,
                         &finalization.certificate,
                     )
