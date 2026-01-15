@@ -40,6 +40,10 @@ pub struct TempoPoolUpdates {
     pub expired_txs: Vec<TxHash>,
     /// Revoked keychain keys: (account, public_key).
     pub revoked_keys: Vec<(Address, Address)>,
+    /// Spending limit changes: (account, public_key, token).
+    /// When a spending limit changes, transactions from that key paying with that token
+    /// may become unexecutable if the new limit is below their value.
+    pub spending_limit_changes: Vec<(Address, Address, Address)>,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
     /// TIP403 blacklist additions: (policy_id, account).
@@ -58,6 +62,7 @@ impl TempoPoolUpdates {
     pub fn is_empty(&self) -> bool {
         self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
+            && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.pause_events.is_empty()
@@ -78,10 +83,16 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
-            // Key revocations
+            // Key revocations and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
                     updates.revoked_keys.push((event.account, event.publicKey));
+                } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
+                    updates.spending_limit_changes.push((
+                        event.account,
+                        event.publicKey,
+                        event.token,
+                    ));
                 }
             }
             // Validator token changes
@@ -116,6 +127,7 @@ impl TempoPoolUpdates {
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         !self.revoked_keys.is_empty()
+            || !self.spending_limit_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
     }
@@ -417,13 +429,15 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 9. Evict invalidated transactions in a single pool scan
-                // This checks both revoked keys and validator token changes together
-                // to avoid scanning all transactions multiple times per block.
+                // This checks revoked keys, spending limit changes, validator token changes,
+                // and blacklist additions together to avoid scanning all transactions
+                // multiple times per block.
                 if updates.has_invalidation_events() {
                     let invalidation_start = Instant::now();
                     debug!(
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
+                        spending_limit_changes = updates.spending_limit_changes.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
                         "Processing transaction invalidation events"

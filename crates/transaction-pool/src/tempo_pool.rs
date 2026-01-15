@@ -175,6 +175,7 @@ where
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
+        let mut spending_limit_count = 0;
         let mut liquidity_count = 0;
         let mut blacklisted_count = 0;
 
@@ -198,7 +199,38 @@ where
                 }
             }
 
-            // Check 2: Validator token changes (check liquidity for all transactions)
+            // Check 2: Spending limit changes (only for AA transactions with keychain signatures)
+            // When a spending limit changes, transactions from that key paying with that token
+            // may become unexecutable if the new limit is below their value.
+            if !updates.spending_limit_changes.is_empty()
+                && let Some(aa_tx) = tx.transaction.inner().as_aa()
+                && let Some(keychain_sig) = aa_tx.signature().as_keychain()
+            {
+                let tx_fee_token = tx
+                    .transaction
+                    .inner()
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+
+                let is_affected =
+                    updates
+                        .spending_limit_changes
+                        .iter()
+                        .any(|&(account, key_id, token)| {
+                            keychain_sig.user_address == account
+                                && tx_fee_token == token
+                                && keychain_sig
+                                    .key_id(&aa_tx.signature_hash())
+                                    .is_ok_and(|tx_key_id| tx_key_id == key_id)
+                        });
+                if is_affected {
+                    to_remove.push(*tx.hash());
+                    spending_limit_count += 1;
+                    continue;
+                }
+            }
+
+            // Check 3: Validator token changes (check liquidity for all transactions)
             if let Some(ref provider) = state_provider {
                 let user_token = tx
                     .transaction
@@ -244,7 +276,7 @@ where
                 }
             }
 
-            // Check 3: Blacklisted fee payers
+            // Check 4: Blacklisted fee payers
             // Only check AA transactions with a fee token (non-AA transactions don't have
             // a fee payer that can be blacklisted via TIP403)
             if !updates.blacklist_additions.is_empty()
@@ -295,6 +327,7 @@ where
                 target: "txpool",
                 total = evicted_count,
                 revoked_count,
+                spending_limit_count,
                 liquidity_count,
                 blacklisted_count,
                 "Evicting invalidated transactions"
