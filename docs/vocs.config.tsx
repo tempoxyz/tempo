@@ -517,7 +517,7 @@ export default defineConfig({
             ],
           },
           {
-            text: 'TIPs',
+            text: 'Tempo Improvement Proposals',
             link: '/protocol/tips',
           },
         ],
