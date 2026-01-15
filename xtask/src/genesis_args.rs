@@ -18,7 +18,7 @@ use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
-use rand::SeedableRng as _;
+use rand::{SeedableRng as _, rngs::StdRng};
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -37,7 +37,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_commonware_node_config::{SigningKey, SigningShare};
+use tempo_commonware_node_config::{EncryptionKey, SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
@@ -152,6 +152,7 @@ pub(crate) struct GenesisArgs {
 pub(crate) struct ConsensusConfig {
     pub(crate) output: Output<MinSig, PublicKey>,
     pub(crate) validators: Vec<Validator>,
+    pub(crate) rng: StdRng,
 }
 impl ConsensusConfig {
     pub(crate) fn to_genesis_dkg_outcome(&self) -> OnchainDkgOutcome {
@@ -172,6 +173,7 @@ pub(crate) struct Validator {
     pub(crate) addr: SocketAddr,
     pub(crate) signing_key: SigningKey,
     pub(crate) signing_share: SigningShare,
+    pub(crate) signing_share_encryption_key: EncryptionKey,
 }
 
 impl Validator {
@@ -188,6 +190,10 @@ impl Validator {
 
     pub(crate) fn dst_signing_share(&self, path: impl AsRef<Path>) -> PathBuf {
         self.dst_dir(path).join("signing.share")
+    }
+
+    pub(crate) fn dst_signing_share_encryption_key(&self, path: impl AsRef<Path>) -> PathBuf {
+        self.dst_dir(path).join("signing.encryption.env")
     }
 }
 
@@ -281,9 +287,7 @@ impl GenesisArgs {
 
         let deployment_gas_token = {
             if self.deployment_gas_token {
-                let mut rng = rand::rngs::StdRng::seed_from_u64(
-                    self.seed.unwrap_or_else(rand::random::<u64>),
-                );
+                let mut rng = StdRng::seed_from_u64(self.seed.unwrap_or_else(rand::random::<u64>));
 
                 let mut salt_bytes = [0u8; 32];
                 rand::Rng::fill(&mut rng, &mut salt_bytes);
@@ -865,7 +869,7 @@ fn generate_consensus_config(
         _ => {}
     }
 
-    let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
+    let mut rng = StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
 
     let mut signer_keys = repeat_with(|| PrivateKey::random(&mut rng))
         .take(validators.len())
@@ -890,11 +894,16 @@ fn generate_consensus_config(
                 addr,
                 signing_key: SigningKey::from(signing_key),
                 signing_share: SigningShare::from(signing_share),
+                signing_share_encryption_key: EncryptionKey::random(&mut rng),
             }
         })
         .collect();
 
-    Some(ConsensusConfig { output, validators })
+    Some(ConsensusConfig {
+        output,
+        validators,
+        rng,
+    })
 }
 
 fn mint_pairwise_liquidity(

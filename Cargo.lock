@@ -11674,6 +11674,7 @@ dependencies = [
  "commonware-cryptography",
  "commonware-math",
  "commonware-runtime",
+ "const-hex",
  "eyre",
  "futures",
  "pyroscope",
@@ -11823,19 +11824,25 @@ dependencies = [
  "tempo-telemetry-util",
  "tokio",
  "tracing",
+ "tracing-subscriber 0.3.22",
 ]
 
 [[package]]
 name = "tempo-commonware-node-config"
 version = "1.0.0-rc.6"
 dependencies = [
+ "bytes",
+ "chacha20poly1305",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-utils",
  "const-hex",
+ "crypto-common",
  "derive_more",
  "rand 0.8.5",
+ "tempfile",
  "thiserror 2.0.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -11913,6 +11920,7 @@ dependencies = [
  "tempfile",
  "tempo-chainspec",
  "tempo-commonware-node",
+ "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-eyre",
  "tempo-node",

@@ -1,14 +1,13 @@
+use bytes::Bytes;
 use commonware_consensus::types::FixedEpocher;
-use commonware_cryptography::{
-    bls12381::primitives::group::Share,
-    ed25519::{PrivateKey, PublicKey},
-};
+use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::Address;
 use commonware_runtime::{Clock, Metrics, Spawner, Storage};
 use commonware_utils::ordered;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -69,9 +68,12 @@ pub(crate) struct Config<TPeerManager> {
     pub(crate) execution_node: TempoFullNode,
 
     /// This node's initial share of the bls12381 private key.
-    pub(crate) initial_share: Option<Share>,
+    pub(crate) initial_share: Option<Bytes>,
 
     /// The peer manager on which the dkg actor will register new peers for a
     /// given epoch after reading them from the smart contract.
     pub(crate) peer_manager: TPeerManager,
+
+    /// The secret to encrypt and descrypt signing shares.
+    pub(crate) share_key: EncryptionKey,
 }

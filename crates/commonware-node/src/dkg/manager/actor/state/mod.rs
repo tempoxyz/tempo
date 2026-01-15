@@ -1,10 +1,12 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     num::{NonZeroU16, NonZeroU32, NonZeroUsize},
 };
 
 use alloy_consensus::BlockHeader as _;
+use bytes::Bytes;
 use commonware_codec::{EncodeSize, RangeCfg, Read, ReadExt, Write};
 use commonware_consensus::{
     Block as _, Heightable as _,
@@ -21,16 +23,25 @@ use commonware_cryptography::{
 };
 use commonware_p2p::Address;
 use commonware_parallel::Strategy;
-use commonware_runtime::{Metrics, buffer::PoolRef};
-use commonware_storage::journal::{contiguous, segmented};
-use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered};
+use commonware_runtime::{Clock, Metrics, buffer::PoolRef};
+use commonware_storage::{
+    journal::{contiguous, segmented},
+    metadata::{self, Metadata},
+};
+use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered, sequence::U64};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
+use rand_core::CryptoRngCore;
+use tempo_commonware_node_config::EncryptionKey;
 use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
+#[cfg(test)]
+mod tests;
+
 const PAGE_SIZE: NonZeroU16 = NZU16!(1 << 12);
+
 const POOL_CAPACITY: NonZeroUsize = NZUsize!(1 << 20);
 const WRITE_BUFFER: NonZeroUsize = NZUsize!(1 << 12);
 const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
@@ -42,70 +53,42 @@ const READ_BUFFER: NonZeroUsize = NZUsize!(1 << 20);
 /// too limited. There is extremely little cost doing u16::MAX instead.
 const MAXIMUM_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
+/// The key to access the current state of the DKG actor.
+const STATE_KEY: U64 = U64::new(0);
+
 pub(super) fn builder() -> Builder {
     Builder::default()
 }
 
 pub(super) struct Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Metrics,
+    TContext: commonware_runtime::Storage + Metrics + Clock,
 {
-    states: contiguous::variable::Journal<TContext, State>,
-    events: segmented::variable::Journal<TContext, Event>,
+    // Used as an RNG source.
+    context: TContext,
+
+    state: metadata::Metadata<TContext, U64, Encrypted<State>>,
+    events: segmented::variable::Journal<TContext, Encrypted<Event>>,
 
     current: State,
     cache: BTreeMap<Epoch, Events>,
+
+    encryption_key: EncryptionKey,
 }
 
 impl<TContext> Storage<TContext>
 where
-    TContext: commonware_runtime::Storage + Metrics,
+    TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
 {
-    /// Returns all player acknowledgments received during the given epoch.
-    fn acks_for_epoch(
-        &self,
-        epoch: Epoch,
-    ) -> impl Iterator<Item = (&PublicKey, &PlayerAck<PublicKey>)> {
-        self.cache
-            .get(&epoch)
-            .into_iter()
-            .flat_map(|cache| cache.acks.iter())
-    }
-
-    /// Returns all dealings received during the given epoch.
-    fn dealings_for_epoch(
-        &self,
-        epoch: Epoch,
-    ) -> impl Iterator<Item = (&PublicKey, &(DealerPubMsg<MinSig>, DealerPrivMsg))> {
-        self.cache
-            .get(&epoch)
-            .into_iter()
-            .flat_map(|cache| cache.dealings.iter())
-    }
-
-    /// Returns all dealings received during the given epoch.
-    pub(super) fn logs_for_epoch(
-        &self,
-        epoch: Epoch,
-    ) -> impl Iterator<Item = (&PublicKey, &dkg::DealerLog<MinSig, PublicKey>)> {
-        self.cache
-            .get(&epoch)
-            .into_iter()
-            .flat_map(|cache| cache.logs.iter())
-    }
-
-    /// Returns the DKG outcome for the current epoch.
-    pub(super) fn current(&self) -> State {
-        self.current.clone()
-    }
-
     /// Appends the outcome of a DKG ceremony to state
-    pub(super) async fn append_state(&mut self, state: State) -> eyre::Result<()> {
-        self.states
-            .append(state.clone())
+    pub(super) async fn set_state(&mut self, state: State) -> eyre::Result<()> {
+        self.state
+            .put_sync(
+                STATE_KEY,
+                Encrypted::encrypt(&state, &self.encryption_key, &mut self.context),
+            )
             .await
             .wrap_err("failed writing state")?;
-        self.states.sync().await.wrap_err("failed syncing state")?;
         self.current = state;
         Ok(())
     }
@@ -138,10 +121,14 @@ where
         self.events
             .append(
                 section,
-                Event::Ack {
-                    player: player.clone(),
-                    ack: ack.clone(),
-                },
+                Encrypted::encrypt(
+                    &Event::Ack {
+                        player: player.clone(),
+                        ack: ack.clone(),
+                    },
+                    &self.encryption_key,
+                    &mut self.context,
+                ),
             )
             .await
             .wrap_err("unable to write event to storage")?;
@@ -189,11 +176,15 @@ where
         self.events
             .append(
                 section,
-                Event::Dealing {
-                    dealer: dealer.clone(),
-                    public_msg: pub_msg.clone(),
-                    private_msg: priv_msg.clone(),
-                },
+                Encrypted::encrypt(
+                    &Event::Dealing {
+                        dealer: dealer.clone(),
+                        public_msg: pub_msg.clone(),
+                        private_msg: priv_msg.clone(),
+                    },
+                    &self.encryption_key,
+                    &mut self.context,
+                ),
             )
             .await
             .wrap_err("unable to write event to storage")?;
@@ -236,10 +227,14 @@ where
         self.events
             .append(
                 section,
-                Event::Log {
-                    dealer: dealer.clone(),
-                    log: log.clone(),
-                },
+                Encrypted::encrypt(
+                    &Event::Log {
+                        dealer: dealer.clone(),
+                        log: log.clone(),
+                    },
+                    &self.encryption_key,
+                    &mut self.context,
+                ),
             )
             .await
             .wrap_err("failed to append log to journal")?;
@@ -280,11 +275,15 @@ where
         self.events
             .append(
                 section,
-                Event::Finalized {
-                    digest,
-                    parent,
-                    height,
-                },
+                Encrypted::encrypt(
+                    &Event::Finalized {
+                        digest,
+                        parent,
+                        height,
+                    },
+                    &self.encryption_key,
+                    &mut self.context,
+                ),
             )
             .await
             .wrap_err("failed to append finalized block to journal")?;
@@ -303,6 +302,49 @@ where
             },
         );
         Ok(())
+    }
+}
+
+impl<TContext> Storage<TContext>
+where
+    TContext: commonware_runtime::Storage + Metrics + Clock,
+{
+    /// Returns all player acknowledgments received during the given epoch.
+    fn acks_for_epoch(
+        &self,
+        epoch: Epoch,
+    ) -> impl Iterator<Item = (&PublicKey, &PlayerAck<PublicKey>)> {
+        self.cache
+            .get(&epoch)
+            .into_iter()
+            .flat_map(|cache| cache.acks.iter())
+    }
+
+    /// Returns all dealings received during the given epoch.
+    fn dealings_for_epoch(
+        &self,
+        epoch: Epoch,
+    ) -> impl Iterator<Item = (&PublicKey, &(DealerPubMsg<MinSig>, DealerPrivMsg))> {
+        self.cache
+            .get(&epoch)
+            .into_iter()
+            .flat_map(|cache| cache.dealings.iter())
+    }
+
+    /// Returns all dealings received during the given epoch.
+    pub(super) fn logs_for_epoch(
+        &self,
+        epoch: Epoch,
+    ) -> impl Iterator<Item = (&PublicKey, &dkg::DealerLog<MinSig, PublicKey>)> {
+        self.cache
+            .get(&epoch)
+            .into_iter()
+            .flat_map(|cache| cache.logs.iter())
+    }
+
+    /// Returns the DKG outcome for the current epoch.
+    pub(super) fn current(&self) -> State {
+        self.current.clone()
     }
 
     pub(super) fn cache_dkg_outcome(
@@ -456,30 +498,6 @@ where
             .prune(up_to_epoch.get())
             .await
             .wrap_err("unable to prune events journal")?;
-
-        // Cannot map epochs directly to segments like in the events journal.
-        // Need to first check what the epoch of the state is and go from there.
-        //
-        // size-2 to ensure that there is always something at the tip.
-        if let Some(previous_segment) = self.states.size().checked_sub(2)
-            && let Ok(previous_state) = self.states.read(previous_segment).await
-        {
-            // NOTE: this does not cover the segment at size-3. In theory it
-            // could be state-3.epoch >= up_to_epoch, but that's ok as long
-            // as state-2 does not get pruned.
-            let to_prune = if previous_state.epoch >= up_to_epoch {
-                previous_segment
-            } else {
-                self.states
-                    .size()
-                    .checked_sub(1)
-                    .expect("there must be at least one segment")
-            };
-            self.states
-                .prune(to_prune)
-                .await
-                .wrap_err("unable to prune state journal")?;
-        }
         self.cache.retain(|&epoch, _| epoch >= up_to_epoch);
         Ok(())
     }
@@ -489,6 +507,10 @@ where
 pub(super) struct Builder {
     initial_state: Option<BoxFuture<'static, eyre::Result<State>>>,
     partition_prefix: Option<String>,
+    /// The encryption key used for encrypting sensitive data - the share of
+    /// this node and the individual shares this node receives from other
+    /// dealers.
+    encryption_key: Option<EncryptionKey>,
 }
 
 impl Builder {
@@ -509,52 +531,53 @@ impl Builder {
         }
     }
 
+    pub(super) fn encryption_key(self, encryption_key: EncryptionKey) -> Self {
+        Self {
+            encryption_key: Some(encryption_key),
+            ..self
+        }
+    }
+
     #[instrument(skip_all, err)]
-    pub(super) async fn init<TContext>(self, context: TContext) -> eyre::Result<Storage<TContext>>
+    pub(super) async fn init<TContext>(
+        self,
+        mut context: TContext,
+    ) -> eyre::Result<Storage<TContext>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
     {
         let Self {
             initial_state,
             partition_prefix,
+            encryption_key,
         } = self;
         let partition_prefix =
-            partition_prefix.ok_or_eyre("DKG actors state must have its partition prefix set")?;
+            partition_prefix.ok_or_eyre("DKG actor state must have its partition prefix set")?;
+        let encryption_key = encryption_key
+            .ok_or_eyre("DKG actor must have a secret set to encrypt and decrypt their shares")?;
 
         let buffer_pool = PoolRef::new(PAGE_SIZE, POOL_CAPACITY);
 
-        let mut states = contiguous::variable::Journal::init(
-            context.with_label("states"),
-            contiguous::variable::Config {
-                partition: format!("{partition_prefix}_states"),
-                compression: None,
-                // NOTE: This eventually gets passed down to `Outcome::read_cfg`
-                // and is effectively the maximum permitted number of players
-                // (and hence validators) that are ever permitted.
-                codec_config: MAXIMUM_VALIDATORS,
-                buffer_pool: buffer_pool.clone(),
-                write_buffer: WRITE_BUFFER,
-                items_per_section: NZU64!(1),
-            },
+        let mut state = open_or_encrypt_state(
+            &mut context,
+            buffer_pool.clone(),
+            &partition_prefix,
+            &encryption_key,
         )
         .await
-        .expect("unable to initialize DKG outcomes journal");
+        .wrap_err("failed to open persistent state store")?;
 
-        let events = segmented::variable::Journal::init(
-            context.with_label("events"),
-            segmented::variable::Config {
-                partition: format!("{partition_prefix}_events"),
-                compression: None,
-                codec_config: MAXIMUM_VALIDATORS,
-                buffer_pool,
-                write_buffer: WRITE_BUFFER,
-            },
+        let events = open_or_encrypt_events(
+            &mut context,
+            buffer_pool.clone(),
+            &partition_prefix,
+            &encryption_key,
         )
         .await
-        .expect("should be able to initialize events journal");
+        .wrap_err("failed to open persistent event store")?;
 
         // Replay states to get current epoch
-        if states.size() == 0 {
+        if state.get(&STATE_KEY).is_none() {
             let initial_state = match initial_state {
                 None => {
                     return Err(eyre!(
@@ -565,23 +588,21 @@ impl Builder {
                     .await
                     .wrap_err("failed constructing initial state to populate storage")?,
             };
-            states
-                .append(initial_state)
+            state
+                .put_sync(
+                    STATE_KEY,
+                    Encrypted::encrypt(&initial_state, &encryption_key, &mut context),
+                )
                 .await
-                .wrap_err("unable to write initial state to states journal")?;
-            states
-                .sync()
-                .await
-                .wrap_err("unable to sync states journal to persist initial state")?;
+                .wrap_err("unable to write initial state to persistent storage")?;
         }
         let current = {
-            let segment = states.size().checked_sub(1).expect(
+            let encrypted = state.get(&STATE_KEY).cloned().expect(
                 "there must be at least one entry in the states journal; just populated it",
             );
-            states
-                .read(segment)
-                .await
-                .wrap_err("unable to read states journal to determine current epoch state")?
+            encrypted
+                .decrypt_decode(&encryption_key)
+                .wrap_err("failed decrypting latest state with the provided key")?
         };
 
         // Replay msgs to populate epoch caches
@@ -598,27 +619,29 @@ impl Builder {
                     result.wrap_err("unable to read entry in replay stream")?;
                 let epoch = Epoch::new(section);
                 let events = cache.entry(epoch).or_default();
-                events.insert(event);
+                events
+                    .insert_encrypted(&event, &encryption_key)
+                    .wrap_err("failed to insert event into cache")?;
             }
         }
 
         Ok(Storage {
-            states,
+            context,
+            state,
             events,
             current,
             cache,
+            encryption_key,
         })
     }
 }
 
 /// The outcome of a DKG ceremony.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct State {
     pub(super) epoch: Epoch,
     pub(super) seed: Summary,
     pub(super) output: Output<MinSig, PublicKey>,
-    // TODO(janis): don't store this un-encryptyed. Maybe don't store it in
-    // state at all?
     pub(super) share: Option<Share>,
     pub(super) dealers: ordered::Map<PublicKey, SocketAddr>,
     pub(super) players: ordered::Map<PublicKey, SocketAddr>,
@@ -667,16 +690,16 @@ impl Write for State {
 }
 
 impl Read for State {
-    type Cfg = NonZeroU32;
+    type Cfg = ();
 
     fn read_cfg(
         buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
+        _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         Ok(Self {
             epoch: ReadExt::read(buf)?,
             seed: ReadExt::read(buf)?,
-            output: Read::read_cfg(buf, cfg)?,
+            output: Read::read_cfg(buf, &MAXIMUM_VALIDATORS)?,
             share: ReadExt::read(buf)?,
             dealers: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
             players: Read::read_cfg(buf, &(RangeCfg::from(1..=(u16::MAX as usize)), (), ()))?,
@@ -710,7 +733,7 @@ struct Events {
 }
 
 impl Events {
-    fn insert(&mut self, event: Event) {
+    fn insert(&mut self, event: Event) -> eyre::Result<()> {
         match event {
             Event::Dealing {
                 dealer: public_key,
@@ -743,9 +766,23 @@ impl Events {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Utility to decrypt and decoded `encrypted` as `Event` using `key` before inserting it.
+    fn insert_encrypted(
+        &mut self,
+        encrypted: &Encrypted<Event>,
+        key: &EncryptionKey,
+    ) -> eyre::Result<()> {
+        let event = encrypted
+            .decrypt_decode(key)
+            .wrap_err("failed to decrypt/decode input as an event")?;
+        self.insert(event)
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 enum Event {
     /// A message received from a dealer (as a player).
     Dealing {
@@ -834,17 +871,17 @@ impl Write for Event {
 }
 
 impl Read for Event {
-    type Cfg = NonZeroU32;
+    type Cfg = ();
 
     fn read_cfg(
         buf: &mut impl bytes::Buf,
-        cfg: &Self::Cfg,
+        _cfg: &Self::Cfg,
     ) -> Result<Self, commonware_codec::Error> {
         let tag = u8::read(buf)?;
         match tag {
             0 => Ok(Self::Dealing {
                 dealer: ReadExt::read(buf)?,
-                public_msg: Read::read_cfg(buf, cfg)?,
+                public_msg: Read::read_cfg(buf, &MAXIMUM_VALIDATORS)?,
                 private_msg: ReadExt::read(buf)?,
             }),
             1 => Ok(Self::Ack {
@@ -853,7 +890,7 @@ impl Read for Event {
             }),
             2 => Ok(Self::Log {
                 dealer: ReadExt::read(buf)?,
-                log: Read::read_cfg(buf, &NZU32!(u16::MAX as u32))?,
+                log: Read::read_cfg(buf, &MAXIMUM_VALIDATORS)?,
             }),
             3 => Ok(Self::Finalized {
                 digest: ReadExt::read(buf)?,
@@ -911,7 +948,7 @@ impl Dealer {
         ack: PlayerAck<PublicKey>,
     ) -> eyre::Result<()>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
     {
         if !self.unsent.contains_key(&player) {
             bail!("already received an ack from `{player}`");
@@ -1053,7 +1090,7 @@ impl Player {
         priv_msg: DealerPrivMsg,
     ) -> eyre::Result<PlayerAck<PublicKey>>
     where
-        TContext: commonware_runtime::Storage + Metrics,
+        TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
     {
         // If we've already generated an ack, return the cached version
         if let Some(ack) = self.acks.get(&dealer) {
@@ -1160,4 +1197,260 @@ impl ReducedBlock {
             log,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Encrypted<T> {
+    bytes: Bytes,
+    _type: std::marker::PhantomData<T>,
+}
+
+impl<T> Encrypted<T> {
+    pub(super) fn new(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Write + EncodeSize> Encrypted<T> {
+    fn encrypt(value: &T, secret: &EncryptionKey, rng: &mut impl CryptoRngCore) -> Self {
+        let bytes = secret.encrypt_encodable(value, rng).into();
+        Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: ReadExt> Encrypted<T> {
+    pub(super) fn decrypt_decode(&self, secret: &EncryptionKey) -> eyre::Result<T> {
+        secret
+            .decrypt_decodable(self.bytes.as_ref())
+            .wrap_err("failed decrypting encrypted secret")
+    }
+}
+
+impl<T> EncodeSize for Encrypted<T> {
+    fn encode_size(&self) -> usize {
+        self.bytes.encode_size()
+    }
+}
+
+impl<T> Write for Encrypted<T> {
+    fn write(&self, buf: &mut impl bytes::BufMut) {
+        self.bytes.write(buf);
+    }
+}
+
+impl<T> Read for Encrypted<T> {
+    type Cfg = ();
+
+    fn read_cfg(
+        buf: &mut impl bytes::Buf,
+        _cfg: &Self::Cfg,
+    ) -> Result<Self, commonware_codec::Error> {
+        // NOTE: this value is only ever written/read by the app so this is safe.
+        // TODO: Technically it is possible to establish a lower and upper bound
+        // for completeness.
+        let bytes = Bytes::read_cfg(buf, &RangeCfg::from(..))?;
+        Ok(Self {
+            bytes,
+            _type: std::marker::PhantomData,
+        })
+    }
+}
+
+async fn open_or_encrypt_state<TContext>(
+    context: &mut TContext,
+    buffer_pool: PoolRef,
+    partition_prefix: &str,
+    key: &EncryptionKey,
+) -> eyre::Result<Metadata<TContext, U64, Encrypted<State>>>
+where
+    TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
+{
+    let mut state_metadata = Metadata::init(
+        context.with_label("state"),
+        metadata::Config {
+            partition: format!("{partition_prefix}_state"),
+            codec_config: (),
+        },
+    )
+    .await
+    .wrap_err("failed to initialize metadata to sore DKG state")?;
+
+    // If metadata is populated, assume the migration was successful and ignore
+    // the journals. In case deleting the journal went wrong the directory will
+    // be dirty. That's ok.
+    if state_metadata.keys().next().is_some() {
+        return Ok(state_metadata);
+    };
+
+    let unencrypted = contiguous::variable::Journal::<_, State>::init(
+        context.with_label("states"),
+        contiguous::variable::Config {
+            partition: format!("{partition_prefix}_states"),
+            compression: None,
+            codec_config: (),
+            buffer_pool: buffer_pool.clone(),
+            write_buffer: WRITE_BUFFER,
+            items_per_section: NZU64!(1),
+        },
+    )
+    .await
+    .wrap_err(
+        "failed to open or initialize unencrypted journal after failing to open encrypted journal",
+    )?;
+
+    // Journal::oldest_retained_pos returns None if the journal is empty. So
+    // this is the general way to check if there is data.
+    if unencrypted.oldest_retained_pos().is_some() {
+        let state = unencrypted
+            .read(unencrypted.size() - 1)
+            .await
+            .wrap_err("failed reading latest unencrypted state from journal")?;
+        state_metadata
+            .put_sync(STATE_KEY, Encrypted::encrypt(&state, key, context))
+            .await
+            .wrap_err("failed writing encrypted state to disk")?;
+    }
+    unencrypted
+        .destroy()
+        .await
+        .wrap_err("failed deleting unencrypted journal")?;
+
+    Ok(state_metadata)
+}
+
+async fn open_or_encrypt_events<TContext>(
+    context: &mut TContext,
+    buffer_pool: PoolRef,
+    partition_prefix: &str,
+    key: &EncryptionKey,
+) -> eyre::Result<segmented::variable::Journal<TContext, Encrypted<Event>>>
+where
+    TContext: commonware_runtime::Storage + Metrics + Clock + CryptoRngCore,
+{
+    let mut events_encrypted = segmented::variable::Journal::init(
+        context.with_label("events_encrypted"),
+        segmented::variable::Config {
+            partition: format!("{partition_prefix}_events_encrypted"),
+            compression: None,
+            codec_config: (),
+            buffer_pool: buffer_pool.clone(),
+            write_buffer: WRITE_BUFFER,
+        },
+    )
+    .await
+    .wrap_err("failed to initialize encrypted events journal")?;
+
+    let events_unencrypted = segmented::variable::Journal::<_, Event>::init(
+        context.with_label("events"),
+        segmented::variable::Config {
+            partition: format!("{partition_prefix}_events"),
+            compression: None,
+            codec_config: (),
+            buffer_pool: buffer_pool.clone(),
+            write_buffer: WRITE_BUFFER,
+        },
+    )
+    .await
+    .wrap_err("failed to initialize unencrypted events journal")?;
+
+    // See if the unencrypted journal contains any items. If it does not,
+    // we are either running a fresh node or we have already successfully
+    // migrated.
+    if events_unencrypted.newest_section().is_none() {
+        tracing::debug!("unencrypted journal is empty, there is nothing to encrypt");
+        events_unencrypted
+            .destroy()
+            .await
+            .wrap_err("failed deleting unencrypted events journal")?;
+        return Ok(events_encrypted);
+    }
+
+    // Grab the newest section and number of items in that section..
+    // There is no easy way to get the latter, so we use the Journal::replay API
+    // to walk to it.
+    let latest_section = events_encrypted.newest_section();
+    let mut items_in_latest_section = 0;
+    if let Some(newest_section) = latest_section {
+        let replay = events_encrypted
+            .replay(newest_section, 0, READ_BUFFER)
+            .await
+            .wrap_err("unable to start a over encrypted items to find last item")?;
+        futures::pin_mut!(replay);
+        while let Some(entry) = replay.next().await {
+            let (section, _, _, _) =
+                entry.wrap_err("failed reading entry to figure out last already encrypted item")?;
+            assert!(
+                section == newest_section,
+                "replay stream returned section that was not the newest section"
+            );
+            items_in_latest_section += 1;
+        }
+    }
+
+    tracing::debug!(
+        latest_section = %latest_section.map_or(Cow::Borrowed("None"), |sec| Cow::Owned(sec.to_string())),
+        items_in_latest_section,
+        "opened encrypted events journal, opening unencrypted journal from \
+        latest already encrypted session, if there was any",
+    );
+
+    {
+        let mut current_section = latest_section.unwrap_or_default();
+        let replay = events_unencrypted
+            .replay(current_section, 0, READ_BUFFER)
+            .await
+            .wrap_err("unable to start a replay stream to populate encrypted journal")?;
+        futures::pin_mut!(replay);
+        let mut items_in_section = 0;
+        while let Some(result) = replay.next().await {
+            let (section, _, _, event) =
+                result.wrap_err("unable to read unencrypted event in replay stream")?;
+
+            if section != current_section {
+                current_section = section;
+                items_in_section = 0;
+            }
+
+            items_in_section += 1;
+
+            // Encrypt/write if we don't have any encrypted sections, or if the
+            // current section is ahead of the latest encrypted section, or
+            // if there are more items in the current unencrypted session than
+            // there are items in the latest already encrypted section.
+            let should_write = match latest_section {
+                None => true,
+                Some(newest_section) => {
+                    section > newest_section
+                        || (section == newest_section && items_in_section > items_in_latest_section)
+                }
+            };
+
+            if should_write {
+                events_encrypted
+                    .append(section, Encrypted::encrypt(&event, key, context))
+                    .await
+                    .wrap_err("failed appending encrypted event to encrypted journal")?;
+                events_encrypted
+                    .sync(section)
+                    .await
+                    .wrap_err("failed persisting encrypted event to disk")?;
+            }
+        }
+    }
+    tracing::debug!(
+        "migration complete, all unencrypted events were encrypted, \
+        deleting unencrypted events journal",
+    );
+
+    events_unencrypted
+        .destroy()
+        .await
+        .wrap_err("failed deleting unencrypted events journal")?;
+    Ok(events_encrypted)
 }

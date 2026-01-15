@@ -43,6 +43,7 @@ reth-rpc-builder.workspace = true
 tempo-chainspec.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-commonware-node.workspace = true
+tempo-commonware-node-config.workspace = true
 tempo-node.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 

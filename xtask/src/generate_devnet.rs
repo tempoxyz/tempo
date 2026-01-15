@@ -2,7 +2,6 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use alloy_primitives::Address;
 use eyre::{Context, OptionExt as _, ensure};
-use rand::SeedableRng as _;
 use reth_network_peers::pk2id;
 use secp256k1::SECP256K1;
 use serde::Serialize;
@@ -46,13 +45,12 @@ impl GenerateDevnet {
             genesis_args,
         } = self;
 
-        let seed = genesis_args.seed;
         let (genesis, consensus_config) = genesis_args
             .generate_genesis()
             .await
             .wrap_err("failed to generate genesis")?;
 
-        let consensus_config = consensus_config
+        let mut consensus_config = consensus_config
             .ok_or_eyre("no consensus config generated; did you provide --validators?")?;
 
         std::fs::create_dir_all(&output).wrap_err_with(|| {
@@ -88,7 +86,6 @@ impl GenerateDevnet {
             );
         }
 
-        let mut rng = rand::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand::random::<u64>));
         let mut execution_peers = vec![];
 
         let devmode = consensus_config.validators.len() == 1;
@@ -96,7 +93,7 @@ impl GenerateDevnet {
         let mut all_configs = vec![];
         for validator in consensus_config.validators {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
-                let (sk, pk) = SECP256K1.generate_keypair(&mut rng);
+                let (sk, pk) = SECP256K1.generate_keypair(&mut consensus_config.rng);
                 (sk, pk2id(&pk))
             };
 
@@ -118,7 +115,13 @@ impl GenerateDevnet {
                     node_image_tag: image_tag.clone(),
 
                     consensus_on_disk_signing_key: validator.signing_key.to_string(),
-                    consensus_on_disk_signing_share: validator.signing_share.to_string(),
+                    consensus_on_disk_signing_share: validator.signing_share.to_hex(
+                        &validator.signing_share_encryption_key,
+                        &mut consensus_config.rng,
+                    ),
+                    consensus_on_disk_signing_share_encryption_key: validator
+                        .signing_share_encryption_key
+                        .to_hex(),
 
                     // FIXME(janis): this should not be zero
                     consensus_fee_recipient: Address::ZERO,
@@ -165,6 +168,7 @@ pub(crate) struct ConfigOutput {
     devmode: bool,
     consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
+    consensus_on_disk_signing_share_encryption_key: String,
     consensus_p2p_port: u16,
     consensus_fee_recipient: Address,
     consensus_metrics_port: u16,

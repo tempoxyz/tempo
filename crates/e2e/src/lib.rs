@@ -36,6 +36,7 @@ pub mod execution_runtime;
 pub use execution_runtime::ExecutionNodeConfig;
 pub mod testing_node;
 pub use execution_runtime::ExecutionRuntime;
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 pub use testing_node::TestingNode;
 
@@ -236,6 +237,10 @@ pub async fn setup_validators(
         );
         execution_config.feed_state = Some(feed_state.clone());
 
+        let share_key = EncryptionKey::random(&mut context);
+
+        let raw_share = share.map(|share| share_key.encrypt_encodable(&share, &mut context).into());
+
         let engine_config = consensus::Builder {
             context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
@@ -243,7 +248,7 @@ pub async fn setup_validators(
             blocker: oracle.control(private_key.public_key()),
             peer_manager: oracle.socket_manager(),
             partition_prefix: uid.clone(),
-            share,
+            raw_share,
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
@@ -257,6 +262,7 @@ pub async fn setup_validators(
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             feed_state,
+            share_key,
         };
 
         nodes.push(TestingNode::new(

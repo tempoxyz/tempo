@@ -7,6 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
@@ -15,7 +16,7 @@ use commonware_consensus::{
 };
 use commonware_cryptography::{
     Signer as _,
-    bls12381::primitives::{group::Share, variant::MinSig},
+    bls12381::primitives::variant::MinSig,
     certificate::Scheme as _,
     ed25519::{PrivateKey, PublicKey},
 };
@@ -29,6 +30,7 @@ use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -78,7 +80,8 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
 
     pub partition_prefix: String,
     pub signer: PrivateKey,
-    pub share: Option<Share>,
+    pub raw_share: Option<Bytes>,
+    pub share_key: EncryptionKey,
 
     pub mailbox_size: usize,
     pub deque_size: usize,
@@ -358,13 +361,14 @@ where
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
-                initial_share: self.share.clone(),
+                initial_share: self.raw_share.clone(),
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
                 me: self.signer.clone(),
                 partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
                 peer_manager: self.peer_manager.clone(),
+                share_key: self.share_key,
             },
         )
         .await

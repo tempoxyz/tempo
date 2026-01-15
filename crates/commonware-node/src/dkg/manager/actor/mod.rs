@@ -34,6 +34,7 @@ use futures::{
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use reth_provider::{BlockNumReader, HeaderProvider};
+use tempo_commonware_node_config::EncryptionKey;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tracing::{Level, Span, debug, error, info, info_span, instrument, warn, warn_span};
@@ -42,13 +43,13 @@ use crate::{
     consensus::{Digest, block::Block},
     dkg::manager::{
         Command,
+        actor::state::State,
         ingress::{GetDkgOutcome, VerifyDealerLog},
         validators::{self, DecodedValidator},
     },
 };
 
 mod state;
-use state::State;
 
 /// Wire message type for DKG protocol communication.
 pub(crate) enum Message {
@@ -171,6 +172,7 @@ where
                 let initial_share = self.config.initial_share.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
                 let mut marshal = self.config.marshal.clone();
+                let share_key = self.config.share_key.clone();
                 async move {
                     read_initial_state_and_set_floor(
                         &mut context,
@@ -178,10 +180,12 @@ where
                         initial_share.clone(),
                         &epoch_strategy,
                         &mut marshal,
+                        &share_key,
                     )
                     .await
                 }
             })
+            .encryption_key(self.config.share_key.clone())
             .init(self.context.with_label("state"))
             .await
         else {
@@ -217,7 +221,8 @@ where
         mux: &mut MuxHandle<TSender, TReceiver>,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext:
+            commonware_runtime::Metrics + commonware_runtime::Storage + Clock + CryptoRngCore,
         TSender: Sender<PublicKey = PublicKey>,
         TReceiver: Receiver<PublicKey = PublicKey>,
     {
@@ -230,7 +235,7 @@ where
         self.metrics.syncing_players.set(state.syncers.len() as i64);
 
         if let Some(previous) = state.epoch.previous() {
-            // NOTE: State::prune emits an error event.
+            // NOTE: Storage::prune emits an error event.
             storage.prune(previous).await.wrap_err_with(|| {
                 format!("unable to prune storage before up until epoch `{previous}`",)
             })?;
@@ -372,9 +377,9 @@ where
                                             ));
 
                                             if let Err(err) = storage
-                                                .append_state(new_state)
+                                                .set_state(new_state)
                                                 .await
-                                                .wrap_err("failed appending new state to journal")
+                                                .wrap_err("failed setting new state")
                                             {
                                                 break Err(err);
                                             }
@@ -481,7 +486,7 @@ where
 
     fn handle_verify_dealer_log(
         &self,
-        state: &state::State,
+        state: &State,
         round: &state::Round,
         VerifyDealerLog {
             epoch,
@@ -570,7 +575,7 @@ where
 
     /// Handles a finalized block.
     ///
-    /// Returns a new [`State`] after finalizing the boundary block of the epoch.
+    /// Returns a new [`state::InMemory`] after finalizing the boundary block of the epoch.
     ///
     /// Some block heights are special cased:
     ///
@@ -609,7 +614,7 @@ where
     async fn handle_finalized_block<TStorageContext, TSender>(
         &mut self,
         cause: Span,
-        state: &state::State,
+        state: &State,
         round: &state::Round,
         round_channel: &mut TSender,
         storage: &mut state::Storage<TStorageContext>,
@@ -618,7 +623,8 @@ where
         block: Block,
     ) -> eyre::Result<Option<State>>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext:
+            commonware_runtime::Metrics + commonware_runtime::Storage + Clock + CryptoRngCore,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let epoch_info = self
@@ -782,7 +788,7 @@ where
             self.metrics.successes.inc();
         }
 
-        Ok(Some(state::State {
+        Ok(Some(State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -854,7 +860,7 @@ where
         )
         .await;
 
-        Ok(Some(state::State {
+        Ok(Some(State {
             epoch: onchain_outcome.epoch,
             seed: Summary::random(&mut self.context),
             output: onchain_outcome.output.clone(),
@@ -880,7 +886,8 @@ where
         player_state: &mut Option<state::Player>,
         round_channel: &mut TSender,
     ) where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext:
+            commonware_runtime::Metrics + commonware_runtime::Storage + Clock + CryptoRngCore,
         TSender: Sender<PublicKey = PublicKey>,
     {
         let me = self.config.me.public_key();
@@ -953,7 +960,8 @@ where
         mut message: Bytes,
     ) -> eyre::Result<()>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext:
+            commonware_runtime::Metrics + commonware_runtime::Storage + Clock + CryptoRngCore,
     {
         let msg = Message::read_cfg(&mut message, &NZU32!(round.players().len() as u32))
             .wrap_err("failed reading p2p message")?;
@@ -1038,7 +1046,7 @@ where
         request: GetDkgOutcome,
     ) -> Option<(Digest, GetDkgOutcome)>
     where
-        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage,
+        TStorageContext: commonware_runtime::Metrics + commonware_runtime::Storage + Clock,
     {
         let epoch_info = self
             .config
@@ -1164,7 +1172,7 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn enter_epoch(&mut self, state: &state::State) -> eyre::Result<()> {
+    fn enter_epoch(&mut self, state: &State) -> eyre::Result<()> {
         self.config
             .epoch_manager
             .enter(
@@ -1177,7 +1185,7 @@ where
     }
 
     #[instrument(skip_all, fields(epoch = %state.epoch), err(level = Level::WARN))]
-    fn exit_epoch(&mut self, state: &state::State) -> eyre::Result<()> {
+    fn exit_epoch(&mut self, state: &State) -> eyre::Result<()> {
         self.config
             .epoch_manager
             .exit(state.epoch)
@@ -1189,9 +1197,10 @@ where
 async fn read_initial_state_and_set_floor<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
-    share: Option<Share>,
+    raw_share: Option<Bytes>,
     epoch_strategy: &FixedEpocher,
     marshal: &mut crate::alias::marshal::Mailbox,
+    key: &EncryptionKey,
 ) -> eyre::Result<State>
 where
     TContext: CryptoRngCore,
@@ -1253,9 +1262,13 @@ where
         })?;
 
     let share = 'verify_initial_share: {
-        let Some(share) = share else {
+        let Some(raw_share) = raw_share else {
             break 'verify_initial_share None;
         };
+        let share = state::Encrypted::<Share>::new(raw_share)
+            .decrypt_decode(key)
+            .wrap_err("failed to decrypt and decode the raw share")?;
+
         let Ok(partial) = onchain_outcome.sharing().partial_public(share.index) else {
             warn!(
                 "the index of the provided share exceeds the polynomial of the \
