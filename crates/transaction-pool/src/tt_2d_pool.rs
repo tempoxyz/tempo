@@ -968,14 +968,16 @@ impl BestTransactions for BestAA2dTransactions {
 ///
 /// This combines the sender address with its nonce key, which
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AASequenceId {
-    pub(crate) address: Address,
-    pub(crate) nonce_key: U256,
+pub struct AASequenceId {
+    /// The sender address.
+    pub address: Address,
+    /// The nonce key for 2D nonce transactions.
+    pub nonce_key: U256,
 }
 
 impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
-    pub(crate) const fn new(address: Address, nonce_key: U256) -> Self {
+    pub const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
     }
 

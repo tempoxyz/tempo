@@ -3,8 +3,11 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::{AA2dPool, AASequenceId},
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, map::HashMap};
@@ -13,6 +16,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
 use reth_primitives_traits::Block;
 use reth_provider::{ChangedAccount, StateProviderFactory};
+use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
     BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
@@ -27,6 +31,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -79,6 +84,43 @@ where
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
+    }
+
+    /// Resets the nonce state for the given 2D nonce sequence IDs by reading from a specific
+    /// block's state. Used during reorgs to correct the pool's nonce tracking for slots that
+    /// were modified in the old chain but not in the new chain.
+    pub(crate) fn reset_2d_nonces_from_state(
+        &self,
+        seq_ids: Vec<AASequenceId>,
+        block_hash: B256,
+    ) -> Result<(), reth_provider::ProviderError> {
+        if seq_ids.is_empty() {
+            return Ok(());
+        }
+
+        let state_provider = self.client().state_by_block_hash(block_hash)?;
+        let mut nonce_changes = HashMap::default();
+
+        for seq_id in seq_ids {
+            // Read the current on-chain nonce for this sequence ID
+            let slot = NonceManager::new().nonces[seq_id.address][seq_id.nonce_key].slot();
+            let current_nonce: u64 = state_provider
+                .storage(NONCE_PRECOMPILE_ADDRESS, slot.into())?
+                .unwrap_or_default()
+                .saturating_to();
+
+            nonce_changes.insert(seq_id, current_nonce);
+        }
+
+        // Apply the nonce changes to the 2D pool
+        let (promoted, _mined) = self.aa_2d_pool.write().on_nonce_changes(nonce_changes);
+        if !promoted.is_empty() {
+            self.protocol_pool
+                .inner()
+                .notify_on_transaction_updates(promoted, Vec::new());
+        }
+
+        Ok(())
     }
 
     fn add_validated_transactions(
