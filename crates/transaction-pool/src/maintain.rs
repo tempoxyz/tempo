@@ -14,7 +14,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{PoolTransaction, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{FullTransactionEvent, PoolTransaction, TransactionOrigin, TransactionPool};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
@@ -56,6 +56,18 @@ impl TempoPoolState {
         }
     }
 
+    /// Removes a single transaction from expiry tracking (used during cleanup).
+    fn remove_from_expiry(&mut self, tx_hash: &TxHash) {
+        if let Some(valid_before) = self.tx_to_expiry.remove(tx_hash)
+            && let Some(hashes) = self.expiry_map.get_mut(&valid_before)
+        {
+            hashes.retain(|h| h != tx_hash);
+            if hashes.is_empty() {
+                self.expiry_map.remove(&valid_before);
+            }
+        }
+    }
+
     /// Collects and removes all expired transactions up to the given timestamp.
     /// Returns the list of expired transaction hashes.
     fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
@@ -93,8 +105,9 @@ where
 {
     let mut state = TempoPoolState::default();
 
-    // Subscribe to new transactions and chain events
+    // Subscribe to new transactions, transaction lifecycle events, and chain events
     let mut new_txs = pool.new_transactions_listener();
+    let mut tx_events = pool.all_transactions_event_listener();
     let mut chain_events = pool.client().canonical_state_stream();
 
     // Populate expiry tracking with existing transactions to prevent race conditions at start-up
@@ -115,6 +128,19 @@ where
 
                 let tx = &tx_event.transaction.transaction;
                 state.track_expiry(tx.inner().as_aa());
+            }
+
+            // Clean up tracking maps when transactions leave the pool
+            Some(event) = tx_events.next() => {
+                let tx_hash = match event {
+                    FullTransactionEvent::Mined { tx_hash, .. }
+                    | FullTransactionEvent::Discarded(tx_hash)
+                    | FullTransactionEvent::Invalid(tx_hash) => tx_hash,
+                    FullTransactionEvent::Replaced { transaction, .. } => *transaction.hash(),
+                    // Pending/Queued/Propagated don't indicate removal
+                    _ => continue,
+                };
+                state.remove_from_expiry(&tx_hash);
             }
 
             // Process all maintenance operations on new block commit or reorg
