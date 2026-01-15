@@ -820,19 +820,36 @@ mod tests {
             );
         }
 
-        /// Property: effective_balance_spending with base_fee=0 uses only priority fee
+        /// Property: effective_balance_spending with base_fee=0 uses only priority fee (EIP-1559)
+        ///
+        /// For EIP-1559 transactions with base_fee=0:
+        /// effective_gas_price = min(max_fee_per_gas, base_fee + priority_fee) = min(max_fee, priority_fee)
+        /// This test verifies the computation matches expectations.
         #[test]
         fn proptest_effective_balance_spending_zero_base_fee(
-            gas_limit in any::<u64>(),
-            max_fee_per_gas in any::<u128>(),
-            value in arb_u256(),
+            gas_limit in 0u64..30_000_000u64,
+            max_fee_per_gas in 0u128..1_000_000_000_000u128,
+            priority_fee in 0u128..500_000_000_000u128,
+            value in 0u128..10_000_000_000_000_000_000_000u128,
         ) {
-            let tx_env = make_tx_env(gas_limit, max_fee_per_gas, value);
+            use revm::context::Transaction;
+
+            let mut tx_env = make_tx_env(gas_limit, max_fee_per_gas, alloy_primitives::U256::from(value));
+            // Set tx_type to EIP-1559 and priority fee
+            tx_env.inner.tx_type = 2; // EIP-1559
+            tx_env.inner.gas_priority_fee = Some(priority_fee);
+
             let result = tx_env.effective_balance_spending(0, 0);
-            prop_assert!(
-                result.is_ok()
-                    || result == Err(InvalidTransaction::OverflowPaymentInTransaction)
-            );
+
+            // For EIP-1559: effective_gas_price = min(max_fee, 0 + priority_fee) = min(max_fee, priority_fee)
+            let effective_price = std::cmp::min(max_fee_per_gas, priority_fee);
+            let expected_gas_spending = calc_gas_balance_spending(gas_limit, effective_price);
+            let expected = expected_gas_spending.checked_add(alloy_primitives::U256::from(value));
+
+            match expected {
+                Some(expected_val) => prop_assert_eq!(result, Ok(expected_val)),
+                None => prop_assert_eq!(result, Err(InvalidTransaction::OverflowPaymentInTransaction)),
+            }
         }
 
         /// Property: calls() returns exactly aa_calls.len() for AA transactions
