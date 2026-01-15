@@ -96,8 +96,8 @@ pub struct IdentityTransitionResponse {
 
 /// A single identity transition (full DKG event).
 ///
-/// This proves that the network transitioned from `old_public_key` to
-/// `new_public_key` at the given epoch, with a certificate signed by
+/// This proves that the network transitioned from `old_identity` to
+/// `new_identity` at the given epoch, with a certificate signed by
 /// the old network identity.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,9 +105,9 @@ pub struct IdentityTransition {
     /// Epoch where the full DKG ceremony occurred.
     pub transition_epoch: u64,
     /// Hex-encoded BLS public key before the transition.
-    pub old_public_key: String,
+    pub old_identity: String,
     /// Hex-encoded BLS public key after the transition.
-    pub new_public_key: String,
+    pub new_identity: String,
     /// Proof of the transition.
     pub proof: TransitionProofData,
 }
@@ -118,8 +118,8 @@ pub struct IdentityTransition {
 pub struct TransitionProofData {
     /// The block header containing the new DKG outcome in extra_data.
     pub header: TempoHeaderResponse,
-    /// Hex-encoded finalization.
-    pub finalization: String,
+    /// Hex-encoded finalization certificate.
+    pub finalization_certificate: String,
 }
 
 /// Trait for accessing consensus feed data.

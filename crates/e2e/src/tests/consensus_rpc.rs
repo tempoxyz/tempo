@@ -248,20 +248,20 @@ async fn get_identity_transition_proof_after_full_dkg() {
         "Transition epoch should match full DKG epoch"
     );
     assert_ne!(
-        transition.old_public_key, transition.new_public_key,
+        transition.old_identity, transition.new_identity,
         "Old and new public keys should be different"
     );
     assert_eq!(
-        response.identity, transition.new_public_key,
+        response.identity, transition.new_identity,
         "Identity should match the new public key from the latest transition"
     );
 
     // Decode and verify the BLS signature
-    let old_pubkey_bytes = hex::decode(&transition.old_public_key).unwrap();
+    let old_pubkey_bytes = hex::decode(&transition.old_identity).unwrap();
     let old_pubkey = <MinSig as Variant>::Public::read(&mut old_pubkey_bytes.as_slice())
         .expect("valid BLS public key");
     let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::read(
-        &mut hex::decode(&transition.proof.finalization)
+        &mut hex::decode(&transition.proof.finalization_certificate)
             .unwrap()
             .as_slice(),
     )
@@ -293,7 +293,7 @@ async fn get_identity_transition_proof_after_full_dkg() {
         "Should have no transitions when querying from epoch 0"
     );
     assert_eq!(
-        response_epoch0.identity, transition.old_public_key,
+        response_epoch0.identity, transition.old_identity,
         "Identity at epoch 0 should be the old public key (before full DKG)"
     );
 

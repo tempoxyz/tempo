@@ -230,14 +230,14 @@ impl ConsensusFeed for FeedStateHandle {
 
                 transitions.push(IdentityTransition {
                     transition_epoch: search_epoch,
-                    old_public_key: hex::encode(prev_pubkey.encode()),
-                    new_public_key: hex::encode(curr_pubkey.encode()),
+                    old_identity: hex::encode(prev_pubkey.encode()),
+                    new_identity: hex::encode(curr_pubkey.encode()),
                     proof: TransitionProofData {
                         header: TempoHeaderResponse::from_consensus_header(
                             proof_block.clone_sealed_header(),
                             0,
                         ),
-                        finalization: hex::encode(finalization.encode()),
+                        finalization_certificate: hex::encode(finalization.encode()),
                     },
                 });
 
