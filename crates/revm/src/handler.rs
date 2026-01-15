@@ -2481,11 +2481,21 @@ mod tests {
             }
         }
 
-        /// Property: base gas is always at least 21000
+        /// Property: base gas is always within expected bounds
+        ///
+        /// For minimal AA transactions (secp256k1 sig, no calldata, no access list):
+        /// - Minimum: 21,000 (base stipend)
+        /// - Maximum: 21,000 + COLD_ACCOUNT_ACCESS_COST * (num_calls - 1)
         #[test]
         fn proptest_gas_minimum_base_stipend(num_calls in 1usize..5) {
             let gas = compute_aa_gas(&make_multi_call_env(num_calls));
             prop_assert!(gas.initial_gas >= 21_000, "Base gas stipend should be at least 21k");
+
+            // Expected: 21k base + cold account access for each additional call
+            let expected_max = 21_000 + COLD_ACCOUNT_ACCESS_COST * (num_calls.saturating_sub(1) as u64);
+            prop_assert!(gas.initial_gas <= expected_max,
+                "Gas {} exceeds expected max {} for {} calls (21k + {}*COLD_ACCOUNT_ACCESS_COST)",
+                gas.initial_gas, expected_max, num_calls, num_calls.saturating_sub(1));
         }
 
         /// Property: first_call returns the first call for AA transactions with any number of calls
