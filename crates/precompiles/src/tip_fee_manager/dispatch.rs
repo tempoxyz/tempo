@@ -5,11 +5,16 @@ use crate::{
         ITIPFeeAMM, TipFeeManager,
         amm::{M, MIN_LIQUIDITY, N, SCALE},
     },
-    view,
+    unknown_selector, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::{PrecompileError, PrecompileResult};
-use tempo_contracts::precompiles::{IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls};
+use tempo_contracts::precompiles::{
+    IFeeManager, IFeeManager::IFeeManagerCalls, ITIPFeeAMM::ITIPFeeAMMCalls,
+};
 
 /// Combined enum for dispatching to either IFeeManager or ITIPFeeAMM
 enum TipFeeManagerCall {
@@ -48,6 +53,12 @@ impl Precompile for TipFeeManager {
                 view(call, |c| self.collected_fees[c.validator][c.token].read())
             }
             TipFeeManagerCall::FeeManager(IFeeManagerCalls::getFeeToken(call)) => {
+                if !self.storage.spec().is_t0() {
+                    return unknown_selector(
+                        IFeeManager::getFeeTokenCall::SELECTOR,
+                        self.storage.gas_used(),
+                    );
+                }
                 view(call, |_| self.get_fee_token())
             }
 
@@ -423,6 +434,28 @@ mod tests {
             assert!(!result.reverted);
             let returned_token = Address::abi_decode(&result.bytes)?;
             assert_eq!(returned_token, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_get_fee_token_reverts_before_t0() -> eyre::Result<()> {
+        use tempo_chainspec::hardfork::TempoHardfork;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        let sender = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut fee_manager = TipFeeManager::new();
+
+            let calldata = IFeeManager::getFeeTokenCall {}.abi_encode();
+            let result = fee_manager.call(&calldata, sender)?;
+
+            assert!(
+                result.reverted,
+                "getFeeToken should revert before T0 hardfork"
+            );
 
             Ok(())
         })
