@@ -101,6 +101,7 @@ crate::sol! {
         error SpendingLimitExceeded();
         error InvalidSignatureType();
         error ZeroPublicKey();
+        error ZeroExpiry();
         error ExpiryInPast();
         error KeyAlreadyRevoked();
     }
@@ -140,6 +141,13 @@ impl AccountKeychainError {
     /// Creates an error for zero public key.
     pub const fn zero_public_key() -> Self {
         Self::ZeroPublicKey(IAccountKeychain::ZeroPublicKey {})
+    }
+
+    /// Creates an error for zero expiry.
+    /// A zero expiry would result in an unusable authorization because expiry == 0
+    /// is used as the existence check for authorized keys.
+    pub const fn zero_expiry() -> Self {
+        Self::ZeroExpiry(IAccountKeychain::ZeroExpiry {})
     }
 
     /// Creates an error for expiry timestamp in the past.

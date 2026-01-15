@@ -101,6 +101,12 @@ impl AccountKeychain {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
+        // Check that expiry is not zero - a zero expiry would result in an unusable
+        // authorization because expiry == 0 is used as the existence check for keys
+        if call.expiry == 0 {
+            return Err(AccountKeychainError::zero_expiry().into());
+        }
+
         // Check if key already exists (key exists if expiry > 0)
         let existing_key = self.keys[msg_sender][call.keyId].read()?;
         if existing_key.expiry > 0 {
@@ -660,6 +666,52 @@ mod tests {
                 }
                 e => panic!("Expected AccountKeychainError, got: {e:?}"),
             }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_authorize_key_rejects_zero_expiry() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Use main key
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Try to authorize a key with expiry = 0
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 0,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result = keychain.authorize_key(account, auth_call);
+            assert!(result.is_err(), "authorize_key with expiry=0 should fail");
+
+            // Verify it's the correct error
+            match result.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(e) => {
+                    assert!(
+                        matches!(e, AccountKeychainError::ZeroExpiry(_)),
+                        "Expected ZeroExpiry error, got: {e:?}"
+                    );
+                }
+                e => panic!("Expected AccountKeychainError, got: {e:?}"),
+            }
+
+            // Verify the key was not stored
+            let key_info = keychain.get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(key_info.expiry, 0, "Key should not exist");
+            assert!(!key_info.isRevoked, "Key should not be marked as revoked");
+
             Ok(())
         })
     }
