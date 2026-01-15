@@ -1265,35 +1265,35 @@ mod tests {
         }
 
         #[test]
-        fn test_non_aa_transaction_skips_keychain_validation() {
+        fn test_non_aa_transaction_skips_keychain_validation() -> Result<(), ProviderError> {
             // Non-AA transaction should return Ok(Ok(())) immediately
             let transaction = get_transaction(None);
             let validator = setup_validator(&transaction, 0);
             let state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Ok(()))),
-                "Non-AA tx should skip keychain validation"
-            );
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(result.is_ok(), "Non-AA tx should skip keychain validation");
+            Ok(())
         }
 
         #[test]
-        fn test_aa_with_primitive_signature_skips_keychain_validation() {
+        fn test_aa_with_primitive_signature_skips_keychain_validation() -> Result<(), ProviderError>
+        {
             // AA transaction with primitive (non-keychain) signature should skip validation
             let transaction = create_aa_transaction(None, None);
             let validator = setup_validator(&transaction, 0);
             let state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
             assert!(
-                matches!(result, Ok(Ok(()))),
+                result.is_ok(),
                 "AA tx with primitive signature should skip keychain validation"
             );
+            Ok(())
         }
 
         #[test]
-        fn test_keychain_signature_with_valid_authorized_key() {
+        fn test_keychain_signature_with_valid_authorized_key() -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let user_address = Address::random();
 
@@ -1317,11 +1317,12 @@ mod tests {
             );
             let state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
             assert!(
-                matches!(result, Ok(Ok(()))),
+                result.is_ok(),
                 "Valid authorized key should pass validation, got: {result:?}"
             );
+            Ok(())
         }
 
         #[test]
@@ -1413,7 +1414,7 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_skips_storage_check() {
+        fn test_key_authorization_skips_storage_check() -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
@@ -1448,11 +1449,12 @@ mod tests {
             );
             let state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
             assert!(
-                matches!(result, Ok(Ok(()))),
+                result.is_ok(),
                 "Valid KeyAuthorization should skip storage check, got: {result:?}"
             );
+            Ok(())
         }
 
         #[test]
@@ -1498,7 +1500,7 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_chain_id_zero_accepted() {
+        fn test_key_authorization_chain_id_zero_accepted() -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let (user_signer, user_address) = generate_keypair();
 
@@ -1532,11 +1534,12 @@ mod tests {
             );
             let state_provider = validator.inner.client().latest().unwrap();
 
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
             assert!(
-                matches!(result, Ok(Ok(()))),
+                result.is_ok(),
                 "chain_id=0 (wildcard) should be accepted, got: {result:?}"
             );
+            Ok(())
         }
 
         #[test]
@@ -1628,7 +1631,7 @@ mod tests {
         }
 
         #[test]
-        fn test_keychain_user_address_mismatch_rejected() {
+        fn test_keychain_user_address_mismatch_rejected() -> Result<(), ProviderError> {
             let (access_key_signer, access_key_address) = generate_keypair();
             let real_user = Address::random();
 
@@ -1699,11 +1702,12 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             // This should pass since user_address matches sender by construction
-            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
             assert!(
-                matches!(result, Ok(Ok(()))),
+                result.is_ok(),
                 "Properly constructed keychain sig should pass, got: {result:?}"
             );
+            Ok(())
         }
     }
 }
