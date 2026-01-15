@@ -7,6 +7,7 @@ pub(crate) mod marshal {
         types::FixedEpocher,
     };
     use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+    use commonware_parallel::Sequential;
     use commonware_storage::archive::immutable;
     use commonware_utils::acknowledgement::Exact;
 
@@ -19,6 +20,7 @@ pub(crate) mod marshal {
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
         immutable::Archive<TContext, Digest, Block>,
         FixedEpocher,
+        Sequential,
         Exact,
     >;
 

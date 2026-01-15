@@ -350,7 +350,6 @@ impl StablecoinDEX {
     /// Place a limit order on the orderbook
     ///
     /// Only supports placing an order on a pair between a token and its quote token.
-    /// The order is queued in the pending queue and will be processed at end of block.
     ///
     /// # Arguments
     /// * `token` - The token to trade (not the quote token)
