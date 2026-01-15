@@ -53,6 +53,7 @@ pub(crate) struct TxBuilder {
     fee_token: Option<Address>,
     valid_after: Option<u64>,
     valid_before: Option<u64>,
+    chain_id: u64,
 }
 
 impl Default for TxBuilder {
@@ -69,6 +70,7 @@ impl Default for TxBuilder {
             fee_token: None,
             valid_after: None,
             valid_before: None,
+            chain_id: 42431, // MODERATO chain_id
         }
     }
 }
@@ -179,6 +181,7 @@ impl TxBuilder {
     /// Build an EIP-1559 transaction.
     pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
         let tx = TxEip1559 {
+            chain_id: self.chain_id,
             to: self.kind,
             gas_limit: self.gas_limit,
             value: self.value,

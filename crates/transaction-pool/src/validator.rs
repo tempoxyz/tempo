@@ -565,7 +565,7 @@ where
 mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
-    use alloy_consensus::{Block, Transaction};
+    use alloy_consensus::{Block, Header, Transaction};
     use alloy_primitives::{Address, B256, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
@@ -575,17 +575,17 @@ mod tests {
     use std::sync::Arc;
     use tempo_chainspec::spec::MODERATO;
     use tempo_precompiles::{
-        TIP403_REGISTRY_ADDRESS,
-        tip20::slots as tip20_slots,
+        PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
     use tempo_primitives::TempoTxEnvelope;
 
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
-        use alloy_consensus::Header;
         let header = Header {
             timestamp,
+            gas_limit: 30_000_000,
             ..Default::default()
         };
         let block = reth_ethereum_primitives::Block {
@@ -625,7 +625,41 @@ mod tests {
             transaction.sender(),
             ExtendedAccount::new(transaction.nonce(), alloy_primitives::U256::ZERO),
         );
-        provider.add_block(B256::random(), Default::default());
+        let block_with_gas = Block {
+            header: Header {
+                gas_limit: 30_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        provider.add_block(B256::random(), block_with_gas);
+
+        // Setup PATH_USD as a valid fee token with USD currency and always-allow transfer policy
+        // USD_CURRENCY_SLOT_VALUE: "USD" left-padded with length marker (3 bytes * 2 = 6)
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+        // transfer_policy_id is packed at byte offset 20 in slot 7, so we need to shift
+        // policy_id=1 left by 160 bits (20 * 8) to position it correctly
+        let transfer_policy_id_packed =
+            uint!(0x0000000000000000000000010000000000000000000000000000000000000000_U256);
+        // Compute the balance slot for the sender in the PATH_USD token
+        let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
+            .expect("PATH_USD_ADDRESS is a valid TIP20 token")
+            .balances[transaction.sender()]
+        .slot();
+        // Give the sender enough balance to cover the transaction cost
+        let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
+        provider.add_account(
+            PATH_USD_ADDRESS,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (
+                    tip20_slots::TRANSFER_POLICY_ID.into(),
+                    transfer_policy_id_packed,
+                ),
+                (balance_slot.into(), fee_payer_balance),
+            ]),
+        );
 
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
@@ -977,25 +1011,10 @@ mod tests {
             .validate_transaction(TransactionOrigin::External, transaction)
             .await;
 
-        // Verify the value check specifically passed by checking we don't get NonZeroValue error.
-        // Full validation success would require extensive state setup (fee token, balance, AMM liquidity).
-        match outcome {
-            TransactionValidationOutcome::Invalid(_, ref err) => {
-                assert!(
-                    !matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::NonZeroValue)
-                    ),
-                    "Zero-value tx should not fail with NonZeroValue error"
-                );
-            }
-            TransactionValidationOutcome::Valid { .. } => {
-                // Full validation passed - even better!
-            }
-            TransactionValidationOutcome::Error(_, _) => {
-                // Provider errors are acceptable, just not NonZeroValue rejection
-            }
-        }
+        assert!(
+            matches!(outcome, TransactionValidationOutcome::Valid { .. }),
+            "Zero-value tx should pass validation, got: {outcome:?}"
+        );
     }
 
     #[tokio::test]
