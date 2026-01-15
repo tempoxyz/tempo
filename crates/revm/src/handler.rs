@@ -2483,5 +2483,262 @@ mod tests {
             let gas = compute_aa_gas(&make_multi_call_env(num_calls));
             prop_assert!(gas.initial_gas >= 21_000, "Base gas stipend should be at least 21k");
         }
+
+        /// Property: first_call returns the first call for AA transactions with any number of calls
+        #[test]
+        fn proptest_first_call_returns_first_for_aa(num_calls in 1usize..10) {
+            let calls: Vec<Call> = (0..num_calls)
+                .map(|i| Call {
+                    to: TxKind::Call(Address::with_last_byte(i as u8)),
+                    value: U256::ZERO,
+                    input: Bytes::from(vec![i as u8; i + 1]),
+                })
+                .collect();
+
+            let expected_addr = Address::with_last_byte(0);
+            let expected_input = vec![0u8; 1];
+
+            let tx_env = TempoTxEnv {
+                inner: revm::context::TxEnv::default(),
+                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    aa_calls: calls,
+                    signature: secp256k1_sig(),
+                    signature_hash: B256::ZERO,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            let first = tx_env.first_call();
+            prop_assert!(first.is_some(), "first_call should return Some for non-empty AA calls");
+
+            let (kind, input) = first.unwrap();
+            prop_assert_eq!(*kind, TxKind::Call(expected_addr), "Should return first call's address");
+            prop_assert_eq!(input, expected_input.as_slice(), "Should return first call's input");
+        }
+
+        /// Property: first_call returns None for AA transaction with zero calls
+        #[test]
+        fn proptest_first_call_empty_aa(_dummy in 0u8..1) {
+            let tx_env = TempoTxEnv {
+                inner: revm::context::TxEnv::default(),
+                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    aa_calls: vec![],
+                    signature: secp256k1_sig(),
+                    signature_hash: B256::ZERO,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+
+            prop_assert!(tx_env.first_call().is_none(), "first_call should return None for empty AA calls");
+        }
+
+        /// Property: first_call returns inner tx data for non-AA transactions
+        #[test]
+        fn proptest_first_call_non_aa(calldata_len in 0usize..100) {
+            let calldata = Bytes::from(vec![0xab_u8; calldata_len]);
+            let target = Address::random();
+
+            let tx_env = TempoTxEnv {
+                inner: revm::context::TxEnv {
+                    kind: TxKind::Call(target),
+                    data: calldata.clone(),
+                    ..Default::default()
+                },
+                tempo_tx_env: None,
+                ..Default::default()
+            };
+
+            let first = tx_env.first_call();
+            prop_assert!(first.is_some(), "first_call should return Some for non-AA tx");
+
+            let (kind, input) = first.unwrap();
+            prop_assert_eq!(*kind, TxKind::Call(target), "Should return inner tx kind");
+            prop_assert_eq!(input, calldata.as_ref(), "Should return inner tx data");
+        }
+
+        /// Property: calculate_key_authorization_gas is monotonic in number of limits
+        #[test]
+        fn proptest_key_auth_gas_monotonic_limits(
+            num_limits1 in 0usize..10,
+            num_limits2 in 0usize..10,
+        ) {
+            use tempo_primitives::transaction::{
+                SignatureType, SignedKeyAuthorization,
+                key_authorization::KeyAuthorization,
+                TokenLimit as PrimTokenLimit,
+            };
+
+            let make_key_auth = |num_limits: usize| -> SignedKeyAuthorization {
+                let limits = if num_limits == 0 {
+                    None
+                } else {
+                    Some((0..num_limits).map(|i| PrimTokenLimit {
+                        token: Address::with_last_byte(i as u8),
+                        limit: U256::from(1000),
+                    }).collect())
+                };
+
+                SignedKeyAuthorization {
+                    authorization: KeyAuthorization {
+                        chain_id: 1,
+                        key_type: SignatureType::Secp256k1,
+                        key_id: Address::ZERO,
+                        expiry: None,
+                        limits,
+                    },
+                    signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+                }
+            };
+
+            let gas1 = calculate_key_authorization_gas(&make_key_auth(num_limits1));
+            let gas2 = calculate_key_authorization_gas(&make_key_auth(num_limits2));
+
+            if num_limits1 <= num_limits2 {
+                prop_assert!(gas1 <= gas2,
+                    "More limits should mean more gas: limits1={}, gas1={}, limits2={}, gas2={}",
+                    num_limits1, gas1, num_limits2, gas2);
+            } else {
+                prop_assert!(gas1 >= gas2,
+                    "Fewer limits should mean less gas: limits1={}, gas1={}, limits2={}, gas2={}",
+                    num_limits1, gas1, num_limits2, gas2);
+            }
+        }
+
+        /// Property: calculate_key_authorization_gas minimum is KEY_AUTH_BASE_GAS + ECRECOVER_GAS
+        #[test]
+        fn proptest_key_auth_gas_minimum(
+            sig_type in 0u8..3,
+            num_limits in 0usize..5,
+        ) {
+            use tempo_primitives::transaction::{
+                SignatureType, SignedKeyAuthorization,
+                key_authorization::KeyAuthorization,
+                TokenLimit as PrimTokenLimit,
+            };
+
+            let signature = match sig_type {
+                0 => PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+                1 => PrimitiveSignature::P256(P256SignatureWithPreHash {
+                    r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO, pre_hash: false,
+                }),
+                _ => PrimitiveSignature::WebAuthn(WebAuthnSignature {
+                    r: B256::ZERO, s: B256::ZERO, pub_key_x: B256::ZERO, pub_key_y: B256::ZERO,
+                    webauthn_data: Bytes::new(),
+                }),
+            };
+
+            let key_auth = SignedKeyAuthorization {
+                authorization: KeyAuthorization {
+                    chain_id: 1,
+                    key_type: SignatureType::Secp256k1,
+                    key_id: Address::ZERO,
+                    expiry: None,
+                    limits: if num_limits == 0 { None } else {
+                        Some((0..num_limits).map(|i| PrimTokenLimit {
+                            token: Address::with_last_byte(i as u8),
+                            limit: U256::from(1000),
+                        }).collect())
+                    },
+                },
+                signature,
+            };
+
+            let gas = calculate_key_authorization_gas(&key_auth);
+
+            // Minimum gas is BASE + ECRECOVER (secp256k1 adds 0 to ECRECOVER)
+            let min_gas = KEY_AUTH_BASE_GAS + ECRECOVER_GAS;
+            prop_assert!(gas >= min_gas,
+                "Key auth gas should be at least {} (base + ecrecover), got {}",
+                min_gas, gas);
+        }
+
+        /// Property: calculate_2d_nonce_gas returns 0 for protocol nonce (key 0)
+        #[test]
+        fn proptest_2d_nonce_gas_zero_key_is_free(_dummy in 0u8..1) {
+            let mut journal = create_test_journal();
+            let block = TempoBlockEnv::default();
+            let cfg = CfgEnv::<TempoHardfork>::default();
+            let caller = Address::random();
+
+            let gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                let nm = NonceManager::new();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                    calculate_2d_nonce_gas(&nm, caller, U256::ZERO).unwrap(),
+                )
+            }).unwrap();
+
+            prop_assert_eq!(gas, 0, "Protocol nonce (key 0) should be free");
+        }
+
+        /// Property: calculate_2d_nonce_gas for new keys costs more than existing keys
+        #[test]
+        fn proptest_2d_nonce_gas_new_more_expensive_than_existing(
+            nonce_key in 1u64..1000u64,
+        ) {
+            let mut journal = create_test_journal();
+            let block = TempoBlockEnv::default();
+            let cfg = CfgEnv::<TempoHardfork>::default();
+            let caller = Address::random();
+            let nonce_key = U256::from(nonce_key);
+
+            // New key gas (before incrementing nonce)
+            let new_key_gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                let nm = NonceManager::new();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                    calculate_2d_nonce_gas(&nm, caller, nonce_key).unwrap(),
+                )
+            }).unwrap();
+
+            // Increment nonce to make it an existing key
+            StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                NonceManager::new().increment_nonce(caller, nonce_key).unwrap();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(())
+            }).unwrap();
+
+            // Existing key gas (after incrementing nonce)
+            let existing_key_gas = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                let nm = NonceManager::new();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                    calculate_2d_nonce_gas(&nm, caller, nonce_key).unwrap(),
+                )
+            }).unwrap();
+
+            prop_assert_eq!(new_key_gas, NEW_NONCE_KEY_GAS, "New key should cost NEW_NONCE_KEY_GAS");
+            prop_assert_eq!(existing_key_gas, EXISTING_NONCE_KEY_GAS, "Existing key should cost EXISTING_NONCE_KEY_GAS");
+            prop_assert!(new_key_gas > existing_key_gas,
+                "New key ({}) should be more expensive than existing key ({})",
+                new_key_gas, existing_key_gas);
+        }
+
+        /// Property: calculate_2d_nonce_gas returns consistent values for same key state
+        #[test]
+        fn proptest_2d_nonce_gas_deterministic(
+            nonce_key in 1u64..1000u64,
+        ) {
+            let mut journal = create_test_journal();
+            let block = TempoBlockEnv::default();
+            let cfg = CfgEnv::<TempoHardfork>::default();
+            let caller = Address::random();
+            let nonce_key = U256::from(nonce_key);
+
+            // Call twice with same state
+            let gas1 = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                let nm = NonceManager::new();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                    calculate_2d_nonce_gas(&nm, caller, nonce_key).unwrap(),
+                )
+            }).unwrap();
+
+            let gas2 = StorageCtx::enter_evm(&mut journal, &block, &cfg, || {
+                let nm = NonceManager::new();
+                Ok::<_, EVMError<Infallible, TempoInvalidTransaction>>(
+                    calculate_2d_nonce_gas(&nm, caller, nonce_key).unwrap(),
+                )
+            }).unwrap();
+
+            prop_assert_eq!(gas1, gas2, "Gas calculation should be deterministic");
+        }
     }
 }
