@@ -259,13 +259,17 @@ fn dispatch_call<T>(
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
-    if calldata.len() < 4 {
-        return Err(PrecompileError::Other(
-            "Invalid input: missing function selector".into(),
-        ));
-    }
-
     let storage = StorageCtx::default();
+
+    if calldata.len() < 4 {
+        if storage.spec().is_t0() {
+            return Ok(PrecompileOutput::new_reverted(0, Bytes::new()));
+        } else {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
+        }
+    }
     let result = decode(calldata);
 
     match result {
