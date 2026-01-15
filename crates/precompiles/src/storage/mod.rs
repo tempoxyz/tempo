@@ -101,5 +101,14 @@ pub trait ContractStorage {
     fn address(&self) -> Address;
 
     /// Contract storage accessor.
-    fn storage(&mut self) -> &mut StorageCtx;
+    fn storage(&self) -> &StorageCtx;
+
+    /// Contract storage mutable accessor.
+    fn storage_mut(&mut self) -> &mut StorageCtx;
+
+    /// Returns true if the contract has been initialized (has bytecode deployed).
+    fn is_initialized(&self) -> Result<bool> {
+        self.storage()
+            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
+    }
 }

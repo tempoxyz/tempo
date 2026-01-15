@@ -3,7 +3,6 @@ use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
-use core::mem;
 
 /// Token spending limit for access keys
 ///
@@ -89,15 +88,11 @@ impl KeyAuthorization {
 
     /// Calculates a heuristic for the in-memory size of the key authorization
     pub fn size(&self) -> usize {
-        mem::size_of::<u64>() + // chain_id
-        mem::size_of::<u8>() + // key_type
-        mem::size_of::<Address>() + // key_id
-        mem::size_of::<Option<u64>>() + // expiry
-        self.limits.as_ref().map_or(0, |limits| {
-            limits.iter().map(|_limit| {
-                mem::size_of::<Address>() + mem::size_of::<U256>()
-            }).sum::<usize>()
-        })
+        size_of::<Self>()
+            + self
+                .limits
+                .as_ref()
+                .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
     }
 }
 
@@ -169,5 +164,87 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             expiry: u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0),
             limits: u.arbitrary()?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::{
+        TempoSignature,
+        tt_authorization::tests::{generate_secp256k1_keypair, sign_hash},
+    };
+
+    fn make_auth(expiry: Option<u64>, limits: Option<Vec<TokenLimit>>) -> KeyAuthorization {
+        KeyAuthorization {
+            chain_id: 1,
+            key_type: SignatureType::Secp256k1,
+            key_id: Address::random(),
+            expiry,
+            limits,
+        }
+    }
+
+    #[test]
+    fn test_signature_hash_and_recover_signer() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+
+        let auth = make_auth(Some(1000), None);
+
+        // Hash determinism
+        let hash1 = auth.signature_hash();
+        let hash2 = auth.signature_hash();
+        assert_eq!(hash1, hash2, "signature_hash should be deterministic");
+        assert_ne!(hash1, B256::ZERO);
+
+        // Different auth produces different hash
+        let auth2 = make_auth(Some(2000), None);
+        assert_ne!(auth.signature_hash(), auth2.signature_hash());
+
+        // Sign and recover
+        let signature = sign_hash(&signing_key, &auth.signature_hash());
+        let inner_sig = match signature {
+            TempoSignature::Primitive(p) => p,
+            _ => panic!("Expected primitive signature"),
+        };
+        let signed = auth.clone().into_signed(inner_sig);
+
+        // Recovery should succeed with correct address
+        let recovered = signed.recover_signer();
+        assert!(recovered.is_ok());
+        assert_eq!(recovered.unwrap(), expected_address);
+
+        // Wrong signature hash yields wrong address
+        let wrong_sig = sign_hash(&signing_key, &B256::random());
+        let wrong_inner = match wrong_sig {
+            TempoSignature::Primitive(p) => p,
+            _ => panic!("Expected primitive signature"),
+        };
+        let bad_signed = auth.into_signed(wrong_inner);
+        let bad_recovered = bad_signed.recover_signer();
+        assert!(bad_recovered.is_ok());
+        assert_ne!(bad_recovered.unwrap(), expected_address);
+    }
+
+    #[test]
+    fn test_spending_expiry_and_size() {
+        // has_unlimited_spending: None = true, Some = false
+        assert!(make_auth(None, None).has_unlimited_spending());
+        assert!(!make_auth(None, Some(vec![])).has_unlimited_spending());
+        assert!(
+            !make_auth(
+                None,
+                Some(vec![TokenLimit {
+                    token: Address::ZERO,
+                    limit: U256::from(100),
+                }])
+            )
+            .has_unlimited_spending()
+        );
+
+        // never_expires: None = true, Some = false
+        assert!(make_auth(None, None).never_expires());
+        assert!(!make_auth(Some(1000), None).never_expires());
+        assert!(!make_auth(Some(0), None).never_expires()); // 0 is still Some
     }
 }

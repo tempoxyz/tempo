@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 
 type QueryRequest = {
   query: string
@@ -65,7 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const signatures =
       body.signatures && body.signatures.length > 0 ? body.signatures : ['']
 
-    const chainId = tempoTestnet.id
+    const chainId = tempoModerato.id
     const chainCursor = `${chainId}-0`
 
     const response = await fetch(url.toString(), {

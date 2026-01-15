@@ -65,21 +65,21 @@ While the execution environment mirrors Ethereum's, Tempo introduces some differ
 
 You can connect to Tempo's public testnet using the following details:
 
-| Property           | Value                           |
-| ------------------ | ------------------------------- |
-| **Network Name**   | Tempo Testnet (Andantino)       |
-| **Currency**       | `USD`                           |
-| **Chain ID**       | `42429`                         |
-| **HTTP URL**       | `https://rpc.testnet.tempo.xyz` |
-| **WebSocket URL**  | `wss://rpc.testnet.tempo.xyz`   |
-| **Block Explorer** | `https://explore.tempo.xyz`     |
+| Property           | Value                              |
+| ------------------ | ---------------------------------- |
+| **Network Name**   | Tempo Testnet (Moderato)           |
+| **Currency**       | `USD`                              |
+| **Chain ID**       | `42431`                            |
+| **HTTP URL**       | `https://rpc.moderato.tempo.xyz`   |
+| **WebSocket URL**  | `wss://rpc.moderato.tempo.xyz`     |
+| **Block Explorer** | `https://explore.tempo.xyz`        |
 
 Next, grab some stablecoins to test with from Tempo's [Faucet](https://docs.tempo.xyz/quickstart/faucet#faucet).
 
 Alternatively, use [`cast`](https://github.com/tempoxyz/tempo-foundry):
 
 ```bash
-cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.testnet.tempo.xyz
+cast rpc tempo_fundAddress <ADDRESS> --rpc-url https://rpc.moderato.tempo.xyz
 ```
 
 ### As an operator

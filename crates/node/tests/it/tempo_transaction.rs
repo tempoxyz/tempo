@@ -3,6 +3,7 @@ use alloy::{
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionRequest,
     signers::{SignerSync, local::MnemonicBuilder},
     sol_types::SolCall,
 };
@@ -26,13 +27,15 @@ use tempo_primitives::{
         KeyAuthorization, SignedKeyAuthorization, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
-            P256SignatureWithPreHash, PrimitiveSignature, TempoSignature, WebAuthnSignature,
+            KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
+            WebAuthnSignature,
         },
         tt_signed::AASigned,
     },
 };
 
 use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
+use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
 /// Helper function to fund an address with fee tokens
@@ -2598,10 +2601,6 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-    use tempo_primitives::transaction::tempo_transaction::Call;
-
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, _signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2696,10 +2695,6 @@ async fn test_aa_estimate_gas_with_key_types() -> eyre::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-    use tempo_primitives::transaction::tempo_transaction::Call;
-
     reth_tracing::init_test_tracing();
 
     let (_setup, provider, signer, signer_addr) = setup_test_with_funded_account().await?;
@@ -2972,9 +2967,6 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     let recipient = Address::random();
 
     // Create transaction request using RPC interface
-    use alloy::rpc::types::TransactionRequest;
-    use tempo_node::rpc::TempoTransactionRequest;
-
     let tx_request = TempoTransactionRequest {
         inner: TransactionRequest {
             from: Some(sender_addr),
@@ -3104,6 +3096,134 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
     );
 
     println!("verification successful");
+
+    Ok(())
+}
+
+/// Test that keychain signatures in tempo_authorization_list are rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    // Setup test node with funded sender account
+    let (mut setup, provider, sender_signer, sender_addr) =
+        setup_test_with_funded_account().await?;
+    let chain_id = provider.get_chain_id().await?;
+
+    // Create attacker and victim accounts
+    let attacker_signer = alloy::signers::local::PrivateKeySigner::random();
+    let attacker_addr = attacker_signer.address();
+    let victim_addr = Address::random(); // Victim account - attacker wants to delegate this
+
+    // The delegate address the attacker wants to set on the victim's account
+    let delegate_address = attacker_addr; // Attacker controls this
+
+    // ========================================================================
+    // Create a spoofed keychain authorization
+    // The attacker signs with their own key but claims to act on behalf of victim
+    // ========================================================================
+
+    let victim_nonce_before = provider.get_transaction_count(victim_addr).await?;
+    let victim_code_before = provider.get_code_at(victim_addr).await?;
+
+    // Create authorization for victim's address
+    let auth = alloy_eips::eip7702::Authorization {
+        chain_id: alloy_primitives::U256::from(chain_id),
+        address: delegate_address,
+        nonce: victim_nonce_before,
+    };
+
+    // Compute the signature hash
+    let sig_hash = compute_authorization_signature_hash(&auth);
+
+    // Attacker signs the authorization with their own key
+    let attacker_signature = attacker_signer.sign_hash_sync(&sig_hash)?;
+    let inner_sig = PrimitiveSignature::Secp256k1(attacker_signature);
+
+    // Create a keychain signature claiming to act on behalf of victim
+    // This is the attack: attacker signs, but claims victim's address
+    let keychain_sig = KeychainSignature::new(victim_addr, inner_sig);
+    let spoofed_sig = TempoSignature::Keychain(keychain_sig);
+
+    // Create the signed authorization with the spoofed keychain signature
+    let spoofed_auth =
+        tempo_primitives::transaction::TempoSignedAuthorization::new_unchecked(auth, spoofed_sig);
+
+    // Verify the spoofed auth recovers to victim's address (demonstrating the attack vector)
+    let recovered = spoofed_auth.recover_authority()?;
+    assert_eq!(
+        recovered, victim_addr,
+        "Spoofed auth should recover to victim address"
+    );
+
+    // ========================================================================
+    // Create and send the attack transaction
+    // ========================================================================
+
+    let recipient = Address::random();
+
+    let tx_request = TempoTransactionRequest {
+        inner: TransactionRequest {
+            from: Some(sender_addr),
+            to: Some(recipient.into()),
+            value: Some(U256::ZERO),
+            gas: Some(300_000),
+            max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            nonce: Some(provider.get_transaction_count(sender_addr).await?),
+            chain_id: Some(chain_id),
+            ..Default::default()
+        },
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        tempo_authorization_list: vec![spoofed_auth], // Include the spoofed authorization
+        ..Default::default()
+    };
+
+    // Build and sign the transaction with sender's key (NOT a keychain signature)
+    let tx = tx_request
+        .build_aa()
+        .map_err(|e| eyre::eyre!("Failed to build AA tx: {:?}", e))?;
+
+    let tx_sig_hash = tx.signature_hash();
+    let tx_signature = sender_signer.sign_hash_sync(&tx_sig_hash)?;
+    let tx_tempo_signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(tx_signature));
+    let signed_tx = AASigned::new_unhashed(tx, tx_tempo_signature);
+
+    // Encode and submit
+    let envelope: TempoTxEnvelope = signed_tx.into();
+    let mut encoded = Vec::new();
+    envelope.encode_2718(&mut encoded);
+
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let _payload = setup.node.advance_block().await?;
+
+    // ========================================================================
+    // Verify the attack was prevented
+    // ========================================================================
+    println!("\n--- Verifying attack was prevented ---");
+
+    let victim_nonce_after = provider.get_transaction_count(victim_addr).await?;
+    let victim_code_after = provider.get_code_at(victim_addr).await?;
+
+    // The keychain authorization should have been SKIPPED
+    // So victim's state should remain unchanged
+    assert_eq!(
+        victim_nonce_before, victim_nonce_after,
+        "Victim nonce should not change - keychain auth should be skipped"
+    );
+    assert_eq!(
+        victim_code_before.len(),
+        victim_code_after.len(),
+        "Victim code should not change - keychain auth should be skipped"
+    );
+    assert!(
+        victim_code_after.is_empty(),
+        "Victim should have no delegation code"
+    );
 
     Ok(())
 }

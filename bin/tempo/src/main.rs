@@ -15,6 +15,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[global_allocator]
+static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::new_allocator();
+
 mod defaults;
 mod tempo_cmd;
 
@@ -49,13 +52,9 @@ use tracing::{info, info_span};
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
-    /// Follow this specific RPC node for block hashes
-    #[arg(
-        long,
-        value_name = "URL",
-        default_missing_value = "wss://rpc.testnet.tempo.xyz",
-        num_args(0..=1)
-    )]
+    /// Follow this specific RPC node for block hashes.
+    /// If provided without a value, defaults to the RPC URL for the selected chain.
+    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
     #[command(flatten)]
@@ -142,6 +141,7 @@ fn main() -> eyre::Result<()> {
         )?;
 
         let ret = if node.config.dev.dev || args.follow.is_some() {
+            // When --follow is used (with or without a URL), skip consensus stack
             futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
@@ -260,8 +260,20 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
-                if let Some(follow_url) = &args.follow {
-                    builder.config_mut().debug.rpc_consensus_url = Some(follow_url.clone());
+                // Resolve the follow URL:
+                // --follow or --follow=auto -> use chain-specific default
+                // --follow=URL -> use provided URL
+                if let Some(follow) = &args.follow {
+                    let follow_url = if follow == "auto" {
+                        builder
+                            .config()
+                            .chain
+                            .default_follow_url()
+                            .map(|s| s.to_string())
+                    } else {
+                        Some(follow.clone())
+                    };
+                    builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
 
                 builder

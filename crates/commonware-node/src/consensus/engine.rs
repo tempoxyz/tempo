@@ -3,7 +3,7 @@
 //! [`alto`]: https://github.com/commonwarexyx/alto
 
 use std::{
-    num::{NonZeroU64, NonZeroUsize},
+    num::{NonZeroU16, NonZeroU64, NonZeroUsize},
     time::{Duration, Instant},
 };
 
@@ -52,11 +52,11 @@ const IMMUTABLE_ITEMS_PER_SECTION: NonZeroU64 =
     NonZeroU64::new(262_144).expect("value is not zero");
 const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 3MB
-const FREEZER_JOURNAL_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
-const FREEZER_JOURNAL_COMPRESSION: Option<u8> = Some(3);
+const FREEZER_VALUE_TARGET_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
+const FREEZER_VALUE_COMPRESSION: Option<u8> = Some(3);
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
-const BUFFER_POOL_PAGE_SIZE: NonZeroUsize = NonZeroUsize::new(4_096).expect("value is not zero"); // 4KB
+const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NonZeroU16::new(4_096).expect("value is not zero"); // 4KB
 const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
 const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
 
@@ -178,10 +178,22 @@ where
                     self.partition_prefix,
                 ),
 
-                freezer_journal_partition: format!(
-                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-journal",
+                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
+                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
+                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
+
+                freezer_key_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-key",
                     self.partition_prefix,
                 ),
+                freezer_key_buffer_pool: buffer_pool.clone(),
+
+                freezer_value_partition: format!(
+                    "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-value",
+                    self.partition_prefix,
+                ),
+                freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
+                freezer_value_compression: FREEZER_VALUE_COMPRESSION,
 
                 ordinal_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-ordinal",
@@ -189,17 +201,12 @@ where
                 ),
 
                 items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
-                freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
-                freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
-                freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
-
-                freezer_journal_buffer_pool: buffer_pool.clone(),
-
-                write_buffer: WRITE_BUFFER,
-                replay_buffer: REPLAY_BUFFER,
                 codec_config: Scheme::<PublicKey, MinSig>::certificate_codec_config_unbounded(),
+
+                replay_buffer: REPLAY_BUFFER,
+                freezer_key_write_buffer: WRITE_BUFFER,
+                freezer_value_write_buffer: WRITE_BUFFER,
+                ordinal_write_buffer: WRITE_BUFFER,
             },
         )
         .await
@@ -221,25 +228,31 @@ where
                     self.partition_prefix,
                 ),
 
-                freezer_journal_partition: format!(
-                    "{}-{FINALIZED_BLOCKS}-freezer-journal",
-                    self.partition_prefix,
-                ),
-
-                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", self.partition_prefix,),
-
-                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
                 freezer_table_resize_frequency: FREEZER_TABLE_RESIZE_FREQUENCY,
                 freezer_table_resize_chunk_size: FREEZER_TABLE_RESIZE_CHUNK_SIZE,
-                freezer_journal_target_size: FREEZER_JOURNAL_TARGET_SIZE,
-                freezer_journal_compression: FREEZER_JOURNAL_COMPRESSION,
 
-                freezer_journal_buffer_pool: buffer_pool.clone(),
+                freezer_key_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-freezer-key",
+                    self.partition_prefix,
+                ),
+                freezer_key_buffer_pool: buffer_pool.clone(),
 
-                write_buffer: WRITE_BUFFER,
-                replay_buffer: REPLAY_BUFFER,
+                freezer_value_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-freezer-value",
+                    self.partition_prefix,
+                ),
+                freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
+                freezer_value_compression: FREEZER_VALUE_COMPRESSION,
+
+                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", self.partition_prefix,),
+                items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 codec_config: (),
+
+                replay_buffer: REPLAY_BUFFER,
+                freezer_key_write_buffer: WRITE_BUFFER,
+                freezer_value_write_buffer: WRITE_BUFFER,
+                ordinal_write_buffer: WRITE_BUFFER,
             },
         )
         .await
@@ -267,7 +280,8 @@ where
                 buffer_pool: buffer_pool.clone(),
 
                 replay_buffer: REPLAY_BUFFER,
-                write_buffer: WRITE_BUFFER,
+                key_write_buffer: WRITE_BUFFER,
+                value_write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
                 block_codec_config: (),
             },

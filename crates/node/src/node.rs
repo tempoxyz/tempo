@@ -2,9 +2,8 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoAmm, TempoAmmApiServer, TempoDex,
-        TempoDexApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer, TempoPolicy,
-        TempoPolicyApiServer, TempoToken, TempoTokenApiServer,
+        TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
+        TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -200,17 +199,11 @@ where
                 } = container;
 
                 let eth_api = registry.eth_api().clone();
-                let dex = TempoDex::new(eth_api.clone());
-                let amm = TempoAmm::new(eth_api.clone());
                 let token = TempoToken::new(eth_api.clone());
-                let policy = TempoPolicy::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
 
-                modules.merge_configured(dex.into_rpc())?;
-                modules.merge_configured(amm.into_rpc())?;
                 modules.merge_configured(token.into_rpc())?;
-                modules.merge_configured(policy.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;

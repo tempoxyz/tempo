@@ -421,6 +421,17 @@ contract StablecoinDEX is IStablecoinDEX {
 
         if (level.head == 0) {
             _clearTickBit(order.bookKey, order.tick, isBid);
+
+            // If this was the best tick, find the next best tick
+            if (isBid && book.bestBidTick == order.tick) {
+                (int16 nextTick, bool hasLiquidity) =
+                    nextInitializedBidTick(order.bookKey, order.tick);
+                book.bestBidTick = hasLiquidity ? nextTick : type(int16).min;
+            } else if (!isBid && book.bestAskTick == order.tick) {
+                (int16 nextTick, bool hasLiquidity) =
+                    nextInitializedAskTick(order.bookKey, order.tick);
+                book.bestAskTick = hasLiquidity ? nextTick : type(int16).max;
+            }
         }
 
         // Credit escrow amount to user's withdrawable balance - must match the escrow calculation
@@ -577,11 +588,14 @@ contract StablecoinDEX is IStablecoinDEX {
                 );
             }
 
+            bytes32 bookKey = order.bookKey;
+            int16 tick = order.tick;
+
             delete orders[orderId];
 
             // Check if tick is exhausted and return 0 if so
             if (level.head == 0) {
-                _clearTickBit(order.bookKey, order.tick, isBid);
+                _clearTickBit(bookKey, tick, isBid);
                 return 0;
             }
         } else {

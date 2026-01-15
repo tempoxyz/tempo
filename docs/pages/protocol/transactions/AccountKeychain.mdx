@@ -1,6 +1,11 @@
+---
+title: Account Keychain Precompile Specification
+description: Technical specification for the Account Keychain precompile managing access keys with expiry timestamps and per-token spending limits.
+---
+
 # Account Keychain Precompile
 
-**Address:** `0xAAAAAAAA00000000000000000000000000000000`
+**Address:** `0xaAAAaaAA00000000000000000000000000000000`
 
 ## Overview
 
@@ -19,7 +24,7 @@ Access Keys are secondary signing keys authorized by an account's Root Key. They
 - **Expiry**: Unix timestamp when the key becomes invalid (0 = never expires)
 - **Spending Limits**: Per-TIP20 token limits that deplete as tokens are spent
   - Limits deplete as tokens are spent and can be updated by the Root Key via `updateSpendingLimit()`
-  - Spending limits only apply to TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `startReward()` calls
+  - Spending limits only apply to TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `distributeReward()` calls
   - Spending limits only apply when `msg.sender == tx.origin` (direct EOA calls, not contract calls)
   - Native value transfers and `transferFrom()` are NOT limited
 - **Privilege Restrictions**: Cannot authorize new keys or modify their own limits

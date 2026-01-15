@@ -1,4 +1,6 @@
 ---
+title: Add Funds to Your Balance
+description: Get test stablecoins on Tempo testnet using the faucet. Request pathUSD, AlphaUSD, BetaUSD, and ThetaUSD tokens for development and testing.
 mipd: true
 ---
 
@@ -29,7 +31,7 @@ Request test tokens using the `tempo_fundAddress` RPC method:
 
 ```bash
 cast rpc tempo_fundAddress <YOUR_ADDRESS> \
-  --rpc-url https://rpc.testnet.tempo.xyz
+  --rpc-url https://rpc.moderato.tempo.xyz
 ```
 
 Replace `<YOUR_ADDRESS>` with your wallet address.
@@ -53,5 +55,5 @@ After requesting tokens, verify your balance:
 # Check AlphaUSD balance
 cast erc20 balance 0x20c0000000000000000000000000000000000001 \
   <YOUR_ADDRESS> \
-  --rpc-url https://rpc.testnet.tempo.xyz
+  --rpc-url https://rpc.moderato.tempo.xyz
 ```

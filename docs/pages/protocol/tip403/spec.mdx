@@ -1,3 +1,8 @@
+---
+title: TIP-403 Policy Registry Specification
+description: Technical specification for TIP-403, the policy registry system enabling whitelist and blacklist access control for TIP-20 tokens on Tempo.
+---
+
 # Overview
 
 ## Abstract
@@ -146,7 +151,7 @@ interface ITIP403Registry {
     /// @dev Starts at 2 and increments with each policy creation
     function policyIdCounter() external view returns (uint64);
 
-    /// @notice Returns whether a policy exists (available from Allegretto hardfork)
+    /// @notice Returns whether a policy exists
     /// @param policyId ID of the policy to check
     /// @return True if the policy exists, false otherwise
     /// @dev Policy IDs 0 and 1 (built-in policies) always exist. For custom policies (ID >= 2),

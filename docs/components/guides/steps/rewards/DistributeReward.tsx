@@ -9,7 +9,7 @@ import { alphaUsd } from '../../tokens'
 import type { DemoStepProps } from '../types'
 import { REWARD_AMOUNT, REWARD_RECIPIENT_UNSET } from './Constants'
 
-export function StartReward(props: DemoStepProps) {
+export function DistributeReward(props: DemoStepProps) {
   const { stepNumber, last = false } = props
   const { address } = useConnection()
   const { getData, setData } = useDemoContext()
@@ -32,7 +32,7 @@ export function StartReward(props: DemoStepProps) {
     account: address,
   })
 
-  const start = Hooks.reward.useStartSync({
+  const distribute = Hooks.reward.useStartSync({
     mutation: {
       onSettled(data) {
         queryClient.refetchQueries({ queryKey: ['getUserRewardInfo'] })
@@ -47,7 +47,7 @@ export function StartReward(props: DemoStepProps) {
   useConnectionEffect({
     onDisconnect() {
       setExpanded(true)
-      start.reset()
+      distribute.reset()
     },
   })
 
@@ -62,13 +62,13 @@ export function StartReward(props: DemoStepProps) {
         rewardInfo.rewardRecipient !== REWARD_RECIPIENT_UNSET,
     )
     if (last) return activeWithBalance
-    return activeWithBalance && !start.isSuccess
+    return activeWithBalance && !distribute.isSuccess
   }, [
     address,
     balance,
     tokenAddress,
     metadata,
-    start.isSuccess,
+    distribute.isSuccess,
     last,
     rewardInfo,
   ])
@@ -76,12 +76,12 @@ export function StartReward(props: DemoStepProps) {
   return (
     <Step
       active={active}
-      completed={start.isSuccess}
+      completed={distribute.isSuccess}
       number={stepNumber}
-      title={`Start a reward of ${REWARD_AMOUNT} ${metadata?.name || 'tokens'}.`}
-      error={start.error}
+      title={`Distribute a reward of ${REWARD_AMOUNT} ${metadata?.name || 'tokens'}.`}
+      error={distribute.error}
       actions={
-        start.isSuccess ? (
+        distribute.isSuccess ? (
           <Button
             variant="default"
             onClick={() => setExpanded(!expanded)}
@@ -93,28 +93,28 @@ export function StartReward(props: DemoStepProps) {
         ) : (
           <Button
             variant={active ? 'accent' : 'default'}
-            disabled={!active || start.isPending || !metadata}
+            disabled={!active || distribute.isPending || !metadata}
             onClick={() => {
               if (!tokenAddress || !metadata) return
-              start.mutate({
+              distribute.mutate({
                 amount: parseUnits(REWARD_AMOUNT, metadata.decimals),
                 token: tokenAddress,
                 feeToken: alphaUsd,
               })
             }}
           >
-            {start.isPending ? 'Starting...' : 'Start Reward'}
+            {distribute.isPending ? 'Distributing...' : 'Distribute Reward'}
           </Button>
         )
       }
     >
-      {start.data && expanded && (
+      {distribute.data && expanded && (
         <div className="flex ml-6 flex-col gap-3 py-4">
           <div className="ps-5 border-gray4 border-s-2">
             <div className="text-[13px] text-gray9 -tracking-[2%]">
-              Successfully started reward distribution.
+              Successfully distributed reward.
             </div>
-            <ExplorerLink hash={start.data.receipt.transactionHash} />
+            <ExplorerLink hash={distribute.data.receipt.transactionHash} />
           </div>
         </div>
       )}

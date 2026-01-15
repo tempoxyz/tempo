@@ -7,78 +7,86 @@ import { loadEnv } from 'vite'
 import { defineConfig } from 'vocs'
 
 export default defineConfig({
-  head() {
-    return (
-      <>
-        <meta
-          content="width=device-width, initial-scale=1, maximum-scale=1"
-          name="viewport"
-        />
-        <meta content="Documentation ⋅ Tempo" property="og:title" />
-        <meta content="/og-docs.png" property="og:image" />
-        <meta content="image/png" property="og:image:type" />
-        <meta content="1200" property="og:image:width" />
-        <meta content="630" property="og:image:height" />
-        <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Documentation ⋅ Tempo" />
-        <meta name="twitter:image" content="/og-docs.png" />
-        <link rel="icon" href="/favicon.ico" sizes="32x32" />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-light.svg"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-dark.svg"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-light.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-dark.png"
-          media="(prefers-color-scheme: dark)"
-        />
-      </>
-    )
+  baseUrl: 'https://docs.tempo.xyz',
+  head: () => (
+    <>
+      <meta
+        content="width=device-width, initial-scale=1, maximum-scale=1"
+        name="viewport"
+      />
+      {process.env['VERCEL_ENV'] === 'production' ? (
+        <meta name="robots" content="index, follow" />
+      ) : (
+        <meta name="robots" content="noindex, nofollow" />
+      )}
+      <link rel="icon" href="/favicon.ico" sizes="32x32" />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-light.svg"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-dark.svg"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-light.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-dark.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      {process.env['VERCEL_ENV'] === 'production' && (
+        <script src="/ph.js" type="text/javascript" />
+      )}
+    </>
+  ),
+  ogImageUrl: {
+    '/': 'https://docs.tempo.xyz/og-docs.png',
+    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
   },
-  title: 'Documentation ⋅ Tempo',
+  title: 'Tempo',
+  titleTemplate: '%s | Tempo Docs',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
@@ -89,6 +97,19 @@ export default defineConfig({
     dark: '/icon-dark.png',
   },
   rootDir: '.',
+  banner: {
+    content: (
+      <div>
+        <strong>Testnet migration:</strong> We've launched a new testnet. You'll
+        need to update your RPC configuration and redeploy any contracts. The
+        old testnet will be deprecated on March 8th.{' '}
+        <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>
+          Learn more →
+        </a>
+      </div>
+    ),
+    dismissable: true,
+  },
   socials: [
     {
       icon: 'github',
@@ -111,6 +132,10 @@ export default defineConfig({
           {
             text: 'Overview',
             link: '/quickstart/integrate-tempo',
+          },
+          {
+            text: 'Network Upgrades',
+            link: '/network-upgrades',
           },
           {
             text: 'Connect to the Network',
@@ -436,11 +461,11 @@ export default defineConfig({
               },
               {
                 text: 'Reference Implementation',
-                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinDEX.sol',
+                link: 'https://github.com/tempoxyz/tempo/blob/main/docs/specs/src/StablecoinExchange.sol',
               },
               {
                 text: 'Rust Implementation',
-                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_dex',
+                link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
               },
             ],
           },
@@ -468,8 +493,8 @@ export default defineConfig({
                 link: 'https://viem.sh/tempo',
               },
               {
-                text: 'Viem Reference',
-                link: 'https://viem.sh/tempo',
+                text: 'Wagmi Reference',
+                link: 'https://wagmi.sh/tempo',
               },
               {
                 text: 'Server Reference',

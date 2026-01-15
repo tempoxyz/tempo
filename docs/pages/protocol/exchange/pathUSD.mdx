@@ -1,3 +1,8 @@
+---
+title: pathUSD - Tempo's Routing Stablecoin
+description: pathUSD is a USD-denominated stablecoin serving as an optional quote token for DEX trading pairs and fallback gas token on Tempo.
+---
+
 # pathUSD
 
 ## Abstract
@@ -37,7 +42,8 @@ TIP20 token = factory.createToken(
   "MCUSD",
   "USD",
   TIP20(0x20c0000000000000000000000000000000000000), // pathUSD
-  msg.sender
+  msg.sender,
+  bytes32("my-unique-salt") // salt for deterministic address
 );
 ```
 

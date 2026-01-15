@@ -1,3 +1,8 @@
+---
+title: TIP-20 Token Specification
+description: Technical specification for TIP-20, the optimized token standard extending ERC-20 with memos, rewards distribution, and policy integration.
+---
+
 # TIP20
 
 ## Abstract
@@ -151,7 +156,7 @@ interface ITIP20 {
     
     /// @notice Changes the transfer policy ID (requires DEFAULT_ADMIN_ROLE)
     /// @param newPolicyId The new policy ID from TIP-403 registry
-    /// @dev From Allegretto hardfork onwards, validates that the policy exists using TIP403Registry.policyExists()
+    /// @dev Validates that the policy exists using TIP403Registry.policyExists().
     /// Built-in policies (ID 0 = always-reject, ID 1 = always-allow) are always valid.
     /// For custom policies (ID >= 2), the policy must exist in the TIP-403 registry.
     /// Reverts with InvalidTransferPolicyId if the policy does not exist.
@@ -474,7 +479,7 @@ interface ITIP20Factory {
     /// @return token The deployed TIP-20 token address
     /// @dev
     ///  - Computes the TIP-20 deployment address as TIP20_PREFIX || lowerBytes,
-    ///    where lowerBytes is the highest 80 bits of keccak256(msg.sender, salt)
+    ///    where lowerBytes is the highest 64 bits of keccak256(msg.sender, salt)
     ///  - Reverts with AddressReserved if lowerBytes < 1000
     ///  - Ensures the provided quote token is itself a valid TIP-20
     ///  - Enforces USD-denomination rules (USD tokens must use USD quote tokens)
@@ -503,6 +508,14 @@ interface ITIP20Factory {
     /// @return True if the address is a well-formed TIP-20
     /// @dev Checks the TIP-20 prefix and verifies the token has code deployed
     function isTIP20(address token) external view returns (bool);
+
+    /// @notice Computes the deterministic TIP-20 address for a given sender and salt
+    /// @param sender The address that will call {createToken}
+    /// @param salt The salt that will be passed to {createToken}
+    /// @return token The TIP-20 address that would be deployed
+    /// @dev Computes the address as TIP20_PREFIX || lowerBytes, where lowerBytes is
+    ///      the highest 64 bits of keccak256(sender, salt), matching the factory deployment scheme.
+    function getTokenAddress(address sender, bytes32 salt) external pure returns (address token);
 
     // =========================================================================
     //                                Events

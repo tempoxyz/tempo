@@ -1,3 +1,8 @@
+---
+title: Foundry SDK for Tempo
+description: Build, test, and deploy smart contracts on Tempo using the Foundry fork. Access protocol-level features with forge and cast tools.
+---
+
 # Foundry for Tempo
 
 Tempo builds on top of [Foundry](https://github.com/foundry-rs/foundry): the leading Ethereum development toolkit, through a custom fork that adds first-class support for Tempo.
@@ -83,7 +88,7 @@ forge script script/Mail.s.sol
 
 ```bash
 # Set environment variables
-export TEMPO_RPC_URL=https://rpc.testnet.tempo.xyz
+export TEMPO_RPC_URL=https://rpc.moderato.tempo.xyz
 export VERIFIER_URL=https://contracts.tempo.xyz
 
 # Optional: create a new keypair and request some testnet tokens from the faucet.
@@ -112,6 +117,7 @@ forge create src/Mail.sol:Mail \
 
 # Run a deployment script and verify on Tempo's explorer
 forge script script/Mail.s.sol \
+  --sig "run(string)" <SALT> \
   --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \
@@ -121,6 +127,7 @@ forge script script/Mail.s.sol \
 # Run a deployment script with custom fee token and verify on Tempo's explorer
 forge script script/Mail.s.sol \
   --fee-token <FEE_TOKEN_ADDRESS> \
+  --sig "run(string)" <SALT> \
   --rpc-url $TEMPO_RPC_URL \
   --interactive \
   --sender <YOUR_WALLET_ADDRESS> \

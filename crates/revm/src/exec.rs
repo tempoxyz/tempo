@@ -127,3 +127,32 @@ where
         h.inspect_run_system_call(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use revm::{Context, ExecuteEvm, MainContext, database::EmptyDB};
+
+    /// Test set_block and replay with default TempoEvm.
+    #[test]
+    fn test_set_block_and_replay() {
+        let db = EmptyDB::new();
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(Default::default())
+            .with_tx(TempoTxEnv::default());
+        let mut evm = TempoEvm::new(ctx, ());
+
+        // Set block with default fields
+        evm.set_block(TempoBlockEnv::default());
+
+        // Replay executes the current transaction and returns result with state.
+        // With default tx (no calls, system tx), it should succeed.
+        let result = evm.replay();
+        assert!(result.is_ok());
+
+        let exec_result = result.unwrap();
+        assert!(exec_result.result.is_success());
+    }
+}

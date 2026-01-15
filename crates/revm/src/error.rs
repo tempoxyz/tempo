@@ -103,13 +103,78 @@ pub enum TempoInvalidTransaction {
     #[error("value transfer in Tempo Transaction not allowed")]
     ValueTransferNotAllowedInAATx,
 
-    /// Access key authorization failed.
+    /// Failed to recover access key address from signature.
     ///
-    /// This error occurs when attempting to authorize an access key with the AccountKeychain
-    /// precompile fails (e.g., key already exists, invalid parameters, unauthorized caller).
-    #[error("access key authorization failed: {reason}")]
-    AccessKeyAuthorizationFailed {
-        /// Specific reason for failure.
+    /// This error occurs when attempting to recover the access key address from a Keychain signature fails.
+    #[error("failed to recover access key address from signature")]
+    AccessKeyRecoveryFailed,
+
+    /// Access keys cannot authorize other keys.
+    ///
+    /// Only the root key can authorize new access keys. An access key can only authorize itself
+    /// in a same-transaction authorization flow.
+    #[error("access keys cannot authorize other keys, only the root key can authorize new keys")]
+    AccessKeyCannotAuthorizeOtherKeys,
+
+    /// Failed to recover signer from KeyAuthorization signature.
+    ///
+    /// This error occurs when signature recovery from the KeyAuthorization fails.
+    #[error("failed to recover signer from KeyAuthorization signature")]
+    KeyAuthorizationSignatureRecoveryFailed,
+
+    /// KeyAuthorization not signed by root account.
+    ///
+    /// The KeyAuthorization must be signed by the root account (transaction caller),
+    /// but was signed by a different address.
+    #[error(
+        "KeyAuthorization must be signed by root account {expected}, but was signed by {actual}"
+    )]
+    KeyAuthorizationNotSignedByRoot {
+        /// The expected signer (root account).
+        expected: Address,
+        /// The actual signer recovered from the signature.
+        actual: Address,
+    },
+
+    /// Access key expiry is in the past.
+    ///
+    /// An access key cannot be authorized with an expiry timestamp that has already passed.
+    #[error("access key expiry {expiry} is in the past (current timestamp: {current_timestamp})")]
+    AccessKeyExpiryInPast {
+        /// The expiry timestamp from the KeyAuthorization.
+        expiry: u64,
+        /// The current block timestamp.
+        current_timestamp: u64,
+    },
+
+    /// AccountKeychain precompile error during key authorization.
+    ///
+    /// This error occurs when the AccountKeychain precompile rejects the key authorization
+    /// (e.g., key already exists, invalid parameters).
+    #[error("keychain precompile error: {reason}")]
+    KeychainPrecompileError {
+        /// The error message from the precompile.
+        reason: String,
+    },
+
+    /// Keychain user address does not match transaction caller.
+    ///
+    /// For Keychain signatures, the user_address field must match the transaction caller.
+    #[error("keychain user_address {user_address} does not match transaction caller {caller}")]
+    KeychainUserAddressMismatch {
+        /// The user_address from the Keychain signature.
+        user_address: Address,
+        /// The transaction caller.
+        caller: Address,
+    },
+
+    /// Keychain validation failed.
+    ///
+    /// The access key is not authorized in the AccountKeychain precompile for this user,
+    /// or the key has expired, or spending limits are exceeded.
+    #[error("keychain validation failed: {reason}")]
+    KeychainValidationFailed {
+        /// The validation error details.
         reason: String,
     },
 
@@ -261,5 +326,27 @@ mod tests {
             tempo_err,
             TempoInvalidTransaction::EthInvalidTransaction(_)
         ));
+    }
+
+    #[test]
+    fn test_is_nonce_too_low() {
+        let err = TempoInvalidTransaction::EthInvalidTransaction(InvalidTransaction::NonceTooLow {
+            tx: 1,
+            state: 0,
+        });
+        assert!(err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_some());
+
+        let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+    }
+
+    #[test]
+    fn test_fee_payment_error() {
+        let _: EVMError<(), TempoInvalidTransaction> = FeePaymentError::InsufficientAmmLiquidity {
+            fee: U256::from(1000),
+        }
+        .into();
     }
 }

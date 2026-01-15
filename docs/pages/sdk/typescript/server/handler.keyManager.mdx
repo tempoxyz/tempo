@@ -1,3 +1,8 @@
+---
+title: Key Manager Handler - Tempo TypeScript Server SDK
+description: Create a server handler to manage WebAuthn credential public keys. Enable passkey authentication for users across multiple devices.
+---
+
 # `Handler.keyManager`
 
 Creates a server handler that manages WebAuthn credential public keys. This handler stores and retrieves the public keys associated with passkey credentials, enabling users to access their accounts from any device.
@@ -19,7 +24,7 @@ const handler = Handler.keyManager({
 
 ```ts twoslash [wagmi.config.ts]
 // @noErrors
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 import { createConfig, http } from 'wagmi'
 
@@ -30,7 +35,7 @@ export const config = createConfig({
       rpId: 'example.com',
     }),
   ],
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   transports: {
     [tempo.id]: http(),
   },

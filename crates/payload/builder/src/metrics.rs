@@ -48,4 +48,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
+    /// RLP-encoded block size in bytes.
+    pub(crate) rlp_block_size_bytes: Histogram,
+    /// RLP-encoded block size in bytes for the last payload.
+    pub(crate) rlp_block_size_bytes_last: Gauge,
 }

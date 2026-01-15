@@ -1,3 +1,8 @@
+---
+title: Distribute Rewards
+description: Distribute rewards to token holders using TIP-20's built-in reward mechanism. Allocate tokens proportionally based on holder balances.
+---
+
 import * as Demo from '../../../components/guides/Demo.tsx'
 import * as Step from '../../../components/guides/steps'
 import * as Card from '../../../components/Card.tsx'
@@ -21,7 +26,7 @@ Try out the complete rewards flow: create a token, opt in to receive rewards on 
   <Step.GrantTokenRoles stepNumber={4} roles={['issuer']} />
   <Step.MintToken stepNumber={5} />
   <Step.OptInToRewards stepNumber={6} />
-  <Step.StartReward stepNumber={7} />
+  <Step.DistributeReward stepNumber={7} />
   <Step.ClaimReward stepNumber={8} flowDependencies={['rewardId']} last />
 </Demo.Container>
 
@@ -74,11 +79,11 @@ export function OptInToRewards() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -96,24 +101,24 @@ Anyone can make a reward distribution that allocates tokens to all opted-in hold
 
 :::code-group
 
-```tsx twoslash [StartReward.tsx]
+```tsx twoslash [DistributeReward.tsx]
 import React from 'react'
 import { Hooks } from 'wagmi/tempo'
 import { parseUnits } from 'viem'
 
 // @noErrors
-export function StartReward() {
+export function DistributeReward() {
   const tokenAddress = '0x...' // Your token address
 
   const { data: metadata } = Hooks.token.useGetMetadata({
     token: tokenAddress,
   })
 
-  const start = Hooks.reward.useStartSync()
+  const distribute = Hooks.reward.useDistributeSync()
 
-  const handleStart = () => { // [!code hl]
+  const handleDistribute = () => { // [!code hl]
     if (!metadata) return // [!code hl]
-    start.mutate({ // [!code hl]
+    distribute.mutate({ // [!code hl]
       amount: parseUnits('50', metadata.decimals), // [!code hl]
       token: tokenAddress, // [!code hl]
     }) // [!code hl]
@@ -121,11 +126,11 @@ export function StartReward() {
 
   return (
     <button
-      disabled={start.isPending || !metadata}
-      onClick={handleStart}
+      disabled={distribute.isPending || !metadata}
+      onClick={handleDistribute}
       type="button"
     >
-      {start.isPending ? 'Starting...' : 'Start Reward'}
+      {distribute.isPending ? 'Distributing...' : 'Distribute Reward'}
     </button>
   )
 }
@@ -134,11 +139,11 @@ export function StartReward() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],
@@ -187,11 +192,11 @@ export function ClaimReward() {
 ```tsx twoslash [config.ts] filename="config.ts"
 // @noErrors
 import { createConfig, http } from 'wagmi'
-import { tempoTestnet } from 'viem/chains'
+import { tempoModerato } from 'viem/chains'
 import { KeyManager, webAuthn } from 'wagmi/tempo'
 
 export const config = createConfig({
-  chains: [tempoTestnet],
+  chains: [tempoModerato],
   connectors: [webAuthn({
     keyManager: KeyManager.localStorage(),
   })],

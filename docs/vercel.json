@@ -1,5 +1,14 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
+  "trailingSlash": false,
+  "rewrites": [
+    {
+      "source": "/robots.txt",
+      "destination": "/robots-noindex.txt",
+      "has": [{ "type": "host", "value": { "neq": "docs.tempo.xyz" } }]
+    }
+  ],
   "redirects": [
     {
       "source": "/documentation/protocol/:path*",
@@ -45,6 +54,11 @@
       "source": "/errors/tx/SubblockNonceKey",
       "destination": "/protocol/blockspace/sub-block-specification#4-block-validity-rules",
       "permanent": false
+    },
+    {
+      "source": "/stablecoin-exchange/:path*",
+      "destination": "/stablecoin-dex/:path*",
+      "permanent": true
     }
   ]
 }

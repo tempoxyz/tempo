@@ -283,3 +283,169 @@ pub struct SubBlockMetadata {
     /// Signature of the subblock.
     pub signature: Bytes,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_has_sub_block_nonce_key_prefix() {
+        // Valid prefix in MSB (byte 31)
+        let with_prefix = U256::from(TEMPO_SUBBLOCK_NONCE_KEY_PREFIX) << 248;
+        assert!(has_sub_block_nonce_key_prefix(&with_prefix));
+
+        // Zero has no prefix
+        assert!(!has_sub_block_nonce_key_prefix(&U256::ZERO));
+
+        // Max value has 0xff in MSB, not 0x5b
+        assert!(!has_sub_block_nonce_key_prefix(&U256::MAX));
+
+        // Prefix in LSB (byte 0), not MSB
+        assert!(!has_sub_block_nonce_key_prefix(&U256::from(
+            TEMPO_SUBBLOCK_NONCE_KEY_PREFIX
+        )));
+    }
+
+    #[test]
+    fn test_partial_validator_key_matches() {
+        // Create a 15-byte partial key
+        let partial =
+            PartialValidatorKey::from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+        // Full key that starts with the partial
+        let matching_key = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ];
+        assert!(
+            partial.matches(matching_key),
+            "Should match when validator starts with partial"
+        );
+
+        // Exactly the partial key length
+        let exact_match: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        assert!(partial.matches(exact_match), "Should match exact length");
+
+        // Different first byte
+        let non_matching = [
+            0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ];
+        assert!(
+            !partial.matches(non_matching),
+            "Should not match with different first byte"
+        );
+
+        // Different last byte of partial
+        let partial_mismatch = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 99, 16, 17, 18,
+        ];
+        assert!(
+            !partial.matches(partial_mismatch),
+            "Should not match with different byte in partial range"
+        );
+
+        // Shorter than partial (should not match)
+        let too_short: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        assert!(
+            !partial.matches(too_short),
+            "Should not match if validator is shorter than partial"
+        );
+
+        // Empty key
+        let empty: [u8; 0] = [];
+        assert!(!partial.matches(empty), "Should not match empty validator");
+
+        // Zero partial key matches any key starting with zeros
+        let zero_partial = PartialValidatorKey::ZERO;
+        let zeros = [0u8; 20];
+        assert!(
+            zero_partial.matches(zeros),
+            "Zero partial should match zeros"
+        );
+    }
+
+    #[test]
+    fn test_subblock_signature_and_recovery() {
+        let subblock = SubBlock {
+            version: SubBlockVersion::V1,
+            parent_hash: B256::random(),
+            fee_recipient: Address::random(),
+            transactions: vec![],
+        };
+
+        // Hash should be deterministic
+        let hash1 = subblock.signature_hash();
+        let hash2 = subblock.signature_hash();
+        assert_eq!(hash1, hash2, "signature_hash should be deterministic");
+        assert_ne!(hash1, B256::ZERO);
+
+        // Different subblocks produce different hashes
+        let subblock2 = SubBlock {
+            version: SubBlockVersion::V1,
+            parent_hash: B256::random(),
+            fee_recipient: Address::random(),
+            transactions: vec![],
+        };
+        assert_ne!(subblock.signature_hash(), subblock2.signature_hash());
+
+        // Verify hash includes magic byte prefix
+        let mut expected_buf = Vec::with_capacity(subblock.length() + 1);
+        expected_buf.put_u8(SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE);
+        subblock.encode(&mut expected_buf);
+        assert_eq!(hash1, keccak256(&expected_buf));
+
+        // SignedSubBlock
+        let signed = SignedSubBlock {
+            inner: subblock.clone(),
+            signature: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        // SignedSubBlock RLP roundtrip
+        let mut buf = Vec::new();
+        signed.encode(&mut buf);
+        assert_eq!(buf.len(), signed.length());
+        let decoded = SignedSubBlock::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded, signed);
+
+        // Deref to SubBlock works
+        assert_eq!(signed.version, SubBlockVersion::V1);
+        assert_eq!(signed.fee_recipient, subblock.fee_recipient);
+
+        // RecoveredSubBlock
+        let validator = B256::random();
+        let recovered = RecoveredSubBlock::new_unchecked(signed.clone(), vec![], validator);
+
+        // Accessors
+        assert_eq!(recovered.validator(), validator);
+        assert!(recovered.transactions_recovered().next().is_none()); // empty
+
+        // metadata()
+        let meta = recovered.metadata();
+        assert_eq!(meta.version, SubBlockVersion::V1);
+        assert_eq!(meta.validator, validator);
+        assert_eq!(meta.fee_recipient, subblock.fee_recipient);
+        assert_eq!(meta.signature, Bytes::from(vec![1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn test_subblock_version_conversion() {
+        // Valid V1
+        assert_eq!(SubBlockVersion::try_from(1u8), Ok(SubBlockVersion::V1));
+        assert_eq!(u8::from(SubBlockVersion::V1), 1);
+
+        // Invalid versions
+        assert_eq!(SubBlockVersion::try_from(0u8), Err(0));
+        assert_eq!(SubBlockVersion::try_from(2u8), Err(2));
+        assert_eq!(SubBlockVersion::try_from(255u8), Err(255));
+
+        // RLP encode/decode
+        let mut buf = Vec::new();
+        SubBlockVersion::V1.encode(&mut buf);
+        assert_eq!(buf.len(), SubBlockVersion::V1.length());
+        let decoded = SubBlockVersion::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(decoded, SubBlockVersion::V1);
+
+        // Invalid version decode
+        let invalid_buf = [2u8];
+        assert!(SubBlockVersion::decode(&mut invalid_buf.as_slice()).is_err());
+    }
+}

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import { AccountKeychain } from "../src/AccountKeychain.sol";
 import { FeeManager } from "../src/FeeManager.sol";
 import { Nonce } from "../src/Nonce.sol";
 import { StablecoinDEX } from "../src/StablecoinDEX.sol";
 import { TIP20 } from "../src/TIP20.sol";
 import { TIP20Factory } from "../src/TIP20Factory.sol";
 import { TIP403Registry } from "../src/TIP403Registry.sol";
+import { IAccountKeychain } from "../src/interfaces/IAccountKeychain.sol";
 import { INonce } from "../src/interfaces/INonce.sol";
 import { ITIP20 } from "../src/interfaces/ITIP20.sol";
 import { IValidatorConfig } from "../src/interfaces/IValidatorConfig.sol";
@@ -17,6 +19,7 @@ import { Test, console } from "forge-std/Test.sol";
 contract BaseTest is Test {
 
     // Registry precompiles
+    address internal constant _ACCOUNT_KEYCHAIN = 0xaAAAaaAA00000000000000000000000000000000;
     address internal constant _TIP403REGISTRY = 0x403c000000000000000000000000000000000000;
     address internal constant _TIP20FACTORY = 0x20Fc000000000000000000000000000000000000;
     address internal constant _PATH_USD = 0x20C0000000000000000000000000000000000000;
@@ -40,6 +43,7 @@ contract BaseTest is Test {
     address public pathUSDAdmin = address(0xb4c79daB8f259C7Aee6E5b2Aa729821864227e84);
 
     // Common test contracts
+    IAccountKeychain public keychain = IAccountKeychain(_ACCOUNT_KEYCHAIN);
     TIP20Factory public factory = TIP20Factory(_TIP20FACTORY);
     TIP20 public pathUSD = TIP20(_PATH_USD); // pathUSD is just a TIP20 at token_id=0
     StablecoinDEX public exchange = StablecoinDEX(_STABLECOIN_DEX);
@@ -57,12 +61,14 @@ contract BaseTest is Test {
     function setUp() public virtual {
         // Is this tempo chain?
         isTempo = _TIP403REGISTRY.code.length + _TIP20FACTORY.code.length + _PATH_USD.code.length
-                + _STABLECOIN_DEX.code.length + _NONCE.code.length > 0;
+                + _STABLECOIN_DEX.code.length + _NONCE.code.length + _ACCOUNT_KEYCHAIN.code.length
+            > 0;
 
         console.log("Tests running with isTempo =", isTempo);
 
         // Deploy contracts if not tempo
         if (!isTempo) {
+            deployCodeTo("AccountKeychain", _ACCOUNT_KEYCHAIN);
             deployCodeTo("TIP403Registry", _TIP403REGISTRY);
             deployCodeTo("StablecoinDEX", _STABLECOIN_DEX);
             deployCodeTo("FeeManager", _FEE_AMM);
@@ -79,6 +85,9 @@ contract BaseTest is Test {
         }
 
         if (isTempo) {
+            if (_ACCOUNT_KEYCHAIN.code.length == 0) {
+                revert MissingPrecompile("AccountKeychain", _ACCOUNT_KEYCHAIN);
+            }
             if (_TIP403REGISTRY.code.length == 0) {
                 revert MissingPrecompile("TIP403Registry", _TIP403REGISTRY);
             }

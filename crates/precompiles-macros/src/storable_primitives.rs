@@ -71,14 +71,14 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
     }
 }
 
-/// Generate `ToWord` implementation for all primitive types (storage I/O is in `Storable`).
+/// Generate `FromWord` implementation for all primitive types (storage I/O is in `Storable`).
 fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrategy) -> TokenStream {
     match strategy {
         StorableConversionStrategy::UnsignedRust => {
             quote! {
                 impl FromWord for #type_path {
                     #[inline]
-                    fn to_word(&self) -> U256 {
+                    fn to_word(&self) -> ::alloy::primitives::U256 {
                         ::alloy::primitives::U256::from(*self)
                     }
 
@@ -155,7 +155,7 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     #[inline]
                     fn to_word(&self) -> ::alloy::primitives::U256 {
                         let mut bytes = [0u8; 32];
-                        bytes[..#size].copy_from_slice(&self[..]);
+                        bytes[32 - #size..].copy_from_slice(&self[..]);
                         ::alloy::primitives::U256::from_be_bytes(bytes)
                     }
 
@@ -163,7 +163,7 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         let bytes = word.to_be_bytes::<32>();
                         let mut fixed_bytes = [0u8; #size];
-                        fixed_bytes.copy_from_slice(&bytes[..#size]);
+                        fixed_bytes.copy_from_slice(&bytes[32 - #size..]);
                         Ok(Self::from(fixed_bytes))
                     }
                 }

@@ -1,3 +1,8 @@
+---
+title: Tempo Transaction Specification
+description: Technical specification for the Tempo transaction type (EIP-2718) with WebAuthn signatures, parallelizable nonces, gas sponsorship, and batching.
+---
+
 # Tempo Transaction
 
 ## Abstract
@@ -583,7 +588,7 @@ Note: `expiry` and `limits` use RLP trailing field semantics - they can be omitt
 
 #### Keychain Precompile
 
-The Account Keychain precompile (deployed at address `0xAAAAAAAA00000000000000000000000000000000`) manages authorized access keys for accounts. It enables root keys to provision scoped access keys with expiry timestamps and per-TIP20 token spending limits.
+The Account Keychain precompile (deployed at address `0xaAAAaaAA00000000000000000000000000000000`) manages authorized access keys for accounts. It enables root keys to provision scoped access keys with expiry timestamps and per-TIP20 token spending limits.
 
 **See the [Account Keychain Specification](./AccountKeychain) for complete interface details, storage layout, and implementation.**
 
@@ -644,7 +649,7 @@ When an Access Key attempts to call `authorizeKey()`, `revokeKey()`, or `updateS
 
 The protocol tracks and enforces spending limits for TIP20 token transfers:
 
-**Scope:** Only TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `startReward()` calls are tracked
+**Scope:** Only TIP20 `transfer()`, `transferWithMemo()`, `approve()`, and `distributeReward()` calls are tracked
 - Spending limits only apply when `msg.sender == tx.origin` (direct EOA calls)
 - When a contract makes transfers on behalf of the user, spending limits do NOT apply (e.g., `transferFrom()`)
 - Native value transfers are NOT limited
@@ -652,7 +657,7 @@ The protocol tracks and enforces spending limits for TIP20 token transfers:
 - Other asset types are NOT limited
 
 **Tracking:** During transaction execution, when an Access Key's transaction directly calls TIP20 methods:
-1. Protocol intercepts `transfer(to, amount)`, `transferWithMemo()`, `approve(spender, amount)`, and `startReward()` calls
+1. Protocol intercepts `transfer(to, amount)`, `transferWithMemo()`, `approve(spender, amount)`, and `distributeReward()` calls
 2. For `transfer`/`transferWithMemo`, the full `amount` is checked against the remaining limit
 3. For `approve`, only **increases** in approval (new approval minus previous allowance) are checked and counted against the limit
 4. Queries: `getRemainingLimit(account, keyId, token)`

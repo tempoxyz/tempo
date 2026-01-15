@@ -1,3 +1,8 @@
+---
+title: Query the Stablecoin DEX Orderbook
+description: Inspect Tempo's onchain orderbook using SQL queries. View spreads, order depth, individual orders, and recent trade prices with indexed data.
+---
+
 import { IndexSupplyQuery } from '../../../components/IndexSupplyQuery'
 
 
@@ -22,26 +27,24 @@ Find the highest bid prices (buyers) for AlphaUSD. This query filters out fully 
 <IndexSupplyQuery
   title={'Best Bid Prices for AlphaUSD'}
   query={`SELECT
-    COALESCE(o.tick, f.tick) as price,
-    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_liquidity
-  FROM orderplaced o
-  FULL OUTER JOIN fliporderplaced f
-    ON o."orderId" = f."orderId"
-  WHERE (o.token = '0x20c0000000000000000000000000000000000001' OR f.token = '0x20c0000000000000000000000000000000000001')
-    AND (o."isBid" = true OR f."isBid" = true)
+    tick as price,
+    SUM(amount) as total_liquidity
+  FROM orderplaced
+  WHERE token = '0x20c0000000000000000000000000000000000001'
+    AND "isBid" = true
     AND NOT EXISTS (
       SELECT 1 FROM orderfilled
-      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE orderfilled."orderId" = orderplaced."orderId"
         AND orderfilled."partialFill" = false
     )
     AND NOT EXISTS (
       SELECT 1 FROM ordercancelled
-      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE ordercancelled."orderId" = orderplaced."orderId"
     )
   GROUP BY price
   ORDER BY price DESC
   LIMIT 5`}
-  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+  signatures={["OrderPlaced", "OrderFilled", "OrderCancelled"]}
 />
 
 Find the lowest ask prices (sellers) for AlphaUSD. The spread is the difference between the highest bid and lowest ask price.
@@ -49,58 +52,54 @@ Find the lowest ask prices (sellers) for AlphaUSD. The spread is the difference 
 <IndexSupplyQuery
   title={'Best Ask Prices for AlphaUSD'}
   query={`SELECT
-    COALESCE(o.tick, f.tick) as price,
-    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_liquidity
-  FROM orderplaced o
-  FULL OUTER JOIN fliporderplaced f
-    ON o."orderId" = f."orderId"
-  WHERE (o.token = '0x20c0000000000000000000000000000000000001' OR f.token = '0x20c0000000000000000000000000000000000001')
-    AND (o."isBid" = false OR f."isBid" = false)
+    tick as price,
+    SUM(amount) as total_liquidity
+  FROM orderplaced
+  WHERE token = '0x20c0000000000000000000000000000000000001'
+    AND "isBid" = false
     AND NOT EXISTS (
       SELECT 1 FROM orderfilled
-      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE orderfilled."orderId" = orderplaced."orderId"
         AND orderfilled."partialFill" = false
     )
     AND NOT EXISTS (
       SELECT 1 FROM ordercancelled
-      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE ordercancelled."orderId" = orderplaced."orderId"
     )
   GROUP BY price
   ORDER BY price
   LIMIT 5`}
-  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+  signatures={["OrderPlaced", "OrderFilled", "OrderCancelled"]}
 />
 
 ### Inspect order depth
 
 View aggregated liquidity at each price level to understand the orderbook structure.
 
-This query shows all active orders from both OrderPlaced and FlipOrderPlaced events for BetaUSD.
+This query shows all active orders for BetaUSD, including both regular and flip orders (identified by the `isFlipOrder` field).
 
 <IndexSupplyQuery
   title={'BetaUSD Order Depth by Price Level'}
   query={`SELECT
-    COALESCE(o.tick, f.tick) as price,
-    COALESCE(o."isBid", f."isBid") as is_bid,
-    COUNT(COALESCE(o."orderId", f."orderId")) as num_orders,
-    SUM(COALESCE(o.amount, 0) + COALESCE(f.amount, 0)) as total_amount
-  FROM orderplaced o
-  FULL OUTER JOIN fliporderplaced f
-    ON o."orderId" = f."orderId"
-  WHERE (o.token = '0x20c0000000000000000000000000000000000002' OR f.token = '0x20c0000000000000000000000000000000000002')
+    tick as price,
+    "isBid" as is_bid,
+    COUNT("orderId") as num_orders,
+    SUM(amount) as total_amount
+  FROM orderplaced
+  WHERE token = '0x20c0000000000000000000000000000000000002'
     AND NOT EXISTS (
       SELECT 1 FROM orderfilled
-      WHERE orderfilled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE orderfilled."orderId" = orderplaced."orderId"
         AND orderfilled."partialFill" = false
     )
     AND NOT EXISTS (
       SELECT 1 FROM ordercancelled
-      WHERE ordercancelled."orderId" = COALESCE(o."orderId", f."orderId")
+      WHERE ordercancelled."orderId" = orderplaced."orderId"
     )
   GROUP BY price, is_bid
   ORDER BY is_bid DESC, price
   LIMIT 50`}
-  signatures={["OrderPlaced", "FlipOrderPlaced", "OrderFilled", "OrderCancelled"]}
+  signatures={["OrderPlaced", "OrderFilled", "OrderCancelled"]}
 />
 
 ### Inspect an individual order
@@ -120,6 +119,8 @@ This query inspects the details of the most recent order for AlphaUSD. It shows 
     amount,
     maker,
     token,
+    "isFlipOrder",
+    "flipTick",
     block_num,
     tx_hash
   FROM orderplaced
@@ -177,19 +178,14 @@ This query joins order fill events with their corresponding placement details to
   query={`SELECT
     ofl.block_num,
     ofl."orderId",
-    COALESCE(o.tick, f.tick) as price,
+    o.tick as price,
     ofl."amountFilled",
-    COALESCE(o."isBid", f."isBid") as "isBid"
+    o."isBid"
   FROM orderfilled ofl
-  LEFT JOIN orderplaced o
+  INNER JOIN orderplaced o
     ON ofl."orderId" = o."orderId"
-    AND o.token = '0x20c0000000000000000000000000000000000001'
-  LEFT JOIN fliporderplaced f
-    ON ofl."orderId" = f."orderId"
-    AND f.token = '0x20c0000000000000000000000000000000000001'
-  WHERE o."orderId" IS NOT NULL OR f."orderId" IS NOT NULL
+  WHERE o.token = '0x20c0000000000000000000000000000000000001'
   ORDER BY ofl.block_num DESC
   LIMIT 10`}
-  signatures={["OrderFilled", "OrderPlaced", "FlipOrderPlaced"]}
+  signatures={["OrderFilled", "OrderPlaced"]}
 />
-

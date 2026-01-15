@@ -239,6 +239,9 @@ pub trait Packable: FromWord + StorableType {}
 
 /// Trait for primitive types that fit into a single EVM storage slot.
 ///
+/// Implementations must produce right-aligned U256 values (data in low bytes)
+/// to match EVM storage slot layout expectations.
+///
 /// # Warning
 ///
 /// Round-trip conversions must preserve data: `from_word(to_word(x)) == x`

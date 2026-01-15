@@ -1,6 +1,20 @@
+---
+title: Install the Tempo Node
+description: Install Tempo node using pre-built binaries, build from source with Rust, or run with Docker. Get started in minutes with tempoup.
+---
+
 # Installation
 
 We provide three different installation paths - installing a pre-built binary, building from source or using our provided Docker image.
+
+## Versions
+
+The versions across networks may not be compatible, as such, please consult the table below on what version for what network you should be running.
+
+| Network  | Version |
+|----------|---------|
+| Andantino  | v0.8.2 |
+| Moderato | v1.0.0-rc.1 |
 
 ## Pre-built Binary
 
@@ -29,9 +43,9 @@ You can find the latest tagged version of Tempo at [the Tempo GHCR package](http
 
 ```bash /dev/null/docker.sh#L1-4
 # Pull the latest Docker image
-docker pull ghcr.io/tempoxyz/tempo:0.7.2
+docker pull ghcr.io/tempoxyz/tempo:<version>
 
 # Run the Docker container
-docker run -d --name tempo ghcr.io/tempoxyz/tempo:0.7.2 --version
+docker run -d --name tempo ghcr.io/tempoxyz/tempo:<version> --version
 docker logs tempo
 ```

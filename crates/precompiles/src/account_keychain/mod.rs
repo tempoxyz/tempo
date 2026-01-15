@@ -1,5 +1,8 @@
 pub mod dispatch;
 
+use __packing_authorized_key::{
+    ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
+};
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
@@ -12,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, packing::insert_into_word},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -49,6 +52,43 @@ impl AuthorizedKey {
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode AuthorizedKey from slot")
+    }
+
+    /// Encode AuthorizedKey to a storage slot value
+    ///
+    /// This is useful for tests that need to set up storage state directly.
+    pub fn encode_to_slot(&self) -> U256 {
+        let encoded = insert_into_word(
+            U256::ZERO,
+            &self.signature_type,
+            SIGNATURE_TYPE_LOC.offset_bytes,
+            SIGNATURE_TYPE_LOC.size,
+        )
+        .expect("unable to insert 'signature_type'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.expiry,
+            EXPIRY_LOC.offset_bytes,
+            EXPIRY_LOC.size,
+        )
+        .expect("unable to insert 'expiry'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.enforce_limits,
+            ENFORCE_LIMITS_LOC.offset_bytes,
+            ENFORCE_LIMITS_LOC.size,
+        )
+        .expect("unable to insert 'enforce_limits'");
+
+        insert_into_word(
+            encoded,
+            &self.is_revoked,
+            IS_REVOKED_LOC.offset_bytes,
+            IS_REVOKED_LOC.size,
+        )
+        .expect("unable to insert 'is_revoked'")
     }
 }
 
@@ -712,6 +752,109 @@ mod tests {
         })
     }
 
+    #[test]
+    fn test_authorize_approve() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let eoa = Address::random();
+        let access_key = Address::random();
+        let token = Address::random();
+        let contract = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // authorize access key with 100 token spending limit
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(eoa)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: true,
+                limits: vec![TokenLimit {
+                    token,
+                    amount: U256::from(100),
+                }],
+            };
+            keychain.authorize_key(eoa, auth_call)?;
+
+            let initial_limit = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(initial_limit, U256::from(100));
+
+            // Switch to access key for remaining tests
+            keychain.set_transaction_key(access_key)?;
+
+            // Increase approval by 30, which deducts from the limit
+            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(30))?;
+
+            let limit_after = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after, U256::from(70));
+
+            // Decrease approval to 20, does not affect limit
+            keychain.authorize_approve(eoa, token, U256::from(30), U256::from(20))?;
+
+            let limit_unchanged = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_unchanged, U256::from(70));
+
+            // Increase from 20 to 50, reducing the limit by 30
+            keychain.authorize_approve(eoa, token, U256::from(20), U256::from(50))?;
+
+            let limit_after_increase = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after_increase, U256::from(40));
+
+            // Assert that spending limits only applied when account is tx origin
+            keychain.authorize_approve(contract, token, U256::ZERO, U256::from(1000))?;
+
+            let limit_after_contract = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_after_contract, U256::from(40)); // unchanged
+
+            // Assert that exceeding remaining limit fails
+            let exceed_result = keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(50));
+            assert!(matches!(
+                exceed_result,
+                Err(TempoPrecompileError::AccountKeychainError(
+                    AccountKeychainError::SpendingLimitExceeded(_)
+                ))
+            ));
+
+            // Assert that the main key bypasses spending limits, does not affect existing limits
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.authorize_approve(eoa, token, U256::ZERO, U256::from(1000))?;
+
+            let limit_main_key = keychain.get_remaining_limit(getRemainingLimitCall {
+                account: eoa,
+                keyId: access_key,
+                token,
+            })?;
+            assert_eq!(limit_main_key, U256::from(40));
+
+            Ok(())
+        })
+    }
+
     /// Test that spending limits are only enforced when msg_sender == tx_origin.
     ///
     /// This test verifies the fix for the bug where spending limits were incorrectly
@@ -827,5 +970,34 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_authorized_key_encode_decode_roundtrip() {
+        let original = AuthorizedKey {
+            signature_type: 2,  // WebAuthn
+            expiry: 1234567890, // some timestamp
+            enforce_limits: true,
+            is_revoked: false,
+        };
+
+        let encoded = original.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+
+        assert_eq!(
+            decoded, original,
+            "encode/decode roundtrip should be lossless"
+        );
+
+        // Test with revoked key
+        let revoked = AuthorizedKey {
+            signature_type: 0,
+            expiry: 0,
+            enforce_limits: false,
+            is_revoked: true,
+        };
+        let encoded = revoked.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+        assert_eq!(decoded, revoked);
     }
 }
