@@ -36,6 +36,8 @@ struct ContractConfig {
     address: Option<Expr>,
     /// Whether to link to an `abi` module for ABI types.
     use_abi: bool,
+    /// Whether to generate `Dispatch` and `Precompile` impls (requires `abi`).
+    dispatch: bool,
 }
 
 impl Parse for ContractConfig {
@@ -59,10 +61,13 @@ impl Parse for ContractConfig {
                     }
                     config.use_abi = true;
                 }
+                "dispatch" => {
+                    config.dispatch = true;
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unknown attribute `{other}`, expected `addr` or `abi`"),
+                        format!("unknown attribute `{other}`, expected `addr`, `abi`, or `dispatch`"),
                     ));
                 }
             }
@@ -86,7 +91,8 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 ///
 /// - `#[contract]` - Basic contract with storage accessors
 /// - `#[contract(addr = EXPR)]` - Contract with fixed address (generates `new()` and `Default`)
-/// - `#[contract(abi(module))]` - Link to a `#[abi]` module for ABI types (Calls, Error, Event)
+/// - `#[contract(abi)]` - Link to a sibling `#[abi] pub mod abi { ... }` module (generates type aliases and `IConstants` impl)
+/// - `#[contract(abi, dispatch)]` - Same as above plus `Dispatch` and `Precompile` impls (adds initialization check for dynamic precompiles)
 ///
 /// # Storage Layout Example
 ///
@@ -159,13 +165,15 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// Configuration parsed from `#[solidity(...)]` attribute arguments.
+/// Configuration parsed from `#[abi(...)]` attribute arguments.
 #[derive(Default)]
 pub(crate) struct SolidityConfig {
     /// Custom name for the interface alias module (defaults to `I{PascalCaseName}`).
     pub interface_alias: Option<String>,
     /// Disable auto re-export of module contents.
     pub no_reexport: bool,
+    /// Generate Dispatch trait and precompile_call helper (requires revm).
+    pub dispatch: bool,
 }
 
 impl Parse for SolidityConfig {
@@ -183,11 +191,14 @@ impl Parse for SolidityConfig {
                 "no_reexport" => {
                     config.no_reexport = true;
                 }
+                "dispatch" => {
+                    config.dispatch = true;
+                }
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unknown attribute `{other}`, expected `interface_alias` or `no_reexport`"
+                            "unknown attribute `{other}`, expected `interface_alias`, `no_reexport`, or `dispatch`"
                         ),
                     ));
                 }
@@ -212,6 +223,7 @@ impl Parse for SolidityConfig {
 /// # Attributes
 ///
 /// - `#[abi]` - Default behavior with auto re-exports
+/// - `#[abi(dispatch)]` - Generate `Dispatch` trait and `precompile_call` helper (requires `revm`)
 /// - `#[abi(interface_alias = "CustomName")]` - Custom interface alias module name
 /// - `#[abi(no_reexport)]` - Disable auto re-export behavior
 ///
@@ -364,7 +376,8 @@ fn gen_contract_output(
     let storage_output = gen_contract_storage(&ident, &vis, &fields, config.address.as_ref())?;
 
     let abi_aliases = if config.use_abi {
-        composition::generate_abi_aliases(&ident)?
+        let is_dynamic = config.address.is_none();
+        composition::generate_abi_aliases(&ident, config.dispatch, is_dynamic)?
     } else {
         proc_macro2::TokenStream::new()
     };

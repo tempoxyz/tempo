@@ -6,11 +6,8 @@ use alloy::{
 };
 use futures::future::try_join_all;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::{ITIP20, ITIP403Registry, TIP20Error};
-use tempo_precompiles::{
-    TIP403_REGISTRY_ADDRESS,
-    tip20::{IRewards, IRolesAuth},
-};
+use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP403Registry, TIP20Error};
+use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
 use crate::utils::{TestNodeBuilder, await_receipts, setup_test_token};
 
@@ -675,7 +672,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .connect_http(http_url.clone());
 
     let token = setup_test_token(admin_provider.clone(), admin).await?;
-    let admin_rewards = IRewards::new(*token.address(), admin_provider);
+    let admin_rewards = ITIP20::new(*token.address(), admin_provider);
 
     let alice_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(1)?
@@ -685,7 +682,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
         .wallet(alice_wallet)
         .connect_http(http_url.clone());
     let alice_token = ITIP20::new(*token.address(), alice_provider.clone());
-    let alice_rewards = IRewards::new(*token.address(), alice_provider);
+    let alice_rewards = ITIP20::new(*token.address(), alice_provider);
 
     let bob_wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
         .index(2)?
@@ -694,7 +691,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let bob_provider = ProviderBuilder::new()
         .wallet(bob_wallet)
         .connect_http(http_url.clone());
-    let bob_rewards = IRewards::new(*token.address(), bob_provider);
+    let bob_rewards = ITIP20::new(*token.address(), bob_provider);
 
     let mint_amount = U256::from(1000e18);
     let reward_amount = U256::from(300e18);

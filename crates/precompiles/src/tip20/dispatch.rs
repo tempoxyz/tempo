@@ -1,214 +1,24 @@
-use crate::{
-    Precompile, dispatch_call,
-    error::TempoPrecompileError,
-    input_cost, metadata, mutate, mutate_void,
-    tip20::{ITIP20, TIP20Error, TIP20Token, TIP20TokenCalls, abi},
-    view,
-};
-use alloy::primitives::Address;
-use revm::precompile::{PrecompileError, PrecompileResult};
-
-use abi::{IConstants as _, IRewards as _, IRolesAuth as _, IToken as _};
-
-impl Precompile for TIP20Token {
-    fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        self.storage
-            .deduct_gas(input_cost(calldata.len()))
-            .map_err(|_| PrecompileError::OutOfGas)?;
-
-        // Ensure that the token is initialized (has bytecode)
-        // Note that if the initialization check fails, this is treated as uninitialized
-        if !self.is_initialized().unwrap_or(false) {
-            return TempoPrecompileError::TIP20(TIP20Error::uninitialized())
-                .into_precompile_result(self.storage.gas_used());
-        }
-
-        dispatch_call(calldata, TIP20TokenCalls::abi_decode, |call| match call {
-            // Metadata functions (no calldata decoding needed)
-            TIP20TokenCalls::IToken(abi::ITokenCalls::name(_)) => {
-                metadata::<ITIP20::nameCall>(|| self.name())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::symbol(_)) => {
-                metadata::<ITIP20::symbolCall>(|| self.symbol())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::decimals(_)) => {
-                metadata::<ITIP20::decimalsCall>(|| self.decimals())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::currency(_)) => {
-                metadata::<ITIP20::currencyCall>(|| self.currency())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::totalSupply(_)) => {
-                metadata::<ITIP20::totalSupplyCall>(|| self.total_supply())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::supplyCap(_)) => {
-                metadata::<ITIP20::supplyCapCall>(|| self.supply_cap())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::transferPolicyId(_)) => {
-                metadata::<ITIP20::transferPolicyIdCall>(|| self.transfer_policy_id())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::paused(_)) => {
-                metadata::<ITIP20::pausedCall>(|| self.paused())
-            }
-
-            // View functions
-            TIP20TokenCalls::IToken(abi::ITokenCalls::balanceOf(call)) => {
-                view(call, |c| self.balance_of(c.account))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::allowance(call)) => {
-                view(call, |c| self.allowance(c.owner, c.spender))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::quoteToken(call)) => {
-                view(call, |_| self.quote_token())
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::nextQuoteToken(call)) => {
-                view(call, |_| self.next_quote_token())
-            }
-            TIP20TokenCalls::Constants(abi::ConstantsCalls::PAUSE_ROLE(call)) => {
-                view(call, |_| Ok(self.PAUSE_ROLE()))
-            }
-            TIP20TokenCalls::Constants(abi::ConstantsCalls::UNPAUSE_ROLE(call)) => {
-                view(call, |_| Ok(self.UNPAUSE_ROLE()))
-            }
-            TIP20TokenCalls::Constants(abi::ConstantsCalls::ISSUER_ROLE(call)) => {
-                view(call, |_| Ok(self.ISSUER_ROLE()))
-            }
-            TIP20TokenCalls::Constants(abi::ConstantsCalls::BURN_BLOCKED_ROLE(call)) => {
-                view(call, |_| Ok(self.BURN_BLOCKED_ROLE()))
-            }
-
-            // State changing functions
-            TIP20TokenCalls::IToken(abi::ITokenCalls::transferFrom(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.transfer_from(s, c.from, c.to, c.amount)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::transfer(call)) => {
-                mutate(call, msg_sender, |s, c| self.transfer(s, c.to, c.amount))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::approve(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.approve(s, c.spender, c.amount)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::changeTransferPolicyId(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.change_transfer_policy_id(s, c.new_policy_id)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::setSupplyCap(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.set_supply_cap(s, c.new_supply_cap)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::pause(call)) => {
-                mutate_void(call, msg_sender, |s, _| self.pause(s))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::unpause(call)) => {
-                mutate_void(call, msg_sender, |s, _| self.unpause(s))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::setNextQuoteToken(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.set_next_quote_token(s, c.new_quote_token)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::completeQuoteTokenUpdate(call)) => {
-                mutate_void(call, msg_sender, |s, _| self.complete_quote_token_update(s))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::mint(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.mint(s, c.to, c.amount))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::mintWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.mint_with_memo(s, c.to, c.amount, c.memo)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::burn(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.burn(s, c.amount))
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::burnWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.burn_with_memo(s, c.amount, c.memo)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::burnBlocked(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.burn_blocked(s, c.from, c.amount)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::transferWithMemo(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.transfer_with_memo(s, c.to, c.amount, c.memo)
-                })
-            }
-            TIP20TokenCalls::IToken(abi::ITokenCalls::transferFromWithMemo(call)) => {
-                mutate(call, msg_sender, |s, c| {
-                    self.transfer_from_with_memo(s, c.from, c.to, c.amount, c.memo)
-                })
-            }
-
-            // Rewards functions
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::distributeReward(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c.amount))
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::setRewardRecipient(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.set_reward_recipient(s, c.recipient)
-                })
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::claimRewards(call)) => {
-                mutate(call, msg_sender, |s, _| self.claim_rewards(s))
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::globalRewardPerToken(call)) => {
-                view(call, |_| self.global_reward_per_token())
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::optedInSupply(call)) => {
-                view(call, |_| self.opted_in_supply())
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::userRewardInfo(call)) => {
-                view(call, |c| self.user_reward_info(c.account))
-            }
-            TIP20TokenCalls::IRewards(abi::IRewardsCalls::getPendingRewards(call)) => {
-                view(call, |c| self.get_pending_rewards(c.account))
-            }
-
-            // RolesAuth functions
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::hasRole(call)) => {
-                view(call, |c| self.has_role(c.account, c.role))
-            }
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::getRoleAdmin(call)) => {
-                view(call, |c| self.get_role_admin(c.role))
-            }
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::grantRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.grant_role(s, c.role, c.account)
-                })
-            }
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::revokeRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.revoke_role(s, c.role, c.account)
-                })
-            }
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::renounceRole(call)) => {
-                mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c.role))
-            }
-            TIP20TokenCalls::IRolesAuth(abi::IRolesAuthCalls::setRoleAdmin(call)) => {
-                mutate_void(call, msg_sender, |s, c| {
-                    self.set_role_admin(s, c.role, c.admin_role)
-                })
-            }
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
+        Precompile, dispatch_call,
+        error::TempoPrecompileError,
+        input_cost, metadata, mutate, mutate_void,
         storage::StorageCtx,
         test_util::{TIP20Setup, setup_storage},
-        tip20::{IRolesAuth, ISSUER_ROLE, PAUSE_ROLE, RolesAuthError, UNPAUSE_ROLE},
+        tip20::{
+            IRolesAuth, ISSUER_ROLE, ITIP20, PAUSE_ROLE, RolesAuthError, TIP20Error, TIP20Token,
+            TIP20TokenCalls, UNPAUSE_ROLE, abi,
+        },
         tip403_registry::{ITIP403Registry, TIP403Registry},
+        view,
     };
+    use alloy::primitives::Address;
+    use revm::precompile::{PrecompileError, PrecompileResult};
+
+    use abi::{IConstants as _, IRewards as _, IRolesAuth as _, IToken as _};
+
     use alloy::{
         primitives::{Bytes, U256, address},
         sol_types::{SolCall, SolInterface, SolValue},

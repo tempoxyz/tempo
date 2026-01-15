@@ -53,6 +53,7 @@
 
 mod common;
 mod constants;
+mod dispatch;
 mod enums;
 mod interface;
 mod parser;
@@ -131,6 +132,14 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     let unified_calls =
         interface::generate_unified_calls(&module.interfaces, has_constants);
 
+    // Generate the Dispatch trait for routing calls to methods (only when dispatch flag is set)
+    // This requires revm types and dispatch helpers from tempo_precompiles
+    let dispatch_trait = if config.dispatch {
+        dispatch::generate_dispatch_trait(&module.interfaces, &module.constants)
+    } else {
+        quote! {}
+    };
+
     // Generate instance impl for first interface (for backward compatibility)
     // TODO: Consider generating instances for all interfaces
     let instance_impl = module
@@ -182,6 +191,8 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
             #constants_impl
 
             #unified_calls
+
+            #dispatch_trait
 
             #instance_impl
 

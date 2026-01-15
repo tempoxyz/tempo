@@ -18,7 +18,7 @@ use tempo_precompiles_macros::{Storable, abi, contract};
 pub use roles::*;
 pub use token::*;
 
-#[contract(abi)]
+#[contract(abi, dispatch)]
 pub struct TIP20Token {
     // RolesAuth
     roles: Mapping<Address, Mapping<B256, bool>>,
@@ -48,7 +48,7 @@ pub struct TIP20Token {
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 
-#[abi]
+#[abi(dispatch)]
 #[rustfmt::skip]
 pub mod abi {
     use super::*;
