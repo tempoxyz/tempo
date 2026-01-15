@@ -520,7 +520,7 @@ export default defineConfig({
             ],
           },
           {
-            text: 'Tempo Improvement Proposals',
+            text: 'TIPs',
             link: '/protocol/tips',
           },
         ],
