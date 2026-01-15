@@ -2395,6 +2395,11 @@ mod tests {
         }
 
         /// Property: validate_time_window with valid_after=0 is equivalent to None
+        ///
+        /// This tests the equivalence property: Some(0) and None for valid_after should produce
+        /// identical results regardless of what valid_before is. We intentionally don't constrain
+        /// valid_before because we're testing that the equivalence holds in all cases (both when
+        /// valid_before causes success and when it causes failure).
         #[test]
         fn proptest_validate_time_window_zero_after_equivalent_to_none(
             valid_before in arb_opt_timestamp(),
