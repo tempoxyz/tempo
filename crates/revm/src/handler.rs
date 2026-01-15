@@ -199,7 +199,13 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        // Always validate TIP20 prefix to prevent panics in get_token_balance.
+        // This is a protocol-level check since validators could bypass initial validation.
+        if !is_tip20_prefix(self.fee_token) {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
+        }
+
+        // Skip additional fee token validity check for cases when the transaction is free and is not a part of a subblock.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
             && !ctx
                 .journaled_state
@@ -647,14 +653,6 @@ where
             keychain.set_tx_origin(tx.caller())
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
-
-        // Validate fee token has TIP20 prefix before attempting to read balance.
-        // Note that this is checked during tx validation but this check is also
-        // necessary at the protocol level since it is possible for a validator to
-        // bypass initial validation and inject the tx directly to the block
-        if !is_tip20_prefix(self.fee_token) {
-            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
-        }
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
@@ -1494,30 +1492,30 @@ mod tests {
     #[test]
     fn test_invalid_fee_token_rejected() {
         // Test that an invalid fee token (non-TIP20 address) is rejected with InvalidFeeToken error
-        // rather than panicking. This guards against the bug where validation could be bypassed
-        // when max_balance_spending is zero and it's not a subblock transaction.
+        // rather than panicking. This validates the check in load_fee_fields that guards against
+        // invalid tokens reaching get_token_balance.
         let invalid_token = Address::random(); // Random address won't have TIP20 prefix
         assert!(
             !is_tip20_prefix(invalid_token),
             "Test requires a non-TIP20 address"
         );
 
-        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler {
-            fee_token: invalid_token,
-            fee_payer: Address::random(),
-            ..Default::default()
-        };
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+
+        // Set up tx with the invalid token as fee_token
+        let mut tx_env = TempoTxEnv::default();
+        tx_env.fee_token = Some(invalid_token);
 
         let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
             Context::mainnet()
                 .with_db(CacheDB::new(EmptyDB::default()))
                 .with_block(TempoBlockEnv::default())
                 .with_cfg(Default::default())
-                .with_tx(TempoTxEnv::default()),
+                .with_tx(tx_env),
             (),
         );
 
-        let result = handler.validate_against_state_and_deduct_caller(&mut evm);
+        let result = handler.load_fee_fields(&mut evm);
 
         assert!(
             matches!(
