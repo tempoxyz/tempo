@@ -1504,8 +1504,10 @@ mod tests {
         let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
 
         // Set up tx with the invalid token as fee_token
-        let mut tx_env = TempoTxEnv::default();
-        tx_env.fee_token = Some(invalid_token);
+        let tx_env = TempoTxEnv {
+            fee_token: Some(invalid_token),
+            ..Default::default()
+        };
 
         let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
             Context::mainnet()
