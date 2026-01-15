@@ -373,7 +373,55 @@ interface IMultisig {
         bytes calldata value,
         bytes calldata data
     ) external;
+
+    // ============ Owner Management ============
+
+    /// @notice Adds a new owner to the multisig
+    /// @dev Requires threshold confirmations. Reverts if owner already exists or MAX_OWNERS reached.
+    /// @param owner The address to add as owner
+    function addOwner(address owner) external;
+
+    /// @notice Removes an owner from the multisig
+    /// @dev Requires threshold confirmations. Reverts if owner doesn't exist or would make threshold > ownerCount.
+    /// @param owner The address to remove
+    function removeOwner(address owner) external;
+
+    /// @notice Replaces an existing owner with a new address
+    /// @dev Requires threshold confirmations. Atomic swap to avoid temporary threshold issues.
+    /// @param oldOwner The owner to remove
+    /// @param newOwner The owner to add
+    function replaceOwner(address oldOwner, address newOwner) external;
+
+    /// @notice Changes the confirmation threshold
+    /// @dev Requires threshold confirmations. Reverts if newThreshold is 0 or > ownerCount.
+    /// @param newThreshold The new threshold value
+    function changeThreshold(uint8 newThreshold) external;
 }
+```
+
+### Owner Management Events and Errors
+
+```solidity
+/// @notice An owner was added to the multisig
+event OwnerAdded(address indexed owner);
+
+/// @notice An owner was removed from the multisig
+event OwnerRemoved(address indexed owner);
+
+/// @notice An owner was replaced with another address
+event OwnerReplaced(address indexed oldOwner, address indexed newOwner);
+
+/// @notice The confirmation threshold was changed
+event ThresholdChanged(uint8 oldThreshold, uint8 newThreshold);
+
+/// @notice The address is already an owner
+error AlreadyOwner(address owner);
+
+/// @notice Cannot remove: would make threshold > owner count
+error ThresholdExceedsOwners(uint8 threshold, uint8 newOwnerCount);
+
+/// @notice Cannot have zero owners
+error CannotRemoveLastOwner();
 ```
 
 ### Transaction Structure
@@ -489,6 +537,67 @@ Convenience function for 1-of-1 multisigs only:
 
 ---
 
+### Owner Management Behavior
+
+Owner management functions use the same confirmation pattern as regular transactions. Each function internally creates a "config change" transaction that owners must confirm.
+
+#### `addOwner`
+
+1. Revert with `NotOwner` if `msg.sender` is not an owner
+2. Revert with `ZeroAddressOwner` if `owner` is `address(0)`
+3. Revert with `AlreadyOwner` if `owner` is already an owner
+4. Revert with `TooManyOwners` if `ownerCount >= MAX_OWNERS`
+5. Create config-change transaction for adding owner
+6. Auto-confirm for `msg.sender`
+7. If confirmations >= threshold:
+   - Add owner to owners array (maintain sorted order)
+   - Increment `ownerCount`
+   - Emit `OwnerAdded`
+
+#### `removeOwner`
+
+1. Revert with `NotOwner` if `msg.sender` is not an owner
+2. Revert with `NotOwner` if `owner` is not in owners list
+3. Revert with `CannotRemoveLastOwner` if `ownerCount == 1`
+4. Revert with `ThresholdExceedsOwners` if `threshold > ownerCount - 1`
+5. Create config-change transaction for removing owner
+6. Auto-confirm for `msg.sender`
+7. If confirmations >= threshold:
+   - Remove owner from owners array
+   - Decrement `ownerCount`
+   - Emit `OwnerRemoved`
+
+> **Note**: If the removed owner had pending confirmations, those confirmations remain valid. However, they can no longer confirm new transactions or execute.
+
+#### `replaceOwner`
+
+1. Revert with `NotOwner` if `msg.sender` is not an owner
+2. Revert with `NotOwner` if `oldOwner` is not in owners list
+3. Revert with `ZeroAddressOwner` if `newOwner` is `address(0)`
+4. Revert with `AlreadyOwner` if `newOwner` is already an owner
+5. Create config-change transaction for replacement
+6. Auto-confirm for `msg.sender`
+7. If confirmations >= threshold:
+   - Replace `oldOwner` with `newOwner` in owners array (maintain sorted order)
+   - Emit `OwnerReplaced`
+
+> **Note**: `replaceOwner` is atomic - it never temporarily reduces owner count, avoiding threshold validation edge cases.
+
+#### `changeThreshold`
+
+1. Revert with `NotOwner` if `msg.sender` is not an owner
+2. Revert with `InvalidThreshold` if `newThreshold == 0`
+3. Revert with `InvalidThreshold` if `newThreshold > ownerCount`
+4. Create config-change transaction for threshold change
+5. Auto-confirm for `msg.sender`
+6. If confirmations >= threshold (using **current** threshold):
+   - Update threshold to `newThreshold`
+   - Emit `ThresholdChanged`
+
+> **Security Note**: Threshold changes use the **current** threshold for confirmation, not the new one. This prevents a single owner from reducing threshold to 1 and taking over.
+
+---
+
 ## Storage Layout
 
 ### Multisig Factory Storage
@@ -582,9 +691,12 @@ multisig.submitTransaction(
 7. Expired transactions cannot be executed or confirmed
 8. `confirmations` count must equal the number of owners who have confirmed
 9. `transactionCount` must be monotonically increasing
-10. The `owners()` and `threshold()` values must never change after creation
-11. Transaction `data` size must be <= `MAX_DATA_SIZE` (64KB)
-12. Transaction `value` must be empty or exactly 64 bytes (valid encoding)
+10. Transaction `data` size must be <= `MAX_DATA_SIZE` (64KB)
+11. Transaction `value` must be empty or exactly 64 bytes (valid encoding)
+12. `ownerCount` must always be >= 1 (cannot remove last owner)
+13. `threshold` must always be >= 1 and <= `ownerCount`
+14. Owner management operations require `threshold` confirmations
+15. Config changes use the current threshold, not the proposed new threshold
 
 ## Security Invariants
 
@@ -664,6 +776,41 @@ multisig.submitTransaction(
 - `execute()` reverts if threshold > 1
 - Transaction with empty value and empty data (no-op)
 - Transaction targeting multisig itself (self-call)
+
+## Owner Management Tests
+
+### Add Owner
+- Add owner with threshold confirmations
+- Reject add from non-owner
+- Reject adding existing owner (`AlreadyOwner`)
+- Reject adding zero address
+- Reject adding when at MAX_OWNERS (50)
+- Verify owner list remains sorted after add
+
+### Remove Owner
+- Remove owner with threshold confirmations
+- Reject remove from non-owner
+- Reject removing non-existent owner
+- Reject removing last owner (`CannotRemoveLastOwner`)
+- Reject if would make threshold > ownerCount (`ThresholdExceedsOwners`)
+- Removed owner's pending confirmations remain valid
+- Removed owner cannot confirm new transactions
+
+### Replace Owner
+- Replace owner atomically with threshold confirmations
+- Reject replace from non-owner
+- Reject replacing non-existent owner
+- Reject replacing with zero address
+- Reject replacing with existing owner
+- Verify owner list remains sorted after replace
+
+### Change Threshold
+- Change threshold with current threshold confirmations
+- Reject change from non-owner
+- Reject threshold = 0
+- Reject threshold > ownerCount
+- Verify change uses current threshold (not new one)
+- 2-of-3 can change to 1-of-3, then 1-of-3 to 3-of-3
 
 ## Integration Tests
 
