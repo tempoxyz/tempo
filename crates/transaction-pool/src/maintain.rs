@@ -121,18 +121,16 @@ impl MaintenanceState {
     }
 }
 
-/// A unified maintenance task for the Tempo transaction pool.
+/// Unified maintenance task for the Tempo transaction pool.
 ///
-/// This task consolidates multiple pool maintenance operations into a single event loop
-/// to avoid multiple tasks competing for the same canonical state updates:
+/// Handles:
+/// - Evicting expired AA transactions (`valid_before <= tip_timestamp`)
+/// - Updating the AA 2D nonce pool from `NonceManager` changes
+/// - Refreshing the AMM liquidity cache from `FeeManager` updates
+/// - Removing transactions signed with revoked keychain keys
 ///
-/// - **Expired AA transactions**: Evicts transactions when `valid_before <= tip_timestamp`
-/// - **2D nonce pool**: Updates the AA 2D nonce pool based on `NonceManager` state changes
-/// - **AMM liquidity cache**: Updates the AMM liquidity cache from `FeeManager` state changes
-/// - **Revoked keychain keys**: Evicts transactions signed with revoked keychain keys
-///
-/// By batching these operations, we can process all updates with a single state subscription
-/// and minimize contention on pool locks.
+/// Consolidates these operations into a single event loop to avoid multiple tasks
+/// competing for canonical state updates and to minimize contention on pool locks.
 pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
