@@ -218,9 +218,6 @@ export function SendPaymentWithMemo(props: DemoStepProps) {
             {sendPayment.isSuccess && sendPayment.data && (
               <div className="mt-2">
                 <ExplorerLink hash={sendPayment.data.receipt.transactionHash} />
-                <p className="text-[11px] text-gray9 mt-1">
-                  Memo "{memo}" attached to transaction
-                </p>
                 {memoEvents.length > 0 && (
                   <div className="mt-3 p-2 bg-gray2 rounded-lg">
                     <p className="text-[11px] text-gray9 mb-1">
