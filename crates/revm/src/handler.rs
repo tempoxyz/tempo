@@ -649,8 +649,8 @@ where
         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
         // Validate fee token has TIP20 prefix before attempting to read balance.
-        // This prevents panic in get_token_balance if an invalid token bypassed earlier validation
-        // (e.g., when max_balance_spending is zero and it's not a subblock transaction).
+        // Note that this is checked during tx validation but this check is also necessary at the protocol level since it is possible for a validator to bypass initial validation and inject the tx directly to the block
+    
         if !is_tip20_prefix(self.fee_token) {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
