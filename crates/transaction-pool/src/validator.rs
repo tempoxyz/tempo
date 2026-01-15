@@ -1351,9 +1351,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("revoked")),
-                "Revoked key should be rejected, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("access key has been revoked"),
+                "Revoked key should be rejected"
             );
         }
 
@@ -1383,9 +1384,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("does not exist")),
-                "Non-existent key should be rejected, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("access key does not exist"),
+                "Non-existent key should be rejected"
             );
         }
 
@@ -1407,9 +1409,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("does not exist")),
-                "Missing storage should result in non-existent key error, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("access key does not exist"),
+                "Missing storage should result in non-existent key error"
             );
         }
 
@@ -1493,9 +1496,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("chain_id")),
-                "Wrong chain_id should be rejected, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("KeyAuthorization chain_id does not match current chain"),
+                "Wrong chain_id should be rejected"
             );
         }
 
@@ -1580,9 +1584,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("key_id") && msg.contains("match")),
-                "Mismatched key_id should be rejected, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("KeyAuthorization key_id does not match Keychain signature key_id"),
+                "Mismatched key_id should be rejected"
             );
         }
 
@@ -1624,9 +1629,10 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert!(
-                matches!(result, Ok(Err(msg)) if msg.contains("Invalid") && msg.contains("signature")),
-                "Invalid KeyAuthorization signature should be rejected, got: {result:?}"
+            assert_eq!(
+                result.expect("should not be a provider error"),
+                Err("Invalid KeyAuthorization signature"),
+                "Invalid KeyAuthorization signature should be rejected"
             );
         }
 
