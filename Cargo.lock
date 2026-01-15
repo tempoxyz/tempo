@@ -2428,8 +2428,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf3ce8bf336b0ed47c5596de852dca00af534663376108e30b5d1554a226762"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2447,8 +2446,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "932a888c88c67ed0a2e35861cb3106f0238826ef99af3fd79e1da5cfa682fe6b"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "paste",
@@ -2460,8 +2458,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e59253a02e2157aa1a487b1506d2453627b7b6d0434aede81e9ff5ee1232b700"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2489,8 +2486,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baf84215a142eb4b5c633ef048fc3d39210e74dd4c00943667421ad65fecbc86"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2521,8 +2517,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fba0d95a5099b688944998efe0c2c65d7929355e9c9203ff3db5e5fffba4c1a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2537,8 +2532,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "634c6488502ca976d1013b230e34a46f3998883d583f1ea4483b14a81231eb3e"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2550,8 +2544,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27005677f181e0324c339800da0729f987a20904dcb3d4dd7c188a0334f7e387"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2577,8 +2570,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69ce87c7e89435d3730a4fe18c83f0502d8953fae90e62bd1384164c9239786e"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "cfg-if",
  "rayon",
@@ -2587,8 +2579,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c8f548df3773f33ec9d45f55327d239eb49688fcbd481a73f50a59c7002699f"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2608,8 +2599,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "699b7fd1f4a028442313f1c98cca47765bc4294e56884ca21efe0de5e38f89a5"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "async-lock",
  "axum",
@@ -2645,8 +2635,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e97b508b9e1527fabe81f91776ff7bfac13cd98759d2a8877c369143d9c4f6"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2669,8 +2658,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd88ee96b41da08924fe093f7be3299988698f58a768340f045e8a6120a4f234"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2690,8 +2678,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.65"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dff0b48bf9e9ca3efdfd14aba67dbbc8da1f6132329c477e562592747dd052a"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=f966223ac7775606eb23c85c35f1c272d8f61d0b#f966223ac7775606eb23c85c35f1c272d8f61d0b"
 dependencies = [
  "bytes",
  "cfg-if",

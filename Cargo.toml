@@ -318,3 +318,17 @@ vergen-git2 = "1"
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 # reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
+
+[patch.crates-io]
+# Commonware right after after PR #2828 was merged
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "f966223ac7775606eb23c85c35f1c272d8f61d0b"}
