@@ -1188,7 +1188,7 @@ mod tests {
         #[test]
         fn test_non_aa_transaction_skips_keychain_validation() -> Result<(), ProviderError> {
             // Non-AA transaction should return Ok(Ok(())) immediately
-            let transaction = get_transaction(None);
+            let transaction = TxBuilder::eip1559(Address::random()).build_eip1559();
             let validator = setup_validator(&transaction, 0);
             let state_provider = validator.inner.client().latest().unwrap();
 
