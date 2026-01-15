@@ -62,15 +62,7 @@ jobs:
           cargo nextest run \
             --no-fail-fast \
             -j num-cpus \
-            --retries 2 \
-            --E 'not(test(sync::can_restart_after_joining_from_snapshot))'
-      - name: Run flaky test
-        run: |
-          cargo nextest run \
-            --no-fail-fast \
-            -j num-cpus \
-            --retries 2 \
-            --E 'test(sync::can_restart_after_joining_from_snapshot)'
+            --retries 2
 
   msrv:
     name: MSRV
