@@ -280,6 +280,21 @@ fn partial_fill_order(&mut self, order: &mut Order, level: &mut TickLevel, fill_
 
 ---
 
+# Maker Considerations
+
+Makers should understand that orders can be early-completed when remaining falls below `MIN_ORDER_AMOUNT` ($100). This affects smaller orders more significantly:
+
+| Order Size | Min Fill Before Early Completion | % That Must Fill |
+|------------|----------------------------------|------------------|
+| $200 | $100 | 50% |
+| $500 | $400 | 80% |
+| $1,000 | $900 | 90% |
+| $10,000 | $9,900 | 99% |
+
+**Recommendation:** Makers who want full order execution should place orders significantly larger than `MIN_ORDER_AMOUNT`. For market making strategies, this behavior is generally acceptable since the filled portion is settled normally and the dust is refunded.
+
+---
+
 # Migration
 
 This change requires a **hard fork** as it modifies consensus-critical behavior:
