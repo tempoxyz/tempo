@@ -16,6 +16,9 @@ use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
+/// A key identifying a keychain-signed transaction: (account, key_id).
+type KeychainKey = (Address, Address);
+
 /// Tracking state for pool maintenance operations.
 ///
 /// Groups the data structures needed to track:
@@ -28,9 +31,9 @@ struct MaintenanceState {
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup).
     tx_to_expiry: HashMap<TxHash, u64>,
     /// Maps (account, key_id) to the set of transaction hashes using that key.
-    keychain_txs: HashMap<(Address, Address), HashSet<TxHash>>,
+    keychain_txs: HashMap<KeychainKey, HashSet<TxHash>>,
     /// Reverse mapping: tx_hash -> (account, key_id) (for cleanup when tx is removed).
-    tx_to_key: HashMap<TxHash, (Address, Address)>,
+    tx_to_key: HashMap<TxHash, KeychainKey>,
 }
 
 impl MaintenanceState {
