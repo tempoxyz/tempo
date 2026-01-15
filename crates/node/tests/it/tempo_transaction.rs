@@ -41,9 +41,6 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
-/// Duration to wait for pool maintenance task to process blocks
-const POOL_MAINTENANCE_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// Default timeout for waiting on pool processing
 const POOL_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -6400,6 +6397,172 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
     println!("✓ Protocol nonce now 1 after protocol tx");
 
     println!("\n✓ Expiring nonces are independent from protocol nonces");
+
+    Ok(())
+}
+
+/// Verifies that transactions from a blacklisted fee payer are evicted from the pool.
+/// This tests the fix for CHAIN-443 - DoS via TIP403 blacklist TOCTOU vulnerability.
+#[tokio::test]
+async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<()> {
+    use alloy::sol_types::SolEvent;
+    use tempo_contracts::precompiles::ITIP403Registry;
+    use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
+
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing TIP403 Blacklist Fee Payer Eviction ===\n");
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // ========================================
+    // STEP 1: Create a blacklist policy
+    // ========================================
+    println!("\n=== STEP 1: Create a blacklist policy ===");
+
+    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
+
+    let policy_receipt = registry
+        .createPolicy(root_addr, ITIP403Registry::PolicyType::BLACKLIST)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(300_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let policy_id = policy_receipt
+        .logs()
+        .iter()
+        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
+        .next()
+        .expect("PolicyCreated event should be emitted")
+        .policyId;
+
+    println!("Created blacklist policy with ID: {policy_id}");
+
+    // Get nonce after policy creation
+    let nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Get current block timestamp for valid_after
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    // ========================================
+    // STEP 2: Submit a transaction with valid_after in the future
+    // ========================================
+    println!("\n=== STEP 2: Submit transaction with future valid_after ===");
+
+    // Set valid_after to be in the future (enough time to blacklist the sender)
+    let valid_after_time = current_timestamp + 10;
+    println!("Setting valid_after to {valid_after_time} (current: {current_timestamp})");
+
+    let recipient = Address::random();
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token
+
+    let delayed_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: transferCall {
+                to: recipient,
+                amount: transfer_amount,
+            }
+            .abi_encode()
+            .into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        fee_payer_signature: None,
+        valid_after: Some(valid_after_time),
+        valid_before: Some(u64::MAX),
+        ..Default::default()
+    };
+
+    // Sign the transaction
+    let signature = root_signer.sign_hash_sync(&delayed_tx.signature_hash())?;
+    let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(signature.into()).into();
+    let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(delayed_tx_envelope.encoded_2718().into())
+        .await?;
+
+    println!("Delayed transaction submitted (hash: {delayed_tx_hash})");
+
+    // Verify transaction is in the pool
+    assert!(
+        setup.node.inner.pool.contains(&delayed_tx_hash),
+        "Delayed transaction should be in the pool"
+    );
+    println!("Transaction is in the mempool");
+
+    // ========================================
+    // STEP 3: Blacklist the root address (fee payer)
+    // ========================================
+    println!("\n=== STEP 3: Blacklist the fee payer ===");
+
+    let blacklist_receipt = registry
+        .modifyPolicyBlacklist(policy_id, root_addr, true)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(300_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    println!(
+        "Fee payer blacklisted in block {}",
+        blacklist_receipt.block_number.unwrap()
+    );
+
+    // Advance a block to trigger the commit notification
+    let payload = setup.node.advance_block().await?;
+    let new_tip = payload.block().inner.number;
+
+    // Wait for the maintenance task to process the block
+    setup
+        .node
+        .inner
+        .pool
+        .wait_for_maintenance_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
+        .await?;
+
+    // ========================================
+    // STEP 4: Verify transaction is evicted from the pool
+    // ========================================
+    println!("\n=== STEP 4: Verify transaction is evicted from pool ===");
+
+    let tx_still_in_pool = setup.node.inner.pool.contains(&delayed_tx_hash);
+
+    println!("\n=== RESULTS ===");
+    println!("Transaction still in pool: {tx_still_in_pool}");
+
+    assert!(
+        !tx_still_in_pool,
+        "DoS via TIP403 blacklist TOCTOU: \
+         Transaction with blacklisted fee payer should be evicted from the mempool"
+    );
+
+    println!("Transaction was correctly evicted after fee payer was blacklisted");
 
     Ok(())
 }

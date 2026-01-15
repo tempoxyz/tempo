@@ -14,37 +14,51 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{FullTransactionEvent, PoolTransaction, TransactionOrigin, TransactionPool};
+use reth_transaction_pool::{
+    FullTransactionEvent, PoolTransaction, TransactionOrigin, TransactionPool,
+};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20};
+use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::is_tip20_prefix,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip20::is_tip20_prefix,
 };
-use tempo_primitives::{AASigned, TempoPrimitives};
+use tempo_primitives::{AASigned, TempoPrimitives, TempoTxEnvelope};
 use tracing::{debug, error};
+
+/// A key identifying a keychain-signed transaction: (account, key_id).
+type KeychainKey = (Address, Address);
 
 /// Tracking state for pool maintenance operations.
 ///
-/// Tracks AA transaction expiry (`valid_before` timestamps) for eviction.
-///
-/// Note: Stale entries (transactions no longer in the pool) are cleaned up lazily
-/// when we check `pool.contains()` before eviction. This avoids the overhead of
-/// subscribing to all transaction lifecycle events.
+/// Groups the data structures needed to track:
+/// - AA transaction expiry (`valid_before` timestamps)
+/// - Keychain-signed transactions (for revocation eviction)
+/// - Fee payer transactions (for blacklist eviction)
+/// - Paused fee token transactions
 #[derive(Default)]
-struct TempoPoolState {
+struct MaintenanceState {
     /// Maps `valid_before` timestamp to transaction hashes that expire at that time.
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
-    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
+    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup).
     tx_to_expiry: HashMap<TxHash, u64>,
+    /// Maps (account, key_id) to the set of transaction hashes using that key.
+    keychain_txs: HashMap<KeychainKey, HashSet<TxHash>>,
+    /// Reverse mapping: tx_hash -> (account, key_id) (for cleanup when tx is removed).
+    tx_to_key: HashMap<TxHash, KeychainKey>,
+    /// Maps fee payer address to the set of transaction hashes they are paying for.
+    fee_payer_txs: HashMap<Address, HashSet<TxHash>>,
+    /// Reverse mapping: tx_hash -> fee payer address (for cleanup when tx is removed).
+    tx_to_fee_payer: HashMap<TxHash, Address>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
 }
 
-impl TempoPoolState {
+impl MaintenanceState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
     fn track_expiry(&mut self, maybe_aa_tx: Option<&AASigned>) {
         if let Some(aa_tx) = maybe_aa_tx
@@ -56,8 +70,51 @@ impl TempoPoolState {
         }
     }
 
-    /// Removes a single transaction from expiry tracking (used during cleanup).
-    fn remove_from_expiry(&mut self, tx_hash: &TxHash) {
+    /// Tracks a keychain-signed transaction for revocation eviction.
+    fn track_keychain_tx(&mut self, maybe_aa_tx: Option<&AASigned>, tx_hash: TxHash) {
+        let Some(aa_tx) = maybe_aa_tx else {
+            return;
+        };
+
+        let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+            return;
+        };
+
+        let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
+            return;
+        };
+
+        let account = keychain_sig.user_address;
+        let key = (account, key_id);
+
+        self.keychain_txs.entry(key).or_default().insert(tx_hash);
+        self.tx_to_key.insert(tx_hash, key);
+    }
+
+    /// Tracks the fee payer for a transaction.
+    fn track_fee_payer(&mut self, tx: &TempoTxEnvelope, sender: Address, tx_hash: TxHash) {
+        let fee_payer = tx.fee_payer(sender).unwrap_or(sender);
+        self.fee_payer_txs
+            .entry(fee_payer)
+            .or_default()
+            .insert(tx_hash);
+        self.tx_to_fee_payer.insert(tx_hash, fee_payer);
+    }
+
+    /// Removes a transaction from keychain tracking maps.
+    fn remove_from_keychain_tracking(&mut self, tx_hash: &TxHash) {
+        if let Some(key) = self.tx_to_key.remove(tx_hash)
+            && let Some(hashes) = self.keychain_txs.get_mut(&key)
+        {
+            hashes.remove(tx_hash);
+            if hashes.is_empty() {
+                self.keychain_txs.remove(&key);
+            }
+        }
+    }
+
+    /// Removes a transaction from expiry tracking maps.
+    fn remove_from_expiry_tracking(&mut self, tx_hash: &TxHash) {
         if let Some(valid_before) = self.tx_to_expiry.remove(tx_hash)
             && let Some(hashes) = self.expiry_map.get_mut(&valid_before)
         {
@@ -66,6 +123,25 @@ impl TempoPoolState {
                 self.expiry_map.remove(&valid_before);
             }
         }
+    }
+
+    /// Removes a transaction from fee payer tracking maps.
+    fn remove_from_fee_payer_tracking(&mut self, tx_hash: &TxHash) {
+        if let Some(fee_payer) = self.tx_to_fee_payer.remove(tx_hash)
+            && let Some(hashes) = self.fee_payer_txs.get_mut(&fee_payer)
+        {
+            hashes.remove(tx_hash);
+            if hashes.is_empty() {
+                self.fee_payer_txs.remove(&fee_payer);
+            }
+        }
+    }
+
+    /// Removes a transaction from all tracking maps.
+    fn remove_tx(&mut self, tx_hash: &TxHash) {
+        self.remove_from_keychain_tracking(tx_hash);
+        self.remove_from_expiry_tracking(tx_hash);
+        self.remove_from_fee_payer_tracking(tx_hash);
     }
 
     /// Collects and removes all expired transactions up to the given timestamp.
@@ -83,19 +159,31 @@ impl TempoPoolState {
         }
         expired
     }
+
+    /// Finds all transactions using a specific keychain key.
+    fn txs_for_key(&self, account: Address, key_id: Address) -> Option<&HashSet<TxHash>> {
+        self.keychain_txs.get(&(account, key_id))
+    }
+
+    /// Finds all transactions for a specific fee payer.
+    fn txs_for_fee_payer(&self, fee_payer: Address) -> Option<&HashSet<TxHash>> {
+        self.fee_payer_txs.get(&fee_payer)
+    }
 }
 
-/// Unified maintenance task for the Tempo transaction pool.
+/// A unified maintenance task for the Tempo transaction pool.
 ///
-/// Handles:
-/// - Evicting expired AA transactions (`valid_before <= tip_timestamp`)
-/// - Updating the AA 2D nonce pool from `NonceManager` changes
-/// - Refreshing the AMM liquidity cache from `FeeManager` updates
-/// - Removing transactions signed with revoked keychain keys
-/// - Moving transactions to/from the paused pool when fee tokens are paused/unpaused
+/// This task consolidates multiple pool maintenance operations into a single event loop
+/// to avoid multiple tasks competing for the same canonical state updates:
 ///
-/// Consolidates these operations into a single event loop to avoid multiple tasks
-/// competing for canonical state updates and to minimize contention on pool locks.
+/// - **Expired AA transactions**: Evicts transactions when `valid_before <= tip_timestamp`
+/// - **2D nonce pool**: Updates the AA 2D nonce pool based on `NonceManager` state changes
+/// - **AMM liquidity cache**: Updates the AMM liquidity cache from `FeeManager` state changes
+/// - **Revoked keychain keys**: Evicts transactions signed with revoked keychain keys
+/// - **Blacklisted fee payers**: Evicts transactions when fee payer is added to a TIP403 blacklist
+///
+/// By batching these operations, we can process all updates with a single state subscription
+/// and minimize contention on pool locks.
 pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
 where
     Client: StateProviderFactory
@@ -103,34 +191,51 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
-    let mut state = TempoPoolState::default();
+    let mut state = MaintenanceState::default();
 
-    // Subscribe to new transactions, transaction lifecycle events, and chain events
+    // Small delay to allow other tasks to initialize (skip in tests)
+    #[cfg(not(feature = "test-utils"))]
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // Subscribe to new transactions, transaction events, and chain events
     let mut new_txs = pool.new_transactions_listener();
     let mut tx_events = pool.all_transactions_event_listener();
     let mut chain_events = pool.client().canonical_state_stream();
 
-    // Populate expiry tracking with existing transactions to prevent race conditions at start-up
-    let all_txs = pool.all_transactions();
-    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-        state.track_expiry(tx.transaction.inner().as_aa());
-    }
+    // Populate tracking maps with existing transactions to prevent race conditions at start-up
+    // pool.all_transactions().all() returns an iterator of Recovered<TempoTxEnvelope>
+    pool.all_transactions().all().for_each(|tx| {
+        let maybe_aa = tx.as_aa();
+        let tx_hash = *tx.tx_hash();
+        let sender = tx.signer();
+        state.track_expiry(maybe_aa);
+        state.track_keychain_tx(maybe_aa, tx_hash);
+        state.track_fee_payer(tx.inner(), sender, tx_hash);
+    });
 
     let amm_cache = pool.amm_liquidity_cache();
 
     loop {
         tokio::select! {
-            // Track new transactions for expiry
+            // Track new transactions for expiry, keychain revocation, and fee payer blacklisting
             tx_event = new_txs.recv() => {
                 let Some(tx_event) = tx_event else {
                     break;
                 };
 
-                let tx = &tx_event.transaction.transaction;
-                state.track_expiry(tx.inner().as_aa());
+                // tx_event.transaction is Arc<ValidPoolTransaction<TempoPooledTransaction>>
+                // .transaction gives TempoPooledTransaction, .inner() gives &Recovered<TempoTxEnvelope>
+                let recovered = tx_event.transaction.transaction.inner();
+                let tx_hash = *tx_event.transaction.hash();
+                let sender = tx_event.transaction.sender();
+                let maybe_aa = recovered.as_aa();
+
+                state.track_expiry(maybe_aa);
+                state.track_keychain_tx(maybe_aa, tx_hash);
+                state.track_fee_payer(recovered.inner(), sender, tx_hash);
             }
 
-            // Clean up tracking maps when transactions leave the pool
+            // Clean up tracking maps when transactions are removed from the pool
             Some(event) = tx_events.next() => {
                 let tx_hash = match event {
                     FullTransactionEvent::Mined { tx_hash, .. }
@@ -140,7 +245,7 @@ where
                     // Pending/Queued/Propagated don't indicate removal
                     _ => continue,
                 };
-                state.remove_from_expiry(&tx_hash);
+                state.remove_tx(&tx_hash);
             }
 
             // Process all maintenance operations on new block commit or reorg
@@ -201,13 +306,12 @@ where
                 let tip = &new;
                 #[cfg(feature = "test-utils")]
                 let tip_number = tip.tip().header().number();
+
                 let bundle_state = tip.execution_outcome().state().state();
 
-                // 1. Evict expired AA transactions (filter to only those still in pool)
+                // 1. Evict expired AA transactions
                 let tip_timestamp = tip.tip().header().timestamp();
-                let expired = state.drain_expired(tip_timestamp);
-                let to_remove: Vec<_> =
-                    expired.into_iter().filter(|h| pool.contains(h)).collect();
+                let mut to_remove = state.drain_expired(tip_timestamp);
 
                 if !to_remove.is_empty() {
                     debug!(
@@ -216,38 +320,72 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions"
                     );
-                    pool.remove_transactions(to_remove);
                 }
 
-                // 2. Collect invalidation events from this block
-                // Key revocations are rare, so we scan the pool on-demand rather than
-                // tracking all keychain-signed transactions.
-                let revoked_keys: Vec<_> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
-                    .filter_map(|log| IAccountKeychain::KeyRevoked::decode_log(log).ok())
-                    .map(|event| (event.account, event.publicKey))
-                    .collect();
+                // 2. Evict transactions with revoked keychain keys by scanning for KeyRevoked events
+                let mut revoked_txs = Vec::new();
 
-                // Validator token changes - transactions may fail if there's insufficient
-                // liquidity in the new (user_token, validator_token) AMM pool.
-                let validator_token_changes: Vec<(Address, Address)> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
-                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
-                    .map(|event| (event.validator, event.token))
-                    .collect();
+                for receipts in tip.execution_outcome().receipts().iter() {
+                    for receipt in receipts {
+                        for log in &receipt.logs {
+                            if log.address != ACCOUNT_KEYCHAIN_ADDRESS {
+                                continue;
+                            }
 
-                // 3. Handle fee token pause/unpause events
-                // Collect PauseStateUpdate events from TIP20 tokens
+                            if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log)
+                                && let Some(tx_hashes) = state.txs_for_key(event.account, event.publicKey)
+                            {
+                                revoked_txs.extend(tx_hashes.iter().copied());
+                            }
+                        }
+                    }
+                }
+
+                if !revoked_txs.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = revoked_txs.len(),
+                        "Evicting AA transactions with revoked keychain keys"
+                    );
+                    for tx_hash in &revoked_txs {
+                        state.remove_from_keychain_tracking(tx_hash);
+                    }
+                    to_remove.extend(revoked_txs);
+                }
+
+                // 3. Evict transactions where fee payer was added to a blacklist
+                let mut blacklisted_txs = Vec::new();
+
+                for receipts in tip.execution_outcome().receipts().iter() {
+                    for receipt in receipts {
+                        for log in &receipt.logs {
+                            if log.address != TIP403_REGISTRY_ADDRESS {
+                                continue;
+                            }
+
+                            if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
+                                && event.restricted
+                                && let Some(tx_hashes) = state.txs_for_fee_payer(event.account)
+                            {
+                                blacklisted_txs.extend(tx_hashes.iter().copied());
+                            }
+                        }
+                    }
+                }
+
+                if !blacklisted_txs.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = blacklisted_txs.len(),
+                        "Evicting transactions with blacklisted fee payers"
+                    );
+                    for tx_hash in &blacklisted_txs {
+                        state.remove_from_fee_payer_tracking(tx_hash);
+                    }
+                    to_remove.extend(blacklisted_txs);
+                }
+
+                // 4. Handle fee token pause/unpause events
                 let pause_events: Vec<(Address, bool)> = tip
                     .execution_outcome()
                     .receipts()
@@ -332,7 +470,7 @@ where
                     }
                 }
 
-                // 4. Evict expired transactions from the paused pool
+                // 5. Evict expired transactions from the paused pool
                 let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
                 let paused_timed_out = state.paused_pool.evict_timed_out();
                 let total_paused_evicted = paused_expired + paused_timed_out;
@@ -345,17 +483,15 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys from paused pool
-                if !revoked_keys.is_empty() {
-                    state.paused_pool.evict_by_revoked_keys(&revoked_keys);
+                // 6. Remove all collected transactions in a single batch
+                if !to_remove.is_empty() {
+                    pool.remove_transactions(to_remove);
                 }
 
-                // 6. Update 2D nonce pool
+                // 7. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 7. Remove included expiring nonce transactions
-                // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
-                // so we need to remove them on inclusion rather than relying on nonce changes.
+                // 8. Remove included expiring nonce transactions
                 let mined_tx_hashes: Vec<_> = tip
                     .blocks_iter()
                     .flat_map(|block| block.body().transactions())
@@ -363,7 +499,7 @@ where
                     .collect();
                 pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
 
-                // 8. Update AMM liquidity cache (must happen before validator token eviction)
+                // 9. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
@@ -371,9 +507,35 @@ where
                     }
                 }
 
-                // 9. Evict invalidated transactions in a single pool scan
-                // This checks both revoked keys and validator token changes together
-                // to avoid scanning all transactions multiple times per block.
+                // 10. Collect and process validator token changes
+                let revoked_keys: Vec<_> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
+                    .filter_map(|log| IAccountKeychain::KeyRevoked::decode_log(log).ok())
+                    .map(|event| (event.account, event.publicKey))
+                    .collect();
+
+                let validator_token_changes: Vec<(Address, Address)> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
+                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
+                    .map(|event| (event.validator, event.token))
+                    .collect();
+
+                // Evict revoked keys from paused pool
+                if !revoked_keys.is_empty() {
+                    state.paused_pool.evict_by_revoked_keys(&revoked_keys);
+                }
+
+                // Evict transactions affected by validator token changes
                 if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
                     debug!(
                         target: "txpool",
