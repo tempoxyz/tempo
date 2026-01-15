@@ -30,8 +30,9 @@ alloy-network = { workspace = true, optional = true }
 # Utils
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 derive_more.workspace = true
-serde = { workspace = true, features = ["derive"], optional = true }
 modular-bitfield = { version = "0.11.2", optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 # Cryptography for P256 and WebAuthn signature verification
 p256 = { workspace = true, features = ["ecdsa"] }
@@ -44,11 +45,10 @@ reth-codecs.workspace = true
 proptest.workspace = true
 proptest-arbitrary-interop.workspace = true
 alloy-consensus = { workspace = true, features = ["arbitrary"] }
-alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom"] }
+alloy-primitives = { workspace = true, features = ["arbitrary", "getrandom", "rand"] }
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 rand = "0.9"
-serde_json.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
@@ -58,7 +58,6 @@ reth = [
 	"dep:reth-primitives-traits",
 ]
 serde = [
-	"dep:serde",
 	"dep:alloy-serde",
 	"alloy-consensus/serde",
 	"reth-primitives-traits?/serde",

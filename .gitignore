@@ -24,6 +24,7 @@ docs/node_modules
 docs/.vocs-cache/
 docs/specs/cache/
 docs/specs/out/
+docs/specs/*.log
 docs/specs/soljson-latest.js
 docs/.vercel
 docs/_
@@ -31,4 +32,6 @@ docs/tmp
 docs/.sonda
 
 _
-.worktrees
+.vercel
+.env*.local
+.worktrees/

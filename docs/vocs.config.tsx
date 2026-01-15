@@ -1,3 +1,5 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
@@ -6,79 +8,135 @@ import icons from 'unplugin-icons/vite'
 import { loadEnv } from 'vite'
 import { defineConfig } from 'vocs'
 
+function getTipsData() {
+  const tipsDir = path.join(process.cwd(), 'pages/protocol/tips')
+  if (!fs.existsSync(tipsDir)) return []
+
+  const files = fs
+    .readdirSync(tipsDir)
+    .filter((file) => file.match(/^tip-\d+\.mdx$/))
+    .sort((a, b) => {
+      const numA = Number.parseInt(a.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      const numB = Number.parseInt(b.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      return numA - numB
+    })
+
+  return files
+    .map((file) => {
+      const content = fs.readFileSync(path.join(tipsDir, file), 'utf-8')
+      const lines = content.split('\n')
+
+      let title = ''
+      let tipId = ''
+      let status = 'Draft'
+
+      for (const line of lines) {
+        const headingMatch = line.match(/^#\s+(?:TIP-\d+:\s*)?(.+)$/)
+        if (headingMatch?.[1] && !title) title = headingMatch[1].trim()
+
+        const tipIdMatch = line.match(/\*\*TIP ID\*\*:\s*(TIP-\d+)/)
+        if (tipIdMatch?.[1]) tipId = tipIdMatch[1]
+
+        const statusMatch = line.match(/\*\*Status\*\*:\s*(\w+)/)
+        if (statusMatch?.[1]) status = statusMatch[1]
+      }
+
+      if (!tipId) {
+        const m = file.match(/tip-(\d+)/)
+        if (m) tipId = `TIP-${m[1]}`
+      }
+
+      return {
+        id: tipId,
+        title,
+        status,
+        fileName: file,
+      }
+    })
+    .filter((t) => t.id && t.title)
+}
+
 export default defineConfig({
-  head() {
-    return (
-      <>
-        <meta
-          content="width=device-width, initial-scale=1, maximum-scale=1"
-          name="viewport"
-        />
-        <meta content="Documentation ⋅ Tempo" property="og:title" />
-        <meta content="/og-docs.png" property="og:image" />
-        <meta content="image/png" property="og:image:type" />
-        <meta content="1200" property="og:image:width" />
-        <meta content="630" property="og:image:height" />
-        <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Documentation ⋅ Tempo" />
-        <meta name="twitter:image" content="/og-docs.png" />
-        <link rel="icon" href="/favicon.ico" sizes="32x32" />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-light.svg"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/svg+xml"
-          href="/favicon-dark.svg"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="32x32"
-          href="/favicon-32x32-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-light.png"
-          media="(prefers-color-scheme: dark)"
-        />
-        <link
-          rel="icon"
-          type="image/png"
-          sizes="16x16"
-          href="/favicon-16x16-dark.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-light.png"
-          media="(prefers-color-scheme: light)"
-        />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href="/favicon-dark.png"
-          media="(prefers-color-scheme: dark)"
-        />
-      </>
-    )
+  baseUrl: 'https://docs.tempo.xyz',
+  head: () => (
+    <>
+      <meta
+        content="width=device-width, initial-scale=1, maximum-scale=1"
+        name="viewport"
+      />
+      {process.env['VERCEL_ENV'] === 'production' ? (
+        <meta name="robots" content="index, follow" />
+      ) : (
+        <meta name="robots" content="noindex, nofollow" />
+      )}
+      <link rel="icon" href="/favicon.ico" sizes="32x32" />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-light.svg"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/svg+xml"
+        href="/favicon-dark.svg"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="32x32"
+        href="/favicon-32x32-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-light.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      <link
+        rel="icon"
+        type="image/png"
+        sizes="16x16"
+        href="/favicon-16x16-dark.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-light.png"
+        media="(prefers-color-scheme: light)"
+      />
+      <link
+        rel="apple-touch-icon"
+        sizes="180x180"
+        href="/favicon-dark.png"
+        media="(prefers-color-scheme: dark)"
+      />
+      {process.env['VERCEL_ENV'] === 'production' && (
+        <script src="/ph.js" type="text/javascript" />
+      )}
+    </>
+  ),
+  ogImageUrl: {
+    '/': 'https://docs.tempo.xyz/og-docs.png',
+    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
   },
-  title: 'Documentation ⋅ Tempo',
+  title: 'Tempo',
+  titleTemplate: '%s | Tempo Docs',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
@@ -91,11 +149,15 @@ export default defineConfig({
   rootDir: '.',
   banner: {
     content: (
-        <div>
-          <strong>Testnet migration:</strong> We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th.{' '}
-          <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>Learn more →</a>
-        </div>
-      ),
+      <div>
+        <strong>Testnet migration:</strong> We've launched a new testnet. You'll
+        need to update your RPC configuration and redeploy any contracts. The
+        old testnet will be deprecated on March 8th.{' '}
+        <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>
+          Learn more →
+        </a>
+      </div>
+    ),
     dismissable: true,
   },
   socials: [
@@ -457,6 +519,10 @@ export default defineConfig({
               },
             ],
           },
+          {
+            text: 'TIPs',
+            link: '/protocol/tips',
+          },
         ],
       },
       {
@@ -684,6 +750,20 @@ export default defineConfig({
         },
   vite: {
     plugins: [
+      {
+        name: 'virtual-tips',
+        resolveId(id) {
+          if (id === 'virtual:tips-data') return '\0virtual:tips-data'
+          return undefined
+        },
+        load(id) {
+          if (id === '\0virtual:tips-data') {
+            const tips = getTipsData()
+            return `export const tips = ${JSON.stringify(tips)}`
+          }
+          return undefined
+        },
+      },
       {
         name: 'tempo-node',
         async configureServer(_server) {
