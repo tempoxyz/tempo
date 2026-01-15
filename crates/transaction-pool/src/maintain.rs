@@ -257,10 +257,7 @@ where
 
                 // Signal that we have processed this tip (for test synchronization)
                 #[cfg(feature = "test-utils")]
-                {
-                    pool.mark_2d_pool_processed_tip(tip_number);
-                    pool.mark_keychain_processed_tip(tip_number);
-                }
+                pool.mark_maintenance_processed_tip(tip_number);
             }
         }
     }

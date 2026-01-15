@@ -14,6 +14,8 @@ pub mod validator;
 pub mod tempo_pool;
 
 // The main Tempo transaction pool type that handles both protocol and 2D nonces
+#[cfg(feature = "test-utils")]
+pub use tempo_pool::MaintenanceTestSync;
 pub use tempo_pool::TempoTransactionPool;
 
 pub mod amm;
