@@ -144,6 +144,7 @@ export default defineConfig({
     dark: '/icon-dark.png',
   },
   rootDir: '.',
+  checkDeadlinks: 'warn',
   banner: {
     content: (
       <div>
