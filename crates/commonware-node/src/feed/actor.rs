@@ -79,15 +79,15 @@ impl<TContext: Spawner> Actor<TContext> {
         }
     }
 
-    /// Create a [`CertifiedBlock`] from a proposal and certificate.
+    /// Create a [`CertifiedBlock`] from the full certification (Notarization or Finalization).
     async fn create_certified_block(
         &mut self,
         view: u64,
         epoch: u64,
         digest: Digest,
-        certificate: &impl Encode,
+        certification: &impl Encode,
     ) -> CertifiedBlock {
-        let certificate = hex::encode(certificate.encode());
+        let certification = hex::encode(certification.encode());
         let height = self
             .marshal
             .get_block(&digest)
@@ -99,7 +99,7 @@ impl<TContext: Spawner> Actor<TContext> {
             view,
             height,
             digest: digest.0,
-            certificate,
+            certification,
         }
     }
 
@@ -115,7 +115,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         notarization.proposal.round.epoch().get(),
                         notarization.proposal.payload,
-                        &notarization.certificate,
+                        &notarization,
                     )
                     .await;
 
@@ -148,7 +148,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         finalization.proposal.round.epoch().get(),
                         finalization.proposal.payload,
-                        &finalization.certificate,
+                        &finalization,
                     )
                     .await;
 

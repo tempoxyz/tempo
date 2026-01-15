@@ -14,7 +14,8 @@ pub struct CertifiedBlock {
     /// Block height, if known. May be `None` if the block hasn't been stored yet.
     pub height: Option<u64>,
     pub digest: B256,
-    pub certificate: String,
+    /// Hex-encoded full certification (Notarization or Finalization), not just the certificate.
+    pub certification: String,
 }
 
 /// Consensus event emitted.
