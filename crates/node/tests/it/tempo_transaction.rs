@@ -1175,7 +1175,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         .node
         .inner
         .pool
-        .wait_for_keychain_processed_tip(payload1.block().inner.number, POOL_PROCESS_TIMEOUT)
+        .wait_for_maintenance_processed_tip(payload1.block().inner.number, POOL_PROCESS_TIMEOUT)
         .await?;
 
     for tx_hash in &sent {
@@ -1294,7 +1294,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         .node
         .inner
         .pool
-        .wait_for_keychain_processed_tip(payload2.block().inner.number, POOL_PROCESS_TIMEOUT)
+        .wait_for_maintenance_processed_tip(payload2.block().inner.number, POOL_PROCESS_TIMEOUT)
         .await?;
 
     for tx_hash in &sent {
@@ -1468,7 +1468,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         .node
         .inner
         .pool
-        .wait_for_keychain_processed_tip(payload4.block().inner.number, POOL_PROCESS_TIMEOUT)
+        .wait_for_maintenance_processed_tip(payload4.block().inner.number, POOL_PROCESS_TIMEOUT)
         .await?;
 
     // Assert that all transactions are removed from the pool
@@ -5833,7 +5833,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         .node
         .inner
         .pool
-        .wait_for_keychain_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
+        .wait_for_maintenance_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
         .await?;
 
     // ========================================
