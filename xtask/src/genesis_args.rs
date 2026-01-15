@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256, address},
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
 };
-use alloy_primitives::Bytes;
+use alloy_primitives::{B256, Bytes};
 use commonware_codec::Encode as _;
 use commonware_consensus::types::Epoch;
 use commonware_cryptography::{
@@ -18,6 +18,7 @@ use commonware_utils::{TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
+use rand::SeedableRng as _;
 use rayon::prelude::*;
 use reth_evm::{
     Evm as _, EvmEnv, EvmFactory,
@@ -41,7 +42,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::IValidatorConfig,
+    precompiles::{ITIP20Factory, IValidatorConfig},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -72,10 +73,6 @@ pub(crate) struct GenesisArgs {
         default_value = "test test test test test test test test test test test junk"
     )]
     mnemonic: String,
-
-    /// Balance for each account
-    #[arg(long, default_value = "0xD3C21BCECCEDA1000000")]
-    balance: U256,
 
     /// Coinbase address
     #[arg(long, default_value = "0x0000000000000000000000000000000000000000")]
@@ -121,6 +118,9 @@ pub(crate) struct GenesisArgs {
     #[arg(long)]
     pathusd_admin: Option<Address>,
 
+    #[arg(long, default_value_t = u64::MAX)]
+    pathusd_amount: u64,
+
     /// Custom admin address for validator config.
     /// If not set, uses the first generated account.
     #[arg(long)]
@@ -134,6 +134,14 @@ pub(crate) struct GenesisArgs {
     /// Disable creating Alpha/Beta/ThetaUSD tokens.
     #[arg(long)]
     no_extra_tokens: bool,
+
+    /// Enable creating deployment gas token.
+    #[arg(long)]
+    deployment_gas_token: bool,
+
+    /// Custom admin address for deployment gas token.
+    #[arg(long)]
+    deployment_gas_token_admin: Option<Address>,
 
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
@@ -218,7 +226,7 @@ impl GenesisArgs {
         initialize_tip20_factory(&mut evm)?;
 
         println!("Creating pathUSD through factory");
-        create_path_usd_token(pathusd_admin, &addresses, &mut evm)?;
+        create_path_usd_token(pathusd_admin, &addresses, self.pathusd_amount, &mut evm)?;
 
         let (alpha_token_address, beta_token_address, theta_token_address) =
             if !self.no_extra_tokens {
@@ -231,7 +239,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000001"),
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000001")),
                     &mut evm,
                 )?;
 
@@ -243,7 +251,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000002"),
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000002")),
                     &mut evm,
                 )?;
 
@@ -255,7 +263,7 @@ impl GenesisArgs {
                     pathusd_admin,
                     &addresses,
                     U256::from(u64::MAX),
-                    address!("20C0000000000000000000000000000000000003"),
+                    SaltOrAddress::Address(address!("20C0000000000000000000000000000000000003")),
                     &mut evm,
                 )?;
 
@@ -264,6 +272,42 @@ impl GenesisArgs {
                 println!("Skipping extra token creation (--no-extra-tokens)");
                 (None, None, None)
             };
+
+        if self.deployment_gas_token && self.deployment_gas_token_admin.is_none() {
+            eyre::bail!(
+                "--deployment-gas-token-admin is required when --deployment-gas-token is set"
+            );
+        }
+
+        let deployment_gas_token = {
+            if self.deployment_gas_token {
+                let mut rng = rand::rngs::StdRng::seed_from_u64(
+                    self.seed.unwrap_or_else(rand::random::<u64>),
+                );
+
+                let mut salt_bytes = [0u8; 32];
+                rand::Rng::fill(&mut rng, &mut salt_bytes);
+
+                let address = create_and_mint_token(
+                    "DONOTUSE",
+                    "DONOTUSE",
+                    "USD",
+                    PATH_USD_ADDRESS,
+                    self.deployment_gas_token_admin.expect(
+                        "Deployment gas token admin is required if you want to deploy the token",
+                    ),
+                    &addresses,
+                    U256::from(u64::MAX),
+                    SaltOrAddress::Salt(B256::from(salt_bytes)),
+                    &mut evm,
+                )?;
+
+                println!("Deployment gas token address: {address}");
+                Some(address)
+            } else {
+                None
+            }
+        };
 
         println!(
             "generating consensus config for validators: {:?}",
@@ -297,9 +341,21 @@ impl GenesisArgs {
         )?;
 
         println!("Initializing fee manager");
-        let default_fee_token = alpha_token_address.unwrap_or(PATH_USD_ADDRESS);
+        let default_user_fee_token = if let Some(address) = deployment_gas_token {
+            address
+        } else {
+            alpha_token_address.unwrap_or(PATH_USD_ADDRESS)
+        };
+
+        let default_validator_fee_token = if let Some(address) = deployment_gas_token {
+            address
+        } else {
+            PATH_USD_ADDRESS
+        };
+
         initialize_fee_manager(
-            default_fee_token,
+            default_validator_fee_token,
+            default_user_fee_token,
             addresses.clone(),
             // TODO: also populate validators here, once the logic is back.
             vec![self.coinbase],
@@ -415,13 +471,16 @@ impl GenesisArgs {
             osaka_time: Some(0),
             terminal_total_difficulty: Some(U256::from(0)),
             terminal_total_difficulty_passed: true,
-            deposit_contract_address: Some(address!("0x00000000219ab540356cBB839Cbe05303d7705Fa")),
+            deposit_contract_address: Some(Address::ZERO),
             ..Default::default()
         };
 
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
+        chain_config
+            .extra_fields
+            .insert_value("t0Time".to_string(), 0u64)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -514,6 +573,7 @@ fn initialize_tip20_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Resul
 fn create_path_usd_token(
     admin: Address,
     recipients: &[Address],
+    amount_per_recipient: u64,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
@@ -539,7 +599,7 @@ fn create_path_usd_token(
                     admin,
                     ITIP20::mintCall {
                         to: *recipient,
-                        amount: U256::from(u64::MAX),
+                        amount: U256::from(amount_per_recipient),
                     },
                 )
                 .expect("Could not mint pathUSD");
@@ -547,6 +607,11 @@ fn create_path_usd_token(
 
         Ok(())
     })
+}
+
+enum SaltOrAddress {
+    Salt(B256),
+    Address(Address),
 }
 
 /// Creates a TIP20 token through the factory (factory must already be initialized)
@@ -559,7 +624,7 @@ fn create_and_mint_token(
     admin: Address,
     recipients: &[Address],
     mint_amount: U256,
-    address: Address,
+    salt_or_address: SaltOrAddress,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
 ) -> eyre::Result<Address> {
     let ctx = evm.ctx_mut();
@@ -571,9 +636,25 @@ fn create_and_mint_token(
                 .expect("Could not check factory initialization"),
             "TIP20Factory must be initialized before creating tokens"
         );
-        let token_address = factory
-            .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
-            .expect("Could not create token");
+
+        let token_address = match salt_or_address {
+            SaltOrAddress::Salt(salt) => factory
+                .create_token(
+                    admin,
+                    ITIP20Factory::createTokenCall {
+                        name: name.into(),
+                        symbol: symbol.into(),
+                        currency: currency.into(),
+                        quoteToken: quote_token,
+                        salt,
+                        admin,
+                    },
+                )
+                .expect("Could not create token"),
+            SaltOrAddress::Address(address) => factory
+                .create_token_reserved_address(address, name, symbol, currency, quote_token, admin)
+                .expect("Could not create token"),
+        };
 
         let mut token =
             TIP20Token::from_address(token_address).expect("Could not create token instance");
@@ -614,7 +695,8 @@ fn create_and_mint_token(
 }
 
 fn initialize_fee_manager(
-    default_fee_address: Address,
+    validator_fee_token_address: Address,
+    user_fee_token_address: Address,
     initial_accounts: Vec<Address>,
     validators: Vec<Address>,
     evm: &mut TempoEvm<CacheDB<EmptyDB>>,
@@ -627,11 +709,12 @@ fn initialize_fee_manager(
             .initialize()
             .expect("Could not init fee manager");
         for address in initial_accounts.iter().progress() {
+            println!("Setting user token for {user_fee_token_address}");
             fee_manager
                 .set_user_token(
                     *address,
                     IFeeManager::setUserTokenCall {
-                        token: default_fee_address,
+                        token: user_fee_token_address,
                     },
                 )
                 .expect("Could not set fee token");
@@ -639,11 +722,12 @@ fn initialize_fee_manager(
 
         // Set validator fee tokens to pathUSD
         for validator in validators {
+            println!("Setting user token for {validator} {validator_fee_token_address}");
             fee_manager
                 .set_validator_token(
                     validator,
                     IFeeManager::setValidatorTokenCall {
-                        token: PATH_USD_ADDRESS,
+                        token: validator_fee_token_address,
                     },
                     // use random address to avoid `CannotChangeWithinBlock` error
                     Address::random(),
@@ -767,7 +851,6 @@ fn generate_consensus_config(
     no_dkg_in_genesis: bool,
 ) -> Option<ConsensusConfig> {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
-    use rand::SeedableRng as _;
 
     match (validators.is_empty(), no_dkg_in_genesis) {
         (_, true) => {
