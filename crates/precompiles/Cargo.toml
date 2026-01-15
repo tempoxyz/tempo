@@ -12,7 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-contracts.workspace = true
+tempo-contracts = { workspace = true, features = ["precompile"] }
 tempo-chainspec.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
@@ -39,9 +39,11 @@ serde_json.workspace = true
 tempo-evm.workspace = true
 
 [features]
-default = ["rpc"]
+default = ["rpc", "precompile"]
 test-utils = ["alloy/getrandom"]
 rpc = ["tempo-contracts/rpc"]
+# Enable precompile runtime support (generates interface traits in #[abi] modules)
+precompile = []
 
 [[test]]
 name = "storage"

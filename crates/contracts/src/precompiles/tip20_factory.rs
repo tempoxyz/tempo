@@ -1,6 +1,7 @@
 use alloy::primitives::{Address, B256};
 use tempo_precompiles_macros::abi;
 
+#[cfg(feature = "precompile")]
 use super::Result;
 
 #[abi]

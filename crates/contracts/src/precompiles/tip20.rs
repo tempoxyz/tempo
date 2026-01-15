@@ -2,6 +2,7 @@ use alloy::primitives::{Address, B256, U256, keccak256};
 use std::sync::LazyLock;
 use tempo_precompiles_macros::abi;
 
+#[cfg(feature = "precompile")]
 use super::Result;
 
 #[abi]

@@ -25,6 +25,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 [features]
 default = ["rpc"]
 rpc = ["dep:alloy-contract"]
-# Enable precompile runtime support (defines Result type alias for #[abi] traits).
-# When disabled, #[abi] modules still generate ABI types but traits use a placeholder Result.
+# Enable precompile runtime support (generates interface traits in `#[abi]` modules).
 precompile = []

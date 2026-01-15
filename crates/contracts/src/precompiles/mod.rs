@@ -1,6 +1,7 @@
 pub mod account_keychain;
 pub mod common_errors;
 pub mod nonce;
+#[cfg(feature = "precompile")]
 mod result;
 pub mod stablecoin_dex;
 pub mod tip20;
@@ -9,6 +10,7 @@ pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
 
+#[cfg(feature = "precompile")]
 pub use result::Result;
 
 pub use account_keychain::*;

@@ -61,8 +61,8 @@ fn generate_definitions(constants: &[ConstantDef]) -> TokenStream {
 
 /// Generate the IConstants trait with default implementations.
 ///
-/// The trait is always generated (even if empty) so that `#[contract(abi)]`
-/// can unconditionally implement it on the contract struct.
+/// The trait is gated by `#[cfg(feature = "precompile")]` so it's only generated
+/// when the precompile feature is enabled.
 pub(super) fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
     let methods = constants.iter().map(|c| {
         let (name, ty, is_lazy) = (&c.name, &c.ty, c.is_lazy);
@@ -74,6 +74,7 @@ pub(super) fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
         quote! { fn #name(&self) -> #ty { #body } }
     });
     quote! {
+        #[cfg(feature = "precompile")]
         pub trait IConstants {
             #(#methods)*
         }

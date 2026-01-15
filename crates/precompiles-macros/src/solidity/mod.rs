@@ -81,8 +81,6 @@ mod parser;
 mod registry;
 mod structs;
 
-
-
 #[cfg(test)]
 mod test_utils;
 
@@ -91,7 +89,7 @@ use quote::{format_ident, quote};
 use syn::ItemMod;
 
 use crate::{SolidityConfig, utils::to_pascal_case};
-use parser::{ConstantDef, InterfaceDef, SolidityModule, SolStructDef, UnitEnumDef};
+use parser::{ConstantDef, InterfaceDef, SolStructDef, SolidityModule, UnitEnumDef};
 use registry::TypeRegistry;
 
 /// Generate the prelude and traits submodules containing re-exports.
@@ -125,10 +123,14 @@ fn generate_submodules(
     let constant_names: Vec<&Ident> = constants.iter().map(|c| &c.name).collect();
 
     // Build re-export statements
+    // Trait re-exports are gated by cfg since traits are only generated with precompile feature
     let trait_reexports = if trait_names.is_empty() {
         quote! {}
     } else {
-        quote! { pub use super::{#(#trait_names),*}; }
+        quote! {
+            #[cfg(feature = "precompile")]
+            pub use super::{#(#trait_names),*};
+        }
     };
 
     let trait_calls_reexports = if trait_calls_names.is_empty() {
@@ -167,7 +169,15 @@ fn generate_submodules(
         quote! {}
     };
 
-    quote! {
+    // IConstants re-export is gated by cfg
+    let iconstants_reexport = quote! {
+        #[cfg(feature = "precompile")]
+        pub use super::IConstants;
+    };
+
+    // Traits module is gated by cfg
+    let traits_mod = quote! {
+        #[cfg(feature = "precompile")]
         /// Traits module for selective trait imports.
         ///
         /// Import only the interface traits:
@@ -181,6 +191,10 @@ fn generate_submodules(
             // Interface traits
             #trait_reexports
         }
+    };
+
+    quote! {
+        #traits_mod
 
         /// Prelude module for convenient glob imports.
         ///
@@ -192,8 +206,8 @@ fn generate_submodules(
             // Unified Calls enum (always present)
             pub use super::Calls;
 
-            // IConstants trait (always present)
-            pub use super::IConstants;
+            // IConstants trait (when traits are enabled)
+            #iconstants_reexport
 
             // Interface traits
             #trait_reexports
@@ -261,13 +275,14 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     };
 
     // Generate Interface traits and their Calls enums
+    // Traits are wrapped in #[cfg(feature = "precompile")] by generate_interface
     let interface_impls = module
         .interfaces
         .iter()
         .map(|def| interface::generate_interface(def, &registry))
         .collect::<syn::Result<Vec<_>>>()?;
 
-    // Generate IConstants trait (always, even if empty)
+    // Generate IConstants trait
     let constants_trait = constants::generate_trait(&module.constants);
 
     // Generate constants definitions, call structs, and calls enum (only if constants exist)
@@ -275,8 +290,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     let has_constants = !module.constants.is_empty();
 
     // Generate unified Calls enum that composes all interface Calls and constants
-    let unified_calls =
-        interface::generate_unified_calls(&module.interfaces, has_constants);
+    let unified_calls = interface::generate_unified_calls(&module.interfaces, has_constants);
 
     // Generate the Dispatch trait for routing calls to methods (only when dispatch flag is set)
     // This requires revm types and dispatch helpers from tempo_precompiles
