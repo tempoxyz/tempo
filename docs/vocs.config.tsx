@@ -57,6 +57,7 @@ function getTipsData() {
 }
 
 export default defineConfig({
+  baseUrl: 'https://docs.tempo.xyz',
   head: () => (
     <>
       <meta
@@ -64,17 +65,10 @@ export default defineConfig({
         name="viewport"
       />
       {process.env['VERCEL_ENV'] === 'production' ? (
-        <meta name="robot" content="index, follow" />
+        <meta name="robots" content="index, follow" />
       ) : (
-        <meta name="robot" content="noindex, nofollow" />
+        <meta name="robots" content="noindex, nofollow" />
       )}
-      <meta content="/og-docs.png" property="og:image" />
-      <meta content="image/png" property="og:image:type" />
-      <meta content="1200" property="og:image:width" />
-      <meta content="630" property="og:image:height" />
-      <meta name="twitter:card" content="summary_large_image" />
-      <meta name="twitter:title" content="Documentation ⋅ Tempo" />
-      <meta name="twitter:image" content="/og-docs.png" />
       <link rel="icon" href="/favicon.ico" sizes="32x32" />
       <link
         rel="icon"
@@ -129,11 +123,20 @@ export default defineConfig({
         media="(prefers-color-scheme: dark)"
       />
       {process.env['VERCEL_ENV'] === 'production' && (
-        <script src="/ph.js" type="text/javascript"></script>
+        <script src="/ph.js" type="text/javascript" />
       )}
     </>
   ),
-  title: 'Documentation ⋅ Tempo',
+  ogImageUrl: {
+    '/': 'https://docs.tempo.xyz/og-docs.png',
+    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+  },
+  title: 'Tempo',
+  titleTemplate: '%s | Tempo Docs',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
