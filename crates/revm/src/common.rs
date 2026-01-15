@@ -637,33 +637,16 @@ mod tests {
     }
 
     #[test]
-    fn test_is_fee_token_paused_returns_true_for_paused_token() -> eyre::Result<()> {
+    fn test_is_fee_token_paused() -> eyre::Result<()> {
         let token_address = PATH_USD_ADDRESS;
-
         let mut db = revm::database::CacheDB::new(EmptyDB::default());
+
+        // Default (unpaused) returns false
+        assert!(!db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
 
         // Set paused=true
         db.insert_account_storage(token_address, tip20_slots::PAUSED, U256::from(1))?;
-
-        let is_paused = db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?;
-        assert!(is_paused, "Paused tokens should be detected as paused");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_is_fee_token_paused_returns_false_for_unpaused_token() -> eyre::Result<()> {
-        let token_address = PATH_USD_ADDRESS;
-
-        let mut db = revm::database::CacheDB::new(EmptyDB::default());
-
-        // paused=false is the default (zero), no need to set
-
-        let is_paused = db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?;
-        assert!(
-            !is_paused,
-            "Unpaused tokens should not be detected as paused"
-        );
+        assert!(db.is_fee_token_paused(TempoHardfork::Genesis, token_address)?);
 
         Ok(())
     }
