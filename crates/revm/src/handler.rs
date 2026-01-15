@@ -2370,7 +2370,7 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(500))]
 
-        /// Property: validate_time_window returns Ok iff (after <= ts < before)
+        /// Property: validate_time_window returns Ok if (after <= ts < before)
         #[test]
         fn proptest_validate_time_window_correctness(
             valid_after in arb_opt_timestamp(),
