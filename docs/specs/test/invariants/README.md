@@ -218,3 +218,55 @@ The TIP20Factory is the factory contract for creating TIP-20 compliant tokens wi
 
 - **TEMPO-FAC11**: Address format - all created tokens have addresses with the correct TIP-20 prefix (`0x20C0...`).
 - **TEMPO-FAC12**: Salt-to-token consistency - ghost mappings `saltToToken` and `tokenToSalt` match factory's `getTokenAddress` for all tracked sender/salt combinations.
+
+## AccountKeychain
+
+The AccountKeychain precompile manages authorized Access Keys for accounts, enabling Root Keys to provision scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
+
+### Key Authorization Invariants
+
+- **TEMPO-KEY1**: Key authorization - `authorizeKey` correctly stores key info (keyId, expiry, signatureType, enforceLimits).
+- **TEMPO-KEY2**: Spending limit initialization - initial spending limits are correctly stored when `enforceLimits` is true.
+
+### Key Revocation Invariants
+
+- **TEMPO-KEY3**: Key revocation - `revokeKey` marks key as revoked and clears expiry.
+- **TEMPO-KEY4**: Revocation finality - revoked keys cannot be reauthorized (reverts with `KeyAlreadyRevoked`).
+
+### Spending Limit Invariants
+
+- **TEMPO-KEY5**: Limit update - `updateSpendingLimit` correctly updates the spending limit for a token.
+- **TEMPO-KEY6**: Limit enforcement activation - calling `updateSpendingLimit` on a key with `enforceLimits=false` enables limit enforcement.
+
+### Input Validation Invariants
+
+- **TEMPO-KEY7**: Zero key rejection - authorizing a key with `keyId=address(0)` reverts with `ZeroPublicKey`.
+- **TEMPO-KEY8**: Duplicate key rejection - authorizing a key that already exists reverts with `KeyAlreadyExists`.
+- **TEMPO-KEY9**: Non-existent key revocation - revoking a key that doesn't exist reverts with `KeyNotFound`.
+
+### Isolation Invariants
+
+- **TEMPO-KEY10**: Account isolation - keys are scoped per account; the same keyId can be authorized for different accounts with different settings.
+- **TEMPO-KEY11**: Transaction key context - `getTransactionKey` returns `address(0)` when called outside of a transaction signed by an access key.
+- **TEMPO-KEY12**: Non-existent key defaults - `getKey` for a non-existent key returns default values (keyId=0, expiry=0, enforceLimits=false).
+
+### Global Invariants
+
+- **TEMPO-KEY13**: Key data consistency - all key data (expiry, enforceLimits, signatureType) matches ghost state for tracked keys.
+- **TEMPO-KEY14**: Spending limit consistency - all spending limits match ghost state for active keys with limits enforced.
+- **TEMPO-KEY15**: Revocation permanence - revoked keys remain revoked (isRevoked stays true).
+- **TEMPO-KEY16**: Signature type consistency - key signature type matches ghost state for all active keys.
+
+### Expiry Boundary Invariants
+
+- **TEMPO-KEY17**: Expiry at current timestamp is expired - Rust uses `timestamp >= expiry` so `expiry == block.timestamp` counts as expired.
+- **TEMPO-KEY18**: Operations on expired keys fail with `KeyExpired` - `updateSpendingLimit` on a key where `timestamp >= expiry` reverts.
+
+### Signature Type Validation Invariants
+
+- **TEMPO-KEY19**: Invalid signature type rejection - enum values >= 3 are invalid and revert with `InvalidSignatureType`.
+
+### Transaction Context Invariants
+
+- **TEMPO-KEY20**: Main-key-only administration - `authorizeKey`, `revokeKey`, and `updateSpendingLimit` require `transaction_key == 0` (Root Key context). When called with a non-zero transaction key (i.e., from an Access Key), these operations revert with `UnauthorizedCaller`. This ensures only the Root Key can manage Access Keys.
+- **TEMPO-KEY21**: Spending limit tx_origin enforcement - spending limits are only consumed when `msg_sender == tx_origin`. Contract-initiated transfers (where msg_sender is a contract, not the signing EOA) do not consume the EOA's spending limit. This prevents contracts from unexpectedly draining a user's spending limits.
