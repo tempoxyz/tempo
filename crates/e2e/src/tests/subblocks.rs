@@ -26,7 +26,11 @@ use tempo_node::primitives::{
     transaction::{Call, calc_gas_balance_spending},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::TIP20Token,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS,
+    nonce::NonceManager,
+    storage::Handler as _,
+    tip20::TIP20Token,
+    tip403_registry::{ITIP403Registry, TIP403Registry},
 };
 
 use tempo_node::consensus::TEMPO_SHARED_GAS_DIVISOR;
@@ -45,8 +49,7 @@ fn subblocks_are_included() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
         let mut fee_recipients = Vec::new();
 
@@ -152,8 +155,7 @@ fn subblocks_are_included_with_failing_txs() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
         let mut fee_recipients = Vec::new();
 
@@ -329,8 +331,7 @@ fn oversized_subblock_txs_are_removed() {
             .how_many_signers(how_many_signers)
             .epoch_length(10);
 
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
         for node in &mut nodes {
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
@@ -436,4 +437,134 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
         .unwrap();
 
     tx_hash
+}
+
+/// Tests that blacklisted fee payers are rejected consistently across both standard
+/// and subblock transaction paths.
+///
+/// This test validates TIP-403 compliance:
+/// 1. Standard RPC path: Transaction from blacklisted address should be rejected by the validator
+/// 2. Subblock RPC path: Transaction from blacklisted address should also be rejected
+///
+/// The test sets up a blacklist policy in genesis that blacklists the first test wallet,
+/// then attempts to submit transactions from that wallet through both paths.
+#[test_traced]
+fn blacklisted_fee_payer_rejected_in_subblock_path() {
+    use crate::execution_runtime::address;
+
+    let _ = tempo_eyre::install();
+
+    // Get the address of the first test wallet (index 0) - this will be blacklisted
+    let blacklisted_address = address(0);
+
+    Runner::from(deterministic::Config::default().with_seed(42)).start(|context| async move {
+        let setup = Setup::new()
+            .how_many_signers(1)
+            .epoch_length(10)
+            .with_genesis_state_setup(move || {
+                // Create a blacklist policy and add the blacklisted address
+                let admin_address = Address::ZERO; // Use zero address as admin for simplicity
+                let mut registry = TIP403Registry::new();
+
+                // Create a blacklist policy (policy_id will be 1 since 0 is reserved)
+                let policy_id = registry.create_policy(
+                    admin_address,
+                    ITIP403Registry::createPolicyCall {
+                        admin: admin_address,
+                        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                    },
+                )?;
+
+                // Add the blacklisted address to the policy
+                registry.modify_policy_blacklist(
+                    admin_address,
+                    ITIP403Registry::modifyPolicyBlacklistCall {
+                        policyId: policy_id,
+                        account: blacklisted_address,
+                        restricted: true,
+                    },
+                )?;
+
+                // Directly update the default fee token's transfer_policy_id storage slot
+                // This bypasses the role check since we're in genesis setup
+                let mut fee_token = TIP20Token::from_address(DEFAULT_FEE_TOKEN)?;
+                fee_token.transfer_policy_id.write(policy_id)?;
+
+                Ok(())
+            });
+
+        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
+
+        for node in &mut nodes {
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
+        }
+
+        join_all(nodes.iter_mut().map(|node| node.start())).await;
+
+        // Wait for the first block to be produced
+        let mut stream = nodes[0]
+            .execution()
+            .add_ons_handle
+            .engine_events
+            .new_listener();
+
+        // Wait for first canonical block
+        while let Some(update) = stream.next().await {
+            if let ConsensusEngineEvent::CanonicalBlockAdded(block, _) = update
+                && block.block_number() >= 1
+            {
+                break;
+            }
+        }
+
+        // Use the blacklisted wallet
+        let blacklisted_wallet = PrivateKeySigner::from_bytes(&b256!(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        ))
+        .unwrap();
+        assert_eq!(blacklisted_wallet.address(), blacklisted_address);
+
+        let node = &nodes[0];
+
+        // Attempt to submit a subblock transaction from the blacklisted address.
+        // This should be rejected, but due to the bug it may be accepted.
+        let mut nonce_bytes = rand::random::<[u8; 32]>();
+        nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
+        nonce_bytes[1..16].copy_from_slice(&node.public_key().as_ref()[..15]);
+
+        let provider = node.execution_provider();
+        let gas_price = TEMPO_BASE_FEE as u128;
+
+        let mut tx = TempoTransaction {
+            chain_id: provider.chain_spec().chain_id(),
+            calls: vec![Call {
+                to: Address::ZERO.into(),
+                input: Default::default(),
+                value: Default::default(),
+            }],
+            gas_limit: 100_000,
+            nonce_key: U256::from_be_bytes(nonce_bytes),
+            max_fee_per_gas: gas_price,
+            max_priority_fee_per_gas: gas_price,
+            ..Default::default()
+        };
+
+        let signature = blacklisted_wallet.sign_transaction_sync(&mut tx).unwrap();
+        let tx = TempoTxEnvelope::AA(tx.into_signed(signature.into()));
+
+        // Submit the subblock transaction - this should fail for blacklisted users
+        let result = node
+            .execution()
+            .eth_api()
+            .send_raw_transaction(tx.encoded_2718().into())
+            .await;
+
+        // The transaction should be rejected because the fee payer is blacklisted.
+        // If this assertion fails, it means blacklisted users can bypass TIP-403 via subblocks.
+        assert!(
+            result.is_err(),
+            "Subblock transaction from blacklisted fee payer should be rejected, \
+             but it was accepted. This indicates TIP-403 bypass vulnerability."
+        );
+    });
 }

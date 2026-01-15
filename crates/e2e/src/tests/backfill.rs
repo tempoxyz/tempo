@@ -23,7 +23,7 @@ async fn run_validator_late_join_test(
         .epoch_length(100)
         .connect_execution_layer_nodes(should_pipeline_sync);
 
-    let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+    let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
 
     // Start all nodes except the last one
     let mut last = nodes.pop().unwrap();

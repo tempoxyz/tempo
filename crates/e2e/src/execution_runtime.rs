@@ -66,11 +66,35 @@ const VALIDATOR_START_INDEX: u32 = 1;
 /// Same mnemonic as used in the imported test-genesis and in the `tempo-node` integration tests.
 pub const TEST_MNEMONIC: &str = "test test test test test test test test test test test junk";
 
-#[derive(Default, Debug)]
+/// Type alias for genesis state setup callbacks.
+pub type GenesisStateSetup = Box<dyn FnOnce() -> eyre::Result<()> + Send>;
+
+/// Builder for creating an [`ExecutionRuntime`] with custom configuration.
 pub struct Builder {
     epoch_length: Option<u64>,
     initial_dkg_outcome: Option<OnchainDkgOutcome>,
     validators: Option<ordered::Map<PublicKey, (SocketAddr, Address)>>,
+    genesis_state_setup: Option<GenesisStateSetup>,
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for Builder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Builder")
+            .field("epoch_length", &self.epoch_length)
+            .field("initial_dkg_outcome", &self.initial_dkg_outcome)
+            .field("validators", &self.validators)
+            .field(
+                "genesis_state_setup",
+                &self.genesis_state_setup.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
 }
 
 impl Builder {
@@ -79,6 +103,7 @@ impl Builder {
             epoch_length: None,
             initial_dkg_outcome: None,
             validators: None,
+            genesis_state_setup: None,
         }
     }
 
@@ -106,11 +131,26 @@ impl Builder {
         }
     }
 
+    /// Add a callback to set up custom genesis state.
+    ///
+    /// The callback is invoked inside a `StorageCtx::enter_evm` context, allowing
+    /// direct manipulation of precompile state (e.g., TIP403 policies, TIP20 tokens).
+    pub fn with_genesis_state_setup<F>(self, setup: F) -> Self
+    where
+        F: FnOnce() -> eyre::Result<()> + Send + 'static,
+    {
+        Self {
+            genesis_state_setup: Some(Box::new(setup)),
+            ..self
+        }
+    }
+
     pub fn launch(self) -> eyre::Result<ExecutionRuntime> {
         let Self {
             epoch_length,
             initial_dkg_outcome,
             validators,
+            genesis_state_setup,
         } = self;
 
         let epoch_length = epoch_length.ok_or_eyre("must specify epoch length")?;
@@ -154,6 +194,11 @@ impl Builder {
                             },
                         )
                         .unwrap();
+                }
+
+                // Run custom genesis state setup if provided
+                if let Some(setup) = genesis_state_setup {
+                    setup().unwrap();
                 }
             })
         }
