@@ -2317,7 +2317,12 @@ mod tests {
         prop_oneof![Just(None), any::<u64>().prop_map(Some)]
     }
 
-    /// Helper to create a secp256k1 signature for testing.
+    /// Helper to create a secp256k1 signature for testing gas calculations.
+    ///
+    /// Note: We use a test signature rather than real valid/invalid signatures because
+    /// these gas calculation functions only depend on the signature *type* (Secp256k1,
+    /// P256, WebAuthn), not on cryptographic validity. Signature verification happens
+    /// separately during `recover_signer()` before transactions enter the pool.
     fn secp256k1_sig() -> TempoSignature {
         TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
             alloy_primitives::Signature::test_signature(),
