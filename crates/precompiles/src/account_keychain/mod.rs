@@ -1,5 +1,8 @@
 pub mod dispatch;
 
+use __packing_authorized_key::{
+    ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
+};
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
@@ -55,10 +58,6 @@ impl AuthorizedKey {
     ///
     /// This is useful for tests that need to set up storage state directly.
     pub fn encode_to_slot(&self) -> U256 {
-        use __packing_authorized_key::{
-            ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
-        };
-
         let encoded = insert_into_word(
             U256::ZERO,
             &self.signature_type,
