@@ -20,6 +20,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Address, Blocker, Receiver, Sender};
+use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage, buffer::PoolRef,
     spawn_cell,
@@ -284,6 +285,8 @@ where
                 value_write_buffer: WRITE_BUFFER,
                 max_repair: MAX_REPAIR,
                 block_codec_config: (),
+
+                strategy: Sequential,
             },
         )
         .await;

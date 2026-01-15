@@ -47,5 +47,7 @@ reth-provider = { workspace = true, features = ["test-utils"] }
 reth-ethereum-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true
 tokio.workspace = true
 test-case.workspace = true
