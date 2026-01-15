@@ -10,7 +10,7 @@ use revm::{
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, ITIP403Registry, STABLECOIN_DEX_ADDRESS,
+    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
@@ -18,7 +18,7 @@ use tempo_precompiles::{
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
     tip20::{IRewards, ITIP20, TIP20Token, is_tip20_prefix},
-    tip403_registry::TIP403Registry,
+    tip403_registry::{TIP403Registry, abi::IRegistry as _},
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -228,10 +228,7 @@ pub trait TempoStateAccess<M = ()> {
             let transfer_policy_id = TIP20Token::from_address(fee_token)?
                 .transfer_policy_id
                 .read()?;
-            TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: transfer_policy_id,
-                user: fee_payer,
-            })
+            TIP403Registry::new().is_authorized(transfer_policy_id, fee_payer)
         })
     }
 

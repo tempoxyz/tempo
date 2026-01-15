@@ -14,7 +14,8 @@ use alloy::{
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
-use tempo_contracts::precompiles::{TIP20_FACTORY_ADDRESS, UnknownFunctionSelector};
+use crate::TIP20_FACTORY_ADDRESS;
+use tempo_contracts::precompiles::UnknownFunctionSelector;
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -299,16 +300,15 @@ impl TIP20Setup {
                 let admin = self.admin.expect("initializing a token requires an admin");
                 let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
                 let salt = self.salt.unwrap_or_else(B256::random);
-                let token_address = factory.create_token(
+                let token_address = tip20_factory::abi::IFactory::create_token(
+                    &mut factory,
                     admin,
-                    tip20_factory::ITIP20Factory::createTokenCall {
-                        name: name.to_string(),
-                        symbol: symbol.to_string(),
-                        currency,
-                        quoteToken: quote,
-                        admin,
-                        salt,
-                    },
+                    name.to_string(),
+                    symbol.to_string(),
+                    currency,
+                    quote,
+                    admin,
+                    salt,
                 )?;
                 TIP20Token::from_address(token_address)?
             }
@@ -381,7 +381,7 @@ fn is_initialized(address: Address) -> bool {
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::{primitives::Log, sol_types::SolEvent};
-    use tempo_contracts::precompiles::ITIP20Factory;
+    use tip20_factory::abi::TokenCreated;
 
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
     for log_data in events {
@@ -390,7 +390,7 @@ fn get_tip20_admin(token: Address) -> Option<Address> {
             log_data.topics().to_vec(),
             log_data.data.clone(),
         );
-        if let Ok(event) = ITIP20Factory::TokenCreated::decode_log(&log)
+        if let Ok(event) = TokenCreated::decode_log(&log)
             && event.token == token
         {
             return Some(event.admin);

@@ -4,14 +4,16 @@ use std::{
 };
 
 use crate::tip20::abi::Error as TIP20Error;
+use crate::tip20_factory::TIP20FactoryError;
+use crate::tip403_registry::TIP403RegistryError;
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
 use tempo_contracts::precompiles::{
-    AccountKeychainError, FeeManagerError, NonceError, StablecoinDEXError, TIP20FactoryError,
-    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    AccountKeychainError, FeeManagerError, NonceError, StablecoinDEXError, TIPFeeAMMError,
+    UnknownFunctionSelector, ValidatorConfigError,
 };
 
 /// Top-level error type for all Tempo precompile operations

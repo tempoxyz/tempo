@@ -8,8 +8,8 @@ use crate::{
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20_factory::TIP20Factory,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip20_factory::{TIP20Factory, abi::IFactory as _},
+    tip403_registry::{TIP403Registry, abi::IRegistry as _},
 };
 use alloy::primitives::{Address, B256, U256, hex, uint};
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
@@ -53,10 +53,7 @@ impl TIP20Token {
         let total_supply = self.total_supply()?;
 
         // Check if the `to` address is authorized to receive tokens
-        if !TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: self.transfer_policy_id()?,
-            user: to,
-        })? {
+        if !TIP403Registry::new().is_authorized(self.transfer_policy_id()?, to)? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -254,10 +251,7 @@ impl abi::IToken for TIP20Token {
         }
 
         // Check if the address is blocked from transferring
-        if TIP403Registry::new().is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: self.transfer_policy_id()?,
-            user: from,
-        })? {
+        if TIP403Registry::new().is_authorized(self.transfer_policy_id()?, from)? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
@@ -344,9 +338,7 @@ impl abi::IToken for TIP20Token {
         self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
 
         // Validate that the policy exists
-        if !TIP403Registry::new().policy_exists(ITIP403Registry::policyExistsCall {
-            policyId: new_policy_id,
-        })? {
+        if !TIP403Registry::new().policy_exists(new_policy_id)? {
             return Err(TIP20Error::invalid_transfer_policy_id().into());
         }
 
@@ -532,16 +524,10 @@ impl TIP20Token {
         let registry = TIP403Registry::new();
 
         // Check if 'from' address is authorized
-        let from_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: from,
-        })?;
+        let from_authorized = registry.is_authorized(transfer_policy_id, from)?;
 
         // Check if 'to' address is authorized
-        let to_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: transfer_policy_id,
-            user: to,
-        })?;
+        let to_authorized = registry.is_authorized(transfer_policy_id, to)?;
 
         Ok(from_authorized && to_authorized)
     }
@@ -694,7 +680,7 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256};
-    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, ITIP20Factory, STABLECOIN_DEX_ADDRESS};
+    use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS};
 
     use super::*;
     use crate::{
@@ -704,7 +690,7 @@ pub(crate) mod tests {
         test_util::{TIP20Setup, setup_storage},
         tip20::{RolesAuthError, abi},
         tip20_factory::TIP20Factory,
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{PolicyType, TIP403Registry, abi::IRegistry as _},
     };
     use abi::{IRewards as _, IRolesAuth as _, IToken as _};
     use rand::Rng;
@@ -1347,14 +1333,12 @@ pub(crate) mod tests {
 
             let created_tip20 = TIP20Factory::new().create_token(
                 sender,
-                ITIP20Factory::createTokenCall {
-                    name: "Test Token".to_string(),
-                    symbol: "TEST".to_string(),
-                    currency: "USD".to_string(),
-                    quoteToken: crate::PATH_USD_ADDRESS,
-                    admin: sender,
-                    salt: alloy::primitives::B256::random(),
-                },
+                "Test Token".to_string(),
+                "TEST".to_string(),
+                "USD".to_string(),
+                crate::PATH_USD_ADDRESS,
+                sender,
+                alloy::primitives::B256::random(),
             )?;
             let non_tip20 = Address::random();
 
@@ -1551,13 +1535,11 @@ pub(crate) mod tests {
             for i in 0..10 {
                 let policy_id = registry.create_policy(
                     admin,
-                    ITIP403Registry::createPolicyCall {
-                        admin,
-                        policyType: if i % 2 == 0 {
-                            ITIP403Registry::PolicyType::WHITELIST
-                        } else {
-                            ITIP403Registry::PolicyType::BLACKLIST
-                        },
+                    admin,
+                    if i % 2 == 0 {
+                        PolicyType::Whitelist
+                    } else {
+                        PolicyType::Blacklist
                     },
                 )?;
                 valid_policy_ids.push(policy_id);

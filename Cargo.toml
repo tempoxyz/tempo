@@ -369,10 +369,10 @@ vergen-git2 = "1"
 # reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
 
 [patch.crates-io]
-# Local alloy-core for development
-alloy-sol-macro = { path = "../../../ithaca/alloy-core/crates/sol-macro" }
-alloy-sol-macro-expander = { path = "../../../ithaca/alloy-core/crates/sol-macro-expander" }
-alloy-sol-macro-input = { path = "../../../ithaca/alloy-core/crates/sol-macro-input" }
+# alloy-core fork with sol-macro codegen changes
+alloy-sol-macro = { git = "https://github.com/0xrusowsky/alloy-core", branch = "rus/sol-macro-codegen" }
+alloy-sol-macro-expander = { git = "https://github.com/0xrusowsky/alloy-core", branch = "rus/sol-macro-codegen" }
+alloy-sol-macro-input = { git = "https://github.com/0xrusowsky/alloy-core", branch = "rus/sol-macro-codegen" }
 
 # Commonware main right after https://github.com/commonwarexyz/monorepo/pull/2640 was merged
 commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "82318232ea611fd5ff754b00fa617c6c4a63454b" }

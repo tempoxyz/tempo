@@ -18,8 +18,8 @@ use crate::{
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
     tip20::{TIP20Token, abi::IToken as _, is_tip20_prefix, validate_usd_currency},
-    tip20_factory::TIP20Factory,
-    tip403_registry::{ITIP403Registry, TIP403Registry},
+    tip20_factory::{TIP20Factory, abi::IFactory as _},
+    tip403_registry::{TIP403Registry, abi::IRegistry as _},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
@@ -1056,10 +1056,7 @@ impl StablecoinDEX {
         let policy_id = token_contract.transfer_policy_id()?;
 
         let registry = TIP403Registry::new();
-        let is_authorized = registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-            policyId: policy_id,
-            user: order.maker(),
-        })?;
+        let is_authorized = registry.is_authorized(policy_id, order.maker())?;
 
         if is_authorized {
             return Err(StablecoinDEXError::order_not_stale().into());
@@ -1372,7 +1369,7 @@ mod tests {
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{InvalidCurrency, PolicyForbids, TIP20Error},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{TIP403Registry, abi::{IRegistry as _, PolicyType}},
     };
 
     use super::*;
@@ -3675,7 +3672,7 @@ mod tests {
 
     #[test]
     fn test_blacklisted_user_cannot_use_internal_balance() -> eyre::Result<()> {
-        use crate::tip403_registry::{ITIP403Registry, TIP403Registry};
+        use crate::tip403_registry::{TIP403Registry, abi::{IRegistry as _, PolicyType}};
 
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -3687,13 +3684,7 @@ mod tests {
 
             // Create a blacklist policy
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             // Setup quote token (pathUSD) with the blacklist policy
             let mut quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
@@ -3716,18 +3707,8 @@ mod tests {
             assert_eq!(exchange.balance_of(alice, base_address)?, internal_balance);
 
             // Blacklist alice
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
-            assert!(!registry.is_authorized(ITIP403Registry::isAuthorizedCall {
-                policyId: policy_id,
-                user: alice,
-            })?);
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
+            assert!(!registry.is_authorized(policy_id, alice)?);
 
             // Attempt to place order using internal balance - should fail
             let tick = 0i16;
@@ -3762,13 +3743,7 @@ mod tests {
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             let mut base = TIP20Setup::create("USDC", "USDC", admin)
                 .with_issuer(admin)
@@ -3780,14 +3755,7 @@ mod tests {
             exchange.create_pair(base.address())?;
             let order_id = exchange.place(alice, base.address(), MIN_ORDER_AMOUNT, false, 0)?;
 
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
 
             exchange.cancel_stale_order(order_id)?;
 
@@ -3811,13 +3779,7 @@ mod tests {
             let admin = Address::random();
 
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             let mut base = TIP20Setup::create("USDC", "USDC", admin)
                 .with_issuer(admin)
@@ -3852,13 +3814,7 @@ mod tests {
 
             // Setup TIP403 registry and create blacklist policy
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             // Set up base and quote tokens
             let (base_addr, _quote_addr) =
@@ -3869,14 +3825,7 @@ mod tests {
             base.change_transfer_policy_id(admin, policy_id)?;
 
             // Blacklist alice in the base token
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
 
             exchange.create_pair(base_addr)?;
 
@@ -3913,13 +3862,7 @@ mod tests {
 
             // Setup TIP403 registry and create blacklist policy
             let mut registry = TIP403Registry::new();
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             // Set up base and quote tokens
             let (base_addr, quote_addr) =
@@ -3930,14 +3873,7 @@ mod tests {
             quote.change_transfer_policy_id(admin, policy_id)?;
 
             // Blacklist alice in the quote token
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
 
             exchange.create_pair(base_addr)?;
 

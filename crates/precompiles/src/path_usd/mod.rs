@@ -281,7 +281,7 @@ mod tests {
         storage::hashmap::HashMapStorageProvider,
         test_util::setup_storage,
         tip20::{IRolesAuth::Interface, ISSUER_ROLE, PAUSE_ROLE, RolesAuthError, UNPAUSE_ROLE},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{PolicyType, TIP403Registry, abi::IRegistry as _},
     };
 
     fn transfer_test_setup(admin: Address) -> Result<PathUSD> {
@@ -1183,13 +1183,7 @@ mod tests {
             registry.initialize()?;
 
             // Create a valid policy
-            let new_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
+            let new_policy_id = registry.create_policy(admin, admin, PolicyType::Whitelist)?;
 
             // Admin can change transfer policy ID
             path_usd.token.change_transfer_policy_id(

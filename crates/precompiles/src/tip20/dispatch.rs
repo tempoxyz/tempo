@@ -11,7 +11,7 @@ mod tests {
             IRolesAuth, ISSUER_ROLE, ITIP20, PAUSE_ROLE, RolesAuthError, TIP20Error, TIP20Token,
             TIP20TokenCalls, UNPAUSE_ROLE, abi,
         },
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{PolicyType, TIP403Registry, abi::IRegistry as _},
         view,
     };
     use alloy::primitives::Address;
@@ -438,13 +438,7 @@ mod tests {
             registry.initialize()?;
 
             // Create a valid policy
-            let new_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::WHITELIST,
-                },
-            )?;
+            let new_policy_id = registry.create_policy(admin, admin, PolicyType::Whitelist)?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall { new_policy_id };
             let calldata = change_policy_call.abi_encode();
@@ -453,13 +447,7 @@ mod tests {
             assert_eq!(token.transfer_policy_id()?, new_policy_id);
 
             // Create another valid policy for the unauthorized test
-            let another_policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let another_policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
             let change_policy_call = ITIP20::changeTransferPolicyIdCall {
                 new_policy_id: another_policy_id,

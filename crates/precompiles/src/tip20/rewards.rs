@@ -324,7 +324,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::{PolicyForbids, abi},
-        tip403_registry::{ITIP403Registry, TIP403Registry},
+        tip403_registry::{PolicyType, TIP403Registry, abi::IRegistry as _},
     };
     use abi::IToken as _;
     use alloy::primitives::{Address, U256};
@@ -574,22 +574,9 @@ mod tests {
             let mut registry = TIP403Registry::new();
             registry.initialize()?;
 
-            let policy_id = registry.create_policy(
-                admin,
-                ITIP403Registry::createPolicyCall {
-                    admin,
-                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
-                },
-            )?;
+            let policy_id = registry.create_policy(admin, admin, PolicyType::Blacklist)?;
 
-            registry.modify_policy_blacklist(
-                admin,
-                ITIP403Registry::modifyPolicyBlacklistCall {
-                    policyId: policy_id,
-                    account: alice,
-                    restricted: true,
-                },
-            )?;
+            registry.modify_policy_blacklist(admin, policy_id, alice, true)?;
 
             let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
 
