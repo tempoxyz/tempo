@@ -75,7 +75,8 @@ jemalloc-prof = [
 	"reth-cli-util/jemalloc",
 	"reth-cli-util/jemalloc-prof",
 	"reth-ethereum-cli/jemalloc-prof",
-	"tempo-node/jemalloc-prof"
+	"tempo-node/jemalloc-prof",
+	"reth-ethereum/jemalloc-prof"
 ]
 
 min-error-logs = [
