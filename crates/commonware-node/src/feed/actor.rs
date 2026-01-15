@@ -79,7 +79,7 @@ impl<TContext: Spawner> Actor<TContext> {
         }
     }
 
-    /// Create a [`CertifiedBlock`] from the full certification (Notarization or Finalization).
+    /// Create a [`CertifiedBlock`] from the notarization or finalization.
     async fn create_certified_block(
         &mut self,
         view: u64,
