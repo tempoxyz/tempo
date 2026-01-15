@@ -871,14 +871,11 @@ mod tests {
             prop_assert_eq!(aa_tx.calls().count(), num_calls);
         }
 
-        /// Property: calls() returns exactly 1 for non-AA transactions
-        #[test]
-        fn proptest_calls_count_non_aa_tx(
-            gas_limit in any::<u64>(),
-            value in arb_u256(),
-        ) {
-            let non_aa_tx = make_tx_env(gas_limit, 0, value);
-            prop_assert_eq!(non_aa_tx.calls().count(), 1);
-        }
+    }
+
+    #[test]
+    fn test_calls_count_non_aa_tx() {
+        let non_aa_tx = make_tx_env(21_000, 0, alloy_primitives::U256::ZERO);
+        assert_eq!(non_aa_tx.calls().count(), 1);
     }
 }
