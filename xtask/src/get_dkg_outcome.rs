@@ -7,7 +7,7 @@ use alloy::{
 use commonware_codec::{Encode as _, ReadExt as _};
 use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_utils::NZU64;
+use commonware_utils::{N3f1, NZU64};
 use eyre::{Context as _, eyre};
 use serde::Serialize;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -121,7 +121,7 @@ impl GetDkgOutcome {
             next_players: outcome.next_players().iter().map(pubkey_to_hex).collect(),
             is_next_full_dkg: outcome.is_next_full_dkg,
             network_identity: Bytes::copy_from_slice(&sharing.public().encode()),
-            threshold: sharing.required(),
+            threshold: sharing.required::<N3f1>(),
             total_participants: sharing.total().get(),
         };
 

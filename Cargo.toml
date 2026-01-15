@@ -185,17 +185,18 @@ alloy-signer-local = "1.4.3"
 alloy-sol-types = "1.5.0"
 alloy-transport = "1.4.3"
 
-commonware-broadcast = "0.0.64"
-commonware-codec = "0.0.64"
-commonware-consensus = "0.0.64"
-commonware-cryptography = "0.0.64"
-commonware-macros = "0.0.64"
-commonware-math = "0.0.64"
-commonware-p2p = "0.0.64"
-commonware-parallel = "0.0.64"
-commonware-runtime = "0.0.64"
-commonware-storage = "0.0.64"
-commonware-utils = "0.0.64"
+commonware-broadcast = "0.0.65"
+commonware-codec = "0.0.65"
+commonware-consensus = "0.0.65"
+commonware-cryptography = "0.0.65"
+commonware-macros = "0.0.65"
+commonware-math = "0.0.65"
+commonware-p2p = "0.0.65"
+commonware-parallel = "0.0.65"
+commonware-runtime = "0.0.65"
+commonware-storage = "0.0.65"
+commonware-utils = "0.0.65"
+
 arbitrary = { version = "1.3", features = ["derive"] }
 async-lock = "3.4.1"
 async-trait = "0.1"
@@ -317,17 +318,3 @@ vergen-git2 = "1"
 # reth-trie-parallel = { path = "../reth/crates/trie/parallel" }
 # reth-trie-sparse = { path = "../reth/crates/trie/sparse" }
 # reth-trie-sparse-parallel = { path = "../reth/crates/trie/sparse-parallel" }
-
-[patch.crates-io]
-# Commonware main right after https://github.com/commonwarexyz/monorepo/pull/2740 was merged
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "5ca1fb0bba4f2f04bf27d1da2b68ef034dca93be" }

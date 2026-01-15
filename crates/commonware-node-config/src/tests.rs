@@ -3,7 +3,7 @@ use commonware_cryptography::{
     bls12381::{dkg, primitives::variant::MinSig},
     ed25519::PrivateKey,
 };
-use commonware_utils::NZU32;
+use commonware_utils::{N3f1, NZU32};
 use rand::SeedableRng as _;
 
 use crate::{SigningKey, SigningShare};
@@ -34,7 +34,8 @@ fn signing_share_snapshot() {
 fn signing_share_roundtrip() {
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
-    let (_, mut shares) = dkg::deal_anonymous::<MinSig>(&mut rng, Default::default(), NZU32!(1));
+    let (_, mut shares) =
+        dkg::deal_anonymous::<MinSig, N3f1>(&mut rng, Default::default(), NZU32!(1));
     let share = shares.remove(0);
     let signing_share: SigningShare = share.into();
     assert_eq!(
