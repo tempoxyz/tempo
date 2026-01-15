@@ -650,7 +650,7 @@ where
 
         // Validate fee token has TIP20 prefix before attempting to read balance.
         // Note that this is checked during tx validation but this check is also necessary at the protocol level since it is possible for a validator to bypass initial validation and inject the tx directly to the block
-    
+
         if !is_tip20_prefix(self.fee_token) {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
@@ -1520,7 +1520,10 @@ mod tests {
         let err = result.unwrap_err();
         match err {
             EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr)) => {
-                assert_eq!(addr, invalid_token, "Error should contain the invalid token address");
+                assert_eq!(
+                    addr, invalid_token,
+                    "Error should contain the invalid token address"
+                );
             }
             other => panic!("Expected InvalidFeeToken error, got: {:?}", other),
         }
