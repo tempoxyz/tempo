@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 /**
  * @title Account Keychain Precompile Interface
  * @notice Interface for the Account Keychain precompile that manages authorized access keys
- * @dev This precompile is deployed at address `0xAAAAAAAA00000000000000000000000000000000`
+ * @dev This precompile is deployed at address `0xaAAAaaAA00000000000000000000000000000000`
  *
  * The Account Keychain allows accounts to authorize secondary keys (Access Keys) that can sign
  * transactions on behalf of the account. Access Keys can be scoped by:
