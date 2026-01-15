@@ -28,6 +28,9 @@ use tempo_revm::{TempoBatchCallEnv, TempoStateAccess, calculate_aa_batch_intrins
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
+/// Default maximum number of authorizations allowed in an AA transaction's authorization list.
+pub const DEFAULT_MAX_TEMPO_AUTHORIZATIONS: usize = 16;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -35,6 +38,8 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction>,
     /// Maximum allowed `valid_after` offset for AA txs.
     pub(crate) aa_valid_after_max_secs: u64,
+    /// Maximum number of authorizations allowed in an AA transaction.
+    pub(crate) max_tempo_authorizations: usize,
     /// Cache of AMM liquidity for validator tokens.
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
 }
@@ -46,11 +51,13 @@ where
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction>,
         aa_valid_after_max_secs: u64,
+        max_tempo_authorizations: usize,
         amm_liquidity_cache: AmmLiquidityCache,
     ) -> Self {
         Self {
             inner,
             aa_valid_after_max_secs,
+            max_tempo_authorizations,
             amm_liquidity_cache,
         }
     }
@@ -152,6 +159,26 @@ where
 
         // Expiry checks are skipped here, they are done in the EVM handler where block timestamp is easily available.
         Ok(Ok(()))
+    }
+
+    /// Validates that an AA transaction does not exceed the maximum authorization list size.
+    fn ensure_authorization_list_size(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(aa_tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        let count = aa_tx.tx().tempo_authorization_list.len();
+        if count > self.max_tempo_authorizations {
+            return Err(TempoPoolTransactionError::TooManyAuthorizations {
+                count,
+                max_allowed: self.max_tempo_authorizations,
+            });
+        }
+
+        Ok(())
     }
 
     /// Validates AA transaction time-bound conditionals
@@ -303,6 +330,14 @@ where
         if let Some(tx) = transaction.inner().as_aa()
             && let Err(err) = self.ensure_valid_conditionals(tx.tx())
         {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate AA transaction authorization list size.
+        if let Err(err) = self.ensure_authorization_list_size(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -666,7 +701,12 @@ mod tests {
             .build(InMemoryBlobStore::default());
         let amm_cache =
             AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-        let validator = TempoTransactionValidator::new(inner, 3600, amm_cache);
+        let validator = TempoTransactionValidator::new(
+            inner,
+            3600,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
 
         // Set the tip timestamp by simulating a new head block
         let mock_block = create_mock_block(tip_timestamp);
@@ -864,8 +904,12 @@ mod tests {
         let inner = EthTransactionValidatorBuilder::new(provider.clone())
             .disable_balance_check()
             .build(InMemoryBlobStore::default());
-        let validator =
-            TempoTransactionValidator::new(inner, 3600, AmmLiquidityCache::new(provider).unwrap());
+        let validator = TempoTransactionValidator::new(
+            inner,
+            3600,
+            DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::new(provider).unwrap(),
+        );
 
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, transaction)
@@ -1182,7 +1226,7 @@ mod tests {
                 .build(InMemoryBlobStore::default());
             let amm_cache =
                 AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
-            TempoTransactionValidator::new(inner, 3600, amm_cache)
+            TempoTransactionValidator::new(inner, 3600, DEFAULT_MAX_TEMPO_AUTHORIZATIONS, amm_cache)
         }
 
         #[test]
@@ -1635,6 +1679,124 @@ mod tests {
                 "Properly constructed keychain sig should pass, got: {result:?}"
             );
             Ok(())
+        }
+    }
+
+    // ============================================
+    // Authorization list limit tests
+    // ============================================
+
+    /// Helper function to create an AA transaction with the given number of authorizations.
+    fn create_aa_transaction_with_authorizations(
+        authorization_count: usize,
+    ) -> TempoPooledTransaction {
+        use alloy_eips::eip7702::Authorization;
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoSignedAuthorization, TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        // Create dummy authorizations
+        let authorizations: Vec<TempoSignedAuthorization> = (0..authorization_count)
+            .map(|i| {
+                let auth = Authorization {
+                    chain_id: U256::from(1),
+                    nonce: i as u64,
+                    address: address!("0000000000000000000000000000000000000001"),
+                };
+                TempoSignedAuthorization::new_unchecked(
+                    auth,
+                    TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                        Signature::test_signature(),
+                    )),
+                )
+            })
+            .collect();
+
+        let tx_aa = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![Call {
+                to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::new(),
+            }],
+            nonce_key: U256::ZERO,
+            nonce: 0,
+            fee_token: Some(address!("0000000000000000000000000000000000000002")),
+            fee_payer_signature: None,
+            valid_after: None,
+            valid_before: None,
+            access_list: Default::default(),
+            tempo_authorization_list: authorizations,
+            key_authorization: None,
+        };
+
+        let signed_tx = AASigned::new_unhashed(
+            tx_aa,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+        );
+        let envelope: TempoTxEnvelope = signed_tx.into();
+        let recovered = envelope.try_into_recovered().unwrap();
+        TempoPooledTransaction::new(recovered)
+    }
+
+    #[tokio::test]
+    async fn test_aa_too_many_authorizations_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create transaction with more authorizations than the default limit
+        let transaction =
+            create_aa_transaction_with_authorizations(DEFAULT_MAX_TEMPO_AUTHORIZATIONS + 1);
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match &outcome {
+            TransactionValidationOutcome::Invalid(_, err) => {
+                let error_msg = err.to_string();
+                assert!(
+                    error_msg.contains("Too many authorizations"),
+                    "Expected TooManyAuthorizations error, got: {error_msg}"
+                );
+            }
+            other => panic!("Expected Invalid outcome, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_aa_authorization_count_at_limit_accepted() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create transaction with exactly the limit
+        let transaction =
+            create_aa_transaction_with_authorizations(DEFAULT_MAX_TEMPO_AUTHORIZATIONS);
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should not fail with TooManyAuthorizations (may fail for other reasons)
+        if let TransactionValidationOutcome::Invalid(_, err) = &outcome {
+            let error_msg = err.to_string();
+            assert!(
+                !error_msg.contains("Too many authorizations"),
+                "Should not fail with TooManyAuthorizations at the limit, got: {error_msg}"
+            );
         }
     }
 }
