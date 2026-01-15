@@ -205,11 +205,12 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
         }
 
-        // Skip additional fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
+        // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
             && !ctx
                 .journaled_state
-                .is_valid_fee_token(ctx.cfg.spec, self.fee_token)
+                .is_tip20_usd(ctx.cfg.spec, self.fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());

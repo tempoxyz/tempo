@@ -194,6 +194,20 @@ pub trait TempoStateAccess<M = ()> {
         Ok(DEFAULT_FEE_TOKEN)
     }
 
+    /// Checks if the given TIP20 token has USD currency.
+    ///
+    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
+    fn is_tip20_usd(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            // SAFETY: caller must ensure prefix is already checked
+            let token = TIP20Token::from_address(fee_token)?;
+            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
+        })
+    }
+
     /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
     where
@@ -205,12 +219,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Ensure the currency is USD
-        // load fee token account to ensure that we can load storage for it.
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: prefix already checked above
-            let token = TIP20Token::from_address(fee_token)?;
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
-        })
+        self.is_tip20_usd(spec, fee_token)
     }
 
     /// Checks if the fee payer can transfer a given token (is not blacklisted).
