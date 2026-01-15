@@ -15,7 +15,7 @@ pub struct CertifiedBlock {
     pub height: Option<u64>,
     pub digest: B256,
     /// Hex-encoded full notarization or finalization.
-    pub certification: String,
+    pub certificate: String,
 }
 
 /// Consensus event emitted.

@@ -85,9 +85,9 @@ impl<TContext: Spawner> Actor<TContext> {
         view: u64,
         epoch: u64,
         digest: Digest,
-        certification: &impl Encode,
+        certificate: &impl Encode,
     ) -> CertifiedBlock {
-        let certification = hex::encode(certification.encode());
+        let certificate = hex::encode(certificate.encode());
         let height = self
             .marshal
             .get_block(&digest)
@@ -99,7 +99,7 @@ impl<TContext: Spawner> Actor<TContext> {
             view,
             height,
             digest: digest.0,
-            certification,
+            certificate,
         }
     }
 

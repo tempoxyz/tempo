@@ -120,7 +120,7 @@ impl ConsensusFeed for FeedStateHandle {
                     view: finalization.proposal.round.view().get(),
                     height: Some(height),
                     digest: finalization.proposal.payload.0,
-                    certification: hex::encode(finalization.encode()),
+                    certificate: hex::encode(finalization.encode()),
                 })
             }
         }
