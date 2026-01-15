@@ -120,7 +120,10 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
         .map(|def| interface::generate_interface(def, &registry))
         .collect::<syn::Result<Vec<_>>>()?;
 
-    // Generate constants (const/static items as view functions)
+    // Generate IConstants trait (always, even if empty)
+    let constants_trait = constants::generate_trait(&module.constants);
+
+    // Generate constants definitions, call structs, and calls enum (only if constants exist)
     let constants_impl = constants::generate_constants(&module.constants, &registry)?;
     let has_constants = !module.constants.is_empty();
 
@@ -173,6 +176,8 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
             #event_impl
 
             #(#interface_impls)*
+
+            #constants_trait
 
             #constants_impl
 

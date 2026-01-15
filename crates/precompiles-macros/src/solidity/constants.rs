@@ -14,7 +14,10 @@ use super::{
     registry::TypeRegistry,
 };
 
-/// Generate code for all constants as view functions.
+/// Generate code for constants: definitions, call structs, and calls enum.
+///
+/// Note: The `IConstants` trait is generated separately via `generate_trait()`
+/// so it can be included even when there are no constants.
 pub(super) fn generate_constants(
     constants: &[ConstantDef],
     _registry: &TypeRegistry,
@@ -24,7 +27,6 @@ pub(super) fn generate_constants(
     }
 
     let constant_defs = generate_definitions(constants);
-    let trait_def = generate_trait(constants);
     let call_impls = constants
         .iter()
         .map(generate_call_code)
@@ -33,7 +35,6 @@ pub(super) fn generate_constants(
 
     Ok(quote! {
         #constant_defs
-        #trait_def
         #(#call_impls)*
         #calls_enum
     })
@@ -58,11 +59,19 @@ fn generate_definitions(constants: &[ConstantDef]) -> TokenStream {
     quote! { #(#defs)* }
 }
 
-/// Generate the IConstants trait.
-fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
+/// Generate the IConstants trait with default implementations.
+///
+/// The trait is always generated (even if empty) so that `#[contract(abi)]`
+/// can unconditionally implement it on the contract struct.
+pub(super) fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
     let methods = constants.iter().map(|c| {
-        let (name, ty) = (&c.name, &c.ty);
-        quote! { fn #name(&self) -> Result<#ty>; }
+        let (name, ty, is_lazy) = (&c.name, &c.ty, c.is_lazy);
+        let body = if is_lazy {
+            quote! { *#name }
+        } else {
+            quote! { #name }
+        };
+        quote! { fn #name(&self) -> #ty { #body } }
     });
     quote! {
         pub trait IConstants {

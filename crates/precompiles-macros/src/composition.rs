@@ -27,5 +27,7 @@ pub(crate) fn generate_abi_aliases(struct_name: &Ident) -> syn::Result<TokenStre
 
         /// Unified event enum for this contract.
         pub type #event_alias = abi::Event;
+
+        impl abi::IConstants for #struct_name {}
     })
 }

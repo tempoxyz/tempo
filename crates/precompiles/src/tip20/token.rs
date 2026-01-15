@@ -47,38 +47,6 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
 }
 
 impl TIP20Token {
-    /// Returns the PAUSE_ROLE constant
-    ///
-    /// This role identifier grants permission to pause the token contract.
-    /// The role is computed as `keccak256("PAUSE_ROLE")`.
-    pub fn pause_role() -> B256 {
-        *PAUSE_ROLE
-    }
-
-    /// Returns the UNPAUSE_ROLE constant
-    ///
-    /// This role identifier grants permission to unpause the token contract.
-    /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
-    pub fn unpause_role() -> B256 {
-        *UNPAUSE_ROLE
-    }
-
-    /// Returns the ISSUER_ROLE constant
-    ///
-    /// This role identifier grants permission to mint and burn tokens.
-    /// The role is computed as `keccak256("ISSUER_ROLE")`.
-    pub fn issuer_role() -> B256 {
-        *ISSUER_ROLE
-    }
-
-    /// Returns the BURN_BLOCKED_ROLE constant
-    ///
-    /// This role identifier grants permission to burn tokens from blocked accounts.
-    /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
-    pub fn burn_blocked_role() -> B256 {
-        *BURN_BLOCKED_ROLE
-    }
-
     /// Internal helper to mint new tokens and update balances
     fn _mint(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<()> {
         self.check_role(msg_sender, *ISSUER_ROLE)?;

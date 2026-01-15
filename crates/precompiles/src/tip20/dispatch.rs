@@ -8,7 +8,7 @@ use crate::{
 use alloy::primitives::Address;
 use revm::precompile::{PrecompileError, PrecompileResult};
 
-use abi::{IRewards as _, IRolesAuth as _, IToken as _};
+use abi::{IConstants as _, IRewards as _, IRolesAuth as _, IToken as _};
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -64,16 +64,16 @@ impl Precompile for TIP20Token {
                 view(call, |_| self.next_quote_token())
             }
             TIP20TokenCalls::Constants(abi::ConstantsCalls::PAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::pause_role()))
+                view(call, |_| Ok(self.PAUSE_ROLE()))
             }
             TIP20TokenCalls::Constants(abi::ConstantsCalls::UNPAUSE_ROLE(call)) => {
-                view(call, |_| Ok(Self::unpause_role()))
+                view(call, |_| Ok(self.UNPAUSE_ROLE()))
             }
             TIP20TokenCalls::Constants(abi::ConstantsCalls::ISSUER_ROLE(call)) => {
-                view(call, |_| Ok(Self::issuer_role()))
+                view(call, |_| Ok(self.ISSUER_ROLE()))
             }
             TIP20TokenCalls::Constants(abi::ConstantsCalls::BURN_BLOCKED_ROLE(call)) => {
-                view(call, |_| Ok(Self::burn_blocked_role()))
+                view(call, |_| Ok(self.BURN_BLOCKED_ROLE()))
             }
 
             // State changing functions

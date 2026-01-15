@@ -21,7 +21,7 @@ use alloy::primitives::U256;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    Data, DeriveInput, Expr, Fields, Ident, Path, Token, Type, Visibility,
+    Data, DeriveInput, Expr, Fields, Ident, Token, Type, Visibility,
     parse::{Parse, ParseStream, Parser},
     parse_macro_input,
     punctuated::Punctuated,
