@@ -113,9 +113,15 @@ where
 {
     let mut events = pool.client().canonical_state_stream();
     while let Some(notification) = events.next().await {
-        pool.notify_aa_pool_on_state_updates(
-            notification.committed().execution_outcome().state().state(),
-        );
+        let tip = notification.committed();
+        #[cfg(feature = "test-utils")]
+        let tip_number = tip.tip().header().number();
+
+        pool.notify_aa_pool_on_state_updates(tip.execution_outcome().state().state());
+
+        // Signal that we have processed this tip (for test synchronization)
+        #[cfg(feature = "test-utils")]
+        pool.mark_2d_pool_processed_tip(tip_number);
     }
 }
 
@@ -154,10 +160,14 @@ where
 /// - Monitors `ACCOUNT_KEYCHAIN_ADDRESS` storage changes for revocations
 /// - Evicts affected transactions when `is_revoked` becomes true
 /// - Periodically checks all tracked keys' current revocation status (handles missed events)
-pub async fn evict_revoked_keychain_txs<P, C>(pool: P, client: C)
+pub async fn evict_revoked_keychain_txs<Client>(pool: TempoTransactionPool<Client>, client: Client)
 where
-    P: TransactionPool<Transaction = TempoPooledTransaction> + 'static,
-    C: CanonStateSubscriptions<Primitives = TempoPrimitives> + StateProviderFactory + 'static,
+    Client: CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Send
+        + Sync
+        + 'static,
 {
     // Track keychain-signed transactions by their key slot
     // key_slot (U256) -> Set of tx hashes using that key
@@ -212,7 +222,8 @@ where
         }
     };
 
-    // Small delay to allow other tasks to initialize
+    // Small delay to allow backup tasks to initialize (skip in tests)
+    #[cfg(not(feature = "test-utils"))]
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // Subscribe to new transactions and chain events
@@ -246,6 +257,9 @@ where
                     continue;
                 };
 
+                #[cfg(feature = "test-utils")]
+                let tip_number = new.tip().header().number();
+
                 // Collect tx hashes to remove
                 let mut to_remove = Vec::new();
 
@@ -266,6 +280,9 @@ where
                 // revocations that happened before we subscribed to events
                 if to_remove.is_empty() && !keychain_txs.is_empty() {
                     let Ok(state_provider) = client.latest() else {
+                        // Signal processed tip even on error, to avoid test deadlocks
+                        #[cfg(feature = "test-utils")]
+                        pool.mark_keychain_processed_tip(tip_number);
                         continue;
                     };
 
@@ -294,6 +311,10 @@ where
                     remove_txs(&mut keychain_txs, &mut tx_to_slot, &to_remove);
                     pool.remove_transactions(to_remove);
                 }
+
+                // Signal that we have processed this tip (for test synchronization)
+                #[cfg(feature = "test-utils")]
+                pool.mark_keychain_processed_tip(tip_number);
             }
         }
     }

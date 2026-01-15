@@ -25,8 +25,12 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
+#[cfg(feature = "test-utils")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::TempoChainSpec;
+#[cfg(feature = "test-utils")]
+use tokio::sync::Notify;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -38,6 +42,19 @@ pub struct TempoTransactionPool<Client> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Tracks the last block tip number processed by the 2D pool maintenance task.
+    /// Used by tests to wait for maintenance task to finish processing.
+    #[cfg(feature = "test-utils")]
+    aa_2d_last_processed_tip: Arc<AtomicU64>,
+    /// Notifies waiters when 2D pool maintenance task processes a new tip.
+    #[cfg(feature = "test-utils")]
+    aa_2d_processed_notify: Arc<Notify>,
+    /// Tracks the last block tip number processed by the keychain eviction maintenance task.
+    #[cfg(feature = "test-utils")]
+    keychain_last_processed_tip: Arc<AtomicU64>,
+    /// Notifies waiters when keychain eviction task processes a new tip.
+    #[cfg(feature = "test-utils")]
+    keychain_processed_notify: Arc<Notify>,
 }
 
 impl<Client> TempoTransactionPool<Client> {
@@ -52,6 +69,89 @@ impl<Client> TempoTransactionPool<Client> {
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            #[cfg(feature = "test-utils")]
+            aa_2d_last_processed_tip: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "test-utils")]
+            aa_2d_processed_notify: Arc::new(Notify::new()),
+            #[cfg(feature = "test-utils")]
+            keychain_last_processed_tip: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "test-utils")]
+            keychain_processed_notify: Arc::new(Notify::new()),
+        }
+    }
+
+    /// Signals that the 2D pool maintenance task has processed a new tip.
+    #[cfg(feature = "test-utils")]
+    pub fn mark_2d_pool_processed_tip(&self, tip: u64) {
+        self.aa_2d_last_processed_tip.store(tip, Ordering::Release);
+        self.aa_2d_processed_notify.notify_waiters();
+    }
+
+    /// Signals that the keychain eviction maintenance task has processed a new tip.
+    #[cfg(feature = "test-utils")]
+    pub fn mark_keychain_processed_tip(&self, tip: u64) {
+        self.keychain_last_processed_tip
+            .store(tip, Ordering::Release);
+        self.keychain_processed_notify.notify_waiters();
+    }
+
+    /// Waits until the 2D pool maintenance task has processed up to the given tip.
+    ///
+    /// This is used by tests to synchronize with the async maintenance task.
+    #[cfg(feature = "test-utils")]
+    pub async fn wait_for_2d_pool_processed_tip(
+        &self,
+        tip: u64,
+        timeout: std::time::Duration,
+    ) -> eyre::Result<()> {
+        use tokio::time;
+
+        let deadline = time::Instant::now() + timeout;
+        loop {
+            if self.aa_2d_last_processed_tip.load(Ordering::Acquire) >= tip {
+                return Ok(());
+            }
+
+            let notified = self.aa_2d_processed_notify.notified();
+            let now = time::Instant::now();
+            if now >= deadline {
+                eyre::bail!(
+                    "timeout waiting for 2D pool to process tip={}, last_processed={}",
+                    tip,
+                    self.aa_2d_last_processed_tip.load(Ordering::Acquire)
+                );
+            }
+            let _ = time::timeout(deadline - now, notified).await;
+        }
+    }
+
+    /// Waits until the keychain eviction task has processed up to the given tip.
+    ///
+    /// This is used by tests to synchronize with the async maintenance task.
+    #[cfg(feature = "test-utils")]
+    pub async fn wait_for_keychain_processed_tip(
+        &self,
+        tip: u64,
+        timeout: std::time::Duration,
+    ) -> eyre::Result<()> {
+        use tokio::time;
+
+        let deadline = time::Instant::now() + timeout;
+        loop {
+            if self.keychain_last_processed_tip.load(Ordering::Acquire) >= tip {
+                return Ok(());
+            }
+
+            let notified = self.keychain_processed_notify.notified();
+            let now = time::Instant::now();
+            if now >= deadline {
+                eyre::bail!(
+                    "timeout waiting for keychain eviction to process tip={}, last_processed={}",
+                    tip,
+                    self.keychain_last_processed_tip.load(Ordering::Acquire)
+                );
+            }
+            let _ = time::timeout(deadline - now, notified).await;
         }
     }
 }
@@ -190,6 +290,14 @@ impl<Client> Clone for TempoTransactionPool<Client> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            #[cfg(feature = "test-utils")]
+            aa_2d_last_processed_tip: Arc::clone(&self.aa_2d_last_processed_tip),
+            #[cfg(feature = "test-utils")]
+            aa_2d_processed_notify: Arc::clone(&self.aa_2d_processed_notify),
+            #[cfg(feature = "test-utils")]
+            keychain_last_processed_tip: Arc::clone(&self.keychain_last_processed_tip),
+            #[cfg(feature = "test-utils")]
+            keychain_processed_notify: Arc::clone(&self.keychain_processed_notify),
         }
     }
 }

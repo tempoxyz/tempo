@@ -12219,6 +12219,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "eyre",
  "futures",
  "metrics",
  "parking_lot",
