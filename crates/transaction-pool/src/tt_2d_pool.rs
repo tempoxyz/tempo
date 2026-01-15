@@ -2439,32 +2439,19 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_pool_contains() {
+    fn test_2d_pool_helpers() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let tx = TxBuilder::aa(sender).build();
         let tx_hash = *tx.hash();
 
         assert!(!pool.contains(&tx_hash));
-
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
-            .unwrap();
-
-        assert!(pool.contains(&tx_hash));
-    }
-
-    #[test]
-    fn test_pool_get() {
-        let mut pool = AA2dPool::default();
-        let sender = Address::random();
-        let tx = TxBuilder::aa(sender).build();
-        let tx_hash = *tx.hash();
-
         assert!(pool.get(&tx_hash).is_none());
 
         pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
             .unwrap();
 
+        assert!(pool.contains(&tx_hash));
         let retrieved = pool.get(&tx_hash);
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().hash(), &tx_hash);
@@ -2513,42 +2500,44 @@ mod tests {
     }
 
     #[test]
-    fn test_pool_queued_transactions() {
+    fn test_pool_pending_and_queued_transactions() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
 
-        // Insert tx0 (pending) and tx2 (queued due to gap)
-        let tx0 = TxBuilder::aa(sender).build();
-        let tx2 = TxBuilder::aa(sender).nonce(2).build();
-        let tx2_hash = *tx2.hash();
-
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)), 0)
-            .unwrap();
-
-        let queued: Vec<_> = pool.queued_transactions().collect();
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].hash(), &tx2_hash);
-    }
-
-    #[test]
-    fn test_pool_pending_transactions() {
-        let mut pool = AA2dPool::default();
-        let sender = Address::random();
-
+        // Pending: tx0, tx1, tx2 (consecutive nonces starting from on-chain nonce 0)
         let tx0 = TxBuilder::aa(sender).build();
         let tx1 = TxBuilder::aa(sender).nonce(1).build();
-        let _tx0_hash = *tx0.hash();
-        let _tx1_hash = *tx1.hash();
+        let tx2 = TxBuilder::aa(sender).nonce(2).build();
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+        let tx2_hash = *tx2.hash();
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)), 0)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)), 0)
-            .unwrap();
+        // Queued: tx5, tx6, tx7 (gap after tx2)
+        let tx5 = TxBuilder::aa(sender).nonce(5).build();
+        let tx6 = TxBuilder::aa(sender).nonce(6).build();
+        let tx7 = TxBuilder::aa(sender).nonce(7).build();
+        let tx5_hash = *tx5.hash();
+        let tx6_hash = *tx6.hash();
+        let tx7_hash = *tx7.hash();
+
+        for tx in [tx0, tx1, tx2, tx5, tx6, tx7] {
+            pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0)
+                .unwrap();
+        }
 
         let pending: Vec<_> = pool.pending_transactions().collect();
-        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.len(), 3);
+        let pending_hashes: HashSet<_> = pending.iter().map(|tx| *tx.hash()).collect();
+        assert!(pending_hashes.contains(&tx0_hash));
+        assert!(pending_hashes.contains(&tx1_hash));
+        assert!(pending_hashes.contains(&tx2_hash));
+
+        let queued: Vec<_> = pool.queued_transactions().collect();
+        assert_eq!(queued.len(), 3);
+        let queued_hashes: HashSet<_> = queued.iter().map(|tx| *tx.hash()).collect();
+        assert!(queued_hashes.contains(&tx5_hash));
+        assert!(queued_hashes.contains(&tx6_hash));
+        assert!(queued_hashes.contains(&tx7_hash));
     }
 
     #[test]

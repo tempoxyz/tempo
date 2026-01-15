@@ -6,7 +6,7 @@ import { IAccountKeychain } from "./interfaces/IAccountKeychain.sol";
 /// @title AccountKeychain - Access Key Manager Precompile
 /// @notice Manages authorized Access Keys for accounts, enabling Root Keys to provision
 ///         scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
-/// @dev This precompile is deployed at address `0xAAAAAAAA00000000000000000000000000000000`
+/// @dev This precompile is deployed at address `0xaAAAaaAA00000000000000000000000000000000`
 ///
 /// Storage Layout:
 /// ```solidity
