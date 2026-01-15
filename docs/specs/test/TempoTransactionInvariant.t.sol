@@ -476,7 +476,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             assertEq(nonceAfter, nonceBefore + 1, "C7: Nonce must burn even when create reverts");
             ghost_protocolNonce[actualSender] = nonceAfter;
             ghost_totalTxExecuted++;
-            ghost_totalCreatesExecuted++;
+            // NOTE: Do NOT increment ghost_totalCreatesExecuted here - the CREATE reverted
+            // so no contract was deployed. ghost_totalCreatesExecuted tracks successful deployments.
             ghost_totalProtocolNonceTxs++;
         } catch {
             uint256 nonceAfter = vm.getNonce(actualSender);
