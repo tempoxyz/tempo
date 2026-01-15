@@ -377,6 +377,11 @@ abstract contract HandlerBase is InvariantBase {
                 bytes32 key = keccak256(abi.encodePacked(sender, uint256(protocolNonce)));
                 ghost_createAddresses[key] = expectedAddress;
                 ghost_createCount[sender]++;
+                
+                // CREATE operations also consume protocol nonce for address uniqueness
+                // even when using 2D nonces (nonce_key > 0)
+                ghost_protocolNonce[sender]++;
+                ghost_totalProtocolNonceTxs++;
             }
         }
     }
