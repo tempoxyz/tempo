@@ -20,7 +20,7 @@ TIP-1007 adds a `getFeeToken()` view function to the FeeManager precompile that 
 
 Tempo transactions support paying gas fees in any USD-denominated TIP-20 token via the fee token preference system. However, prior to this TIP, there was no way for a smart contract to determine which fee token is being used for the current transaction during execution.
 
-This capability was requested by a partner that wants to:
+This capability was requested by a partner. It could be useful for contracts that want to:
 
 - Adjust their internal logic based on which fee token is being used
 - Provide fee token-aware pricing or routing decisions
@@ -42,10 +42,8 @@ interface IFeeManager {
     /// @notice Returns the fee token being used for the current transaction
     /// @return The address of the TIP-20 token paying for gas fees
     /// @dev This value is set by the protocol before transaction execution begins.
-    ///      Returns address(0) if no fee token has been set (e.g., free transactions
-    ///      or calls outside of a transaction context).
-    ///      This function reads from transient storage, so it is safe to call
-    ///      from staticcall contexts.
+    ///      Returns address(0) if no fee token has been set (e.g., in eth_call
+    ///      simulations where the transaction handler does not run).
     function getFeeToken() external view returns (address);
 }
 ```
@@ -54,12 +52,7 @@ interface IFeeManager {
 
 ### Fee Token Resolution
 
-The fee token returned by `getFeeToken()` is the same token that was resolved by the protocol during transaction validation, following the fee token preference rules:
-
-1. **Transaction field**: If the transaction specifies a `fee_token` field, that token is used
-2. **User preference**: Otherwise, the fee payer's `userTokens` preference from FeeManager
-3. **TIP-20 inference**: For direct TIP-20 calls (`transfer`, `transferWithMemo`, `distributeReward`), the target token is used
-4. **Default**: Falls back to pathUSD (`0x20C0000000000000000000000000000000000000`)
+The fee token returned by `getFeeToken()` is the same token that was resolved by the protocol during transaction validation, following the [fee token preference rules](/protocol/fees/spec-fee#fee-token-resolution).
 
 ### Storage
 
@@ -75,7 +68,7 @@ The fee token is set by the protocol in the `validate_against_state_and_deduct_c
 
 ### Gas Cost
 
-Reading the fee token costs the standard warm transient storage read cost (100 gas for TLOAD).
+Reading the fee token costs the standard warm transient storage read cost (100 gas for TLOAD). This is the cost of calling `getFeeToken()` itself; callers should account for additional gas used by the CALL opcode to invoke the precompile.
 
 ### Edge Cases
 
@@ -110,47 +103,14 @@ contract FeeTokenAware {
 }
 ```
 
-## Interface Definition
+## Interface Addition
 
-The complete updated `IFeeManager` interface:
+The following function is added to `IFeeManager`:
 
 ```solidity
-interface IFeeManager {
-    // Structs
-    struct FeeInfo {
-        uint128 amount;
-        bool hasBeenSet;
-    }
-
-    // User preferences
-    function userTokens(address user) external view returns (address);
-    function validatorTokens(address validator) external view returns (address);
-    function setUserToken(address token) external;
-    function setValidatorToken(address token) external;
-
-    // Fee functions
-    function distributeFees(address validator, address token) external;
-    function collectedFees(address validator, address token) external view returns (uint256);
-
-    // Transaction context (TIP-1007)
-    function getFeeToken() external view returns (address);
-
-    // Events
-    event UserTokenSet(address indexed user, address indexed token);
-    event ValidatorTokenSet(address indexed validator, address indexed token);
-    event FeesDistributed(address indexed validator, address indexed token, uint256 amount);
-
-    // Errors
-    error OnlyValidator();
-    error OnlySystemContract();
-    error InvalidToken();
-    error PoolDoesNotExist();
-    error InsufficientFeeTokenBalance();
-    error InternalError();
-    error CannotChangeWithinBlock();
-    error CannotChangeWithPendingFees();
-    error TokenPolicyForbids();
-}
+/// @notice Returns the fee token being used for the current transaction
+/// @return The address of the TIP-20 token paying for gas fees
+function getFeeToken() external view returns (address);
 ```
 
 ---
