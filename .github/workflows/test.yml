@@ -58,7 +58,19 @@ jobs:
       - name: Build and compile tests
         run: cargo nextest run --no-run -j num-cpus
       - name: Run tests
-        run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
+        run: |
+          cargo nextest run \
+            --no-fail-fast \
+            -j num-cpus \
+            --retries 2 \
+            --E 'not(test(sync::can_restart_after_joining_from_snapshot))'
+      - name: Run flaky test
+        run: |
+          cargo nextest run \
+            --no-fail-fast \
+            -j num-cpus \
+            --retries 2 \
+            --E 'test(sync::can_restart_after_joining_from_snapshot)'
 
   msrv:
     name: MSRV
