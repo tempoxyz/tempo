@@ -17,6 +17,7 @@ mod validators;
 
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
+pub use actor::prune_share;
 
 use ingress::{Command, Message};
 
@@ -75,3 +76,5 @@ pub(crate) struct Config<TPeerManager> {
     /// given epoch after reading them from the smart contract.
     pub(crate) peer_manager: TPeerManager,
 }
+
+

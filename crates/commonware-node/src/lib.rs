@@ -7,7 +7,7 @@ pub(crate) mod alias;
 mod args;
 pub(crate) mod config;
 pub mod consensus;
-pub(crate) mod dkg;
+pub mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;

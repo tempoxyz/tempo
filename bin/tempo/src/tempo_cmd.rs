@@ -7,6 +7,7 @@ use eyre::Context;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use tempo_commonware_node_config::SigningKey;
+use commonware_runtime::Runner; // Import Runner trait
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -91,25 +92,41 @@ impl CalculatePublicKey {
 
 #[derive(Debug, clap::Args)]
 struct DeleteSigningShare {
-    /// Path to the signing share file to delete.
-    #[arg(long, short, value_name = "FILE")]
-    path: PathBuf,
+    //// Path to the consensus data directory (e.g. .../data/consensus).
+    #[arg(long, short, value_name = "DIR")]
+    data_dir: PathBuf,
+
+    /// Partition prefix used by the node.
+    #[arg(long, default_value = "tempo")]
+    prefix: String,
 }
 
 impl DeleteSigningShare {
     fn run(self) -> eyre::Result<()> {
-        let Self { path } = self;
+        let Self { data_dir, prefix } = self;
 
-        if !path.exists() {
-            println!("Signing share file does not exist at: {}", path.display());
-            return Ok(());
-        }
+        // Configure runtime to open the database
+        let config = commonware_runtime::tokio::Config::default()
+            .with_storage_directory(data_dir);
 
-        std::fs::remove_file(&path).wrap_err_with(|| {
-            format!("failed deleting signing share at `{}`", path.display())
-        })?;
+        // Initialize Runner (simulation environment)
+        let runner = commonware_runtime::tokio::Runner::new(config);
 
-        println!("Successfully deleted signing share at: {}", path.display());
+        println!("Opening database to prune signing share...");
+
+        // Execute share deletion logic within the async environment
+        runner.start(async move |context| -> eyre::Result<()> {
+            // Actual partition name in engine code is "{prefix}_dkg_manager"
+            let dkg_prefix = format!("{}_dkg_manager", prefix);
+
+            match tempo_commonware_node::dkg::manager::prune_share(context, dkg_prefix).await {
+                Ok(true) => println!("✅ Successfully deleted signing share from node state."),
+                Ok(false) => println!("⚠️ No signing share found to delete (already deleted?)."),
+                Err(e) => eprintln!("❌ Failed to delete signing share: {:?}", e),
+            }
+            Ok(())
+        }).wrap_err("failed to execute database operation")?;
+
         Ok(())
     }
 }

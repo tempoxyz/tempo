@@ -1,1 +1,1 @@
-pub(crate) mod manager;
+pub mod manager;

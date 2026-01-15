@@ -1609,3 +1609,38 @@ fn read_dealer_log(
         .ok_or_eyre("failed checking signed log against current round")?;
     Ok((dealer, log))
 }
+
+/// Prunes the local signing share from the node state.
+pub async fn prune_share<TContext>(
+    context: TContext,
+    partition_prefix: String,
+) -> eyre::Result<bool>
+where
+    TContext: commonware_runtime::Storage + commonware_runtime::Metrics,
+{
+    use eyre::WrapErr; 
+
+    // 1. Initialize storage to read current state
+    // state module is accessible here because we are inside actor/mod.rs
+    let mut storage = state::builder()
+        .partition_prefix(&partition_prefix)
+        .init(context)
+        .await
+        .wrap_err("failed to initialize storage (is the node initialized?)")?;
+
+    // 2. Read current state
+    let mut current_state = storage.current();
+    
+    // 3. Check if share exists
+    if current_state.share.is_none() {
+        return Ok(false); // Nothing to delete
+    }
+
+    // 4. Prune share (Set to None)
+    current_state.share = None;
+    
+    // 5. Persist the change (Append new state to journal)
+    storage.append_state(current_state).await.wrap_err("failed to persist pruned state")?;
+    
+    Ok(true)
+}
