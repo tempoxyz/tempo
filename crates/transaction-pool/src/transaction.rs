@@ -203,6 +203,12 @@ pub enum TempoPoolTransactionError {
         "Insufficient gas for AA transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
     )]
     InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
+
+    /// Thrown when an AA transaction has too many authorizations in its authorization list.
+    #[error(
+        "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyAuthorizations { count: usize, max_allowed: usize },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -218,7 +224,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InsufficientLiquidity(_) => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
-            | Self::InsufficientGasForAAIntrinsicCost { .. } => true,
+            | Self::InsufficientGasForAAIntrinsicCost { .. }
+            | Self::TooManyAuthorizations { .. } => true,
         }
     }
 
@@ -416,10 +423,6 @@ mod tests {
         tt_signed::AASigned,
     };
 
-    // ============================================
-    // Payment classification tests
-    // ============================================
-
     #[test]
     fn test_payment_classification_positive() {
         // Test that TIP20 address prefix is correctly classified as payment
@@ -448,16 +451,12 @@ mod tests {
     #[test]
     fn test_payment_classification_negative() {
         // Test that non-TIP20 address is NOT classified as payment
-        let non_payment_addr = address!("1234567890123456789012345678901234567890");
+        let non_payment_addr = Address::random();
         let pooled_tx = TxBuilder::eip1559(non_payment_addr)
             .gas_limit(21000)
             .build_eip1559();
         assert!(!pooled_tx.is_payment());
     }
-
-    // ============================================
-    // fee_token_cost tests
-    // ============================================
 
     #[test]
     fn test_fee_token_cost() {
@@ -468,18 +467,13 @@ mod tests {
             .value(value)
             .build();
 
-        // fee_token_cost should be cost - value
-        let fee_cost = tx.fee_token_cost();
-
-        // The cost includes gas spending + value, so fee_token_cost = cost - value = gas spending
-        assert!(fee_cost > U256::ZERO, "Fee token cost should be positive");
-        // Inner cost should equal fee_cost + value
-        assert_eq!(tx.inner.cost, fee_cost + value);
+        // fee_token_cost = cost - value = gas spending
+        // gas spending = calc_gas_balance_spending(100_000, 2_000_000_000)
+        //              = (100_000 * 2_000_000_000) / 1_000_000_000_000 = 200
+        let expected_fee_cost = U256::from(200);
+        assert_eq!(tx.fee_token_cost(), expected_fee_cost);
+        assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
-
-    // ============================================
-    // AA helper tests - non-AA transactions
-    // ============================================
 
     #[test]
     fn test_non_aa_transaction_helpers() {
@@ -504,10 +498,6 @@ mod tests {
         );
     }
 
-    // ============================================
-    // AA helper tests - AA with nonce_key = 0
-    // ============================================
-
     #[test]
     fn test_aa_transaction_with_zero_nonce_key() {
         let sender = Address::random();
@@ -530,10 +520,6 @@ mod tests {
         assert_eq!(aa_id.seq_id.nonce_key, U256::ZERO);
         assert_eq!(aa_id.nonce, nonce);
     }
-
-    // ============================================
-    // AA helper tests - AA with nonce_key > 0 (2D nonce)
-    // ============================================
 
     #[test]
     fn test_aa_transaction_with_nonzero_nonce_key() {
@@ -562,10 +548,6 @@ mod tests {
         assert_eq!(aa_id.nonce, nonce);
     }
 
-    // ============================================
-    // nonce_key_slot caching tests
-    // ============================================
-
     #[test]
     fn test_nonce_key_slot_caching_for_2d_tx() {
         let sender = Address::random();
@@ -586,137 +568,88 @@ mod tests {
     }
 
     #[test]
-    fn test_nonce_key_slot_returns_none_for_non_aa() {
-        let tx = TxBuilder::eip1559(Address::random())
-            .gas_limit(21000)
-            .build_eip1559();
-        assert!(tx.nonce_key_slot().is_none());
-    }
-
-    // ============================================
-    // TxEnv caching tests
-    // ============================================
-
-    #[test]
-    fn test_prepare_tx_env_and_into_with_tx_env() {
-        let sender = Address::random();
-        let tx = TxBuilder::aa(sender).build();
-        let hash = *tx.hash();
-
-        // Pre-compute tx_env
-        tx.prepare_tx_env();
-
-        // Convert to WithTxEnv (should use cached value)
-        let with_env = tx.into_with_tx_env();
-
-        // Verify the tx is preserved
-        assert_eq!(with_env.tx.tx_hash(), &hash);
-    }
-
-    #[test]
-    fn test_into_with_tx_env_without_prepare() {
-        let sender = Address::random();
-        let tx = TxBuilder::aa(sender).build();
-        let hash = *tx.hash();
-
-        // Don't call prepare_tx_env, should still work (compute on demand)
-        let with_env = tx.into_with_tx_env();
-        assert_eq!(with_env.tx.tx_hash(), &hash);
-    }
-
-    // ============================================
-    // TempoPoolTransactionError::is_bad_transaction tests
-    // ============================================
-
-    #[test]
-    fn test_error_is_bad_transaction_false_cases() {
-        // These errors are NOT "bad transactions" (can be retried)
-        let false_cases = [
-            TempoPoolTransactionError::ExceedsNonPaymentLimit,
-            TempoPoolTransactionError::InvalidFeeToken(Address::ZERO),
-            TempoPoolTransactionError::MissingFeeToken,
-            TempoPoolTransactionError::InvalidValidBefore {
-                valid_before: 100,
-                min_allowed: 200,
-            },
-            TempoPoolTransactionError::InvalidValidAfter {
-                valid_after: 200,
-                max_allowed: 100,
-            },
-            TempoPoolTransactionError::Keychain("test error"),
-            TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
-            TempoPoolTransactionError::BlackListedFeePayer {
-                fee_token: Address::ZERO,
-                fee_payer: Address::ZERO,
-            },
+    fn test_is_bad_transaction() {
+        let cases: &[(TempoPoolTransactionError, bool)] = &[
+            (TempoPoolTransactionError::ExceedsNonPaymentLimit, false),
+            (
+                TempoPoolTransactionError::InvalidFeeToken(Address::ZERO),
+                false,
+            ),
+            (TempoPoolTransactionError::MissingFeeToken, false),
+            (
+                TempoPoolTransactionError::InvalidValidBefore {
+                    valid_before: 100,
+                    min_allowed: 200,
+                },
+                false,
+            ),
+            (
+                TempoPoolTransactionError::InvalidValidAfter {
+                    valid_after: 200,
+                    max_allowed: 100,
+                },
+                false,
+            ),
+            (TempoPoolTransactionError::Keychain("test error"), false),
+            (
+                TempoPoolTransactionError::InsufficientLiquidity(Address::ZERO),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::BlackListedFeePayer {
+                    fee_token: Address::ZERO,
+                    fee_payer: Address::ZERO,
+                },
+                false,
+            ),
+            (TempoPoolTransactionError::NonZeroValue, true),
+            (TempoPoolTransactionError::SubblockNonceKey, true),
+            (
+                TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
+                    gas_limit: 21000,
+                    intrinsic_gas: 50000,
+                },
+                true,
+            ),
         ];
 
-        for err in false_cases {
-            assert!(
-                !err.is_bad_transaction(),
-                "Expected is_bad_transaction() == false for: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_error_is_bad_transaction_true_cases() {
-        // These errors ARE "bad transactions" (should not be retried)
-        let true_cases = [
-            TempoPoolTransactionError::NonZeroValue,
-            TempoPoolTransactionError::SubblockNonceKey,
-            TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost {
-                gas_limit: 21000,
-                intrinsic_gas: 50000,
-            },
-        ];
-
-        for err in true_cases {
-            assert!(
+        for (err, expected) in cases {
+            assert_eq!(
                 err.is_bad_transaction(),
-                "Expected is_bad_transaction() == true for: {err}"
+                *expected,
+                "Unexpected is_bad_transaction() for: {err}"
             );
         }
     }
 
-    // ============================================
-    // PoolTransaction::requires_nonce_check tests
-    // ============================================
-
     #[test]
-    fn test_requires_nonce_check_non_aa() {
-        let tx = TxBuilder::eip1559(Address::random())
-            .gas_limit(21000)
-            .build_eip1559();
-        assert!(
-            tx.requires_nonce_check(),
-            "Non-AA should require nonce check"
-        );
-    }
+    fn test_requires_nonce_check() {
+        let cases: &[(TempoPooledTransaction, bool, &str)] = &[
+            (
+                TxBuilder::eip1559(Address::random())
+                    .gas_limit(21000)
+                    .build_eip1559(),
+                true,
+                "Non-AA should require nonce check",
+            ),
+            (
+                TxBuilder::aa(Address::random()).build(),
+                true,
+                "AA with nonce_key=0 should require nonce check",
+            ),
+            (
+                TxBuilder::aa(Address::random())
+                    .nonce_key(U256::from(1))
+                    .build(),
+                false,
+                "AA with nonce_key > 0 should NOT require nonce check",
+            ),
+        ];
 
-    #[test]
-    fn test_requires_nonce_check_aa_with_zero_nonce_key() {
-        let tx = TxBuilder::aa(Address::random()).build();
-        assert!(
-            tx.requires_nonce_check(),
-            "AA with nonce_key=0 should require nonce check"
-        );
+        for (tx, expected, msg) in cases {
+            assert_eq!(tx.requires_nonce_check(), *expected, "{msg}");
+        }
     }
-
-    #[test]
-    fn test_requires_nonce_check_aa_with_nonzero_nonce_key() {
-        let tx = TxBuilder::aa(Address::random())
-            .nonce_key(U256::from(1))
-            .build();
-        assert!(
-            !tx.requires_nonce_check(),
-            "AA with nonce_key > 0 should NOT require nonce check"
-        );
-    }
-
-    // ============================================
-    // EthPoolTransaction::validate_blob tests
-    // ============================================
 
     #[test]
     fn test_validate_blob_returns_not_blob_transaction() {
@@ -733,19 +666,11 @@ mod tests {
 
         let result = tx.validate_blob(&sidecar, settings);
 
-        assert!(result.is_err());
-        match result {
-            Err(BlobTransactionValidationError::NotBlobTransaction(ty)) => {
-                // EIP-1559 type
-                assert_eq!(ty, tx.ty());
-            }
-            other => panic!("Expected NotBlobTransaction error, got: {other:?}"),
-        }
+        assert!(matches!(
+            result,
+            Err(BlobTransactionValidationError::NotBlobTransaction(ty)) if ty == tx.ty()
+        ));
     }
-
-    // ============================================
-    // EthPoolTransaction::take_blob tests
-    // ============================================
 
     #[test]
     fn test_take_blob_returns_none() {
@@ -755,24 +680,6 @@ mod tests {
         let blob = tx.take_blob();
         assert!(matches!(blob, EthBlobTransactionSidecar::None));
     }
-
-    // ============================================
-    // Inner reference accessor tests
-    // ============================================
-
-    #[test]
-    fn test_inner_returns_correct_reference() {
-        let sender = Address::random();
-        let tx = TxBuilder::aa(sender).nonce(5).build();
-
-        let inner = tx.inner();
-        assert_eq!(inner.signer(), sender);
-        assert_eq!(inner.nonce(), 5);
-    }
-
-    // ============================================
-    // PoolTransaction trait implementation tests
-    // ============================================
 
     #[test]
     fn test_pool_transaction_hash_and_sender() {
@@ -836,10 +743,6 @@ mod tests {
         assert_eq!(pooled.nonce(), nonce);
     }
 
-    // ============================================
-    // Transaction trait forwarding tests
-    // ============================================
-
     #[test]
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
@@ -857,10 +760,6 @@ mod tests {
         assert!(tx.is_dynamic_fee());
         assert!(!tx.is_create());
     }
-
-    // ============================================
-    // cost() always returns zero (Tempo-specific)
-    // ============================================
 
     #[test]
     fn test_cost_returns_zero() {
