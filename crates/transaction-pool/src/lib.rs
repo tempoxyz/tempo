@@ -3,6 +3,10 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// Used for test-utils feature propagation
+#[cfg(feature = "test-utils")]
+use reth_ethereum_primitives as _;
+
 pub mod transaction;
 pub mod validator;
 

@@ -173,6 +173,8 @@ where
                 };
 
                 let tip = &new;
+                #[cfg(feature = "test-utils")]
+                let tip_number = tip.tip().header().number();
                 let bundle_state = tip.execution_outcome().state().state();
 
                 // 1. Evict expired AA transactions (filter to only those still in pool)
@@ -355,6 +357,10 @@ where
                     );
                     pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
                 }
+
+                // Signal that we have processed this tip (for test synchronization)
+                #[cfg(feature = "test-utils")]
+                pool.mark_keychain_processed_tip(tip_number);
             }
         }
     }
