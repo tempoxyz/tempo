@@ -8,7 +8,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::TransactionPool;
+use reth_transaction_pool::{FullTransactionEvent, TransactionPool};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::IAccountKeychain;
@@ -37,6 +37,8 @@ where
 {
     // Track valid_before timestamp -> Vec<TxHash>
     let mut expiry_map: BTreeMap<u64, Vec<TxHash>> = BTreeMap::new();
+    // Reverse mapping for expiry cleanup: tx_hash -> valid_before timestamp
+    let mut tx_to_expiry: HashMap<TxHash, u64> = HashMap::new();
 
     // Keychain revocation tracking state:
     // (account, key_id) -> Set of tx hashes using that key
@@ -45,12 +47,15 @@ where
     let mut tx_to_key: HashMap<TxHash, (Address, Address)> = HashMap::new();
 
     // Helper to track AA transactions with `valid_before` timestamps
-    let track_expiry = |map: &mut BTreeMap<u64, Vec<TxHash>>, maybe_aa_tx: Option<&AASigned>| {
+    let track_expiry = |expiry_map: &mut BTreeMap<u64, Vec<TxHash>>,
+                        tx_to_expiry: &mut HashMap<TxHash, u64>,
+                        maybe_aa_tx: Option<&AASigned>| {
         if let Some(aa_tx) = maybe_aa_tx
             && let Some(valid_before) = aa_tx.tx().valid_before
         {
             let hash = *aa_tx.hash();
-            map.entry(valid_before).or_default().push(hash);
+            expiry_map.entry(valid_before).or_default().push(hash);
+            tx_to_expiry.insert(hash, valid_before);
         }
     };
 
@@ -80,35 +85,48 @@ where
         tx_to_key.insert(tx_hash, key);
     };
 
-    // Helper to remove transactions from keychain tracking maps
+    // Helper to remove a single transaction from keychain tracking maps
     let remove_from_keychain_tracking =
         |keychain_txs: &mut HashMap<(Address, Address), HashSet<TxHash>>,
          tx_to_key: &mut HashMap<TxHash, (Address, Address)>,
-         to_remove: &[TxHash]| {
-            for tx_hash in to_remove {
-                if let Some(key) = tx_to_key.remove(tx_hash)
-                    && let Some(hashes) = keychain_txs.get_mut(&key)
-                {
-                    hashes.remove(tx_hash);
-                    if hashes.is_empty() {
-                        keychain_txs.remove(&key);
-                    }
+         tx_hash: &TxHash| {
+            if let Some(key) = tx_to_key.remove(tx_hash)
+                && let Some(hashes) = keychain_txs.get_mut(&key)
+            {
+                hashes.remove(tx_hash);
+                if hashes.is_empty() {
+                    keychain_txs.remove(&key);
                 }
             }
         };
+
+    // Helper to remove a single transaction from expiry tracking maps
+    let remove_from_expiry_tracking = |expiry_map: &mut BTreeMap<u64, Vec<TxHash>>,
+                                       tx_to_expiry: &mut HashMap<TxHash, u64>,
+                                       tx_hash: &TxHash| {
+        if let Some(valid_before) = tx_to_expiry.remove(tx_hash)
+            && let Some(hashes) = expiry_map.get_mut(&valid_before)
+        {
+            hashes.retain(|h| h != tx_hash);
+            if hashes.is_empty() {
+                expiry_map.remove(&valid_before);
+            }
+        }
+    };
 
     // Small delay to allow other tasks to initialize (skip in tests)
     #[cfg(not(feature = "test-utils"))]
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    // Subscribe to new transactions and chain events (single subscriptions for all operations)
+    // Subscribe to new transactions, transaction events, and chain events
     let mut new_txs = pool.new_transactions_listener();
+    let mut tx_events = pool.all_transactions_event_listener();
     let mut chain_events = pool.client().canonical_state_stream();
 
     // Populate tracking maps with existing transactions to prevent race conditions at start-up
     pool.all_transactions().all().for_each(|tx| {
         let maybe_aa = tx.inner().as_aa();
-        track_expiry(&mut expiry_map, maybe_aa);
+        track_expiry(&mut expiry_map, &mut tx_to_expiry, maybe_aa);
         if let Some(aa_tx) = maybe_aa {
             let tx_hash = *aa_tx.hash();
             track_keychain_tx(&mut keychain_txs, &mut tx_to_key, Some(aa_tx), tx_hash);
@@ -130,10 +148,24 @@ where
                 let maybe_aa = tx.inner().as_aa();
 
                 // Track for expiry
-                track_expiry(&mut expiry_map, maybe_aa);
+                track_expiry(&mut expiry_map, &mut tx_to_expiry, maybe_aa);
 
                 // Track for keychain revocation
                 track_keychain_tx(&mut keychain_txs, &mut tx_to_key, maybe_aa, tx_hash);
+            }
+
+            // Clean up tracking maps when transactions are removed from the pool
+            Some(event) = tx_events.next() => {
+                let tx_hash = match event {
+                    FullTransactionEvent::Mined { tx_hash, .. }
+                    | FullTransactionEvent::Discarded(tx_hash)
+                    | FullTransactionEvent::Invalid(tx_hash) => tx_hash,
+                    FullTransactionEvent::Replaced { transaction, .. } => *transaction.hash(),
+                    // Pending/Queued/Propagated don't indicate removal
+                    _ => continue,
+                };
+                remove_from_keychain_tracking(&mut keychain_txs, &mut tx_to_key, &tx_hash);
+                remove_from_expiry_tracking(&mut expiry_map, &mut tx_to_expiry, &tx_hash);
             }
 
             // Process all maintenance operations on new block commit
@@ -154,7 +186,11 @@ where
                 // 1. Evict expired AA transactions
                 let tip_timestamp = tip.tip().header().timestamp();
                 while let Some(entry) = expiry_map.first_entry() && *entry.key() <= tip_timestamp {
-                    to_remove.extend(entry.remove());
+                    let expired_hashes = entry.remove();
+                    for tx_hash in &expired_hashes {
+                        tx_to_expiry.remove(tx_hash);
+                    }
+                    to_remove.extend(expired_hashes);
                 }
 
                 let expired_count = to_remove.len();
@@ -196,7 +232,9 @@ where
                         count = revoked_txs.len(),
                         "Evicting AA transactions with revoked keychain keys"
                     );
-                    remove_from_keychain_tracking(&mut keychain_txs, &mut tx_to_key, &revoked_txs);
+                    for tx_hash in &revoked_txs {
+                        remove_from_keychain_tracking(&mut keychain_txs, &mut tx_to_key, tx_hash);
+                    }
                     to_remove.extend(revoked_txs);
                 }
 
