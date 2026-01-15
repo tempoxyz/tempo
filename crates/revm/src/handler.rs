@@ -2441,9 +2441,10 @@ mod tests {
             prop_assert!(p256_gas <= webauthn_gas, "p256 should be <= webauthn");
         }
 
-        /// Property: gas calculation monotonicity - more calldata means more gas
+        /// Property: gas calculation monotonicity - more calldata means more gas (non-zero bytes)
+        /// Non-zero bytes cost 16 gas each, so monotonicity holds for uniform non-zero calldata.
         #[test]
-        fn proptest_gas_monotonicity_calldata(
+        fn proptest_gas_monotonicity_calldata_nonzero(
             calldata_len1 in 0usize..1000,
             calldata_len2 in 0usize..1000,
         ) {
@@ -2459,6 +2460,63 @@ mod tests {
                     "Less calldata should mean less gas: len1={}, gas1={}, len2={}, gas2={}",
                     calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
             }
+        }
+
+        /// Property: gas calculation monotonicity - more calldata means more gas (zero bytes)
+        /// Zero bytes cost 4 gas each, so monotonicity holds for uniform zero calldata.
+        #[test]
+        fn proptest_gas_monotonicity_calldata_zero(
+            calldata_len1 in 0usize..1000,
+            calldata_len2 in 0usize..1000,
+        ) {
+            let gas1 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len1])));
+            let gas2 = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len2])));
+
+            if calldata_len1 <= calldata_len2 {
+                prop_assert!(gas1.initial_gas <= gas2.initial_gas,
+                    "More zero-byte calldata should mean more gas: len1={}, gas1={}, len2={}, gas2={}",
+                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+            } else {
+                prop_assert!(gas1.initial_gas >= gas2.initial_gas,
+                    "Less zero-byte calldata should mean less gas: len1={}, gas1={}, len2={}, gas2={}",
+                    calldata_len1, gas1.initial_gas, calldata_len2, gas2.initial_gas);
+            }
+        }
+
+        /// Property: zero-byte calldata costs less gas than non-zero byte calldata of same length.
+        /// Zero bytes cost 4 gas each, non-zero bytes cost 16 gas each.
+        #[test]
+        fn proptest_zero_bytes_cheaper_than_nonzero(calldata_len in 1usize..1000) {
+            let zero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len])));
+            let nonzero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len])));
+
+            prop_assert!(zero_gas.initial_gas < nonzero_gas.initial_gas,
+                "Zero-byte calldata should cost less: len={}, zero_gas={}, nonzero_gas={}",
+                calldata_len, zero_gas.initial_gas, nonzero_gas.initial_gas);
+        }
+
+        /// Property: mixed calldata gas is bounded by all-zero and all-nonzero extremes.
+        /// Gas for mixed calldata should be between gas for all-zero and all-nonzero of same length.
+        #[test]
+        fn proptest_mixed_calldata_gas_bounded(
+            calldata_len in 1usize..500,
+            nonzero_ratio in 0u8..=100,
+        ) {
+            // Create mixed calldata where nonzero_ratio% of bytes are non-zero
+            let calldata: Vec<u8> = (0..calldata_len)
+                .map(|i| if (i * 100 / calldata_len) < nonzero_ratio as usize { 1u8 } else { 0u8 })
+                .collect();
+
+            let mixed_gas = compute_aa_gas(&make_single_call_env(Bytes::from(calldata)));
+            let zero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![0u8; calldata_len])));
+            let nonzero_gas = compute_aa_gas(&make_single_call_env(Bytes::from(vec![1u8; calldata_len])));
+
+            prop_assert!(mixed_gas.initial_gas >= zero_gas.initial_gas,
+                "Mixed calldata gas should be >= all-zero gas: mixed={}, zero={}",
+                mixed_gas.initial_gas, zero_gas.initial_gas);
+            prop_assert!(mixed_gas.initial_gas <= nonzero_gas.initial_gas,
+                "Mixed calldata gas should be <= all-nonzero gas: mixed={}, nonzero={}",
+                mixed_gas.initial_gas, nonzero_gas.initial_gas);
         }
 
         /// Property: gas calculation monotonicity - more calls means more gas
