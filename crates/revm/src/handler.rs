@@ -37,7 +37,7 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
@@ -647,6 +647,13 @@ where
             keychain.set_tx_origin(tx.caller())
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+        // Validate fee token has TIP20 prefix before attempting to read balance.
+        // This prevents panic in get_token_balance if an invalid token bypassed earlier validation
+        // (e.g., when max_balance_spending is zero and it's not a subblock transaction).
+        if !is_tip20_prefix(self.fee_token) {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
+        }
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
