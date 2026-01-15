@@ -1501,9 +1501,11 @@ mod tests {
             "Test requires a non-TIP20 address"
         );
 
-        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
-        handler.fee_token = invalid_token;
-        handler.fee_payer = Address::random();
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler {
+            fee_token: invalid_token,
+            fee_payer: Address::random(),
+            ..Default::default()
+        };
 
         let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
             Context::mainnet()
