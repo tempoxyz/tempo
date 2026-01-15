@@ -502,6 +502,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try vmExec.executeTransaction(signedTx) {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
         } catch {
+            // Sync ghost state if on-chain nonce changed (nonce consumed in pre-execution)
+            uint64 actualNonce = nonce.getNonce(ctx.sender, ctx.nonceKey);
+            if (actualNonce > ctx.currentNonce) {
+                ghost_2dNonce[ctx.sender][ctx.nonceKey] = actualNonce;
+                ghost_2dNonceUsed[ctx.sender][ctx.nonceKey] = true;
+            }
             ghost_totalTxReverted++;
         }
     }
