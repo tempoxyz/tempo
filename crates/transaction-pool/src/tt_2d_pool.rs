@@ -625,6 +625,13 @@ impl AA2dPool {
                     break;
                 }
             }
+
+            // If no transaction was found at the on-chain nonce (next_nonce unchanged),
+            // remove any stale independent transaction entry for this seq_id.
+            // This handles reorgs where the on-chain nonce decreases.
+            if next_nonce == on_chain_nonce {
+                self.independent_transactions.remove(&sender_id);
+            }
         }
 
         // actually remove mined transactions
@@ -3423,6 +3430,94 @@ mod tests {
         assert_eq!(queued, 0);
 
         assert_eq!(pool.independent_transactions.len(), 2);
+
+        pool.assert_invariants();
+    }
+
+    /// Test reorg handling when on-chain nonce decreases.
+    ///
+    /// When a reorg occurs, the canonical nonce can decrease. If no transaction
+    /// exists at the new on-chain nonce, `independent_transactions` must be cleared.
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn reorg_nonce_decrease_clears_stale_independent_transaction(nonce_key: U256) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Step 1: Add txs with nonces [3, 4, 5], starting with on_chain_nonce=3
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx5_hash = *tx5.hash();
+
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 3)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 3)
+            .unwrap();
+        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 3)
+            .unwrap();
+
+        // Verify initial state: all 3 txs pending, tx3 is independent
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "All transactions should be pending");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .nonce(),
+            3,
+            "tx3 should be independent initially"
+        );
+        pool.assert_invariants();
+
+        // Step 2: Simulate mining of tx3 and tx4, on_chain_nonce becomes 5
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 5u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        assert_eq!(mined.len(), 2, "tx3 and tx4 should be mined");
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // Now tx5 should be the only tx in pool and be independent
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "Only tx5 should remain pending");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .hash(),
+            &tx5_hash,
+            "tx5 should be independent after mining"
+        );
+        pool.assert_invariants();
+
+        // Step 3: Simulate reorg - nonce decreases back to 3
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 3u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        // No transactions should be mined (tx5.nonce=5 >= on_chain_nonce=3)
+        assert!(mined.is_empty(), "No transactions should be mined");
+        // No promotions expected
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // tx5 should still be in the pool but is now QUEUED (gap at nonces 3, 4)
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0, "tx5 should not be pending (nonce gap)");
+        assert_eq!(queued, 1, "tx5 should be queued");
+
+        // No tx at on_chain_nonce=3, so independent_transactions should be cleared
+        assert!(
+            !pool.independent_transactions.contains_key(&seq_id),
+            "independent_transactions should not contain stale entry after reorg"
+        );
 
         pool.assert_invariants();
     }
