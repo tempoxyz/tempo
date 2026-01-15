@@ -213,7 +213,7 @@ mod tests {
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         nonce::NonceManager,
-        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
     };
@@ -768,8 +768,6 @@ mod tests {
         Ok(())
     }
 
-    use tempo_precompiles::storage::Handler;
-
     #[test]
     fn test_tempo_tx_initial_gas() -> eyre::Result<()> {
         let key_pair = P256KeyPair::random();
@@ -785,12 +783,12 @@ mod tests {
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
-        _ = StorageCtx::enter(&mut provider, || {
+        StorageCtx::enter(&mut provider, || {
             TIP20Setup::path_usd(caller)
                 .with_issuer(caller)
                 .with_mint(caller, U256::from(100_000))
                 .apply()
-        });
+        })?;
 
         drop(provider);
 
@@ -814,14 +812,12 @@ mod tests {
                 .balances
                 .at(caller)
                 .read()
-        })
-        .unwrap();
+        })?;
         drop(provider);
 
         assert_eq!(slot, U256::from(100_000));
 
         let result1 = evm.transact_commit(tx_env1)?;
-        //println!("{result1:#?}");
         assert!(result1.is_success());
         assert_eq!(result1.gas_used(), 28_671);
 
@@ -834,8 +830,7 @@ mod tests {
                 .balances
                 .at(caller)
                 .read()
-        })
-        .unwrap();
+        })?;
         drop(provider);
 
         assert_eq!(slot, U256::from(97_132));
@@ -854,8 +849,6 @@ mod tests {
         let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
 
         let result2 = evm.transact_commit(tx_env2)?;
-
-        //println!("{result2:#?}");
         assert!(result2.is_success());
         assert_eq!(result2.gas_used(), 31_286);
 
@@ -868,8 +861,7 @@ mod tests {
                 .balances
                 .at(caller)
                 .read()
-        })
-        .unwrap();
+        })?;
         drop(provider);
 
         assert_eq!(slot, U256::from(94_003));
