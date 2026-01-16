@@ -434,7 +434,9 @@ mod tests {
     // ==================== TIP-1000 EVM Configuration Tests ====================
 
     /// Helper to create EvmEnv with a specific hardfork spec.
-    fn evm_env_with_spec(spec: tempo_chainspec::hardfork::TempoHardfork) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
+    fn evm_env_with_spec(
+        spec: tempo_chainspec::hardfork::TempoHardfork,
+    ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         let mut env = EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::default();
         env.cfg_env.spec = spec;
         env

@@ -1668,14 +1668,14 @@ mod tests {
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
 
         let result = evm.transact_commit(tx_env)?;
-        assert!(result.is_success(), "Multiple SSTORE transaction should succeed");
+        assert!(
+            result.is_success(),
+            "Multiple SSTORE transaction should succeed"
+        );
 
         // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
         let gas_used = result.gas_used();
-        assert_eq!(
-            gas_used, 783069,
-            "T1 multiple SSTOREs gas should be exact"
-        );
+        assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
 
         Ok(())
     }
@@ -1707,10 +1707,7 @@ mod tests {
 
         // With TIP-1000: TX create cost (250k) + new account for sender (250k) + base costs
         let gas_used = result.gas_used();
-        assert_eq!(
-            gas_used, 778720,
-            "T1 CREATE contract gas should be exact"
-        );
+        assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
 
         Ok(())
     }
@@ -1753,14 +1750,8 @@ mod tests {
         let gas_triple = result2.gas_used();
 
         // Three calls should cost more than single call
-        assert_eq!(
-            gas_single, 278738,
-            "T1 single call gas should be exact"
-        );
-        assert_eq!(
-            gas_triple, 284102,
-            "T1 triple call gas should be exact"
-        );
+        assert_eq!(gas_single, 278738, "T1 single call gas should be exact");
+        assert_eq!(gas_triple, 284102, "T1 triple call gas should be exact");
         assert!(
             gas_triple > gas_single,
             "3 calls should cost more than 1 call"
@@ -1816,10 +1807,7 @@ mod tests {
 
         // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
         let gas_used = result.gas_used();
-        assert_eq!(
-            gas_used, 280866,
-            "T1 SLOAD cold/warm gas should be exact"
-        );
+        assert_eq!(gas_used, 280866, "T1 SLOAD cold/warm gas should be exact");
 
         Ok(())
     }
