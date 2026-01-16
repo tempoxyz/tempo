@@ -479,9 +479,15 @@ impl AA2dPool {
 
     /// Returns an iterator over all senders in this pool.
     pub(crate) fn senders_iter(&self) -> impl Iterator<Item = &Address> {
-        self.by_id
+        let regular = self
+            .by_id
             .values()
-            .map(|tx| tx.inner.transaction.sender_ref())
+            .map(|tx| tx.inner.transaction.sender_ref());
+        let expiring = self
+            .expiring_nonce_txs
+            .values()
+            .map(|tx| tx.transaction.sender_ref());
+        regular.chain(expiring)
     }
 
     /// Returns all mutable transactions that _follow_ after the given id but have the same sender.
@@ -621,7 +627,14 @@ impl AA2dPool {
             .get_transactions_by_sender_iter(sender_id)
             .collect::<Vec<_>>();
         for tx in txs {
-            if let Some(tx) = tx
+            // Handle expiring nonce transactions separately - they are stored by hash
+            if tx.transaction.is_expiring_nonce() {
+                let hash = *tx.hash();
+                if self.expiring_nonce_txs.remove(&hash).is_some() {
+                    self.by_hash.remove(&hash);
+                    removed.push(tx);
+                }
+            } else if let Some(tx) = tx
                 .transaction
                 .aa_transaction_id()
                 .and_then(|id| self.remove_transaction_by_id(&id))
@@ -850,11 +863,13 @@ impl AA2dPool {
             self.independent_transactions.len(),
             self.by_id.len()
         );
+        // by_hash contains both regular 2D nonce txs (in by_id) and expiring nonce txs
         assert_eq!(
-            self.by_id.len(),
+            self.by_id.len() + self.expiring_nonce_txs.len(),
             self.by_hash.len(),
-            "by_id.len() ({}) != by_hash.len() ({})",
+            "by_id.len() ({}) + expiring_nonce_txs.len() ({}) != by_hash.len() ({})",
             self.by_id.len(),
+            self.expiring_nonce_txs.len(),
             self.by_hash.len()
         );
 
@@ -909,6 +924,15 @@ impl AA2dPool {
                 tx.hash()
             );
 
+            // Expiring nonce txs are stored in expiring_nonce_txs, not by_id
+            if tx.transaction.is_expiring_nonce() {
+                assert!(
+                    self.expiring_nonce_txs.contains_key(hash),
+                    "Expiring nonce transaction with hash {hash:?} in by_hash but not in expiring_nonce_txs"
+                );
+                continue;
+            }
+
             // Transaction in by_hash should exist in by_id
             let id = tx
                 .transaction
@@ -961,15 +985,29 @@ impl AA2dPool {
         }
 
         // Verify pending/queued consistency
+        // pending_and_queued_txn_count includes expiring nonce txs in pending count
         let (pending_count, queued_count) = self.pending_and_queued_txn_count();
         assert_eq!(
             pending_count + queued_count,
-            self.by_id.len(),
-            "Pending ({}) + queued ({}) != total transactions ({})",
+            self.by_id.len() + self.expiring_nonce_txs.len(),
+            "Pending ({}) + queued ({}) != total transactions (by_id: {} + expiring: {})",
             pending_count,
             queued_count,
-            self.by_id.len()
+            self.by_id.len(),
+            self.expiring_nonce_txs.len()
         );
+
+        // Verify expiring nonce txs integrity
+        for (hash, pending_tx) in &self.expiring_nonce_txs {
+            assert!(
+                self.by_hash.contains_key(hash),
+                "Expiring nonce tx {hash:?} not in by_hash"
+            );
+            assert!(
+                pending_tx.transaction.transaction.is_expiring_nonce(),
+                "Transaction in expiring_nonce_txs is not an expiring nonce tx"
+            );
+        }
     }
 }
 
@@ -1050,6 +1088,12 @@ impl Iterator for BestAA2dTransactions {
 
 impl BestTransactions for BestAA2dTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+        // Skip invalidation for expiring nonce transactions - they are independent
+        // and should not block other expiring nonce txs from the same sender
+        if transaction.transaction.is_expiring_nonce() {
+            return;
+        }
+
         if let Some(id) = transaction.transaction.aa_transaction_id() {
             self.invalid.insert(id.seq_id);
         }
