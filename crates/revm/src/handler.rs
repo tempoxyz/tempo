@@ -536,33 +536,33 @@ where
 
         // If it's an AA transaction with authorization list, we need to apply it manually
         // since the default implementation only checks for TransactionType::Eip7702
-        if has_aa_auth_list {
+        let refunded_gas = if has_aa_auth_list {
             let chain_id = ctx.cfg().chain_id();
 
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
 
-            let mut refunded_gas = apply_auth_list::<_, Self::Error>(
+            apply_auth_list::<_, Self::Error>(
                 chain_id,
                 tempo_tx_env
                     .tempo_authorization_list
                     .iter()
                     .filter(|auth| !auth.signature().is_keychain()),
                 journal,
-            )?;
+            )?
+        } else {
+            // For standard EIP-7702 transactions, use the default implementation
+            pre_execution::apply_eip7702_auth_list::<_, Self::Error>(evm.ctx())?
+        };
 
-            // TIP-1000: State Creation Cost Increase
-            // Authorization lists: There is no refund if the account already exists
-            if spec.t1_active() {
-                refunded_gas = 0;
-            }
-
-            return Ok(refunded_gas);
+        // TIP-1000: State Creation Cost Increase
+        // Authorization lists: There is no refund if the account already existss
+        if spec.t1_active() {
+            return Ok(0);
         }
 
-        // For standard EIP-7702 transactions, use the default implementation
-        pre_execution::apply_eip7702_auth_list(evm.ctx())
+        Ok(refunded_gas)
     }
 
     #[inline]
