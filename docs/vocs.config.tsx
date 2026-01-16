@@ -56,8 +56,12 @@ function getTipsData() {
     .filter((t) => t.id && t.title)
 }
 
+const baseUrl = process.env.VERCEL_URL
+  ? `https://${process.env.VERCEL_URL}`
+  : 'https://docs.tempo.xyz'
+
 export default defineConfig({
-  baseUrl: 'https://docs.tempo.xyz',
+  baseUrl,
   head: () => (
     <>
       <meta
@@ -128,12 +132,12 @@ export default defineConfig({
     </>
   ),
   ogImageUrl: {
-    '/': 'https://docs.tempo.xyz/og-docs.png',
-    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/': `${baseUrl}/og-docs.png`,
+    '/learn': `${baseUrl}/api/og?title=%title&description=%description`,
+    '/quickstart': `${baseUrl}/api/og?title=%title&description=%description`,
+    '/guide': `${baseUrl}/api/og?title=%title&description=%description`,
+    '/protocol': `${baseUrl}/api/og?title=%title&description=%description`,
+    '/sdk': `${baseUrl}/api/og?title=%title&description=%description`,
   },
   title: 'Tempo',
   titleTemplate: '%s | Tempo Docs',
