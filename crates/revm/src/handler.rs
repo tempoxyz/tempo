@@ -2,7 +2,7 @@
 
 use std::{cmp::Ordering, fmt::Debug};
 
-use alloy_primitives::{Address, Bytes, TxKind, U256};
+use alloy_primitives::{Address, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -20,7 +20,7 @@ use revm::{
     },
     inspector::{Inspector, InspectorHandler},
     interpreter::{
-        CallOutcome, CreateOutcome, Gas, InitialAndFloorGas, InstructionResult, InterpreterResult,
+        Gas, InitialAndFloorGas,
         gas::{
             COLD_SLOAD_COST, SSTORE_SET, STANDARD_TOKEN_COST, WARM_SSTORE_RESET,
             get_tokens_in_calldata_istanbul,
@@ -1293,6 +1293,7 @@ where
     DB: alloy_evm::Database,
 {
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
+    let gas_limit = tx.gas_limit();
     let gas_params = cfg.gas_params();
 
     // This function should only be called for AA transactions
@@ -1312,7 +1313,48 @@ where
     }
 
     // Calculate batch intrinsic gas using helper
-    calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list()).map_err(Into::into)
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list())?;
+
+    // Calculate 2D nonce gas if nonce_key is non-zero
+    // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
+    let nonce_2d_gas = if !aa_env.nonce_key.is_zero() {
+        if tx.nonce() == 0 {
+            // New key - cold SLOAD + SSTORE set (0 -> non-zero)
+            NEW_NONCE_KEY_GAS
+        } else {
+            // Existing key - cold SLOAD + warm SSTORE reset
+            EXISTING_NONCE_KEY_GAS
+        }
+    } else {
+        0
+    };
+
+    // Add 2D nonce gas to initial gas
+    batch_gas.initial_gas += nonce_2d_gas;
+
+    if evm.ctx.cfg.is_eip7623_disabled() {
+        batch_gas.floor_gas = 0u64;
+    }
+
+    // Validate gas limit is sufficient for initial gas
+    if gas_limit < batch_gas.initial_gas {
+        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+            gas_limit,
+            intrinsic_gas: batch_gas.initial_gas,
+        }
+        .into());
+    }
+
+    // Validate floor gas (Prague+)
+    if !evm.ctx.cfg.is_eip7623_disabled() && gas_limit < batch_gas.floor_gas {
+        return Err(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+            gas_limit,
+            intrinsic_gas: batch_gas.floor_gas,
+        }
+        .into());
+    }
+
+    Ok(batch_gas)
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
@@ -1402,18 +1444,12 @@ where
 /// Helper function to create a frame result for an out of gas error.
 ///
 /// Use native fn when new revm version is released.
-/// https://github.com/bluealloy/revm/pull/3308
 #[inline]
 fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
-    let oog_result = InterpreterResult::new(
-        InstructionResult::OutOfGas,
-        Bytes::new(),
-        Gas::new_spent(gas_limit),
-    );
     if kind.is_call() {
-        FrameResult::Call(CallOutcome::new(oog_result, 0..0))
+        FrameResult::new_call_oog(gas_limit, 0..0)
     } else {
-        FrameResult::Create(CreateOutcome::new(oog_result, None))
+        FrameResult::new_create_oog(gas_limit)
     }
 }
 

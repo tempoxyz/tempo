@@ -1430,6 +1430,75 @@ mod tests {
         Ok(())
     }
 
+    // ==================== TIP-1000 EVM Configuration Tests ====================
+
+    /// Test that TempoEvm initializes `additional_initial_gas` and `initial_gas` to 0.
+    #[test]
+    fn test_tempo_evm_initial_fields() {
+        let evm = create_evm();
+
+        assert_eq!(
+            evm.additional_initial_gas, 0,
+            "additional_initial_gas should initialize to 0"
+        );
+        assert_eq!(evm.initial_gas, 0, "initial_gas should initialize to 0");
+        assert_eq!(
+            evm.collected_fee,
+            U256::ZERO,
+            "collected_fee should initialize to 0"
+        );
+        assert!(evm.logs.is_empty(), "logs should initialize to empty");
+    }
+
+    /// Test that TempoEvm preserves initial fields when using with_inspector.
+    #[test]
+    fn test_tempo_evm_with_inspector_preserves_fields() {
+        let evm = create_evm();
+
+        // Use with_inspector to get a new EVM with CountInspector
+        let evm_with_inspector = evm.with_inspector(CountInspector::new());
+
+        // Verify fields are still initialized correctly
+        assert_eq!(
+            evm_with_inspector.additional_initial_gas, 0,
+            "additional_initial_gas should be 0 after with_inspector"
+        );
+        assert_eq!(
+            evm_with_inspector.initial_gas, 0,
+            "initial_gas should be 0 after with_inspector"
+        );
+    }
+
+    /// Test that take_logs clears logs and returns them.
+    #[test]
+    fn test_tempo_evm_take_logs() {
+        use alloy_primitives::Log;
+
+        let mut evm = create_evm();
+
+        // Manually add some logs
+        evm.logs.push(Log::new_unchecked(
+            Address::repeat_byte(0x01),
+            vec![],
+            Bytes::new(),
+        ));
+        evm.logs.push(Log::new_unchecked(
+            Address::repeat_byte(0x02),
+            vec![],
+            Bytes::new(),
+        ));
+
+        assert_eq!(evm.logs.len(), 2);
+
+        // Take logs
+        let taken_logs = evm.take_logs();
+
+        assert_eq!(taken_logs.len(), 2, "Should return 2 logs");
+        assert!(evm.logs.is_empty(), "Logs should be cleared after take");
+    }
+
+    // ==================== End TIP-1000 Tests ====================
+
     /// Test system call functions and inspector management.
     /// Tests `system_call_one_with_caller`, `inspect_one_system_call_with_caller`, and `set_inspector`.
     #[test]
