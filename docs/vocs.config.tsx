@@ -259,6 +259,10 @@ export default defineConfig({
                 link: '/guide/payments/accept-a-payment',
               },
               {
+                text: 'Attach a transfer memo',
+                link: '/guide/payments/transfer-memos',
+              },
+              {
                 text: 'Pay fees in any stablecoin',
                 link: '/guide/payments/pay-fees-in-any-stablecoin',
               },
@@ -476,8 +480,8 @@ export default defineConfig({
                 link: '/protocol/blockspace/payment-lane-specification',
               },
               {
-                text: 'Sub-block Specification',
-                link: '/protocol/blockspace/sub-block-specification',
+                text: 'Subblock Specification',
+                link: '/protocol/blockspace/subblock-specification',
               },
             ],
           },

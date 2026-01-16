@@ -22,7 +22,7 @@ use tempo_primitives::TempoReceipt;
 use tempo_revm::IntoAddress;
 
 /// Number of recent validator tokens to track.
-const LAST_SEEN_TOKENS_WINDOW: usize = 100;
+const LAST_SEEN_TOKENS_WINDOW: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
