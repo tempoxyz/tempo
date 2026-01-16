@@ -130,12 +130,6 @@ jobs:
       - name: Re-execute snapshot
         run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc) --to 4500000
 
-      - name: Cleanup before cache save
-        if: always()
-        run: |
-          rm -rf snap-rexec
-          rm -rf target
-
   test-success:
     name: test success
     runs-on: ubuntu-latest
