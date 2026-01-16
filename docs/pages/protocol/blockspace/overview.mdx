@@ -1,6 +1,6 @@
 ---
 title: Blockspace Overview
-description: Technical specification for Tempo block structure including header fields, payment lanes, sub-blocks, and system transaction ordering.
+description: Technical specification for Tempo block structure including header fields, payment lanes, subblocks, and system transaction ordering.
 ---
 
 # Blockspace Overview
@@ -11,7 +11,7 @@ This specification defines the structure of valid blocks in the Tempo blockchain
 
 ## Motivation
 
-Tempo blocks extend the Ethereum block format in multiple ways: there are new header fields to account for payment lanes and sub-blocks, and system transactions are added to the block body for the fee AMM and other protocol operations. This specification contains all the modifications to the block format.
+Tempo blocks extend the Ethereum block format in multiple ways: there are new header fields to account for payment lanes and subblocks, and system transactions are added to the block body for the fee AMM and other protocol operations. This specification contains all the modifications to the block format.
 
 ## Specification
 
@@ -26,7 +26,7 @@ pub struct Header {
 }
 ```
 - `inner` is the canonical Ethereum header (parent_hash, state_root, gas_limit, etc.).
-- `general_gas_limit` and `shared_gas_limit` carve up the canonical `gas_limit` for payment and sub-block gas (see [payment lane specification](/protocol/blockspace/payment-lane-specification) and [sub-block specification](/protocol/blockspace/sub-block-specification)).
+- `general_gas_limit` and `shared_gas_limit` carve up the canonical `gas_limit` for payment and subblock gas (see [payment lane specification](/protocol/blockspace/payment-lane-specification) and [subblock specification](/protocol/blockspace/subblock-specification)).
 - `timestamp_millis_part` stores the sub‑second component; the full timestamp is `inner.timestamp * 1000 + timestamp_millis_part` .
 
 ### Block body
@@ -42,4 +42,4 @@ The block body in Tempo retains the canonical Ethereum block body structure, wit
 
 A valid tempo block must contain the following system transactions:
   - **Rewards Registry (start-of-block)** — must be the first transaction in the block body; refreshes validator rewards metadata before user transactions begin.  Detailed specification [here](/protocol/tip20-rewards/spec).
-  - **Subblock Metadata (end-of-block)** — contains metadata about the sub-blocks included in the block. Detailed specification [here](/protocol/blockspace/sub-block-specification).
+  - **Subblock Metadata (end-of-block)** — contains metadata about the subblocks included in the block. Detailed specification [here](/protocol/blockspace/subblock-specification).

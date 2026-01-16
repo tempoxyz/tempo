@@ -31,10 +31,9 @@ async fn consensus_subscribe_and_query_finalization() {
 
     let executor_handle = std::thread::spawn(move || {
         let executor = Runner::from(cfg);
-        executor.start(|context| async move {
-            let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup).await;
-            validators[0].start().await;
+        executor.start(|mut context| async move {
+            let (mut validators, _execution_runtime) = setup_validators(&mut context, setup).await;
+            validators[0].start(&context).await;
             wait_for_height(&context, initial_height).await;
 
             let execution = validators[0].execution();
