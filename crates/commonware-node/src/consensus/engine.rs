@@ -66,10 +66,7 @@ const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
-pub struct Builder<TBlocker, TContext, TPeerManager> {
-    /// The contextg
-    pub context: TContext,
-
+pub struct Builder<TBlocker, TPeerManager> {
     pub fee_recipient: alloy_primitives::Address,
 
     pub execution_node: Option<TempoFullNode>,
@@ -97,18 +94,9 @@ pub struct Builder<TBlocker, TContext, TPeerManager> {
     pub feed_state: crate::feed::FeedStateHandle,
 }
 
-impl<TBlocker, TContext, TPeerManager> Builder<TBlocker, TContext, TPeerManager>
+impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
-    TContext: Clock
-        + governor::clock::Clock
-        + Rng
-        + CryptoRng
-        + Pacer
-        + Spawner
-        + Storage
-        + Metrics
-        + Network,
     TPeerManager:
         commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
 {
@@ -117,7 +105,21 @@ where
         self
     }
 
-    pub async fn try_init(self) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>> {
+    pub async fn try_init<TContext>(
+        self,
+        context: TContext,
+    ) -> eyre::Result<Engine<TBlocker, TContext, TPeerManager>>
+    where
+        TContext: Clock
+            + governor::clock::Clock
+            + Rng
+            + CryptoRng
+            + Pacer
+            + Spawner
+            + Storage
+            + Metrics
+            + Network,
+    {
         let execution_node = self
             .execution_node
             .clone()
@@ -135,7 +137,7 @@ where
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
-            self.context.with_label("broadcast"),
+            context.with_label("broadcast"),
             buffered::Config {
                 public_key: self.signer.public_key(),
                 mailbox_size: self.mailbox_size,
@@ -167,7 +169,7 @@ where
         const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
         let start = Instant::now();
         let finalizations_by_height = immutable::Archive::init(
-            self.context.with_label("finalizations_by_height"),
+            context.with_label("finalizations_by_height"),
             immutable::Config {
                 metadata_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-metadata",
@@ -217,7 +219,7 @@ where
         const FINALIZED_BLOCKS: &str = "finalized_blocks";
         let start = Instant::now();
         let finalized_blocks = immutable::Archive::init(
-            self.context.with_label("finalized_blocks"),
+            context.with_label("finalized_blocks"),
             immutable::Config {
                 metadata_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-metadata",
@@ -264,7 +266,7 @@ where
         // TODO(janis): forward `last_finalized_height` to application so it can
         // forward missing blocks to EL.
         let (marshal, marshal_mailbox, last_finalized_height) = marshal::Actor::init(
-            self.context.with_label("marshal"),
+            context.with_label("marshal"),
             finalizations_by_height,
             finalized_blocks,
             marshal::Config {
@@ -292,7 +294,7 @@ where
         .await;
 
         let subblocks = subblocks::Actor::new(subblocks::Config {
-            context: self.context.clone(),
+            context: context.clone(),
             signer: self.signer.clone(),
             scheme_provider: scheme_provider.clone(),
             node: execution_node.clone(),
@@ -303,13 +305,13 @@ where
         });
 
         let (feed, feed_mailbox) = crate::feed::init(
-            self.context.with_label("feed"),
+            context.with_label("feed"),
             marshal_mailbox.clone(),
             self.feed_state,
         );
 
         let (executor, executor_mailbox) = crate::executor::init(
-            self.context.with_label("executor"),
+            context.with_label("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
                 last_finalized_height,
@@ -319,7 +321,7 @@ where
         .wrap_err("failed initialization executor actor")?;
 
         let (application, application_mailbox) = application::init(super::application::Config {
-            context: self.context.with_label("application"),
+            context: context.with_label("application"),
             fee_recipient: self.fee_recipient,
             mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
@@ -334,6 +336,7 @@ where
         .wrap_err("failed initializing application actor")?;
 
         let (epoch_manager, epoch_manager_mailbox) = epoch::manager::init(
+            context.with_label("epoch_manager"),
             epoch::manager::Config {
                 application: application_mailbox.clone(),
                 blocker: self.blocker.clone(),
@@ -352,11 +355,10 @@ where
                 views_to_track: ViewDelta::new(self.views_to_track),
                 views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
             },
-            self.context.with_label("epoch_manager"),
         );
 
         let (dkg_manager, dkg_manager_mailbox) = dkg::manager::init(
-            self.context.with_label("dkg_manager"),
+            context.with_label("dkg_manager"),
             dkg::manager::Config {
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
@@ -374,7 +376,7 @@ where
         .wrap_err("failed initializing dkg manager")?;
 
         Ok(Engine {
-            context: ContextCell::new(self.context),
+            context: ContextCell::new(context),
 
             broadcast,
             broadcast_mailbox,
