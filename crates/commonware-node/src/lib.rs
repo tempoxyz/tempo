@@ -89,8 +89,6 @@ pub async fn run_consensus_stack(
         .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
 
     let consensus_engine = crate::consensus::engine::Builder {
-        context: context.with_label("engine"),
-
         fee_recipient,
 
         execution_node: Some(execution_node),
@@ -137,7 +135,7 @@ pub async fn run_consensus_stack(
 
         feed_state,
     }
-    .try_init()
+    .try_init(context.with_label("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 

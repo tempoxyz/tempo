@@ -619,7 +619,7 @@ When a TempoTransaction is received, the protocol:
 4. **Validates Key Authorization** (for Access Keys)
    - Queries precompile: `getKey(account, keyId)` returns `KeyInfo`
    - Checks key is active (not revoked)
-   - Checks expiry: `current_timestamp < expiry` (or `expiry == 0` for never expires)
+   - Checks expiry: `current_timestamp < expiry` (use `u64::MAX` for keys that never expire)
    - Rejects transaction if validation fails
 
 ##### Authorization Hierarchy Enforcement

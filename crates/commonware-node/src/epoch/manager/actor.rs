@@ -322,7 +322,7 @@ where
         self.config.scheme_provider.register(epoch, scheme.clone());
 
         let engine = simplex::Engine::new(
-            self.context.with_label("consensus_engine"),
+            self.context.with_label(&format!("simplex_epoch_{epoch}")),
             simplex::Config {
                 scheme,
                 elector: elector::Random,
