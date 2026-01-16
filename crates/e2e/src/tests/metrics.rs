@@ -18,11 +18,11 @@ fn no_duplicate_metrics() {
     let cfg = Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
-    executor.start(|context| async move {
+    executor.start(|mut context| async move {
         // Setup and run all validators.
-        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
 
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         'wait_for_epoch: loop {
             let metrics = context.encode();
