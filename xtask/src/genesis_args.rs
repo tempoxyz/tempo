@@ -14,7 +14,7 @@ use commonware_cryptography::{
     ed25519::PublicKey,
 };
 use commonware_math::algebra::Random as _;
-use commonware_utils::{TryFromIterator as _, ordered};
+use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use eyre::{WrapErr as _, eyre};
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
@@ -872,7 +872,7 @@ fn generate_consensus_config(
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
 
-    let (output, shares) = dkg::deal(
+    let (output, shares) = dkg::deal::<_, _, N3f1>(
         &mut rng,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),

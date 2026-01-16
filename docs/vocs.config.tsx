@@ -1,3 +1,5 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
@@ -5,6 +7,54 @@ import iconsResolver from 'unplugin-icons/resolver'
 import icons from 'unplugin-icons/vite'
 import { loadEnv } from 'vite'
 import { defineConfig } from 'vocs'
+
+function getTipsData() {
+  const tipsDir = path.join(process.cwd(), 'pages/protocol/tips')
+  if (!fs.existsSync(tipsDir)) return []
+
+  const files = fs
+    .readdirSync(tipsDir)
+    .filter((file) => file.match(/^tip-\d+\.mdx$/))
+    .sort((a, b) => {
+      const numA = Number.parseInt(a.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      const numB = Number.parseInt(b.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      return numA - numB
+    })
+
+  return files
+    .map((file) => {
+      const content = fs.readFileSync(path.join(tipsDir, file), 'utf-8')
+      const lines = content.split('\n')
+
+      let title = ''
+      let tipId = ''
+      let status = 'Draft'
+
+      for (const line of lines) {
+        const headingMatch = line.match(/^#\s+(?:TIP-\d+:\s*)?(.+)$/)
+        if (headingMatch?.[1] && !title) title = headingMatch[1].trim()
+
+        const tipIdMatch = line.match(/\*\*TIP ID\*\*:\s*(TIP-\d+)/)
+        if (tipIdMatch?.[1]) tipId = tipIdMatch[1]
+
+        const statusMatch = line.match(/\*\*Status\*\*:\s*(\w+)/)
+        if (statusMatch?.[1]) status = statusMatch[1]
+      }
+
+      if (!tipId) {
+        const m = file.match(/tip-(\d+)/)
+        if (m) tipId = `TIP-${m[1]}`
+      }
+
+      return {
+        id: tipId,
+        title,
+        status,
+        fileName: file,
+      }
+    })
+    .filter((t) => t.id && t.title)
+}
 
 export default defineConfig({
   baseUrl: 'https://docs.tempo.xyz',
@@ -207,6 +257,10 @@ export default defineConfig({
               {
                 text: 'Accept a payment',
                 link: '/guide/payments/accept-a-payment',
+              },
+              {
+                text: 'Attach a transfer memo',
+                link: '/guide/payments/transfer-memos',
               },
               {
                 text: 'Pay fees in any stablecoin',
@@ -426,8 +480,8 @@ export default defineConfig({
                 link: '/protocol/blockspace/payment-lane-specification',
               },
               {
-                text: 'Sub-block Specification',
-                link: '/protocol/blockspace/sub-block-specification',
+                text: 'Subblock Specification',
+                link: '/protocol/blockspace/subblock-specification',
               },
             ],
           },
@@ -468,6 +522,10 @@ export default defineConfig({
                 link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
               },
             ],
+          },
+          {
+            text: 'TIPs',
+            link: '/protocol/tips',
           },
         ],
       },
@@ -696,6 +754,20 @@ export default defineConfig({
         },
   vite: {
     plugins: [
+      {
+        name: 'virtual-tips',
+        resolveId(id) {
+          if (id === 'virtual:tips-data') return '\0virtual:tips-data'
+          return undefined
+        },
+        load(id) {
+          if (id === '\0virtual:tips-data') {
+            const tips = getTipsData()
+            return `export const tips = ${JSON.stringify(tips)}`
+          }
+          return undefined
+        },
+      },
       {
         name: 'tempo-node',
         async configureServer(_server) {

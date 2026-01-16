@@ -596,6 +596,16 @@ impl TIP20Token {
         Ok(Self::__new(address))
     }
 
+    /// Creates a TIP20Token without validating the prefix.
+    ///
+    /// # Safety
+    /// Caller must ensure `is_tip20_prefix(address)` returns true.
+    #[inline]
+    pub fn from_address_unchecked(address: Address) -> Self {
+        debug_assert!(is_tip20_prefix(address), "address must have TIP20 prefix");
+        Self::__new(address)
+    }
+
     /// Only called internally from the factory, which won't try to re-initialize a token.
     pub fn initialize(
         &mut self,

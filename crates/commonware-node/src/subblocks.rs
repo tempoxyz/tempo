@@ -323,10 +323,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
         let next_proposer = Random::select_leader::<MinSig>(
             next_round,
-            scheme.participants().len(),
+            scheme.participants().len() as u32,
             seed_signature,
         );
-        let next_proposer = scheme.participants()[next_proposer as usize].clone();
+        let next_proposer = scheme.participants()[next_proposer.get() as usize].clone();
 
         debug!(?next_proposer, ?next_round, "determined next proposer");
 

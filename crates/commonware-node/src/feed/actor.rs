@@ -79,7 +79,7 @@ impl<TContext: Spawner> Actor<TContext> {
         }
     }
 
-    /// Create a [`CertifiedBlock`] from a proposal and certificate.
+    /// Create a [`CertifiedBlock`] from the notarization or finalization.
     async fn create_certified_block(
         &mut self,
         view: u64,
@@ -115,7 +115,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         notarization.proposal.round.epoch().get(),
                         notarization.proposal.payload,
-                        &notarization.certificate,
+                        &notarization,
                     )
                     .await;
 
@@ -148,7 +148,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         finalization.proposal.round.epoch().get(),
                         finalization.proposal.payload,
-                        &finalization.certificate,
+                        &finalization,
                     )
                     .await;
 
