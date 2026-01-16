@@ -761,8 +761,13 @@ mod tests {
             };
             let result_past = keychain.authorize_key(account, auth_call_past);
             assert!(
-                result_past.is_err(),
-                "Authorizing with past expiry should fail"
+                matches!(
+                    result_past,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::ExpiryInPast(_)
+                    ))
+                ),
+                "Expected ExpiryInPast error for past expiry, got: {result_past:?}"
             );
 
             Ok(())
