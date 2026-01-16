@@ -25,7 +25,7 @@ type KeychainKey = (Address, Address);
 /// - AA transaction expiry (`valid_before` timestamps)
 /// - Keychain-signed transactions (for revocation eviction)
 #[derive(Default)]
-struct MaintenanceState {
+struct TempoPoolState {
     /// Maps `valid_before` timestamp to transaction hashes that expire at that time.
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup).
@@ -36,7 +36,7 @@ struct MaintenanceState {
     tx_to_key: HashMap<TxHash, KeychainKey>,
 }
 
-impl MaintenanceState {
+impl TempoPoolState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
     fn track_expiry(&mut self, maybe_aa_tx: Option<&AASigned>) {
         if let Some(aa_tx) = maybe_aa_tx
@@ -138,11 +138,7 @@ where
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
 {
-    let mut state = MaintenanceState::default();
-
-    // Small delay to allow other tasks to initialize (skip in tests)
-    #[cfg(not(feature = "test-utils"))]
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    let mut state = TempoPoolState::default();
 
     // Subscribe to new transactions, transaction events, and chain events
     let mut new_txs = pool.new_transactions_listener();
@@ -197,9 +193,6 @@ where
                 };
 
                 let tip = &new;
-                #[cfg(feature = "test-utils")]
-                let tip_number = tip.tip().header().number();
-
                 let bundle_state = tip.execution_outcome().state().state();
 
                 // 1. Evict expired AA transactions
@@ -261,10 +254,6 @@ where
                         error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                     }
                 }
-
-                // Signal that we have processed this tip (for test synchronization)
-                #[cfg(feature = "test-utils")]
-                pool.mark_maintenance_processed_tip(tip_number);
             }
         }
     }
