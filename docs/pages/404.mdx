@@ -3,43 +3,13 @@ title: Page not found
 description: The page you're looking for doesn't exist. Navigate back to Tempo documentation.
 ---
 
-import LucideHome from '~icons/lucide/home'
-import LucideBookOpen from '~icons/lucide/book-open'
-import LucideRocket from '~icons/lucide/rocket'
-import LucideSearch from '~icons/lucide/search'
-import * as Card from "../components/Card.tsx"
-
 <div className="flex flex-col items-center justify-center text-center py-16">
-  <div className="text-[120px] font-bold text-gray4 leading-none select-none">404</div>
-  <h1 className="text-2xl font-semibold text-gray12 mt-4 mb-2">Page not found</h1>
-  <p className="text-gray11 max-w-md mb-8">
-    The page you're looking for doesn't exist or may have been moved. Try one of the options below to get back on track.
+  <div className="text-[120px] font-bold text-[var(--vocs-color_text3)] leading-none select-none">404</div>
+  <h1 className="text-2xl font-semibold mt-4 mb-2">Page not found</h1>
+  <p className="text-[var(--vocs-color_text2)] max-w-md mb-8">
+    The page you're looking for doesn't exist or may have been moved.
   </p>
+  <a href="/" className="text-[var(--vocs-color_textAccent)] hover:underline">
+    ← Back to home
+  </a>
 </div>
-
-<Card.Container>
-  <Card.Link
-    description="Return to the documentation homepage."
-    href="/"
-    icon={LucideHome}
-    title="Go to Docs Home"
-  />
-  <Card.Link
-    description="Connect to the testnet and start building."
-    href="/quickstart/integrate-tempo"
-    icon={LucideRocket}
-    title="Get Started"
-  />
-  <Card.Link
-    description="Learn about stablecoins and Tempo."
-    href="/learn"
-    icon={LucideBookOpen}
-    title="Learn"
-  />
-  <Card.Link
-    description="Search the documentation for what you need."
-    href="/?search"
-    icon={LucideSearch}
-    title="Search Docs"
-  />
-</Card.Container>
