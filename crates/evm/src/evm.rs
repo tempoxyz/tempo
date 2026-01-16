@@ -69,7 +69,9 @@ impl<DB: Database> TempoEvm<DB> {
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
         // In TIP-1000 we bumped gas to 30M.
-        input.cfg_env.tx_gas_limit_cap = Some(30_000_000);
+        if input.cfg_env.spec.is_t1() {
+            input.cfg_env.tx_gas_limit_cap = Some(30_000_000);
+        }
 
         let ctx = Context::mainnet()
             .with_db(db)

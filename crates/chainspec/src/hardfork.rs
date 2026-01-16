@@ -56,7 +56,7 @@ impl TempoHardfork {
     }
 
     /// Returns true if this hardfork is T1 or later.
-    pub fn t1_active(&self) -> bool {
+    pub fn is_t1(&self) -> bool {
         *self >= Self::T1
     }
 }

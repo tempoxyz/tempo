@@ -558,7 +558,7 @@ where
 
         // TIP-1000: State Creation Cost Increase
         // Authorization lists: There is no refund if the account already existss
-        if spec.t1_active() {
+        if spec.is_t1() {
             return Ok(0);
         }
 
@@ -787,7 +787,7 @@ where
                 // Call precompile to authorize the key (same phase as nonce increment)
                 match keychain.authorize_key(*root_account, authorize_call) {
                     // all is good, we can do execution.
-                    Ok(_) => Ok(true),
+                    Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
                     Err(TempoPrecompileError::OutOfGas) => Ok(true),
                     Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
@@ -1109,7 +1109,7 @@ where
         // TIP-1000: Storage pricing updates for launch
         // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
         // TODO(rakita): check if this is needed for `validate_aa_initial_tx_gas` function.
-        if spec.t1_active() && tx.nonce == 0 {
+        if spec.is_t1() && tx.nonce == 0 {
             // TODO(rakita): make simpler function that give only the value without additional checks.
             init_gas.initial_gas += gas_params.new_account_cost(true, true);
         }

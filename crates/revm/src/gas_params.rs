@@ -23,7 +23,7 @@ impl TempoGasParams for GasParams {
 pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
     let mut gas_params = GasParams::new_spec(spec.into());
     let mut overrides = vec![];
-    if spec.t1_active() {
+    if spec.is_t1() {
         overrides.extend([
             // storage set with SSTORE opcode.
             (GasId::sstore_set_without_load_cost(), 250_000),
