@@ -47,14 +47,14 @@ metrics.workspace = true
 [features]
 default = []
 test-utils = [
-    "dep:reth-ethereum-primitives",
-    "reth-chainspec/test-utils",
-    "reth-ethereum-primitives/test-utils",
-    "reth-evm/test-utils",
-    "reth-primitives-traits/test-utils",
-    "reth-provider/test-utils",
-    "reth-transaction-pool/test-utils",
-    "tempo-precompiles/test-utils",
+  "dep:reth-ethereum-primitives",
+  "reth-chainspec/test-utils",
+  "reth-ethereum-primitives/test-utils",
+  "reth-evm/test-utils",
+  "reth-primitives-traits/test-utils",
+  "reth-provider/test-utils",
+  "reth-transaction-pool/test-utils",
+  "tempo-precompiles/test-utils",
 ]
 
 [dev-dependencies]
