@@ -40,8 +40,8 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
-/// Default timeout for waiting on pool processing
-const POOL_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Duration to wait for pool maintenance task to process blocks
+const POOL_MAINTENANCE_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Helper function to fund an address with fee tokens
 /// Returns the fee token address that was used for funding
@@ -1166,13 +1166,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
 
-    // Wait for 2D pool maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload1.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool and included in the block
@@ -1285,13 +1280,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Wait for 2D pool maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload2.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool
@@ -1459,13 +1449,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         println!("  ✓ Both nonce=1 and nonce=2 included");
     }
 
-    // Wait for 2D pool maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload4.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // Assert that all transactions are removed from the pool
     assert!(!setup.node.inner.pool.contains(&pending));
@@ -5845,16 +5830,10 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     // with revoked keys. We need to advance a block to trigger the commit notification,
     // then wait for the maintenance task to process it.
     // Advance another block to trigger the commit notification
-    let payload = setup.node.advance_block().await?;
-    let new_tip = payload.block().inner.number;
+    setup.node.advance_block().await?;
 
     // Wait for keychain eviction task to process the block with the revocation
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
-        .await?;
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool

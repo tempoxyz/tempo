@@ -140,9 +140,6 @@ where
 {
     let mut state = MaintenanceState::default();
 
-    // Small delay to allow other tasks to initialize (skip in tests)
-    #[cfg(not(feature = "test-utils"))]
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // Subscribe to new transactions, transaction events, and chain events
     let mut new_txs = pool.new_transactions_listener();
@@ -197,9 +194,6 @@ where
                 };
 
                 let tip = &new;
-                #[cfg(feature = "test-utils")]
-                let tip_number = tip.tip().header().number();
-
                 let bundle_state = tip.execution_outcome().state().state();
 
                 // 1. Evict expired AA transactions
@@ -261,10 +255,6 @@ where
                         error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                     }
                 }
-
-                // Signal that we have processed this tip (for test synchronization)
-                #[cfg(feature = "test-utils")]
-                pool.mark_maintenance_processed_tip(tip_number);
             }
         }
     }
