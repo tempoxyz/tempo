@@ -1262,9 +1262,16 @@ where
     // Calculate batch intrinsic gas using helper
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, tx.access_list())?;
 
-    // Calculate 2D nonce gas if nonce_key is non-zero
-    // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    let nonce_2d_gas = if !aa_env.nonce_key.is_zero() {
+    let spec = evm.ctx_ref().cfg().spec();
+
+    // Calculate nonce gas based on nonce type:
+    // - Expiring nonce (nonce_key == MAX): ring buffer + seen mapping operations
+    // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
+    // - Regular nonce (nonce_key == 0): no additional gas
+    let nonce_2d_gas = if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        // Expiring nonce - 2 cold SLOADs + 3 warm SSTOREs for ring buffer ops
+        EXPIRING_NONCE_GAS
+    } else if !aa_env.nonce_key.is_zero() {
         if tx.nonce() == 0 {
             // New key - cold SLOAD + SSTORE set (0 -> non-zero)
             NEW_NONCE_KEY_GAS
@@ -2804,5 +2811,46 @@ mod tests {
                 "Key auth gas should be at least {} (base + ecrecover), got {}",
                 min_gas, gas);
         }
+    }
+
+    #[test]
+    fn test_nonce_gas_selection_logic() {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        // Helper to compute nonce gas based on the logic in validate_aa_initial_tx_gas
+        fn compute_nonce_gas(nonce_key: U256, tx_nonce: u64) -> u64 {
+            if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                EXPIRING_NONCE_GAS
+            } else if !nonce_key.is_zero() {
+                if tx_nonce == 0 {
+                    NEW_NONCE_KEY_GAS
+                } else {
+                    EXISTING_NONCE_KEY_GAS
+                }
+            } else {
+                0
+            }
+        }
+
+        // Regular nonce (nonce_key == 0) should have no additional gas
+        assert_eq!(compute_nonce_gas(U256::ZERO, 0), 0);
+        assert_eq!(compute_nonce_gas(U256::ZERO, 5), 0);
+
+        // 2D nonce with new key (tx_nonce == 0) should use NEW_NONCE_KEY_GAS
+        assert_eq!(compute_nonce_gas(U256::from(1), 0), NEW_NONCE_KEY_GAS);
+        assert_eq!(compute_nonce_gas(U256::from(42), 0), NEW_NONCE_KEY_GAS);
+
+        // 2D nonce with existing key (tx_nonce > 0) should use EXISTING_NONCE_KEY_GAS
+        assert_eq!(compute_nonce_gas(U256::from(1), 1), EXISTING_NONCE_KEY_GAS);
+        assert_eq!(
+            compute_nonce_gas(U256::from(42), 100),
+            EXISTING_NONCE_KEY_GAS
+        );
+
+        // Expiring nonce (nonce_key == MAX) should use EXPIRING_NONCE_GAS
+        assert_eq!(
+            compute_nonce_gas(TEMPO_EXPIRING_NONCE_KEY, 0),
+            EXPIRING_NONCE_GAS
+        );
     }
 }
