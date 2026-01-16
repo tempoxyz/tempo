@@ -273,7 +273,12 @@ mod tests {
     ) -> Arc<Chain<TempoPrimitives>> {
         use reth_provider::{Chain, ExecutionOutcome};
 
-        Arc::new(Chain::new(blocks, ExecutionOutcome::default(), None))
+        Arc::new(Chain::new(
+            blocks,
+            ExecutionOutcome::default(),
+            Default::default(),
+            Default::default(),
+        ))
     }
 
     /// Helper to create a recovered block containing the given transactions.
