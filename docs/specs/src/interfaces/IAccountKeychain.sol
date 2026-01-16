@@ -41,7 +41,7 @@ interface IAccountKeychain {
     struct KeyInfo {
         SignatureType signatureType; // Signature type of the key
         address keyId; // The key identifier (address)
-        uint64 expiry; // Unix timestamp when key expires (0 = never)
+        uint64 expiry; // Unix timestamp when key expires (use type(uint64).max for never)
         bool enforceLimits; // Whether spending limits are enforced for this key
         bool isRevoked; // Whether this key has been revoked
     }
