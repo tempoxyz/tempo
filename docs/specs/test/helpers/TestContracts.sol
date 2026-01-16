@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 /// @title SimpleStorage - A minimal contract for CREATE testing
 contract SimpleStorage {
+
     uint256 public value;
 
     constructor(uint256 _value) {
@@ -12,17 +13,21 @@ contract SimpleStorage {
     function setValue(uint256 _value) external {
         value = _value;
     }
+
 }
 
 /// @title RevertingContract - A contract that reverts in constructor
 contract RevertingContract {
+
     constructor() {
         revert("Always reverts");
     }
+
 }
 
 /// @title SelfDestructor - A contract that can self-destruct
 contract SelfDestructor {
+
     address public owner;
 
     constructor() {
@@ -33,10 +38,12 @@ contract SelfDestructor {
         require(msg.sender == owner, "Not owner");
         selfdestruct(payable(owner));
     }
+
 }
 
 /// @title Counter - A simple counter contract for testing state changes
 contract Counter {
+
     uint256 public count;
 
     function increment() external returns (uint256) {
@@ -51,10 +58,12 @@ contract Counter {
     function reset() external {
         count = 0;
     }
+
 }
 
 /// @title GasConsumer - A contract for testing gas limits
 contract GasConsumer {
+
     uint256[] public data;
 
     function consumeGas(uint256 iterations) external {
@@ -62,10 +71,12 @@ contract GasConsumer {
             data.push(i);
         }
     }
+
 }
 
 /// @title InitcodeHelper - Library for generating initcode
 library InitcodeHelper {
+
     /// @notice Get initcode for SimpleStorage with a given value
     function simpleStorageInitcode(uint256 value) internal pure returns (bytes memory) {
         return abi.encodePacked(type(SimpleStorage).creationCode, abi.encode(value));
@@ -92,4 +103,5 @@ library InitcodeHelper {
         bytes memory padding = new bytes(size > base.length ? size - base.length : 0);
         return abi.encodePacked(base, padding, abi.encode(uint256(42)));
     }
+
 }

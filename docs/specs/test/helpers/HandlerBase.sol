@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {InvariantBase} from "./InvariantBase.sol";
-import {TxBuilder} from "./TxBuilder.sol";
-import {INonce} from "../../src/interfaces/INonce.sol";
-import {ITIP20} from "../../src/interfaces/ITIP20.sol";
+import { INonce } from "../../src/interfaces/INonce.sol";
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { InvariantBase } from "./InvariantBase.sol";
+import { TxBuilder } from "./TxBuilder.sol";
 
 /// @title HandlerBase - Common patterns for invariant test handlers
 /// @notice Extracts duplicated handler logic into reusable functions
 /// @dev Inherit from this contract to reduce boilerplate in handler implementations
 abstract contract HandlerBase is InvariantBase {
+
     using TxBuilder for *;
 
     // ============ Common Error Selectors ============
@@ -102,7 +103,9 @@ abstract contract HandlerBase is InvariantBase {
         uint256 minAmount,
         uint256 maxAmount
     ) internal view returns (TxContext memory ctx, bool skip) {
-        (ctx, skip) = _setupTransferContext(actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount);
+        (ctx, skip) = _setupTransferContext(
+            actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
+        );
         ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
     }
@@ -112,20 +115,31 @@ abstract contract HandlerBase is InvariantBase {
     /// @notice Assert protocol nonce matches ghost state (for debugging)
     function _assertProtocolNonceEq(address account, string memory context) internal view {
         uint256 actual = vm.getNonce(account);
-        assertEq(actual, ghost_protocolNonce[account], string.concat("Protocol nonce mismatch: ", context));
+        assertEq(
+            actual,
+            ghost_protocolNonce[account],
+            string.concat("Protocol nonce mismatch: ", context)
+        );
     }
 
     /// @notice Assert 2D nonce matches ghost state (for debugging)
-    function _assert2dNonceEq(address account, uint64 nonceKey, string memory context) internal view {
+    function _assert2dNonceEq(address account, uint64 nonceKey, string memory context)
+        internal
+        view
+    {
         uint64 actual = nonce.getNonce(account, nonceKey);
-        assertEq(actual, ghost_2dNonce[account][nonceKey], string.concat("2D nonce mismatch: ", context));
+        assertEq(
+            actual, ghost_2dNonce[account][nonceKey], string.concat("2D nonce mismatch: ", context)
+        );
     }
 
     /// @notice Update ghost state after successful 2D nonce transaction
     /// @param account The account that executed the transaction
     /// @param nonceKey The nonce key used
     /// @param previousNonce The nonce value before execution
-    function _record2dNonceTxSuccess(address account, uint64 nonceKey, uint64 previousNonce) internal {
+    function _record2dNonceTxSuccess(address account, uint64 nonceKey, uint64 previousNonce)
+        internal
+    {
         uint64 actualNonce = nonce.getNonce(account, nonceKey);
         if (actualNonce > previousNonce) {
             ghost_2dNonce[account][nonceKey] = actualNonce;
@@ -193,7 +207,8 @@ abstract contract HandlerBase is InvariantBase {
     {
         ctx.actorIdx = actorSeed % actors.length;
         ctx.owner = actors[ctx.actorIdx];
-        (ctx.keyId, ctx.keyPk, ctx.pubKeyX, ctx.pubKeyY) = _getActorP256AccessKey(ctx.actorIdx, keySeed);
+        (ctx.keyId, ctx.keyPk, ctx.pubKeyX, ctx.pubKeyY) =
+            _getActorP256AccessKey(ctx.actorIdx, keySeed);
         ctx.isP256 = true;
     }
 
@@ -207,7 +222,8 @@ abstract contract HandlerBase is InvariantBase {
         ctx.owner = actors[ctx.actorIdx];
         ctx.isP256 = keySeed % 2 == 0;
         if (ctx.isP256) {
-            (ctx.keyId, ctx.keyPk, ctx.pubKeyX, ctx.pubKeyY) = _getActorP256AccessKey(ctx.actorIdx, keySeed);
+            (ctx.keyId, ctx.keyPk, ctx.pubKeyX, ctx.pubKeyY) =
+                _getActorP256AccessKey(ctx.actorIdx, keySeed);
         } else {
             (ctx.keyId, ctx.keyPk) = _getActorAccessKey(ctx.actorIdx, keySeed);
         }
@@ -234,10 +250,8 @@ abstract contract HandlerBase is InvariantBase {
         }
 
         bytes4 selector = bytes4(reason);
-        bool isKnown = selector == ERR_INSUFFICIENT_BALANCE
-            || selector == ERR_POLICY_FORBIDS
-            || selector == ERR_NONCE_OVERFLOW
-            || selector == ERR_INVALID_NONCE_KEY
+        bool isKnown = selector == ERR_INSUFFICIENT_BALANCE || selector == ERR_POLICY_FORBIDS
+            || selector == ERR_NONCE_OVERFLOW || selector == ERR_INVALID_NONCE_KEY
             || selector == bytes4(keccak256("InvalidSignature()"))
             || selector == bytes4(keccak256("InvalidNonce()"))
             || selector == bytes4(keccak256("ExpiredTransaction()"))
@@ -265,7 +279,13 @@ abstract contract HandlerBase is InvariantBase {
     /// @param min The minimum value
     /// @param max The maximum value
     /// @return The bounded value
-    function bound(uint256 x, uint256 min, uint256 max) internal pure virtual override returns (uint256) {
+    function bound(uint256 x, uint256 min, uint256 max)
+        internal
+        pure
+        virtual
+        override
+        returns (uint256)
+    {
         return super.bound(x, min, max);
     }
 
@@ -363,7 +383,11 @@ abstract contract HandlerBase is InvariantBase {
     /// @param sender The sender address
     /// @param usedNonce The protocol nonce used for CREATE address derivation
     /// @param expectedAddress The expected CREATE address
-    function _recordProtocolNonceCreateSuccess(address sender, uint64 usedNonce, address expectedAddress) internal {
+    function _recordProtocolNonceCreateSuccess(
+        address sender,
+        uint64 usedNonce,
+        address expectedAddress
+    ) internal {
         ghost_protocolNonce[sender]++;
         ghost_totalTxExecuted++;
         ghost_totalCreatesExecuted++;
@@ -412,4 +436,5 @@ abstract contract HandlerBase is InvariantBase {
             }
         }
     }
+
 }

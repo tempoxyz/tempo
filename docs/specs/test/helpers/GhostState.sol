@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 /// @title GhostState - Ghost Variable Tracking for Invariant Tests
 /// @dev Ghost variables mirror what we expect on-chain state to be
 abstract contract GhostState {
+
     // ============ Nonce Tracking ============
 
     mapping(address => uint256) public ghost_protocolNonce;
@@ -31,24 +32,24 @@ abstract contract GhostState {
 
     // ============ CREATE Rejection Tracking ============
 
-    uint256 public ghost_createRejectedStructure;  // C1, C2, C3, C4 rejections
-    uint256 public ghost_createRejectedSize;       // C8 rejections
-    uint256 public ghost_createGasTracked;         // C9 gas tracking count
-    
+    uint256 public ghost_createRejectedStructure; // C1, C2, C3, C4 rejections
+    uint256 public ghost_createRejectedSize; // C8 rejections
+    uint256 public ghost_createGasTracked; // C9 gas tracking count
+
     // Unexpected success tracking (for negative test cases)
-    uint256 public ghost_createNotFirstAllowed;    // C1 - CREATE not first unexpectedly allowed
-    uint256 public ghost_createMultipleAllowed;    // C2 - multiple creates unexpectedly allowed
-    uint256 public ghost_createWithAuthAllowed;    // C3 - CREATE with auth list unexpectedly allowed
-    uint256 public ghost_createWithValueAllowed;   // C4 - CREATE with value unexpectedly allowed
-    uint256 public ghost_createOversizedAllowed;   // C8 - oversized initcode unexpectedly allowed
-    uint256 public ghost_replayProtocolAllowed;    // N12 - protocol nonce replay unexpectedly allowed
-    uint256 public ghost_replay2dAllowed;          // N13 - 2D nonce replay unexpectedly allowed
-    uint256 public ghost_nonceTooHighAllowed;      // N14 - nonce too high unexpectedly allowed
-    uint256 public ghost_nonceTooLowAllowed;       // N15 - nonce too low unexpectedly allowed
-    uint256 public ghost_keyWrongSignerAllowed;    // K1 - wrong signer unexpectedly allowed
-    uint256 public ghost_keyWrongChainAllowed;     // K3 - wrong chain unexpectedly allowed
+    uint256 public ghost_createNotFirstAllowed; // C1 - CREATE not first unexpectedly allowed
+    uint256 public ghost_createMultipleAllowed; // C2 - multiple creates unexpectedly allowed
+    uint256 public ghost_createWithAuthAllowed; // C3 - CREATE with auth list unexpectedly allowed
+    uint256 public ghost_createWithValueAllowed; // C4 - CREATE with value unexpectedly allowed
+    uint256 public ghost_createOversizedAllowed; // C8 - oversized initcode unexpectedly allowed
+    uint256 public ghost_replayProtocolAllowed; // N12 - protocol nonce replay unexpectedly allowed
+    uint256 public ghost_replay2dAllowed; // N13 - 2D nonce replay unexpectedly allowed
+    uint256 public ghost_nonceTooHighAllowed; // N14 - nonce too high unexpectedly allowed
+    uint256 public ghost_nonceTooLowAllowed; // N15 - nonce too low unexpectedly allowed
+    uint256 public ghost_keyWrongSignerAllowed; // K1 - wrong signer unexpectedly allowed
+    uint256 public ghost_keyWrongChainAllowed; // K3 - wrong chain unexpectedly allowed
     uint256 public ghost_eip7702CreateWithAuthAllowed; // TX7 - CREATE with auth list unexpectedly allowed
-    uint256 public ghost_timeBoundValidAfterAllowed;  // T1 - validAfter not enforced
+    uint256 public ghost_timeBoundValidAfterAllowed; // T1 - validAfter not enforced
     uint256 public ghost_timeBoundValidBeforeAllowed; // T2 - validBefore not enforced
 
     // ============ Fee Collection Tracking (F1-F12) ============
@@ -72,7 +73,8 @@ abstract contract GhostState {
     mapping(address => mapping(address => bool)) public ghost_keyAuthorized;
     mapping(address => mapping(address => uint256)) public ghost_keyExpiry;
     mapping(address => mapping(address => bool)) public ghost_keyEnforceLimits;
-    mapping(address => mapping(address => mapping(address => uint256))) public ghost_keySpendingLimit;
+    mapping(address => mapping(address => mapping(address => uint256))) public
+        ghost_keySpendingLimit;
     mapping(address => mapping(address => mapping(address => uint256))) public ghost_keySpentAmount;
     mapping(address => mapping(address => uint256)) public ghost_keySpendingPeriodStart;
     mapping(address => mapping(address => uint256)) public ghost_keySpendingPeriodDuration;
@@ -135,7 +137,9 @@ abstract contract GhostState {
         ghost_totalCallsExecuted++;
     }
 
-    function _recordCreateSuccess(address caller, uint256 protocolNonce, address deployed) internal {
+    function _recordCreateSuccess(address caller, uint256 protocolNonce, address deployed)
+        internal
+    {
         bytes32 key = keccak256(abi.encodePacked(caller, protocolNonce));
         ghost_createAddresses[key] = deployed;
         ghost_createCount[caller]++;
@@ -163,7 +167,9 @@ abstract contract GhostState {
         ghost_keyExpiry[owner][keyId] = 0;
     }
 
-    function _recordKeySpending(address owner, address keyId, address token, uint256 amount) internal {
+    function _recordKeySpending(address owner, address keyId, address token, uint256 amount)
+        internal
+    {
         ghost_keySpentAmount[owner][keyId][token] += amount;
     }
 
@@ -256,4 +262,5 @@ abstract contract GhostState {
         ghost_gasTrackingKeyAuth++;
         ghost_totalGasTracked++;
     }
+
 }

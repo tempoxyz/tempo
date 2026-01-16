@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {Test} from "forge-std/Test.sol";
+import { Test } from "forge-std/Test.sol";
 
 /// @title ActorManager - Test Actor Management
 /// @notice Manages test actors (accounts) with their keys and state
 /// @dev Used by invariant tests to create and manage multiple test accounts
 abstract contract ActorManager is Test {
+
     uint256 internal constant NUM_ACTORS = 5;
     uint256 internal constant ACCESS_KEYS_PER_ACTOR = 3;
 
@@ -72,23 +73,25 @@ abstract contract ActorManager is Test {
             isActor[actor] = true;
 
             // Generate P256 key for this actor
-            uint256 p256Pk = uint256(keccak256(abi.encodePacked("p256_", label))) % 
-                0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550; // P256 order - 1
+            uint256 p256Pk = uint256(keccak256(abi.encodePacked("p256_", label)))
+                % 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550; // P256 order - 1
             if (p256Pk == 0) p256Pk = 1;
             actorP256Keys.push(p256Pk);
-            
+
             (uint256 pubKeyX, uint256 pubKeyY) = vm.publicKeyP256(p256Pk);
             actorP256PubKeyX.push(bytes32(pubKeyX));
             actorP256PubKeyY.push(bytes32(pubKeyY));
-            
+
             // Derive P256 address: keccak256(x || y)[12:]
-            address p256Addr = address(uint160(uint256(keccak256(abi.encodePacked(pubKeyX, pubKeyY)))));
+            address p256Addr =
+                address(uint160(uint256(keccak256(abi.encodePacked(pubKeyX, pubKeyY)))));
             actorP256Addresses.push(p256Addr);
 
             // Create secp256k1 access keys for each actor
             for (uint256 j = 0; j < ACCESS_KEYS_PER_ACTOR; j++) {
-                string memory keyLabel =
-                    string(abi.encodePacked("actor", vm.toString(i + 1), "_key", vm.toString(j + 1)));
+                string memory keyLabel = string(
+                    abi.encodePacked("actor", vm.toString(i + 1), "_key", vm.toString(j + 1))
+                );
                 (address keyAddr, uint256 keyPk) = makeAddrAndKey(keyLabel);
 
                 actorAccessKeys[i].push(keyAddr);
@@ -97,14 +100,16 @@ abstract contract ActorManager is Test {
 
             // Create P256 access keys for each actor
             for (uint256 j = 0; j < ACCESS_KEYS_PER_ACTOR; j++) {
-                string memory keyLabel =
-                    string(abi.encodePacked("actor", vm.toString(i + 1), "_p256key", vm.toString(j + 1)));
-                uint256 keyP256Pk = uint256(keccak256(abi.encodePacked("p256_", keyLabel))) % 
-                    0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550;
+                string memory keyLabel = string(
+                    abi.encodePacked("actor", vm.toString(i + 1), "_p256key", vm.toString(j + 1))
+                );
+                uint256 keyP256Pk = uint256(keccak256(abi.encodePacked("p256_", keyLabel)))
+                    % 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632550;
                 if (keyP256Pk == 0) keyP256Pk = 1;
-                
+
                 (uint256 keyPubX, uint256 keyPubY) = vm.publicKeyP256(keyP256Pk);
-                address keyP256Addr = address(uint160(uint256(keccak256(abi.encodePacked(keyPubX, keyPubY)))));
+                address keyP256Addr =
+                    address(uint160(uint256(keccak256(abi.encodePacked(keyPubX, keyPubY)))));
 
                 actorP256AccessKeys[i].push(keyP256Addr);
                 actorP256AccessKeyPrivateKeys[i][keyP256Addr] = keyP256Pk;
@@ -127,17 +132,30 @@ abstract contract ActorManager is Test {
         returns (address p256Addr, uint256 privateKey, bytes32 pubKeyX, bytes32 pubKeyY)
     {
         require(index < actors.length, "Actor index out of bounds");
-        return (actorP256Addresses[index], actorP256Keys[index], actorP256PubKeyX[index], actorP256PubKeyY[index]);
+        return (
+            actorP256Addresses[index],
+            actorP256Keys[index],
+            actorP256PubKeyX[index],
+            actorP256PubKeyY[index]
+        );
     }
 
     /// @notice Get actor by seed (for fuzzing)
-    function _getActorBySeed(uint256 seed) internal view returns (uint256 index, address addr, uint256 privateKey) {
+    function _getActorBySeed(uint256 seed)
+        internal
+        view
+        returns (uint256 index, address addr, uint256 privateKey)
+    {
         index = seed % actors.length;
         (addr, privateKey) = _getActor(index);
     }
 
     /// @notice Get a different actor than the given one (for transfers)
-    function _getDifferentActor(uint256 excludeIndex) internal view returns (uint256 index, address addr) {
+    function _getDifferentActor(uint256 excludeIndex)
+        internal
+        view
+        returns (uint256 index, address addr)
+    {
         index = (excludeIndex + 1) % actors.length;
         addr = actors[index];
     }
@@ -223,4 +241,5 @@ abstract contract ActorManager is Test {
             return actorP256Addresses[actorIdx];
         }
     }
+
 }

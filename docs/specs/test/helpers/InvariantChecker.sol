@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {HandlerBase} from "./HandlerBase.sol";
-import {TxBuilder} from "./TxBuilder.sol";
+import { HandlerBase } from "./HandlerBase.sol";
+import { TxBuilder } from "./TxBuilder.sol";
 
 /// @title InvariantChecker - Consolidated Invariant Verification
 /// @notice Consolidates all invariant checks into a single master function with category helpers
 /// @dev Inherit from this contract to get access to all invariant checking utilities
 abstract contract InvariantChecker is HandlerBase {
+
     using TxBuilder for *;
 
     // ============ Master Check Function ============
@@ -58,7 +59,9 @@ abstract contract InvariantChecker is HandlerBase {
         assertEq(
             actualNonce,
             expectedNonce,
-            string(abi.encodePacked("N2: Protocol nonce mismatch for actor ", vm.toString(actorIdx)))
+            string(
+                abi.encodePacked("N2: Protocol nonce mismatch for actor ", vm.toString(actorIdx))
+            )
         );
     }
 
@@ -115,7 +118,7 @@ abstract contract InvariantChecker is HandlerBase {
 
         // F9: Actor balances cannot exceed total supply
         assertLe(actorSum, feeToken.totalSupply(), "F9: Actor balances exceed total supply");
-        
+
         // F10: Validator balance (fees collected) + actor balances + other known addresses <= total supply
         uint256 validatorBalance = feeToken.balanceOf(validator);
         uint256 adminBalance = feeToken.balanceOf(admin);
@@ -274,8 +277,9 @@ abstract contract InvariantChecker is HandlerBase {
 
         // K3: KeyAuthorization chain_id must be 0 (any) or match current
         assertEq(ghost_keyWrongChainAllowed, 0, "K3: Wrong chain key auth unexpectedly allowed");
-        
+
         // K12: Keys with zero spending limit cannot spend anything
         assertEq(ghost_keyZeroLimitAllowed, 0, "K12: Zero-limit key unexpectedly allowed to spend");
     }
+
 }

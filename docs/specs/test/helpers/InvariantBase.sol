@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {BaseTest} from "../BaseTest.t.sol";
-import {ActorManager} from "./ActorManager.sol";
-import {GhostState} from "./GhostState.sol";
-import {TxBuilder} from "./TxBuilder.sol";
-import {TIP20} from "../../src/TIP20.sol";
-import {VmRlp, VmExecuteTransaction} from "tempo-std/StdVm.sol";
+import { TIP20 } from "../../src/TIP20.sol";
+import { BaseTest } from "../BaseTest.t.sol";
+import { ActorManager } from "./ActorManager.sol";
+import { GhostState } from "./GhostState.sol";
+import { TxBuilder } from "./TxBuilder.sol";
+import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 
 /// @title InvariantBase - Combined Base Contract for Invariant Tests
 /// @notice Combines all helper functionality into a single base contract
 /// @dev Inherit from this contract to write invariant tests
 abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
+
     using TxBuilder for *;
 
     // ============ Tempo VM Extensions ============
@@ -36,7 +37,9 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         super.setUp();
 
         // Initialize fee token
-        feeToken = TIP20(factory.createToken("Fee Token", "FEE", "USD", pathUSD, admin, bytes32("feetoken")));
+        feeToken = TIP20(
+            factory.createToken("Fee Token", "FEE", "USD", pathUSD, admin, bytes32("feetoken"))
+        );
 
         // Initialize actors
         _initActors();
@@ -78,10 +81,12 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
 
     /// @notice Execute a signed transaction and track results
     /// @return success Whether execution succeeded
-    function _executeAndTrack(address sender, bytes memory signedTx, bool isCreate, uint256 createNonce)
-        internal
-        returns (bool success)
-    {
+    function _executeAndTrack(
+        address sender,
+        bytes memory signedTx,
+        bool isCreate,
+        uint256 createNonce
+    ) internal returns (bool success) {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
@@ -111,10 +116,14 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     /// @notice Increment 2D nonce via direct storage manipulation
     /// @dev Simulates protocol behavior for 2D nonces since vm.executeTransaction
     ///      doesn't support Tempo transactions
-    function _incrementNonceViaStorage(address account, uint256 nonceKey) internal returns (uint64 newNonce) {
+    function _incrementNonceViaStorage(address account, uint256 nonceKey)
+        internal
+        returns (uint64 newNonce)
+    {
         require(nonceKey > 0, "Cannot increment protocol nonce (key 0)");
 
-        bytes32 nonceSlot = keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
+        bytes32 nonceSlot =
+            keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
 
         uint64 currentNonce = uint64(uint256(vm.load(_NONCE, nonceSlot)));
         require(currentNonce < type(uint64).max, "Nonce overflow");
@@ -128,12 +137,17 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
     }
 
     /// @notice Get 2D nonce from storage
-    function _getNonceFromStorage(address account, uint256 nonceKey) internal view returns (uint64) {
+    function _getNonceFromStorage(address account, uint256 nonceKey)
+        internal
+        view
+        returns (uint64)
+    {
         if (nonceKey == 0) {
             return uint64(vm.getNonce(account));
         }
 
-        bytes32 nonceSlot = keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
+        bytes32 nonceSlot =
+            keccak256(abi.encode(nonceKey, keccak256(abi.encode(account, NONCES_SLOT))));
         return uint64(uint256(vm.load(_NONCE, nonceSlot)));
     }
 
@@ -161,4 +175,5 @@ abstract contract InvariantBase is BaseTest, ActorManager, GhostState {
         vm.prank(from);
         feeToken.transfer(to, amount);
     }
+
 }
