@@ -28,10 +28,12 @@ commonware-runtime = { workspace = true, features = ["external"] }
 futures = { workspace = true, features = ["executor"] }
 rand.workspace = true
 reth-cli-commands.workspace = true
+reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli"] }
 reth-ethereum-cli.workspace = true
 reth-node-builder.workspace = true
+reth-rpc-server-types.workspace = true
 clap.workspace = true
 eyre.workspace = true
 tokio.workspace = true

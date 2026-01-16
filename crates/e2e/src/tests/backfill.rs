@@ -12,7 +12,7 @@ use reth_node_metrics::recorder::install_prometheus_recorder;
 use crate::{Setup, get_pipeline_runs, setup_validators};
 
 async fn run_validator_late_join_test(
-    context: &Context,
+    context: &mut Context,
     blocks_before_join: u64,
     blocks_after_join: u64,
     should_pipeline_sync: bool,
@@ -23,11 +23,11 @@ async fn run_validator_late_join_test(
         .epoch_length(100)
         .connect_execution_layer_nodes(should_pipeline_sync);
 
-    let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup.clone()).await;
+    let (mut nodes, _execution_runtime) = setup_validators(context, setup.clone()).await;
 
     // Start all nodes except the last one
     let mut last = nodes.pop().unwrap();
-    join_all(nodes.iter_mut().map(|node| node.start())).await;
+    join_all(nodes.iter_mut().map(|node| node.start(context))).await;
 
     // Wait for chain to advance before starting the last node
     while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
@@ -35,7 +35,7 @@ async fn run_validator_late_join_test(
     }
 
     // Start the last node
-    last.start().await;
+    last.start(context).await;
     assert_eq!(last.execution_provider().last_block_number().unwrap(), 0);
 
     tracing::debug!("last node started");
@@ -71,8 +71,8 @@ async fn run_validator_late_join_test(
 fn validator_can_join_later_with_live_sync() {
     let _ = tempo_eyre::install();
 
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        run_validator_late_join_test(&context, 5, 10, false).await;
+    Runner::from(deterministic::Config::default().with_seed(0)).start(|mut context| async move {
+        run_validator_late_join_test(&mut context, 5, 10, false).await;
     });
 }
 
@@ -80,7 +80,7 @@ fn validator_can_join_later_with_live_sync() {
 fn validator_can_join_later_with_pipeline_sync() {
     let _ = tempo_eyre::install();
 
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
-        run_validator_late_join_test(&context, 65, 70, true).await;
+    Runner::from(deterministic::Config::default().with_seed(0)).start(|mut context| async move {
+        run_validator_late_join_test(&mut context, 65, 70, true).await;
     });
 }

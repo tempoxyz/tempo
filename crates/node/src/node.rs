@@ -42,8 +42,9 @@ use tempo_payload_builder::TempoPayloadBuilder;
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
-    AA2dPool, AA2dPoolConfig, TempoTransactionPool, amm::AmmLiquidityCache,
-    validator::TempoTransactionValidator,
+    AA2dPool, AA2dPoolConfig, TempoTransactionPool,
+    amm::AmmLiquidityCache,
+    validator::{DEFAULT_MAX_TEMPO_AUTHORIZATIONS, TempoTransactionValidator},
 };
 
 /// Default maximum allowed `valid_after` offset for AA txs (1 hour).
@@ -55,6 +56,10 @@ pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
     pub aa_valid_after_max_secs: u64,
+
+    /// Maximum number of authorizations allowed in an AA transaction.
+    #[arg(long = "txpool.max-tempo-authorizations", default_value_t = DEFAULT_MAX_TEMPO_AUTHORIZATIONS)]
+    pub max_tempo_authorizations: usize,
 
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
@@ -70,6 +75,7 @@ impl TempoNodeArgs {
     pub fn pool_builder(&self) -> TempoPoolBuilder {
         TempoPoolBuilder {
             aa_valid_after_max_secs: self.aa_valid_after_max_secs,
+            max_tempo_authorizations: self.max_tempo_authorizations,
         }
     }
 
@@ -381,6 +387,8 @@ where
 pub struct TempoPoolBuilder {
     /// Maximum allowed `valid_after` offset for AA txs.
     pub aa_valid_after_max_secs: u64,
+    /// Maximum number of authorizations allowed in an AA transaction.
+    pub max_tempo_authorizations: usize,
 }
 
 impl TempoPoolBuilder {
@@ -389,12 +397,19 @@ impl TempoPoolBuilder {
         self.aa_valid_after_max_secs = secs;
         self
     }
+
+    /// Sets the maximum number of authorizations allowed in an AA transaction.
+    pub const fn with_max_tempo_authorizations(mut self, max: usize) -> Self {
+        self.max_tempo_authorizations = max;
+        self
+    }
 }
 
 impl Default for TempoPoolBuilder {
     fn default() -> Self {
         Self {
             aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
         }
     }
 }
@@ -437,6 +452,7 @@ where
             TempoTransactionValidator::new(
                 v,
                 self.aa_valid_after_max_secs,
+                self.max_tempo_authorizations,
                 amm_liquidity_cache.clone(),
             )
         });

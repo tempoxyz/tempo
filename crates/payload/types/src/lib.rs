@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
-use reth_node_api::{ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
+use reth_node_api::{BlockBody, ExecutionPayload, PayloadBuilderAttributes, PayloadTypes};
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
 use serde::{Deserialize, Serialize};
 use tempo_primitives::{Block, TempoPrimitives};
@@ -59,16 +59,16 @@ impl ExecutionPayload for TempoExecutionData {
         self.block.timestamp()
     }
 
+    fn transaction_count(&self) -> usize {
+        self.block.body().transaction_count()
+    }
+
     fn gas_used(&self) -> u64 {
         self.block.gas_used()
     }
 
     fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
         None
-    }
-
-    fn transaction_count(&self) -> usize {
-        self.block.body().transactions.len()
     }
 }
 

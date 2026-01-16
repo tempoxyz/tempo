@@ -52,13 +52,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@03ef6f57d573ca4522fb02950f326083373b85bf # v2.66.2
+      - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
         with:
           tool: nextest
       - name: Build and compile tests
         run: cargo nextest run --no-run -j num-cpus
       - name: Run tests
-        run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
+        run: |
+          cargo nextest run \
+            --no-fail-fast \
+            -j num-cpus \
+            --retries 2
 
   msrv:
     name: MSRV
@@ -102,11 +106,12 @@ jobs:
       - name: Download file if cache miss
         if: steps.cache-file.outputs.cache-hit != 'true'
         run: |
-          mkdir -p .cache/snapshots
+          sudo apt-get update && sudo apt-get install -y aria2
 
           FILE_NAME='${{ steps.latest.outputs.filename }}'
-          curl -L "https://snapshots.tempoxyz.dev/42431/$FILE_NAME" \
-            -o ".cache/snapshots/$FILE_NAME"
+          aria2c -x 16 -s 16 --retry-wait=10 --max-tries=5 \
+            -d .cache/snapshots -o "$FILE_NAME" \
+            "https://snapshots.tempoxyz.dev/42431/$FILE_NAME"
 
           ls -l .cache/snapshots
 

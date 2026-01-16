@@ -10,7 +10,7 @@ use alloy_primitives::{Address, TxHash, U256, b256};
 use commonware_macros::test_traced;
 use commonware_runtime::{
     Runner as _,
-    deterministic::{self, Runner},
+    deterministic::{Config, Runner},
 };
 use futures::{StreamExt, future::join_all};
 use reth_ethereum::{
@@ -37,7 +37,7 @@ use crate::{Setup, TestingNode, setup_validators};
 fn subblocks_are_included() {
     let _ = tempo_eyre::install();
 
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
+    Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
         let how_many_signers = 4;
 
         let setup = Setup::new()
@@ -45,8 +45,7 @@ fn subblocks_are_included() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         let mut fee_recipients = Vec::new();
 
@@ -60,7 +59,7 @@ fn subblocks_are_included() {
             fee_recipients.push(fee_recipient);
         }
 
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         let mut stream = nodes[0]
             .execution()
@@ -144,7 +143,7 @@ fn subblocks_are_included() {
 fn subblocks_are_included_with_failing_txs() {
     let _ = tempo_eyre::install();
 
-    Runner::from(deterministic::Config::default().with_seed(0)).start(|context| async move {
+    Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
         let how_many_signers = 5;
 
         let setup = Setup::new()
@@ -152,8 +151,7 @@ fn subblocks_are_included_with_failing_txs() {
             .epoch_length(10);
 
         // Setup and start all nodes.
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         let mut fee_recipients = Vec::new();
 
@@ -167,7 +165,7 @@ fn subblocks_are_included_with_failing_txs() {
             fee_recipients.push(fee_recipient);
         }
 
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         let mut stream = nodes[0]
             .execution()
@@ -322,21 +320,20 @@ fn subblocks_are_included_with_failing_txs() {
 fn oversized_subblock_txs_are_removed() {
     let _ = tempo_eyre::install();
 
-    Runner::from(deterministic::Config::default().with_seed(42)).start(|context| async move {
+    Runner::from(Config::default().with_seed(42)).start(|mut context| async move {
         let how_many_signers = 4;
 
         let setup = Setup::new()
             .how_many_signers(how_many_signers)
             .epoch_length(10);
 
-        let (mut nodes, _execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         for node in &mut nodes {
             node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
         }
 
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         let mut stream = nodes[0]
             .execution()

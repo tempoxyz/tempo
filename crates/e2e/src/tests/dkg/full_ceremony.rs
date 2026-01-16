@@ -38,11 +38,10 @@ impl FullDkgTest {
         let cfg = Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
 
-        executor.start(|context| async move {
-            let (mut validators, execution_runtime) =
-                setup_validators(context.clone(), setup).await;
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
-            join_all(validators.iter_mut().map(|v| v.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             // Schedule full DKG for the specified epoch
             let http_url: Url = validators[0]
