@@ -240,6 +240,7 @@ where
     fn ensure_aa_intrinsic_gas(
         &self,
         transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
     ) -> Result<(), TempoPoolTransactionError> {
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
@@ -266,9 +267,7 @@ where
         };
 
         // Calculate the intrinsic gas for the AA transaction
-
-        // TODO hardforked check.
-        let gas_params = tempo_gas_params(TempoHardfork::T1);
+        let gas_params = tempo_gas_params(spec);
 
         let mut init_and_floor_gas =
             calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
@@ -317,6 +316,12 @@ where
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Get the current hardfork based on tip timestamp
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
             return TransactionValidationOutcome::Error(
@@ -371,7 +376,7 @@ where
         // This ensures the gas limit covers all AA-specific costs (per-call overhead,
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -384,11 +389,6 @@ where
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
-
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
