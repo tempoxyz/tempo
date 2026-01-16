@@ -686,6 +686,10 @@ export default defineConfig({
             link: '/learn/use-cases/embedded-finance',
           },
           {
+            text: 'Stablecoins as a Platform',
+            link: '/learn/use-cases/stablecoins-as-a-platform',
+          },
+          {
             text: 'Tokenized Deposits',
             link: '/learn/use-cases/tokenized-deposits',
           },

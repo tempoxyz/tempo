@@ -1,0 +1,76 @@
+---
+title: Stablecoins as a Platform
+description: Why stablecoins are not just another payment rail but a new infrastructure layer for building financial products with better economics.
+---
+
+import { Callout } from 'vocs/components'
+import LucideFileText from '~icons/lucide/file-text'
+import LucideMail from '~icons/lucide/mail'
+import LucideRocket from '~icons/lucide/rocket'
+import * as Card from "../../../components/Card.tsx"
+import { ZoomableImage } from "../../../components/ZoomableImage.tsx"
+
+# Stablecoins are a platform, not just a rail [How stablecoins remove the constraints that limited what fintech could build.]
+
+<Card.Notice title="Executive Summary" icon={LucideFileText} inverse>
+  Stablecoins represent a fundamental shift in financial infrastructure. Banking as a Service removed licensing constraints but kept settlement constraints. Stablecoins remove both. This unlocks entirely new categories of financial products that were previously too costly, too slow, or operationally impractical to build on traditional rails.
+</Card.Notice>
+
+## The limits of Banking as a Service
+
+The past decade saw the rise of Banking as a Service. What once required years of licensing and millions in capital became accessible through APIs. Startups could launch card programs, offer accounts, and move money without becoming banks themselves.
+
+BaaS made fintech possible, but it operated within the same settlement constraints as traditional banking. ACH transfers still took days. Wire transfers still required banking hours. Cross-border payments still moved through correspondent banks. FBO accounts still commingled customer funds in ways that created reconciliation challenges.
+
+These constraints shaped what fintech could build. Instant payouts required pre-funded accounts. Cross-border transfers required liquidity buffers on both ends of a corridor. Real-time lending programs required complex arrangements with credit facilities that could not move at the speed of customer demand.
+
+## What changes with stablecoins
+
+Stablecoins settle in seconds, globally, around the clock. This is not an incremental improvement. It removes a fundamental constraint that shaped the architecture of every fintech product built in the BaaS era.
+
+When settlement happens instantly, several things become possible:
+
+**Real-time credit programs.** Traditional card programs require securing facilities, managing settlement delays, and coordinating between multiple parties. With stablecoins, a customer swipes, funding pulls directly from a credit facility, and settlement happens instantly. The operational overhead of managing T+2 settlement disappears.
+
+**Capital-efficient payouts.** Cross-border payout providers typically pre-fund accounts in each destination country. A company operating a USD to BRL corridor might hold 8 to 25 million USD in Brazilian banks just to offer instant transfers. With stablecoin settlement, that liquidity requirement shrinks dramatically because funds move in seconds rather than days.
+
+**Unified reconciliation.** In the BaaS model, money sits in an FBO account at a bank while a separate ledger tracks which customer owns which balance. When these systems disagree, funds become inaccessible. With stablecoins, the blockchain is the ledger. There is one source of truth for every transaction.
+
+## A new stack for building financial products
+
+The BaaS stack relied on sponsor banks, payment processors, and program managers layered on top of traditional rails. Stablecoins introduce a parallel stack.
+
+Wallets replace bank accounts as the interface for holding and moving value. Custody providers manage keys rather than account numbers. Orchestrators connect stablecoin rails to exchanges, OTC desks, and traditional banking for on and off-ramps. The blockchain itself functions as both the settlement layer and the ledger.
+
+This stack is not just simpler. It changes the economics of building financial products. Settlement costs drop from dollars per transaction to fractions of a cent. Cross-border FX spreads compress because on-chain liquidity removes correspondent banks from the flow. Compliance becomes more straightforward because every transaction is recorded in real time on a single ledger.
+
+## What this means for enterprises
+
+For treasury teams, stablecoins offer a way to move working capital globally without pre-funding accounts or waiting for banking windows. Settlement happens when you need it, not when banks open.
+
+For platforms and marketplaces, stablecoins make instant payouts economically viable at scale. The cost savings can fund better merchant terms, more competitive creator payouts, or stronger loyalty programs.
+
+For fintech builders, stablecoins remove the constraint that defined what was possible. Products that were too expensive or operationally complex on BaaS rails become straightforward when settlement happens instantly and globally.
+
+The question is not whether stablecoins will become a standard part of financial infrastructure. It is how quickly enterprises will adopt them and what new products will emerge once settlement constraints disappear.
+
+## Building with Tempo
+
+Tempo is designed for the products that become possible when settlement constraints disappear. Our infrastructure handles high-volume, global stablecoin payments with the speed and cost profile that enterprises require.
+
+If you are evaluating how stablecoins could simplify your treasury operations, reduce payout costs, or enable new financial products, we can help you map the architecture and understand the integration requirements.
+
+<Card.Container>
+  <Card.Link
+    description="Want to explore what stablecoins can unlock for your business? Email us to discuss your use case."
+    href="mailto:partners@tempo.xyz"
+    icon={LucideMail}
+    title="Get in Touch"
+  />
+  <Card.Link
+    description="Start building on Tempo with our guides, SDKs, and documentation."
+    href="/quickstart/integrate-tempo"
+    icon={LucideRocket}
+    title="Build on Tempo"
+  />
+</Card.Container>
