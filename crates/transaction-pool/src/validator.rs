@@ -259,9 +259,20 @@ where
         };
 
         // Calculate the intrinsic gas for the AA transaction
-        let init_and_floor_gas =
+        let mut init_and_floor_gas =
             calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
+
+        // Add 2D nonce gas if nonce_key is non-zero
+        // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
+        if !tx.nonce_key.is_zero() {
+            let nonce_gas = if tx.nonce == 0 {
+                tempo_revm::NEW_NONCE_KEY_GAS
+            } else {
+                tempo_revm::EXISTING_NONCE_KEY_GAS
+            };
+            init_and_floor_gas.initial_gas += nonce_gas;
+        }
 
         let gas_limit = tx.gas_limit;
 
