@@ -40,6 +40,7 @@ impl ConsensusSubcommand {
         match self {
             Self::GeneratePrivateKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
+            Self::DeleteSigningShare(args) => args.run(),
         }
     }
 }
@@ -91,19 +92,57 @@ impl CalculatePublicKey {
 }
 
 #[derive(Debug, clap::Args)]
-struct DeleteSigningShare {
-    //// Path to the consensus data directory (e.g. .../data/consensus).
+pub(crate) struct DeleteSigningShare {
+    /// Path to the consensus data directory (e.g. .../data/consensus).
     #[arg(long, short, value_name = "DIR")]
     data_dir: PathBuf,
 
     /// Partition prefix used by the node.
     #[arg(long, default_value = "tempo")]
     prefix: String,
+
+    /// Skip confirmation prompt and force deletion.
+    /// Use this carefully!
+    #[arg(long, short)]
+    force: bool,
 }
 
 impl DeleteSigningShare {
+    /// Prompts the user for confirmation before proceeding with deletion.
+    /// Returns `true` if the user confirms or if the `--force` flag is set.
+    fn confirm_deletion(&self) -> std::io::Result<bool> {
+        if self.force {
+            return Ok(true);
+        }
+
+        use std::io::{self, Write};
+
+        // Display a warning message to the user
+        println!();
+        println!("⚠️  DANGER ZONE: DELETING SIGNING SHARE ⚠️");
+        println!("You are about to PERMANENTLY delete the consensus signing share from the node state.");
+        println!("This action cannot be undone and may prevent your node from validating.");
+        print!("Are you sure you want to proceed? (Type 'y' to confirm): ");
+        
+        // Flush stdout to ensure the prompt appears immediately
+        io::stdout().flush()?;
+        
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        // Check if the input is 'y' or 'yes' (case-insensitive)
+        let response = input.trim().to_lowercase();
+        Ok(response == "y" || response == "yes")
+    }
+
     fn run(self) -> eyre::Result<()> {
-        let Self { data_dir, prefix } = self;
+        // Ensure user confirmation before initializing runtime or touching the database
+        if !self.confirm_deletion().wrap_err("failed to read user input")? {
+            println!("Operation cancelled by user.");
+            return Ok(());
+        }
+
+        let Self { data_dir, prefix, .. } = self;
 
         // Configure runtime to open the database
         let config = commonware_runtime::tokio::Config::default()
@@ -128,24 +167,5 @@ impl DeleteSigningShare {
         }).wrap_err("failed to execute database operation")?;
 
         Ok(())
-    }
-}
-
-pub(crate) fn try_run_tempo_subcommand() -> Option<eyre::Result<()>> {
-    match TempoCli::try_parse() {
-        Ok(cli) => match cli.command {
-            TempoCommand::Consensus(cmd) => match cmd.command {
-                ConsensusSubcommand::GeneratePrivateKey(args) => Some(args.run()),
-                ConsensusSubcommand::CalculatePublicKey(args) => Some(args.run()),
-                ConsensusSubcommand::DeleteSigningShare(args) => Some(args.run()),
-            },
-        },
-        Err(e) => match e.kind() {
-            ErrorKind::InvalidSubcommand => None,
-            _ => {
-                e.print().expect("should be able to write to STDOUT");
-                Some(Ok(()))
-            }
-        },
     }
 }
