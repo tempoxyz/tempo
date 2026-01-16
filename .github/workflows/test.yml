@@ -106,11 +106,12 @@ jobs:
       - name: Download file if cache miss
         if: steps.cache-file.outputs.cache-hit != 'true'
         run: |
-          mkdir -p .cache/snapshots
+          sudo apt-get update && sudo apt-get install -y aria2
 
           FILE_NAME='${{ steps.latest.outputs.filename }}'
-          curl -L "https://snapshots.tempoxyz.dev/42431/$FILE_NAME" \
-            -o ".cache/snapshots/$FILE_NAME"
+          aria2c -x 16 -s 16 --retry-wait=10 --max-tries=5 \
+            -d .cache/snapshots -o "$FILE_NAME" \
+            "https://snapshots.tempoxyz.dev/42431/$FILE_NAME"
 
           ls -l .cache/snapshots
 
