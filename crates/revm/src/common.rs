@@ -435,7 +435,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::address;
+    use alloy_primitives::{address, uint};
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
     use tempo_precompiles::{
         PATH_USD_ADDRESS,

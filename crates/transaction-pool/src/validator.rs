@@ -754,8 +754,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Block, Header, Transaction};
-    use alloy_eips::Decodable2718;
-    use alloy_primitives::{Address, B256, U256, address, hex, uint};
+    use alloy_primitives::{Address, B256, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
