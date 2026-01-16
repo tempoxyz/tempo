@@ -1295,6 +1295,7 @@ where
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
     let gas_limit = tx.gas_limit();
     let gas_params = cfg.gas_params();
+    let spec = *cfg.spec();
 
     // This function should only be called for AA transactions
     let aa_env = tx
@@ -1329,11 +1330,13 @@ where
         0
     };
 
-    // Add 2D nonce gas to initial gas
-    batch_gas.initial_gas += nonce_2d_gas;
-
     if evm.ctx.cfg.is_eip7623_disabled() {
         batch_gas.floor_gas = 0u64;
+    }
+
+    // For T0, include 2D nonce gas in the validation
+    if spec.is_t0() {
+        batch_gas.initial_gas += nonce_2d_gas;
     }
 
     // Validate gas limit is sufficient for initial gas
@@ -1343,6 +1346,11 @@ where
             intrinsic_gas: batch_gas.initial_gas,
         }
         .into());
+    }
+
+    // For pre-T0, add 2D nonce gas after validation
+    if !spec.is_t0() {
+        batch_gas.initial_gas += nonce_2d_gas;
     }
 
     // Validate floor gas (Prague+)
@@ -1510,6 +1518,45 @@ mod tests {
     fn create_test_journal() -> Journal<CacheDB<EmptyDB>> {
         let db = CacheDB::new(EmptyDB::default());
         Journal::new(db)
+    }
+
+    #[test]
+    fn test_invalid_fee_token_rejected() {
+        // Test that an invalid fee token (non-TIP20 address) is rejected with InvalidFeeToken error
+        // rather than panicking. This validates the check in load_fee_fields that guards against
+        // invalid tokens reaching get_token_balance.
+        let invalid_token = Address::random(); // Random address won't have TIP20 prefix
+        assert!(
+            !is_tip20_prefix(invalid_token),
+            "Test requires a non-TIP20 address"
+        );
+
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::default();
+
+        // Set up tx with the invalid token as fee_token
+        let tx_env = TempoTxEnv {
+            fee_token: Some(invalid_token),
+            ..Default::default()
+        };
+
+        let mut evm: TempoEvm<CacheDB<EmptyDB>, ()> = TempoEvm::new(
+            Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(Default::default())
+                .with_tx(tx_env),
+            (),
+        );
+
+        let result = handler.load_fee_fields(&mut evm);
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr))) if addr == invalid_token
+            ),
+            "Should reject invalid fee token with InvalidFeeToken error"
+        );
     }
 
     #[test]
@@ -2282,6 +2329,71 @@ mod tests {
             let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
             let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
             assert_eq!(gas.initial_gas, BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS);
+        }
+    }
+
+    #[test]
+    fn test_2d_nonce_gas_limit_validation() {
+        use revm::handler::Handler;
+
+        const BASE_INTRINSIC_GAS: u64 = 21_000;
+
+        // Test cases: (gas_limit, nonce, expected_result)
+        // With new 2D nonce key (tx_nonce == 0), need BASE + NEW_NONCE_KEY_GAS
+        let cases = [
+            (BASE_INTRINSIC_GAS + 10_000, 0, false), // Insufficient for new 2D nonce
+            (BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS, 0, true), // Exactly sufficient for new key
+            (BASE_INTRINSIC_GAS + EXISTING_NONCE_KEY_GAS, 1, true), // Exactly sufficient for existing key
+        ];
+
+        for (gas_limit, nonce, should_succeed) in cases {
+            let db = CacheDB::new(EmptyDB::default());
+            let journal = Journal::new(db);
+            let cfg = CfgEnv::<TempoHardfork>::default();
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit,
+                        nonce,
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(Address::random()),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key: U256::from(1), // Non-zero to trigger 2D nonce gas
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let result = handler.validate_initial_tx_gas(&mut evm);
+
+            if should_succeed {
+                assert!(
+                    result.is_ok(),
+                    "gas_limit={gas_limit}, nonce={nonce}: expected success but got error"
+                );
+            } else {
+                let err = result.expect_err(&format!(
+                    "gas_limit={gas_limit}, nonce={nonce}: should fail"
+                ));
+                assert!(
+                    matches!(
+                        err.as_invalid_tx_err(),
+                        Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost { .. })
+                    ),
+                    "Expected InsufficientGasForIntrinsicCost, got: {err:?}"
+                );
+            }
         }
     }
 
