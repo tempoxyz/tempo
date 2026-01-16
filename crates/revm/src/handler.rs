@@ -14,7 +14,7 @@ use revm::{
     },
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
-        pre_execution::{self, calculate_caller_fee},
+        pre_execution::{self, apply_auth_list, calculate_caller_fee},
         validation,
     },
     inspector::{Inspector, InspectorHandler},
@@ -38,7 +38,7 @@ use tempo_precompiles::{
     nonce::{INonce::getNonceCall, NonceManager},
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
@@ -168,11 +168,18 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             .get_fee_token(&ctx.tx, self.fee_payer, ctx.cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-        // Skip fee token validity check for cases when the transaction is free and is not a part of a subblock.
+        // Always validate TIP20 prefix to prevent panics in get_token_balance.
+        // This is a protocol-level check since validators could bypass initial validation.
+        if !is_tip20_prefix(self.fee_token) {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
+        }
+
+        // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
+        // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if (!ctx.tx.max_balance_spending()?.is_zero() || ctx.tx.is_subblock_transaction())
             && !ctx
                 .journaled_state
-                .is_valid_fee_token(ctx.cfg.spec, self.fee_token)
+                .is_tip20_usd(ctx.cfg.spec, self.fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?
         {
             return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
@@ -515,66 +522,16 @@ where
             let (tx, journal) = evm.ctx().tx_journal_mut();
 
             let tempo_tx_env = tx.tempo_tx_env.as_ref().unwrap();
-            let mut refunded_accounts = 0;
 
-            for authorization in &tempo_tx_env.tempo_authorization_list {
-                // Skip keychain signatures in authorization list
-                if authorization.signature().is_keychain() {
-                    continue;
-                }
-
-                let Some(authority) = authorization.authority() else {
-                    // invalid signature, we need to skip
-                    continue;
-                };
-
-                // 1. Verify the chain id is either 0 or the chain's current ID.
-                let auth_chain_id = authorization.chain_id;
-                if !auth_chain_id.is_zero() && auth_chain_id != U256::from(chain_id) {
-                    continue;
-                }
-
-                // 2. Verify the `nonce` is less than `2**64 - 1`.
-                if authorization.nonce == u64::MAX {
-                    continue;
-                }
-
-                // 3. Add `authority` to `accessed_addresses` (warm the account)
-                let mut authority_acc = journal.load_account_with_code_mut(authority)?;
-                let authority_acc_info = &authority_acc.data.account().info;
-
-                // 4. Verify the code of `authority` is either empty or already delegated.
-                if let Some(bytecode) = &authority_acc_info.code {
-                    // if it is not empty and it is not eip7702
-                    if !bytecode.is_empty() && !bytecode.is_eip7702() {
-                        continue;
-                    }
-                }
-
-                // 5. Verify the nonce of `authority` is equal to `nonce`.
-                if authorization.nonce != authority_acc_info.nonce {
-                    continue;
-                }
-
-                // 6. Add gas refund if authority already exists
-                if !(authority_acc_info.is_empty()
-                    && authority_acc
-                        .data
-                        .account()
-                        .is_loaded_as_not_existing_not_touched())
-                {
-                    refunded_accounts += 1;
-                }
-
-                // 7. Set the code of `authority` to be `0xef0100 || address`. This is a delegation designation.
-                //  * As a special case, if `address` is `0x0000000000000000000000000000000000000000` do not write the designation.
-                //    Clear the accounts code and reset the account's code hash to the empty hash `0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470`.
-                // 8. Increase the nonce of `authority` by one.
-                authority_acc.data.delegate(*authorization.address());
-            }
-
-            let refunded_gas =
-                refunded_accounts * (eip7702::PER_EMPTY_ACCOUNT_COST - eip7702::PER_AUTH_BASE_COST);
+            let refunded_gas = apply_auth_list::<_, Self::Error>(
+                chain_id,
+                tempo_tx_env
+                    .tempo_authorization_list
+                    .iter()
+                    .filter(|auth| !auth.signature().is_keychain()),
+                journal,
+            )
+            .unwrap();
             return Ok(refunded_gas);
         }
 
@@ -1059,7 +1016,10 @@ where
     /// - P256 (129 bytes): 21k base + 5k for P256 verification
     /// - WebAuthn (>129 bytes): 21k base + 5k + calldata gas for variable data
     #[inline]
-    fn validate_initial_tx_gas(&self, evm: &mut Self::Evm) -> Result<InitialAndFloorGas, Self::Error> {
+    fn validate_initial_tx_gas(
+        &self,
+        evm: &mut Self::Evm,
+    ) -> Result<InitialAndFloorGas, Self::Error> {
         let tx = evm.ctx_ref().tx();
 
         // Route to appropriate gas calculation based on transaction type
@@ -1170,7 +1130,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
             gas.initial_gas += CREATE; // 32000 gas
 
             // EIP-3860: Initcode analysis gas (2 gas per 32-byte word)
-            let num_words = (call.input.len() + 31) / 32;
+            let num_words = call.input.len().div_ceil(32);
             gas.initial_gas += num_words as u64 * INITCODE_WORD_COST;
         }
 
@@ -1578,11 +1538,9 @@ mod tests {
         };
 
         let spec = tempo_chainspec::hardfork::TempoHardfork::default();
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        )
-        .unwrap();
+        let gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>)
+                .unwrap();
 
         // Calculate base gas for a single normal tx
         let base_tx_gas = calculate_initial_tx_gas(spec.into(), &calldata, false, 0, 0, 0);
@@ -1630,11 +1588,9 @@ mod tests {
             ..Default::default()
         };
 
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        )
-        .unwrap();
+        let gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>)
+                .unwrap();
 
         // Calculate base gas for normal tx
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1670,11 +1626,9 @@ mod tests {
             ..Default::default()
         };
 
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        )
-        .unwrap();
+        let gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>)
+                .unwrap();
 
         // Calculate expected using revm's function for CREATE tx
         let base_gas = calculate_initial_tx_gas(
@@ -1710,10 +1664,8 @@ mod tests {
             ..Default::default()
         };
 
-        let res = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        );
+        let res =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>);
 
         assert_eq!(
             res.unwrap_err(),
@@ -1748,11 +1700,9 @@ mod tests {
         };
 
         // Test without access list
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        )
-        .unwrap();
+        let gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>)
+                .unwrap();
 
         // Calculate expected using revm's function
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
@@ -1847,11 +1797,9 @@ mod tests {
             ..Default::default()
         };
 
-        let gas = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
-            None::<std::iter::Empty<&AccessListItem>>,
-        )
-        .unwrap();
+        let gas =
+            calculate_aa_batch_intrinsic_gas(&aa_env, None::<std::iter::Empty<&AccessListItem>>)
+                .unwrap();
 
         // Calculate expected floor gas using revm's function
         let base_gas = calculate_initial_tx_gas(spec, &calldata, false, 0, 0, 0);
