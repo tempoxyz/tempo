@@ -27,6 +27,7 @@ reth-provider.workspace = true
 reth-eth-wire-types.workspace = true
 reth-tracing.workspace = true
 reth-metrics.workspace = true
+reth-ethereum-primitives = { workspace = true, optional = true }
 
 revm.workspace = true
 
@@ -46,7 +47,9 @@ metrics.workspace = true
 [features]
 default = []
 test-utils = [
+    "dep:reth-ethereum-primitives",
     "reth-chainspec/test-utils",
+    "reth-ethereum-primitives/test-utils",
     "reth-evm/test-utils",
     "reth-primitives-traits/test-utils",
     "reth-provider/test-utils",
