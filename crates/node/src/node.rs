@@ -442,8 +442,8 @@ where
 
         let aa_2d_config = AA2dPoolConfig {
             price_bump_config: pool_config.price_bumps,
-            // TODO: configure dedicated limit
-            aa_2d_limit: pool_config.pending_limit,
+            pending_limit: pool_config.pending_limit,
+            queued_limit: pool_config.queued_limit,
         };
         let aa_2d_pool = AA2dPool::new(aa_2d_config);
         let amm_liquidity_cache = AmmLiquidityCache::new(ctx.provider())?;
