@@ -153,6 +153,9 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     }
 
     /// @notice TEMPO-DEX20: Test divisibility edge cases - when (base*price) % PRICE_SCALE == 0
+    /// @dev Since TICK_SPACING=10, gcd(price, 100_000) is always >= 10, so divisible amounts
+    /// are relatively common (every 10_000 to 100_000 units depending on price). This test
+    /// ensures the exchange handles exact division correctly without spurious +1 rounding.
     function placeDivisibleBid(uint256 actorRnd, uint256 tickRnd, uint256 tokenRnd) external {
         int16 tick = _ticks[tickRnd % _ticks.length];
         address actor = _actors[actorRnd % _actors.length];
@@ -160,6 +163,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint32 price = exchange.tickToPrice(tick);
 
         // Calculate amount where (amount * price) % 100_000 == 0, above min order size
+        // With TICK_SPACING=10, gcd(price, 100_000) >= 10, so amount <= 10_000 * 10_000 = 100M
         uint128 amount = uint128((100_000 / _gcd(uint256(price), 100_000)) * 10_000);
         if (amount < 100_000_000) return;
 

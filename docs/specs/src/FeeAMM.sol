@@ -86,8 +86,8 @@ contract FeeAMM is IFeeAMM {
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
-        // Round up
-        amountIn = (amountOut * N) / SCALE + 1;
+        // Round up using proper ceiling formula: ceil(x/y) = (x + y - 1) / y
+        amountIn = (amountOut * N + SCALE - 1) / SCALE;
 
         Pool storage pool = pools[poolId];
 
