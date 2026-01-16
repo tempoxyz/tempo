@@ -1001,8 +1001,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             IFeeAMM.Pool memory pool = amm.getPool(userToken, validatorToken);
             uint256 expectedOut = (feeAmount * M) / SCALE;
 
-            // Skip if insufficient liquidity
-            vm.assume(pool.reserveValidatorToken >= expectedOut);
+            // Skip if insufficient liquidity - must leave at least 1 to maintain pool invariant
+            // (initialized pools must have reserveValidatorToken > 0)
+            vm.assume(pool.reserveValidatorToken > expectedOut);
             vm.assume(expectedOut > 0);
 
             // Skip if adding feeAmount would overflow uint128
