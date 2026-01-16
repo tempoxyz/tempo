@@ -26,7 +26,7 @@ use commonware_runtime::{
     Clock, Metrics as _, Runner as _,
     deterministic::{self, Context, Runner},
 };
-use commonware_utils::{TryFromIterator as _, ordered};
+use commonware_utils::{N3f1, TryFromIterator as _, ordered};
 use futures::future::join_all;
 use itertools::Itertools as _;
 use reth_node_metrics::recorder::PrometheusRecorder;
@@ -158,7 +158,7 @@ pub async fn setup_validators(
         .take(how_many_signers as usize)
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
-    let (initial_dkg_outcome, shares) = dkg::deal(
+    let (initial_dkg_outcome, shares) = dkg::deal::<_, _, N3f1>(
         &mut context,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),

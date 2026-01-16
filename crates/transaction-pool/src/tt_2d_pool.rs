@@ -362,13 +362,13 @@ impl AA2dPool {
     /// and tracks the accumulated size. It stops collecting when the limit is exceeded.
     ///
     /// The `accumulated_size` is updated with the total encoded size of returned transactions.
-    pub(crate) fn get_pooled_transaction_elements<'a>(
+    pub(crate) fn append_pooled_transaction_elements<'a>(
         &self,
         tx_hashes: impl IntoIterator<Item = &'a TxHash>,
         limit: GetPooledTransactionLimit,
         accumulated_size: &mut usize,
-    ) -> Vec<<TempoPooledTransaction as PoolTransaction>::Pooled> {
-        let mut elements = Vec::new();
+        out: &mut Vec<<TempoPooledTransaction as PoolTransaction>::Pooled>,
+    ) {
         for tx_hash in tx_hashes {
             let Some(tx) = self.by_hash.get(tx_hash) else {
                 continue;
@@ -380,13 +380,12 @@ impl AA2dPool {
             };
 
             *accumulated_size += encoded_len;
-            elements.push(pooled.into_inner());
+            out.push(pooled.into_inner());
 
             if limit.exceeds(*accumulated_size) {
                 break;
             }
         }
-        elements
     }
 
     /// Returns an iterator over all senders in this pool.
@@ -2336,7 +2335,7 @@ mod tests {
     }
 
     #[test]
-    fn get_pooled_transaction_elements_respects_limit() {
+    fn append_pooled_transaction_elements_respects_limit() {
         let mut pool = AA2dPool::default();
         let sender = Address::random();
         let nonce_key = U256::from(1);
@@ -2362,10 +2361,12 @@ mod tests {
 
         // Test with no limit - should return all 3 transactions
         let mut accumulated = 0;
-        let elements = pool.get_pooled_transaction_elements(
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
             &[tx0_hash, tx1_hash, tx2_hash],
             GetPooledTransactionLimit::None,
             &mut accumulated,
+            &mut elements,
         );
         assert_eq!(elements.len(), 3, "Should return all 3 transactions");
         assert_eq!(
@@ -2377,10 +2378,12 @@ mod tests {
         // Test with a soft limit - stops after exceeding (not at) the limit
         // A limit of tx0_len - 1 means we stop after tx0 is added (since tx0_len > limit)
         let mut accumulated = 0;
-        let elements = pool.get_pooled_transaction_elements(
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
             &[tx0_hash, tx1_hash, tx2_hash],
             GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len - 1),
             &mut accumulated,
+            &mut elements,
         );
         assert_eq!(
             elements.len(),
@@ -2392,10 +2395,12 @@ mod tests {
         // Test with limit that allows exactly 2 transactions before exceeding
         // A limit of tx0_len + tx1_len - 1 means we stop after tx1 is added
         let mut accumulated = 0;
-        let elements = pool.get_pooled_transaction_elements(
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
             &[tx0_hash, tx1_hash, tx2_hash],
             GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len + tx1_len - 1),
             &mut accumulated,
+            &mut elements,
         );
         assert_eq!(
             elements.len(),
@@ -2410,10 +2415,12 @@ mod tests {
 
         // Test with pre-accumulated size that causes immediate stop after first tx
         let mut accumulated = tx0_len;
-        let elements = pool.get_pooled_transaction_elements(
+        let mut elements = Vec::new();
+        pool.append_pooled_transaction_elements(
             &[tx1_hash, tx2_hash],
             GetPooledTransactionLimit::ResponseSizeSoftLimit(tx0_len + tx1_len - 1),
             &mut accumulated,
+            &mut elements,
         );
         assert_eq!(
             elements.len(),

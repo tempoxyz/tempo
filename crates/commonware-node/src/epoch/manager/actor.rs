@@ -313,17 +313,11 @@ where
         let is_signer = matches!(share, Some(..));
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::signer(
-                crate::config::NAMESPACE,
-                participants,
-                public,
-                share,
-                Sequential,
-            )
-            .expect("our private share must match our slice of the public key")
+            Scheme::signer(crate::config::NAMESPACE, participants, public, share)
+                .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(crate::config::NAMESPACE, participants, public, Sequential)
+            Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
@@ -358,6 +352,8 @@ where
                 skip_timeout: self.config.views_until_leader_skip,
 
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
+
+                strategy: Sequential,
             },
         );
 
@@ -460,7 +456,6 @@ where
                     crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
-                    Sequential,
                 ),
             );
             self.confirmed_latest_network_epoch

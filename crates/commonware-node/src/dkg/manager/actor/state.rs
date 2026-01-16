@@ -23,7 +23,7 @@ use commonware_p2p::Address;
 use commonware_parallel::Strategy;
 use commonware_runtime::{Metrics, buffer::PoolRef};
 use commonware_storage::journal::{contiguous, segmented};
-use commonware_utils::{NZU16, NZU32, NZU64, NZUsize, ordered};
+use commonware_utils::{N3f1, NZU16, NZU32, NZU64, NZUsize, ordered};
 use eyre::{OptionExt, WrapErr as _, bail, eyre};
 use futures::{FutureExt as _, StreamExt as _, future::BoxFuture};
 use tracing::{debug, info, instrument, warn};
@@ -375,7 +375,7 @@ where
             share
         };
 
-        let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start(
+        let (mut dealer, pub_msg, priv_msgs) = dkg::Dealer::start::<N3f1>(
             Transcript::resume(seed).noise(b"dealer-rng"),
             round.info.clone(),
             me.clone(),
@@ -941,7 +941,7 @@ impl Dealer {
         // Even after the finalized_log is taken, we won't attempt to finalize
         // again because the dealer will be None.
         if let Some(dealer) = self.dealer.take() {
-            let log = dealer.finalize();
+            let log = dealer.finalize::<N3f1>();
             self.finalized = Some(log);
         }
     }
@@ -991,7 +991,7 @@ impl Round {
             epoch: state.epoch,
             dealers: state.dealers.keys().clone(),
             players: state.players.keys().clone(),
-            info: Info::new(
+            info: Info::new::<N3f1>(
                 namespace,
                 state.epoch.get(),
                 previous_output,
@@ -1063,7 +1063,7 @@ impl Player {
         // Otherwise generate a new ack
         let ack = self
             .player
-            .dealer_message(dealer.clone(), pub_msg.clone(), priv_msg.clone())
+            .dealer_message::<N3f1>(dealer.clone(), pub_msg.clone(), priv_msg.clone())
             // FIXME(janis): it would be great to know why exactly that is not the case.
             .ok_or_eyre(
                 "applying dealer message to player instance did not result in a usable ack",
@@ -1088,7 +1088,7 @@ impl Player {
         }
         if let Some(ack) = self
             .player
-            .dealer_message(dealer.clone(), pub_msg, priv_msg)
+            .dealer_message::<N3f1>(dealer.clone(), pub_msg, priv_msg)
         {
             self.acks.insert(dealer, ack);
         }
@@ -1100,7 +1100,7 @@ impl Player {
         logs: BTreeMap<PublicKey, dkg::DealerLog<MinSig, PublicKey>>,
         strategy: &impl Strategy,
     ) -> Result<(Output<MinSig, PublicKey>, Share), dkg::Error> {
-        self.player.finalize(logs, strategy)
+        self.player.finalize::<N3f1>(logs, strategy)
     }
 }
 
