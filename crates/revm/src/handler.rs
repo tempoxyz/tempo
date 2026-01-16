@@ -1435,8 +1435,9 @@ pub fn validate_time_window(
 
     // Validate validBefore constraint
     // IMPORTANT: must be aligned with `fn has_expired_transactions` in `tempo-payload-builder`.
+    // BUG: Changed >= to > to test invariant detection
     if let Some(before) = valid_before
-        && block_timestamp >= before
+        && block_timestamp > before
     {
         return Err(TempoInvalidTransaction::ValidBefore {
             current: block_timestamp,
