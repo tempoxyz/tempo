@@ -476,8 +476,8 @@ export default defineConfig({
                 link: '/protocol/blockspace/payment-lane-specification',
               },
               {
-                text: 'Sub-block Specification',
-                link: '/protocol/blockspace/sub-block-specification',
+                text: 'Subblock Specification',
+                link: '/protocol/blockspace/subblock-specification',
               },
             ],
           },
