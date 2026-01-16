@@ -335,12 +335,12 @@ impl Bridge {
         let validator_config = ValidatorConfig::new();
         let validators = validator_config.get_validators()?;
         let active_count = validators.iter().filter(|v| v.active).count() as u64;
-        
+
         // Ensure we have at least 1 active validator (prevent 0-threshold)
         if active_count == 0 {
             return Err(BridgeError::threshold_not_reached().into());
         }
-        
+
         let threshold = (active_count * 2).div_ceil(3).max(1);
 
         if deposit.voting_power_signed < threshold {

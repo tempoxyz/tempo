@@ -1,8 +1,10 @@
 //! Watches Tempo chain for burn events.
 
-use alloy::consensus::TxReceipt;
-use alloy::primitives::{Address, B256};
-use alloy::sol_types::SolEvent;
+use alloy::{
+    consensus::TxReceipt,
+    primitives::{Address, B256},
+    sol_types::SolEvent,
+};
 use eyre::Result;
 use reth_exex::ExExNotification;
 use reth_primitives_traits::{AlloyBlockHeader as _, NodePrimitives};

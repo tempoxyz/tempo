@@ -2,8 +2,7 @@
 
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 /// Bridge configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

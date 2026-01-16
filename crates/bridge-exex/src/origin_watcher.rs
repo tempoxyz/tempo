@@ -1,10 +1,12 @@
 //! Watches origin chains for deposit events.
 
-use alloy::primitives::{Address, B256};
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy::rpc::types::Filter;
-use alloy::sol;
-use alloy::sol_types::SolEvent;
+use alloy::{
+    primitives::{Address, B256},
+    providers::{Provider, ProviderBuilder},
+    rpc::types::Filter,
+    sol,
+    sol_types::SolEvent,
+};
 use eyre::Result;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};

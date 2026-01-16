@@ -1,7 +1,6 @@
 //! Main ExEx implementation.
 
-use alloy::eips::BlockNumHash;
-use alloy::primitives::Sealable;
+use alloy::{eips::BlockNumHash, primitives::Sealable};
 use eyre::Result;
 use futures::StreamExt;
 use reth_exex::{ExExContext, ExExEvent};

@@ -68,7 +68,13 @@ fn test_register_token_mapping() -> eyre::Result<()> {
         let mut bridge = setup_bridge(owner)?;
 
         // Owner can register token mapping
-        register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Verify mapping was registered
         let mapping = bridge.get_token_mapping(IBridge::getTokenMappingCall {
@@ -88,14 +94,24 @@ fn test_register_token_mapping() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::unauthorized()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::unauthorized()
+            ))
         );
 
         // Cannot register duplicate mapping
-        let result = register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20);
+        let result = register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::token_mapping_exists()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::token_mapping_exists()
+            ))
         );
 
         Ok(())
@@ -116,7 +132,13 @@ fn test_register_deposit() -> eyre::Result<()> {
 
     StorageCtx::enter(&mut storage, || {
         let mut bridge = setup_bridge(owner)?;
-        register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Register deposit
         let request_id = bridge.register_deposit(
@@ -136,7 +158,9 @@ fn test_register_deposit() -> eyre::Result<()> {
         assert!(!request_id.is_zero());
 
         // Verify deposit was stored correctly
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.originChainId, origin_chain_id);
         assert_eq!(deposit.originToken, origin_token);
         assert_eq!(deposit.originTxHash, origin_tx_hash);
@@ -175,7 +199,13 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(owner)?;
-        register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Register deposit
         let request_id = bridge.register_deposit(
@@ -201,7 +231,9 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::validator_not_active()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::validator_not_active()
+            ))
         );
 
         // Validator1 signs
@@ -214,14 +246,18 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         )?;
 
         // Verify voting power increased
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.votingPowerSigned, 1);
 
         // Verify validator has signed
-        assert!(bridge.has_validator_signed_deposit(IBridge::hasValidatorSignedDepositCall {
-            requestId: request_id,
-            validator: validator1,
-        })?);
+        assert!(
+            bridge.has_validator_signed_deposit(IBridge::hasValidatorSignedDepositCall {
+                requestId: request_id,
+                validator: validator1,
+            })?
+        );
 
         // Duplicates rejected
         let result = bridge.submit_deposit_signature(
@@ -233,7 +269,9 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::already_signed()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::already_signed()
+            ))
         );
 
         // Second validator can still sign
@@ -245,7 +283,9 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
             },
         )?;
 
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.votingPowerSigned, 2);
 
         Ok(())
@@ -280,7 +320,13 @@ fn test_finalize_deposit() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Register deposit
         let request_id = bridge.register_deposit(
@@ -307,11 +353,15 @@ fn test_finalize_deposit() -> eyre::Result<()> {
 
         let result = bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::threshold_not_reached()
+            ))
         );
 
         // Get second signature to reach 2/3 threshold
@@ -326,11 +376,15 @@ fn test_finalize_deposit() -> eyre::Result<()> {
         // Now finalize should succeed
         bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         )?;
 
         // Verify deposit is finalized
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
 
         // Verify TIP-20 tokens were minted to recipient
@@ -343,11 +397,15 @@ fn test_finalize_deposit() -> eyre::Result<()> {
         // Cannot finalize twice
         let result = bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::deposit_already_finalized()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::deposit_already_finalized()
+            ))
         );
 
         Ok(())
@@ -376,7 +434,13 @@ fn test_burn_for_unlock() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Burn for unlock
         let burn_id = bridge.burn_for_unlock(
@@ -404,9 +468,8 @@ fn test_burn_for_unlock() -> eyre::Result<()> {
 
         // Verify tokens were burned
         let token = TIP20Token::from_address(tempo_tip20)?;
-        let balance = token.balance_of(tempo_contracts::precompiles::ITIP20::balanceOfCall {
-            account: user,
-        })?;
+        let balance = token
+            .balance_of(tempo_contracts::precompiles::ITIP20::balanceOfCall { account: user })?;
         assert_eq!(balance, U256::ZERO);
 
         // Verify BurnInitiated event was emitted
@@ -431,7 +494,13 @@ fn test_replay_prevention() -> eyre::Result<()> {
 
     StorageCtx::enter(&mut storage, || {
         let mut bridge = setup_bridge(owner)?;
-        register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         let deposit_call = IBridge::registerDepositCall {
             originChainId: origin_chain_id,
@@ -451,7 +520,9 @@ fn test_replay_prevention() -> eyre::Result<()> {
         let result = bridge.register_deposit(sender, deposit_call);
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::deposit_already_exists()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::deposit_already_exists()
+            ))
         );
 
         // Different log index is a different deposit
@@ -483,7 +554,13 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
 
     StorageCtx::enter(&mut storage, || {
         let mut bridge = setup_bridge(owner)?;
-        register_mapping(&mut bridge, owner, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Zero amount rejected
         let result = bridge.register_deposit(
@@ -518,7 +595,9 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::invalid_recipient()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::invalid_recipient()
+            ))
         );
 
         // Unknown token mapping rejected
@@ -536,7 +615,9 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::token_mapping_not_found()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::token_mapping_not_found()
+            ))
         );
 
         Ok(())
@@ -562,7 +643,13 @@ fn test_burn_for_unlock_validation() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Zero amount rejected
         let result = bridge.burn_for_unlock(
@@ -593,7 +680,9 @@ fn test_burn_for_unlock_validation() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::invalid_recipient()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::invalid_recipient()
+            ))
         );
 
         // Insufficient balance rejected
@@ -609,7 +698,9 @@ fn test_burn_for_unlock_validation() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::insufficient_balance()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::insufficient_balance()
+            ))
         );
 
         // Unknown token mapping rejected
@@ -625,7 +716,9 @@ fn test_burn_for_unlock_validation() -> eyre::Result<()> {
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::token_mapping_not_found()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::token_mapping_not_found()
+            ))
         );
 
         Ok(())
@@ -654,7 +747,13 @@ fn test_burn_replay_prevention() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         let burn_call = IBridge::burnForUnlockCall {
             originChainId: origin_chain_id,
@@ -672,7 +771,9 @@ fn test_burn_replay_prevention() -> eyre::Result<()> {
         let result = bridge.burn_for_unlock(user, burn_call);
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::burn_already_exists()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::burn_already_exists()
+            ))
         );
 
         // Different nonce is allowed

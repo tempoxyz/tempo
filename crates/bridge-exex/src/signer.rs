@@ -1,7 +1,9 @@
 //! Signature generation for bridge attestations.
 
-use alloy::primitives::{keccak256, Address, Bytes, B256};
-use alloy::signers::{local::PrivateKeySigner, Signer};
+use alloy::{
+    primitives::{keccak256, Address, Bytes, B256},
+    signers::{local::PrivateKeySigner, Signer},
+};
 use eyre::Result;
 
 /// Domain separator for deposit signatures

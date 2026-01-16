@@ -1,7 +1,9 @@
 //! Test utilities for bridge e2e tests.
 
-use alloy::primitives::{Address, B256, address, keccak256};
-use alloy::signers::local::PrivateKeySigner;
+use alloy::{
+    primitives::{Address, B256, address, keccak256},
+    signers::local::PrivateKeySigner,
+};
 
 pub(super) const BRIDGE_ADDRESS: Address = address!("BBBB000000000000000000000000000000000000");
 
@@ -71,5 +73,5 @@ pub(super) fn compute_burn_id(
 }
 
 pub(super) fn compute_threshold(validator_count: u64) -> u64 {
-    (validator_count * 2 + 2) / 3
+    (validator_count * 2).div_ceil(3)
 }
