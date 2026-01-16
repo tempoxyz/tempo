@@ -704,10 +704,9 @@ library TxBuilder {
             return
                 _createP256Signature(vm, txHash, params.privateKey, params.pubKeyX, params.pubKeyY);
         } else if (params.strategy == SigningStrategy.WebAuthn) {
-            return
-                _createWebAuthnSignature(
-                    vm, txHash, params.privateKey, params.pubKeyX, params.pubKeyY
-                );
+            return _createWebAuthnSignature(
+                vm, txHash, params.privateKey, params.pubKeyX, params.pubKeyY
+            );
         } else if (params.strategy == SigningStrategy.KeychainSecp256k1) {
             (uint8 v, bytes32 r, bytes32 s) = vm.sign(params.privateKey, txHash);
             bytes memory innerSig = abi.encodePacked(r, s, v);
