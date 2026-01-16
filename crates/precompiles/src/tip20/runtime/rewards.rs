@@ -10,7 +10,7 @@ use alloy::primitives::{Address, U256};
 use abi::IRewards as _;
 
 // Re-export types for backwards compatibility
-pub use super::abi::UserRewardInfo;
+pub use abi::UserRewardInfo;
 
 impl abi::IRewards for TIP20Token {
     /// Allows an authorized user to distribute reward tokens to opted-in recipients.

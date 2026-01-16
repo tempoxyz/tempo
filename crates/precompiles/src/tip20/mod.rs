@@ -1,65 +1,18 @@
 //! TIP20 Token module.
-//!
-//! This module contains the TIP20 token implementation including:
-//! - `tip20`: Core ERC20-like token interface
-//! - `roles_auth`: Role-based access control interface
-//! - `rewards`: Reward distribution and claiming interface
 
-#[cfg(feature = "precompile")]
-pub mod dispatch;
-#[cfg(feature = "precompile")]
-pub mod rewards;
-#[cfg(feature = "precompile")]
-pub mod roles;
-#[cfg(feature = "precompile")]
-pub mod token;
-
-#[cfg(feature = "precompile")]
-use crate::storage::Mapping;
-#[cfg(feature = "precompile")]
-use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::abi;
-#[cfg(feature = "precompile")]
-use tempo_precompiles_macros::contract;
 
-#[cfg(feature = "precompile")]
-pub use roles::*;
-#[cfg(feature = "precompile")]
-pub use token::*;
-
-// Re-export abi module as ITIP20 for external consumers
 pub use abi as ITIP20;
 
+pub type TIP20Error = abi::Error;
+pub type TIP20Event = abi::Event;
+pub type RolesAuthError = abi::Error;
+pub type RolesAuthEvent = abi::Event;
+
 #[cfg(feature = "precompile")]
-#[contract(abi, dispatch)]
-pub struct TIP20Token {
-    // RolesAuth
-    roles: Mapping<Address, Mapping<B256, bool>>,
-    role_admins: Mapping<B256, B256>,
-
-    // TIP20 Metadata
-    name: String,
-    symbol: String,
-    currency: String,
-    domain_separator: B256,
-    quote_token: Address,
-    next_quote_token: Address,
-    transfer_policy_id: u64,
-
-    // TIP20 Token
-    total_supply: U256,
-    balances: Mapping<Address, U256>,
-    allowances: Mapping<Address, Mapping<Address, U256>>,
-    nonces: Mapping<Address, U256>,
-    paused: bool,
-    supply_cap: U256,
-    salts: Mapping<B256, bool>,
-
-    // TIP20 Rewards
-    global_reward_per_token: U256,
-    opted_in_supply: u128,
-    user_reward_info: Mapping<Address, UserRewardInfo>,
-}
+mod runtime;
+#[cfg(feature = "precompile")]
+pub use runtime::*;
 
 #[abi(dispatch)]
 #[rustfmt::skip]
@@ -182,11 +135,3 @@ pub mod abi {
         RewardRecipientSet { #[indexed] holder: Address, #[indexed] recipient: Address },
     }
 }
-
-// Backward-compatibility type aliases
-pub type TIP20Error = abi::Error;
-pub type TIP20Event = abi::Event;
-#[cfg(feature = "precompile")]
-pub type RolesAuthError = abi::Error;
-#[cfg(feature = "precompile")]
-pub type RolesAuthEvent = abi::Event;

@@ -2,13 +2,10 @@
 
 use alloy::primitives::{Address, B256};
 
-use crate::{error::Result, storage::Handler, tip20::TIP20Token};
-
-// Re-export types for backwards compatibility
-pub use super::{
-    IRolesAuth, RoleAdminUpdated, RoleMembershipUpdated, RolesAuthError, RolesAuthEvent,
-    Unauthorized,
-    abi::{self, BURN_BLOCKED_ROLE, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+use crate::{
+    error::Result,
+    storage::Handler,
+    tip20::{RolesAuthError, RolesAuthEvent, TIP20Token, abi},
 };
 
 pub const DEFAULT_ADMIN_ROLE: B256 = B256::ZERO;
@@ -121,7 +118,12 @@ mod tests {
     use alloy::primitives::keccak256;
 
     use super::*;
-    use crate::{error::TempoPrecompileError, storage::StorageCtx, test_util::TIP20Setup};
+    use crate::{
+        error::TempoPrecompileError,
+        storage::StorageCtx,
+        test_util::TIP20Setup,
+        tip20::{RoleMembershipUpdated, Unauthorized},
+    };
     use abi::IRolesAuth;
 
     #[test]

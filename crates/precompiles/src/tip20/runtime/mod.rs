@@ -1,21 +1,34 @@
+//! TIP20 Token module.
+//!
+//! This module contains the TIP20 token implementation including:
+//! - `tip20`: Core ERC20-like token interface
+//! - `roles_auth`: Role-based access control interface
+//! - `rewards`: Reward distribution and claiming interface
+
+pub mod dispatch;
+pub mod rewards;
+pub mod roles;
+pub use roles::*;
+
+use crate::storage::Mapping;
+use alloy::primitives::{Address, B256, U256, hex, uint};
+use tempo_precompiles_macros::contract;
+
 use super::{
-    BURN_BLOCKED_ROLE, DEFAULT_ADMIN_ROLE, ISSUER_ROLE, PAUSE_ROLE, TIP20Error, TIP20Event,
-    TIP20Token, UNPAUSE_ROLE, abi,
+    TIP20Error, TIP20Event,
+    abi::{self, prelude::*},
 };
 use crate::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20_factory::{TIP20Factory, abi::IFactory as _},
-    tip403_registry::{TIP403Registry, abi::IRegistry as _},
+    tip20_factory::{TIP20Factory, abi::traits::*},
+    tip403_registry::{TIP403Registry, abi::traits::*},
 };
-use abi::IToken as _;
-use alloy::primitives::{Address, B256, U256, hex, uint};
+pub use roles::DEFAULT_ADMIN_ROLE;
 use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 use tracing::trace;
-
-use abi::IRewards as _;
 
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 pub(crate) const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
@@ -29,6 +42,36 @@ pub(crate) const USD_CURRENCY: &str = "USD";
 /// TIP20 token address prefix (12 bytes)
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 pub(crate) const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+
+#[contract(abi, dispatch)]
+pub struct TIP20Token {
+    // RolesAuth
+    roles: Mapping<Address, Mapping<B256, bool>>,
+    role_admins: Mapping<B256, B256>,
+
+    // TIP20 Metadata
+    name: String,
+    symbol: String,
+    currency: String,
+    domain_separator: B256,
+    quote_token: Address,
+    next_quote_token: Address,
+    transfer_policy_id: u64,
+
+    // TIP20 Token
+    total_supply: U256,
+    balances: Mapping<Address, U256>,
+    allowances: Mapping<Address, Mapping<Address, U256>>,
+    nonces: Mapping<Address, U256>,
+    paused: bool,
+    supply_cap: U256,
+    salts: Mapping<B256, bool>,
+
+    // TIP20 Rewards
+    global_reward_per_token: U256,
+    opted_in_supply: u128,
+    user_reward_info: Mapping<Address, UserRewardInfo>,
+}
 
 /// Returns true if the address has the TIP20 prefix.
 ///
@@ -142,7 +185,7 @@ impl TIP20Token {
     }
 }
 
-impl abi::IToken for TIP20Token {
+impl IToken for TIP20Token {
     fn name(&self) -> Result<String> {
         self.name.read()
     }
@@ -700,7 +743,6 @@ pub(crate) mod tests {
         tip20_factory::TIP20Factory,
         tip403_registry::{PolicyType, TIP403Registry},
     };
-    use abi::IRolesAuth as _;
     use rand::Rng;
 
     #[test]
@@ -1097,7 +1139,7 @@ pub(crate) mod tests {
             let result = token.mint(non_issuer, recipient, amount);
             assert!(matches!(
                 result,
-                Err(TempoPrecompileError::TIP20(abi::Error::Unauthorized(_)))
+                Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
             ));
 
             Ok(())
@@ -1149,7 +1191,7 @@ pub(crate) mod tests {
             let result = token.mint(issuer, recipient, amount);
             assert!(matches!(
                 result,
-                Err(TempoPrecompileError::TIP20(abi::Error::Unauthorized(_)))
+                Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
             ));
 
             Ok(())
