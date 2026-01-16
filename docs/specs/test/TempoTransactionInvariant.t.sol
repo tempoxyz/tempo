@@ -1509,9 +1509,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         // Use actual on-chain nonce, not ghost state
         uint64 currentNonce = uint64(vm.getNonce(sender));
@@ -1549,9 +1547,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         // Use actual on-chain nonce, not ghost state
         uint64 currentNonce = uint64(vm.getNonce(sender));
@@ -2449,9 +2445,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -2538,9 +2532,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -2629,9 +2621,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -2753,9 +2743,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -2826,9 +2814,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -2899,9 +2885,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 nonceKey = uint64(bound(nonceKeySeed, 1, 100));
         uint64 currentNonce = uint64(ghost_2dNonce[sender][nonceKey]);
@@ -3236,9 +3220,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         priorityFee = bound(priorityFee, 1, 100);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
         uint256 baseFee = block.basefee > 0 ? block.basefee : 1;
@@ -3290,9 +3272,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
         uint256 baseFee = block.basefee > 0 ? block.basefee : 100;
@@ -3348,9 +3328,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 senderNonce = uint64(ghost_protocolNonce[sender]);
         uint64 authorityNonce = uint64(vm.getNonce(authority));
@@ -3659,9 +3637,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
 
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
         bytes memory callData = abi.encodeCall(ITIP20.transfer, (recipient, amount));
@@ -3829,9 +3805,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
-        if (balance < amount) {
-            return;
-        }
+        vm.assume(balance >= amount);
 
         uint64 currentNonce = uint64(ghost_protocolNonce[sender]);
         bytes memory callData = abi.encodeCall(ITIP20.transfer, (recipient, amount));
