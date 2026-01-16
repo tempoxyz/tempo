@@ -400,6 +400,7 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool
+    #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
         let mut independent: BTreeSet<_> =
