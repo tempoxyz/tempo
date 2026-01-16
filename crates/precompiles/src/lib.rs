@@ -262,7 +262,7 @@ fn dispatch_call<T>(
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
-        if storage.spec().is_t0() {
+        if storage.spec().is_t1() {
             return Ok(fill_precompile_output(
                 PrecompileOutput::new_reverted(0, Bytes::new()),
                 &storage,
@@ -466,37 +466,37 @@ mod tests {
             AlloyEvmPrecompile::call(&precompile, input)
         };
 
-        // T0: empty calldata (missing selector) should return a reverted output
-        let empty = call_with_spec(Bytes::new(), TempoHardfork::T0)
-            .expect("T0: expected Ok with reverted output");
-        assert!(empty.reverted, "T0: expected reverted output");
+        // T1: empty calldata (missing selector) should return a reverted output
+        let empty = call_with_spec(Bytes::new(), TempoHardfork::T1)
+            .expect("T1: expected Ok with reverted output");
+        assert!(empty.reverted, "T1: expected reverted output");
         assert!(empty.bytes.is_empty());
         assert!(empty.gas_used != 0);
         assert_eq!(empty.gas_refunded, 0);
 
-        // T0: unknown selector should return a reverted output with UnknownFunctionSelector error
-        let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T0)
-            .expect("T0: expected Ok with reverted output");
-        assert!(unknown.reverted, "T0: expected reverted output");
+        // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
+        let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
+            .expect("T1: expected Ok with reverted output");
+        assert!(unknown.reverted, "T1: expected reverted output");
 
         // Verify it's an UnknownFunctionSelector error with the correct selector
         let decoded =
             tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown.bytes)
-                .expect("T0: expected UnknownFunctionSelector error");
+                .expect("T1: expected UnknownFunctionSelector error");
         assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
 
         // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
         assert!(unknown.gas_used >= empty.gas_used);
         assert_eq!(unknown.gas_refunded, empty.gas_refunded);
 
-        // Post-T0 (Genesis): invalid calldata should return PrecompileError
-        let result = call_with_spec(Bytes::new(), TempoHardfork::Genesis);
+        // Pre-T1 (T0): invalid calldata should return PrecompileError
+        let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
         assert!(
             matches!(
                 &result,
                 Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
             ),
-            "Genesis: expected PrecompileError for invalid calldata, got {result:?}"
+            "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
     }
 }

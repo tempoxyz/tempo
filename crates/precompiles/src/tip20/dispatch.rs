@@ -207,7 +207,7 @@ mod tests {
     fn test_function_selector_dispatch() -> eyre::Result<()> {
         let (_, sender) = setup_storage();
 
-        // T0: invalid selector returns reverted output
+        // T1: invalid selector returns reverted output
         let (mut storage, _) = setup_storage();
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
@@ -215,15 +215,15 @@ mod tests {
             let result = token.call(&Bytes::from([0x12, 0x34, 0x56, 0x78]), sender)?;
             assert!(result.reverted);
 
-            // T0: insufficient calldata also returns reverted output
+            // T1: insufficient calldata also returns reverted output
             let result = token.call(&Bytes::from([0x12, 0x34]), sender)?;
             assert!(result.reverted);
 
             Ok(())
         })?;
 
-        // Genesis: insufficient calldata returns error
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        // Pre-T1 (T0): insufficient calldata returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 

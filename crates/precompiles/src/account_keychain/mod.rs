@@ -141,8 +141,8 @@ impl AccountKeychain {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
-        // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
-        if self.storage.spec().is_t0() {
+        // T1+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
+        if self.storage.spec().is_t1() {
             let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
             if call.expiry <= current_timestamp {
                 return Err(AccountKeychainError::expiry_in_past().into());
@@ -715,8 +715,8 @@ mod tests {
 
     #[test]
     fn test_authorize_key_rejects_expiry_in_past() -> eyre::Result<()> {
-        // Must use T0 hardfork for expiry validation to be enforced
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        // Must use T1 hardfork for expiry validation to be enforced
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         let account = Address::random();
         let key_id = Address::random();
         StorageCtx::enter(&mut storage, || {

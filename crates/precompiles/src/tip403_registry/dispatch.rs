@@ -424,7 +424,7 @@ mod tests {
     fn test_invalid_selector() -> eyre::Result<()> {
         let sender = Address::random();
 
-        // T0: invalid selector returns reverted output
+        // T1: invalid selector returns reverted output
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut registry = TIP403Registry::new();
@@ -433,7 +433,7 @@ mod tests {
             let result = registry.call(&invalid_data, sender)?;
             assert!(result.reverted);
 
-            // T0: insufficient data also returns reverted output
+            // T1: insufficient data also returns reverted output
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender)?;
             assert!(result.reverted);
@@ -441,8 +441,8 @@ mod tests {
             Ok(())
         })?;
 
-        // Genesis: insufficient data returns error
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::Genesis);
+        // Pre-T1 (T0): insufficient data returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
