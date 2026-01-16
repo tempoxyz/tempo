@@ -48,3 +48,15 @@ jobs:
       - name: Check types
         working-directory: docs
         run: bun run check:types
+
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: crate-ci/typos@bb4666ad77b539a6b4ce4eda7ebb6de553704021 # v1.42.0
+        with:
+          files: docs/
