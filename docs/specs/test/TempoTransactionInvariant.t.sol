@@ -15,7 +15,7 @@ import { TxBuilder } from "./helpers/TxBuilder.sol";
 import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
 import { Eip1559Transaction, Eip1559TransactionLib } from "tempo-std/tx/Eip1559TransactionLib.sol";
 import {
-    Authorization as Eip7702Authorization,
+    Eip7702Authorization,
     Eip7702Transaction,
     Eip7702TransactionLib
 } from "tempo-std/tx/Eip7702TransactionLib.sol";
