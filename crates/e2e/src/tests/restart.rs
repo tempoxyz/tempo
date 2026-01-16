@@ -51,9 +51,9 @@ fn run_restart_test(
 
     executor.start(|mut context| async move {
         let (mut validators, _execution_runtime) =
-            setup_validators(context.clone(), node_setup.clone()).await;
+            setup_validators(&mut context, node_setup.clone()).await;
 
-        join_all(validators.iter_mut().map(|v| v.start())).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         debug!(
             height = shutdown_height,
@@ -86,7 +86,7 @@ fn run_restart_test(
         .await;
 
         debug!("target height reached, restarting stopped validator");
-        validators[idx].start().await;
+        validators[idx].start(&context).await;
         debug!(
             public_key = %validators[idx].public_key(),
             "restarted validator",
@@ -220,9 +220,9 @@ fn network_resumes_after_restart_with_el_p2p() {
 
         executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(&mut context, setup.clone()).await;
 
-            join_all(validators.iter_mut().map(|v| v.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             debug!(
                 height = shutdown_height,
@@ -238,7 +238,7 @@ fn network_resumes_after_restart_with_el_p2p() {
             context.sleep(Duration::from_secs(1)).await;
             ensure_no_progress(&context, 5).await;
 
-            validators[idx].start().await;
+            validators[idx].start(&context).await;
             debug!(
                 public_key = %validators[idx].public_key(),
                 "restarted validator",
@@ -274,9 +274,9 @@ fn network_resumes_after_restart_without_el_p2p() {
 
         executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(&mut context, setup.clone()).await;
 
-            join_all(validators.iter_mut().map(|v| v.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             debug!(
                 height = shutdown_height,
@@ -292,7 +292,7 @@ fn network_resumes_after_restart_without_el_p2p() {
             context.sleep(Duration::from_secs(1)).await;
             ensure_no_progress(&context, 5).await;
 
-            validators[idx].start().await;
+            validators[idx].start(&context).await;
             debug!(
                 public_key = %validators[idx].public_key(),
                 "restarted validator",
@@ -482,11 +482,11 @@ impl AssertNodeRecoversAfterFinalizingBlock {
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
 
-        executor.start(|context| async move {
+        executor.start(|mut context| async move {
             let (mut validators, _execution_runtime) =
-                setup_validators(context.clone(), setup.clone()).await;
+                setup_validators(&mut context, setup.clone()).await;
 
-            join_all(validators.iter_mut().map(|node| node.start())).await;
+            join_all(validators.iter_mut().map(|node| node.start(&context))).await;
 
             // Catch a node right after it processed the pre-to-boundary height.
             // Best-effort: we hot-loop in 100ms steps, but if processing is too
@@ -525,8 +525,9 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                 .iter()
                 .position(|node| stopped_val_metric.contains(node.uid()))
                 .unwrap();
+            let uid = validators[idx].uid.clone();
             validators[idx].stop().await;
-            validators[idx].start().await;
+            validators[idx].start(&context).await;
 
             let mut iteration = 0;
             'look_for_progress: loop {
@@ -539,7 +540,10 @@ impl AssertNodeRecoversAfterFinalizingBlock {
                     let mut parts = line.split_whitespace();
                     let metric = parts.next().unwrap();
                     let value = parts.next().unwrap();
-                    if metric == stopped_val_metric && value.parse::<u64>().unwrap() > height + 10 {
+                    if metric.contains(&uid)
+                        && metric.ends_with("_marshal_processed_height")
+                        && value.parse::<u64>().unwrap() > height + 10
+                    {
                         break 'look_for_progress;
                     }
                     if metric.ends_with("ceremony_bad_dealings") {

@@ -38,8 +38,8 @@ pub(crate) struct Config<TBlocker> {
 }
 
 pub(crate) fn init<TBlocker, TContext>(
-    config: Config<TBlocker>,
     context: TContext,
+    config: Config<TBlocker>,
 ) -> (Actor<TBlocker, TContext>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,

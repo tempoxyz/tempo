@@ -1,5 +1,8 @@
 pub mod dispatch;
 
+use __packing_authorized_key::{
+    ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
+};
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
@@ -12,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, packing::insert_into_word},
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::{Storable, contract};
@@ -49,6 +52,43 @@ impl AuthorizedKey {
         // NOTE: fine to expect, as `StorageOps` on `PackedSlot` are infallible
         Self::load(&PackedSlot(slot_value), U256::ZERO, LayoutCtx::FULL)
             .expect("unable to decode AuthorizedKey from slot")
+    }
+
+    /// Encode AuthorizedKey to a storage slot value
+    ///
+    /// This is useful for tests that need to set up storage state directly.
+    pub fn encode_to_slot(&self) -> U256 {
+        let encoded = insert_into_word(
+            U256::ZERO,
+            &self.signature_type,
+            SIGNATURE_TYPE_LOC.offset_bytes,
+            SIGNATURE_TYPE_LOC.size,
+        )
+        .expect("unable to insert 'signature_type'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.expiry,
+            EXPIRY_LOC.offset_bytes,
+            EXPIRY_LOC.size,
+        )
+        .expect("unable to insert 'expiry'");
+
+        let encoded = insert_into_word(
+            encoded,
+            &self.enforce_limits,
+            ENFORCE_LIMITS_LOC.offset_bytes,
+            ENFORCE_LIMITS_LOC.size,
+        )
+        .expect("unable to insert 'enforce_limits'");
+
+        insert_into_word(
+            encoded,
+            &self.is_revoked,
+            IS_REVOKED_LOC.offset_bytes,
+            IS_REVOKED_LOC.size,
+        )
+        .expect("unable to insert 'is_revoked'")
     }
 }
 
@@ -99,6 +139,14 @@ impl AccountKeychain {
         // Validate inputs
         if call.keyId == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
+        }
+
+        // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
+        if self.storage.spec().is_t0() {
+            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+            if call.expiry <= current_timestamp {
+                return Err(AccountKeychainError::expiry_in_past().into());
+            }
         }
 
         // Check if key already exists (key exists if expiry > 0)
@@ -472,6 +520,7 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
     };
     use alloy::primitives::{Address, U256};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::IAccountKeychain::SignatureType;
 
     // Helper function to assert unauthorized error
@@ -665,6 +714,67 @@ mod tests {
     }
 
     #[test]
+    fn test_authorize_key_rejects_expiry_in_past() -> eyre::Result<()> {
+        // Must use T0 hardfork for expiry validation to be enforced
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        let account = Address::random();
+        let key_id = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Use main key for the operation
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Try to authorize with expiry = 0 (in the past)
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 0, // Zero expiry is in the past - should fail
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result = keychain.authorize_key(account, auth_call);
+            assert!(
+                result.is_err(),
+                "Authorizing with expiry in past should fail"
+            );
+
+            // Verify it's the correct error
+            match result.unwrap_err() {
+                TempoPrecompileError::AccountKeychainError(e) => {
+                    assert!(
+                        matches!(e, AccountKeychainError::ExpiryInPast(_)),
+                        "Expected ExpiryInPast error, got: {e:?}"
+                    );
+                }
+                e => panic!("Expected AccountKeychainError, got: {e:?}"),
+            }
+
+            // Also test with a non-zero but past expiry
+            let auth_call_past = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 1, // Very old timestamp - should fail
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result_past = keychain.authorize_key(account, auth_call_past);
+            assert!(
+                matches!(
+                    result_past,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::ExpiryInPast(_)
+                    ))
+                ),
+                "Expected ExpiryInPast error for past expiry, got: {result_past:?}"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_different_key_id_can_be_authorized_after_revocation() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let account = Address::random();
@@ -694,7 +804,7 @@ mod tests {
             let auth_call_2 = authorizeKeyCall {
                 keyId: key_id_2,
                 signatureType: SignatureType::P256,
-                expiry: 1000,
+                expiry: u64::MAX,
                 enforceLimits: true,
                 limits: vec![],
             };
@@ -705,7 +815,7 @@ mod tests {
                 account,
                 keyId: key_id_2,
             })?;
-            assert_eq!(key_info.expiry, 1000);
+            assert_eq!(key_info.expiry, u64::MAX);
             assert!(!key_info.isRevoked);
 
             Ok(())
@@ -930,5 +1040,34 @@ mod tests {
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_authorized_key_encode_decode_roundtrip() {
+        let original = AuthorizedKey {
+            signature_type: 2,  // WebAuthn
+            expiry: 1234567890, // some timestamp
+            enforce_limits: true,
+            is_revoked: false,
+        };
+
+        let encoded = original.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+
+        assert_eq!(
+            decoded, original,
+            "encode/decode roundtrip should be lossless"
+        );
+
+        // Test with revoked key
+        let revoked = AuthorizedKey {
+            signature_type: 0,
+            expiry: 0,
+            enforce_limits: false,
+            is_revoked: true,
+        };
+        let encoded = revoked.encode_to_slot();
+        let decoded = AuthorizedKey::decode_from_slot(encoded);
+        assert_eq!(decoded, revoked);
     }
 }

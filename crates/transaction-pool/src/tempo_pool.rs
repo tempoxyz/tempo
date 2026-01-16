@@ -354,17 +354,28 @@ where
         tx_hashes: Vec<B256>,
         limit: GetPooledTransactionLimit,
     ) -> Vec<<Self::Transaction as PoolTransaction>::Pooled> {
+        let mut out = Vec::new();
+        self.append_pooled_transaction_elements(&tx_hashes, limit, &mut out);
+        out
+    }
+
+    fn append_pooled_transaction_elements(
+        &self,
+        tx_hashes: &[B256],
+        limit: GetPooledTransactionLimit,
+        out: &mut Vec<<Self::Transaction as PoolTransaction>::Pooled>,
+    ) {
         let mut accumulated_size = 0;
-        let mut txs = self.aa_2d_pool.read().get_pooled_transaction_elements(
-            &tx_hashes,
+        self.aa_2d_pool.read().append_pooled_transaction_elements(
+            tx_hashes,
             limit,
             &mut accumulated_size,
+            out,
         );
 
         // If the limit is already exceeded, don't query the protocol pool
         if limit.exceeds(accumulated_size) {
-            txs.shrink_to_fit();
-            return txs;
+            return;
         }
 
         // Adjust the limit for the protocol pool based on what we've already collected
@@ -377,12 +388,8 @@ where
             }
         };
 
-        txs.extend(
-            self.protocol_pool
-                .get_pooled_transaction_elements(tx_hashes, remaining_limit),
-        );
-
-        txs
+        self.protocol_pool
+            .append_pooled_transaction_elements(tx_hashes, remaining_limit, out);
     }
 
     fn get_pooled_transaction_element(

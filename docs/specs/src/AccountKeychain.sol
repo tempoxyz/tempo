@@ -6,7 +6,7 @@ import { IAccountKeychain } from "./interfaces/IAccountKeychain.sol";
 /// @title AccountKeychain - Access Key Manager Precompile
 /// @notice Manages authorized Access Keys for accounts, enabling Root Keys to provision
 ///         scoped secondary keys with expiry timestamps and per-TIP20 token spending limits.
-/// @dev This precompile is deployed at address `0xAAAAAAAA00000000000000000000000000000000`
+/// @dev This precompile is deployed at address `0xaAAAaaAA00000000000000000000000000000000`
 ///
 /// Storage Layout:
 /// ```solidity
@@ -76,6 +76,11 @@ contract AccountKeychain is IAccountKeychain {
         // Validate inputs
         if (keyId == address(0)) {
             revert ZeroPublicKey();
+        }
+
+        // Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
+        if (expiry <= block.timestamp) {
+            revert ExpiryInPast();
         }
 
         // Check if key already exists (key exists if expiry > 0)

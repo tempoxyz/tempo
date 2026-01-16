@@ -22,7 +22,7 @@ use tempo_primitives::TempoReceipt;
 use tempo_revm::IntoAddress;
 
 /// Number of recent validator tokens to track.
-const LAST_SEEN_TOKENS_WINDOW: usize = 100;
+const LAST_SEEN_TOKENS_WINDOW: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct AmmLiquidityCache {
@@ -229,22 +229,6 @@ mod tests {
     use super::*;
     use crate::test_utils::create_mock_provider;
     use alloy_primitives::address;
-
-    // ============================================
-    // AmmLiquidityCacheInner tests
-    // ============================================
-
-    #[test]
-    fn test_amm_liquidity_cache_inner_default() {
-        let inner = AmmLiquidityCacheInner::default();
-
-        assert!(inner.cache.is_empty());
-        assert!(inner.slot_to_pool.is_empty());
-        assert!(inner.last_seen_tokens.is_empty());
-        assert!(inner.unique_tokens.is_empty());
-        assert!(inner.validator_preferences.is_empty());
-        assert!(inner.slot_to_validator.is_empty());
-    }
 
     // ============================================
     // has_enough_liquidity tests (using MockEthProvider)
