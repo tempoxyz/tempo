@@ -12185,6 +12185,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tempo-storage-stats"
+version = "1.0.0-rc.7"
+dependencies = [
+ "alloy-primitives",
+ "clap",
+ "eyre",
+ "indicatif",
+ "rayon",
+ "reth-db",
+ "reth-db-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tempo-telemetry-util"
 version = "1.0.0-rc.7"
 dependencies = [
