@@ -78,11 +78,11 @@ pub const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
 /// Operations in `check_and_mark_expiring_nonce`:
-/// - 2 cold SLOADs: seen[tx_hash], ring[idx]
-/// - 3 warm SSTOREs: seen[old_hash]=0, ring[idx], seen[tx_hash]
+/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]`
+/// - 3 warm SSTOREs: `seen[old_hash]=0`, `ring[idx]`, `seen[tx_hash]`
 ///
 /// Note: ring_ptr SLOAD/SSTORE excluded since it's cached (accessed almost every tx).
-/// Note: seen[old_hash] SLOAD excluded - buffer sized so entries are always expired.
+/// Note: `seen[old_hash]` SLOAD excluded - buffer sized so entries are always expired.
 /// After cold SLOADs, slots are warm so SSTOREs use WARM_SSTORE_RESET.
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 3 * WARM_SSTORE_RESET;
 
