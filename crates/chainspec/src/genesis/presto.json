@@ -1,5 +1,8 @@
 {
-  "craftedWithLove": ["achal","alana","alexey","andrew","ani","bpierre","brendan","brian","calvin","dan","dana","daniel","danipopes","dankrad","rakita","emma","eric","fgimenez","georgen","georgios","gina","gorrie","howy","igreg","janis","jen","jev","jordan","josh","joshie","juan","jxom","kamil","karina","klkvr","kuyziss","liam","lindsey","mallesh","matt","mattsse","max","ninad","nischay","omar","onbjerg","pep","rjected","rusowsky","saemi","samczsun","simon","steffi","struong","tanishk","teresa","tim","tmm","yk","zerosnacks","zygis"],
+  "craftedWithLove": {
+      "members": ["achal","alana","alexey","andrew","ani","bpierre","brendan","brian","calvin","dan","dana","daniel","danipopes","dankrad","rakita","emma","eric","fgimenez","georgen","georgios","gina","gorrie","howy","igreg","janis","jen","jev","jordan","josh","joshie","juan","jxom","kamil","karina","klkvr","kuyziss","liam","lindsey","mallesh","matt","mattsse","max","ninad","nischay","omar","onbjerg","pep","rjected","rusowsky","saemi","samczsun","simon","steffi","struong","tanishk","teresa","tim","tmm","yk","zerosnacks","zygis"],
+      "message": "Time is money"
+  }
   "config": {
     "chainId": 4217,
     "homesteadBlock": 0,
