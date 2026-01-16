@@ -35,10 +35,10 @@ fn no_duplicate_metrics() {
                 let mut parts = line.split_whitespace();
                 let metric = parts.next().unwrap();
                 let value = parts.next().unwrap();
-                if metric.ends_with("_epoch_manager_latest_epoch") {
-                    if value.parse::<u64>().unwrap() >= 2 {
-                        break 'wait_for_epoch;
-                    }
+                if metric.ends_with("_epoch_manager_latest_epoch")
+                    && value.parse::<u64>().unwrap() >= 2
+                {
+                    break 'wait_for_epoch;
                 }
             }
             context.sleep(Duration::from_secs(1)).await;
