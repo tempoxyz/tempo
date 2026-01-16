@@ -17,7 +17,6 @@ tempo-commonware-node-config.workspace = true
 tempo-dkg-onchain-artifacts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
-tempo-revm.workspace = true
 
 alloy = { workspace = true, features = [
   "genesis",
@@ -32,7 +31,7 @@ alloy = { workspace = true, features = [
   "getrandom",
 ] }
 alloy-primitives.workspace = true
-clap = { version = "4.5.45", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true
 commonware-cryptography.workspace = true

@@ -11737,7 +11737,6 @@ dependencies = [
  "indicatif",
  "itertools 0.14.0",
  "mimalloc",
- "rand 0.8.5",
  "rand 0.9.2",
  "rayon",
  "reth-tracing",
@@ -12020,7 +12019,6 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
- "test-case",
  "thiserror 2.0.17",
  "tokio",
  "vergen",
@@ -12081,8 +12079,6 @@ dependencies = [
  "alloy",
  "alloy-evm",
  "alloy-primitives",
- "alloy-signer",
- "alloy-signer-local",
  "criterion",
  "derive_more",
  "eyre",
@@ -12266,7 +12262,6 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
- "tempo-revm",
  "tokio",
 ]
 

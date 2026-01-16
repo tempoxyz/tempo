@@ -445,7 +445,7 @@ impl MnemonicArg {
     fn resolve(&self) -> String {
         match self {
             MnemonicArg::Mnemonic(mnemonic) => mnemonic.clone(),
-            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand_08::thread_rng()).to_phrase(),
+            MnemonicArg::Random => Mnemonic::<English>::new(&mut rand::rng()).to_phrase(),
         }
     }
 }
