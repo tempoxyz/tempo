@@ -59,6 +59,51 @@
       "source": "/stablecoin-exchange/:path*",
       "destination": "/stablecoin-dex/:path*",
       "permanent": true
+    },
+    {
+      "source": "/guide",
+      "destination": "/quickstart/integrate-tempo",
+      "permanent": false
+    },
+    {
+      "source": "/quickstart",
+      "destination": "/quickstart/integrate-tempo",
+      "permanent": false
+    },
+    {
+      "source": "/protocol/blockspace",
+      "destination": "/protocol/blockspace/overview",
+      "permanent": false
+    },
+    {
+      "source": "/protocol/tip20",
+      "destination": "/protocol/tip20/overview",
+      "permanent": false
+    },
+    {
+      "source": "/protocol/tip20-rewards",
+      "destination": "/protocol/tip20-rewards/overview",
+      "permanent": false
+    },
+    {
+      "source": "/protocol/tip403",
+      "destination": "/protocol/tip403/overview",
+      "permanent": false
+    },
+    {
+      "source": "/learn/use-cases",
+      "destination": "/learn/use-cases/remittances",
+      "permanent": false
+    },
+    {
+      "source": "/sdk/typescript/server",
+      "destination": "/sdk/typescript/server/handlers",
+      "permanent": false
+    },
+    {
+      "source": "/sdk/typescript/prool",
+      "destination": "/sdk/typescript/prool/setup",
+      "permanent": false
     }
   ]
 }
