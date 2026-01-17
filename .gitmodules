@@ -1,0 +1,4 @@
+[submodule "docs/specs/lib/tempo-std"]
+        path = docs/specs/lib/tempo-std
+        url = https://github.com/tempoxyz/tempo-std
+        branch = master

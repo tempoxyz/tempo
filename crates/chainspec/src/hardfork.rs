@@ -44,13 +44,20 @@ hardfork!(
         #[default]
         /// T0 hardfork (default)
         T0,
+        /// Tempo Protocol Version 1.
+        T1,
     }
 );
 
 impl TempoHardfork {
     /// Returns true if this hardfork is T0 or later.
     pub fn is_t0(&self) -> bool {
-        matches!(self, Self::T0)
+        *self >= Self::T0
+    }
+
+    /// Returns true if this hardfork is T1 or later.
+    pub fn is_t1(&self) -> bool {
+        *self >= Self::T1
     }
 }
 
@@ -77,6 +84,12 @@ pub trait TempoHardforks: EthereumHardforks {
 impl From<TempoHardfork> for SpecId {
     fn from(_value: TempoHardfork) -> Self {
         Self::OSAKA
+    }
+}
+
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
     }
 }
 
