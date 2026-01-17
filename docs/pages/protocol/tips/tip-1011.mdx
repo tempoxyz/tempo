@@ -57,16 +57,20 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 
 ## Main Transaction Gas Limit
 
-**Value**: 25,000,000 gas per block (`general_gas_limit`)
+**Value**: 30,000,000 gas per block (`general_gas_limit`)
 
 **Rationale**:
+- Aligned with the transaction gas cap to ensure maximum-sized contract deployments can be included in a block
 - Supports general smart contract interactions beyond simple payments
 - Provides capacity for:
-  - Contract deployments
+  - Contract deployments (including max 24KB contracts)
   - DEX swaps
   - Complex multi-step transactions
   - Other non-payment use cases
-- Sized to prevent state growth attacks while enabling reasonable contract activity
+
+:::warning
+**Transactions exceeding 16,000,000 gas are not recommended.** The elevated gas limits (30M) exist solely to accommodate maximum-sized contract deployments under TIP-1000 state creation costs. Applications should not rely on transactions consuming more than 16M gas for normal operations. When storage pricing is moved to a separate mechanism (e.g., storage rent or state expiry), the transaction gas cap is expected to return to 16,000,000 gas.
+:::
 
 ## Transaction Gas Cap
 
@@ -87,7 +91,7 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 |-----------|-------|---------|
 | Base fee | `2 × 10^10` wei (20 gwei) | Target 0.1 cent per TIP-20 transfer |
 | Payment lane gas limit | 500,000,000 gas/block | Support ~20,000 TPS for payments |
-| General gas limit | 25,000,000 gas/block | General contract interactions |
+| General gas limit | 30,000,000 gas/block | General contract interactions |
 | Transaction gas cap | 30,000,000 gas | Allow max-size contract deployment |
 
 ## Economic Analysis
