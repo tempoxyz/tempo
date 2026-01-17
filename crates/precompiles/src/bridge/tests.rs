@@ -1040,3 +1040,459 @@ fn test_pause_blocks_burn_for_unlock() -> eyre::Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn test_pause_then_unpause_resumes_operations() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+    let sender = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let tempo_tip20 = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
+
+        // Pause the bridge
+        bridge.pause(owner)?;
+        assert!(bridge.paused()?);
+
+        // Verify operations are blocked
+        let result = bridge.register_deposit(
+            sender,
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: Address::random(),
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::contract_paused()
+            ))
+        );
+
+        // Unpause the bridge
+        bridge.unpause(owner)?;
+        assert!(!bridge.paused()?);
+
+        // Verify operations resume
+        let request_id = bridge.register_deposit(
+            sender,
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: Address::random(),
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        )?;
+        assert!(!request_id.is_zero());
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_double_pause_succeeds() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+
+        // Pause once
+        bridge.pause(owner)?;
+        assert!(bridge.paused()?);
+
+        // Pause again - should succeed (idempotent)
+        bridge.pause(owner)?;
+        assert!(bridge.paused()?);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_double_unpause_succeeds() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+
+        // Initially not paused
+        assert!(!bridge.paused()?);
+
+        // Unpause when not paused - should succeed (idempotent)
+        bridge.unpause(owner)?;
+        assert!(!bridge.paused()?);
+
+        // Unpause again - should still succeed
+        bridge.unpause(owner)?;
+        assert!(!bridge.paused()?);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_only_owner_can_pause() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+    let non_owner = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+
+        // Non-owner cannot pause
+        let result = bridge.pause(non_owner);
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::unauthorized()
+            ))
+        );
+        assert!(!bridge.paused()?);
+
+        // Non-owner cannot unpause
+        bridge.pause(owner)?;
+        let result = bridge.unpause(non_owner);
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::unauthorized()
+            ))
+        );
+        assert!(bridge.paused()?);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_deposit_id_differs_by_chain_id() {
+    let escrow = Address::repeat_byte(0xEE);
+    let tx_hash = B256::repeat_byte(0xAA);
+    let log_index = 42u32;
+
+    let id_chain_1 = Bridge::compute_request_id(1, escrow, tx_hash, log_index);
+    let id_chain_2 = Bridge::compute_request_id(2, escrow, tx_hash, log_index);
+
+    assert_ne!(
+        id_chain_1, id_chain_2,
+        "Deposit IDs must differ when origin_chain_id differs"
+    );
+}
+
+#[test]
+fn test_burn_id_differs_by_chain_id() {
+    let origin_chain_id = 1u64;
+    let origin_token = Address::repeat_byte(0x11);
+    let origin_recipient = Address::repeat_byte(0x22);
+    let amount = 1_000_000u64;
+    let nonce = 0u64;
+    let sender = Address::repeat_byte(0x33);
+
+    let id_tempo_1 = Bridge::compute_burn_id(
+        1, // tempo_chain_id
+        origin_chain_id,
+        origin_token,
+        origin_recipient,
+        amount,
+        nonce,
+        sender,
+    );
+    let id_tempo_2 = Bridge::compute_burn_id(
+        2, // tempo_chain_id
+        origin_chain_id,
+        origin_token,
+        origin_recipient,
+        amount,
+        nonce,
+        sender,
+    );
+
+    assert_ne!(
+        id_tempo_1, id_tempo_2,
+        "Burn IDs must differ when tempo_chain_id differs"
+    );
+}
+
+#[test]
+fn test_deposit_id_differs_by_escrow_address() {
+    let chain_id = 1u64;
+    let tx_hash = B256::repeat_byte(0xAA);
+    let log_index = 42u32;
+
+    let escrow_a = Address::repeat_byte(0xEE);
+    let escrow_b = Address::repeat_byte(0xFF);
+
+    let id_escrow_a = Bridge::compute_request_id(chain_id, escrow_a, tx_hash, log_index);
+    let id_escrow_b = Bridge::compute_request_id(chain_id, escrow_b, tx_hash, log_index);
+
+    assert_ne!(
+        id_escrow_a, id_escrow_b,
+        "Deposit IDs must differ when escrow_address differs"
+    );
+}
+
+#[test]
+fn test_threshold_with_min_validators() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let admin = Address::random();
+    let validators: Vec<Address> = (0..3).map(|_| Address::random()).collect();
+    let recipient = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let amount = 1000000u64;
+
+    StorageCtx::enter(&mut storage, || {
+        // Create TIP-20 token with minting capability
+        let token = TIP20Setup::create("Bridged Token", "BT", admin)
+            .with_role(tempo_contracts::precompiles::BRIDGE_ADDRESS, *ISSUER_ROLE)
+            .apply()?;
+        let tempo_tip20 = token.address();
+
+        // Setup validator config with exactly MIN_VALIDATORS (3)
+        let mut validator_config = ValidatorConfig::new();
+        validator_config.initialize(admin)?;
+        for v in &validators {
+            add_validator(&mut validator_config, admin, *v, true)?;
+        }
+
+        // Verify we have exactly 3 active validators
+        let all_validators = validator_config.get_validators()?;
+        let active_count = all_validators.iter().filter(|v| v.active).count();
+        assert_eq!(active_count, 3, "Should have exactly MIN_VALIDATORS active");
+
+        // Setup bridge
+        let mut bridge = setup_bridge(admin)?;
+        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+
+        // Register deposit
+        let request_id = bridge.register_deposit(
+            Address::random(),
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: recipient,
+                amount,
+                originBlockNumber: 12345,
+            },
+        )?;
+
+        // With 3 validators, threshold = ceil(3 * 2 / 3) = 2
+        // 1 vote should NOT be enough
+        bridge.submit_deposit_vote(
+            validators[0],
+            IBridge::submitDepositVoteCall { requestId: request_id },
+        )?;
+
+        let result = bridge.finalize_deposit(
+            Address::random(),
+            IBridge::finalizeDepositCall { requestId: request_id },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached()))
+        );
+
+        // 2 votes should be enough (threshold = 2)
+        bridge.submit_deposit_vote(
+            validators[1],
+            IBridge::submitDepositVoteCall { requestId: request_id },
+        )?;
+
+        bridge.finalize_deposit(
+            Address::random(),
+            IBridge::finalizeDepositCall { requestId: request_id },
+        )?;
+
+        // Verify deposit was finalized
+        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_cannot_finalize_with_zero_active_validators() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let admin = Address::random();
+    let recipient = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let tempo_tip20 = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        // Setup validator config with NO active validators (empty)
+        let mut validator_config = ValidatorConfig::new();
+        validator_config.initialize(admin)?;
+
+        // Verify no active validators
+        let all_validators = validator_config.get_validators()?;
+        let active_count = all_validators.iter().filter(|v| v.active).count();
+        assert_eq!(active_count, 0, "Should have zero active validators");
+
+        // Setup bridge
+        let mut bridge = setup_bridge(admin)?;
+        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+
+        // Register deposit
+        let request_id = bridge.register_deposit(
+            Address::random(),
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: recipient,
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        )?;
+
+        // Cannot finalize with zero active validators (no votes possible)
+        let result = bridge.finalize_deposit(
+            Address::random(),
+            IBridge::finalizeDepositCall { requestId: request_id },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached()))
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_threshold_increases_with_validator_count() -> eyre::Result<()> {
+    // Test threshold calculation: ceil(n * 2 / 3)
+    // 3 validators -> ceil(6/3) = 2
+    // 4 validators -> ceil(8/3) = 3
+    // 5 validators -> ceil(10/3) = 4
+    // 10 validators -> ceil(20/3) = 7
+    // 100 validators -> ceil(200/3) = 67
+
+    let test_cases: Vec<(u64, u64)> = vec![
+        (3, 2),   // ceil(6/3) = 2
+        (4, 3),   // ceil(8/3) = 3
+        (5, 4),   // ceil(10/3) = 4
+        (10, 7),  // ceil(20/3) = 7
+        (100, 67), // ceil(200/3) = 67
+    ];
+
+    for (validator_count, expected_threshold) in test_cases {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let recipient = Address::random();
+        let origin_chain_id = 1u64;
+        let origin_token = Address::random();
+        let amount = 1000000u64;
+
+        StorageCtx::enter(&mut storage, || {
+            // Create TIP-20 token with minting capability
+            let token = TIP20Setup::create("Bridged Token", "BT", admin)
+                .with_role(tempo_contracts::precompiles::BRIDGE_ADDRESS, *ISSUER_ROLE)
+                .apply()?;
+            let tempo_tip20 = token.address();
+
+            // Setup validator config with specified number of validators
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(admin)?;
+
+            let validators: Vec<Address> =
+                (0..validator_count).map(|_| Address::random()).collect();
+            for v in &validators {
+                add_validator(&mut validator_config, admin, *v, true)?;
+            }
+
+            // Setup bridge
+            let mut bridge = setup_bridge(admin)?;
+            register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+
+            // Register deposit
+            let request_id = bridge.register_deposit(
+                Address::random(),
+                IBridge::registerDepositCall {
+                    originChainId: origin_chain_id,
+                    originEscrow: Address::repeat_byte(0xEE),
+                    originToken: origin_token,
+                    originTxHash: B256::random(),
+                    originLogIndex: 0,
+                    tempoRecipient: recipient,
+                    amount,
+                    originBlockNumber: 12345,
+                },
+            )?;
+
+            // Submit threshold - 1 votes (should NOT be enough)
+            for i in 0..(expected_threshold - 1) {
+                bridge.submit_deposit_vote(
+                    validators[i as usize],
+                    IBridge::submitDepositVoteCall { requestId: request_id },
+                )?;
+            }
+
+            let result = bridge.finalize_deposit(
+                Address::random(),
+                IBridge::finalizeDepositCall { requestId: request_id },
+            );
+            assert_eq!(
+                result,
+                Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached())),
+                "With {} validators and {} votes, finalization should fail",
+                validator_count,
+                expected_threshold - 1
+            );
+
+            // Submit one more vote to reach threshold
+            bridge.submit_deposit_vote(
+                validators[(expected_threshold - 1) as usize],
+                IBridge::submitDepositVoteCall { requestId: request_id },
+            )?;
+
+            // Now finalization should succeed
+            bridge.finalize_deposit(
+                Address::random(),
+                IBridge::finalizeDepositCall { requestId: request_id },
+            )?;
+
+            let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+            assert_eq!(
+                deposit.status,
+                IBridge::DepositStatus::Finalized,
+                "With {} validators and {} votes, deposit should be finalized",
+                validator_count,
+                expected_threshold
+            );
+
+            Ok::<(), eyre::Report>(())
+        })?;
+    }
+
+    Ok(())
+}

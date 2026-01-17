@@ -479,7 +479,297 @@ contract BridgeTest is Test {
         lightClient.setBLSPublicKey(blsKey);
     }
 
+    function test_BLSModeHeaderSubmission() public {
+        // Skip if BLS precompiles not available
+        if (!lightClient.isBLSAvailable()) {
+            return;
+        }
+
+        // Set up BLS mode with a valid 256-byte G2 public key
+        bytes memory blsPublicKey = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            blsPublicKey[i] = bytes1(uint8(i % 256));
+        }
+        lightClient.setBLSPublicKey(blsPublicKey);
+        lightClient.setSignatureMode(false);
+        assertFalse(lightClient.useEcdsaMode());
+
+        // Prepare header data
+        uint64 height = 1;
+        bytes32 parentHash = bytes32(0);
+        bytes32 stateRoot = keccak256("state");
+        bytes32 receiptsRoot = keccak256("receipts");
+        uint64 epoch = 1;
+
+        // Create a mock 128-byte G1 signature
+        bytes memory blsSignature = new bytes(128);
+        for (uint256 i = 0; i < 128; i++) {
+            blsSignature[i] = bytes1(uint8(i % 256));
+        }
+
+        // Submit header with BLS signature - reverts during BLS verification
+        // (either at hash-to-G1 or pairing check depending on precompile behavior)
+        vm.expectRevert(BLS12381.BLSHashToG1Failed.selector);
+        lightClient.submitHeader(height, parentHash, stateRoot, receiptsRoot, epoch, blsSignature);
+    }
+
+    function test_BLSModeInvalidSignatureReverts() public {
+        // Skip if BLS precompiles not available
+        if (!lightClient.isBLSAvailable()) {
+            return;
+        }
+
+        // Set up BLS mode
+        bytes memory blsPublicKey = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            blsPublicKey[i] = bytes1(uint8(i % 256));
+        }
+        lightClient.setBLSPublicKey(blsPublicKey);
+        lightClient.setSignatureMode(false);
+
+        uint64 height = 1;
+        bytes32 parentHash = bytes32(0);
+        bytes32 stateRoot = keccak256("state");
+        bytes32 receiptsRoot = keccak256("receipts");
+        uint64 epoch = 1;
+
+        // Wrong signature length (64 bytes instead of 128)
+        bytes memory wrongLengthSig = new bytes(64);
+        vm.expectRevert(TempoLightClient.InvalidBLSSignatureLength.selector);
+        lightClient.submitHeader(height, parentHash, stateRoot, receiptsRoot, epoch, wrongLengthSig);
+
+        // Correct length but invalid signature - fails at hash-to-G1 step
+        bytes memory invalidSig = new bytes(128);
+        vm.expectRevert(BLS12381.BLSHashToG1Failed.selector);
+        lightClient.submitHeader(height, parentHash, stateRoot, receiptsRoot, epoch, invalidSig);
+    }
+
+    // --- Token Removal Scenario Tests ---
+
+    function test_UnlockAfterTokenRemoval() public {
+        address user = makeAddr("user");
+
+        // User deposits tokens
+        usdc.mint(user, 1000e6);
+        vm.startPrank(user);
+        usdc.approve(address(escrow), 1000e6);
+        escrow.deposit(address(usdc), 1000e6, makeAddr("tempoRecipient"));
+        vm.stopPrank();
+
+        // Owner removes token
+        escrow.removeToken(address(usdc));
+        assertFalse(escrow.supportedTokens(address(usdc)));
+        assertTrue(escrow.everSupportedTokens(address(usdc)));
+
+        // Submit a finalized header for unlock
+        uint64 tempoHeight = 1;
+        bytes32 stateRoot = keccak256("state");
+        bytes32 receiptsRoot = keccak256("receipts");
+        bytes32 headerDigest = keccak256(
+            abi.encodePacked(lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, tempoHeight, bytes32(0), stateRoot, receiptsRoot, uint64(1))
+        );
+        bytes[] memory headerSigs = _createSortedSignatures(headerDigest, 2);
+        lightClient.submitHeader(tempoHeight, bytes32(0), stateRoot, receiptsRoot, 1, headerSigs);
+
+        // Unlock should succeed using everSupportedTokens
+        bytes32 burnId = keccak256("burn1");
+        uint64 unlockAmount = 500e6;
+        bytes32 attestationDigest = keccak256(
+            abi.encodePacked(
+                escrow.BURN_ATTESTATION_DOMAIN(),
+                TEMPO_CHAIN_ID,
+                burnId,
+                tempoHeight,
+                uint64(block.chainid),
+                address(usdc),
+                user,
+                unlockAmount
+            )
+        );
+        bytes[] memory burnSigs = _createSortedSignatures(attestationDigest, 2);
+
+        escrow.unlock(burnId, 1, address(usdc), user, unlockAmount, burnSigs);
+
+        assertEq(usdc.balanceOf(user), unlockAmount);
+        assertTrue(escrow.spentBurnIds(burnId));
+    }
+
+    function test_DepositAfterTokenRemovalReverts() public {
+        address user = makeAddr("user");
+        address tempoRecipient = makeAddr("tempoRecipient");
+        uint256 depositAmount = 1000e6;
+
+        // First deposit succeeds
+        usdc.mint(user, depositAmount * 2);
+        vm.startPrank(user);
+        usdc.approve(address(escrow), depositAmount * 2);
+        escrow.deposit(address(usdc), depositAmount, tempoRecipient);
+        vm.stopPrank();
+
+        // Owner removes token
+        escrow.removeToken(address(usdc));
+
+        // Second deposit should revert
+        vm.startPrank(user);
+        vm.expectRevert(StablecoinEscrow.TokenNotSupported.selector);
+        escrow.deposit(address(usdc), depositAmount, tempoRecipient);
+        vm.stopPrank();
+    }
+
+    // --- Validator Attestation Unlock Tests ---
+
+    function test_UnlockWithValidatorAttestations() public {
+        address user = makeAddr("user");
+        address recipient = makeAddr("recipient");
+        uint256 depositAmount = 1000e6;
+        uint64 normalizedAmount = 1000e6;
+
+        usdc.mint(user, depositAmount);
+        vm.startPrank(user);
+        usdc.approve(address(escrow), depositAmount);
+        escrow.deposit(address(usdc), depositAmount, makeAddr("tempoRecipient"));
+        vm.stopPrank();
+
+        uint64 tempoHeight = 1;
+        bytes32 stateRoot = keccak256("state");
+        bytes32 receiptsRoot = keccak256("receipts");
+        bytes32 headerDigest = keccak256(
+            abi.encodePacked(lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, tempoHeight, bytes32(0), stateRoot, receiptsRoot, uint64(1))
+        );
+        bytes[] memory headerSigs = _createSortedSignatures(headerDigest, 2);
+        lightClient.submitHeader(tempoHeight, bytes32(0), stateRoot, receiptsRoot, 1, headerSigs);
+
+        bytes32 burnId = keccak256("burn1");
+        bytes32 attestationDigest = keccak256(
+            abi.encodePacked(
+                escrow.BURN_ATTESTATION_DOMAIN(),
+                TEMPO_CHAIN_ID,
+                burnId,
+                tempoHeight,
+                uint64(block.chainid),
+                address(usdc),
+                recipient,
+                normalizedAmount
+            )
+        );
+        bytes[] memory unlockSigs = _createSortedSignatures(attestationDigest, 2);
+
+        uint256 recipientBalanceBefore = usdc.balanceOf(recipient);
+        escrow.unlock(burnId, tempoHeight, address(usdc), recipient, normalizedAmount, unlockSigs);
+
+        assertEq(usdc.balanceOf(recipient), recipientBalanceBefore + depositAmount);
+        assertTrue(escrow.spentBurnIds(burnId));
+    }
+
+    function test_UnlockInsufficientSignaturesReverts() public {
+        address user = makeAddr("user");
+        address recipient = makeAddr("recipient");
+        uint256 depositAmount = 1000e6;
+        uint64 normalizedAmount = 1000e6;
+
+        usdc.mint(user, depositAmount);
+        vm.startPrank(user);
+        usdc.approve(address(escrow), depositAmount);
+        escrow.deposit(address(usdc), depositAmount, makeAddr("tempoRecipient"));
+        vm.stopPrank();
+
+        uint64 tempoHeight = 1;
+        bytes32 stateRoot = keccak256("state");
+        bytes32 receiptsRoot = keccak256("receipts");
+        bytes32 headerDigest = keccak256(
+            abi.encodePacked(lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, tempoHeight, bytes32(0), stateRoot, receiptsRoot, uint64(1))
+        );
+        bytes[] memory headerSigs = _createSortedSignatures(headerDigest, 2);
+        lightClient.submitHeader(tempoHeight, bytes32(0), stateRoot, receiptsRoot, 1, headerSigs);
+
+        bytes32 burnId = keccak256("burn2");
+        bytes32 attestationDigest = keccak256(
+            abi.encodePacked(
+                escrow.BURN_ATTESTATION_DOMAIN(),
+                TEMPO_CHAIN_ID,
+                burnId,
+                tempoHeight,
+                uint64(block.chainid),
+                address(usdc),
+                recipient,
+                normalizedAmount
+            )
+        );
+        bytes[] memory unlockSigs = _createSortedSignatures(attestationDigest, 1);
+
+        vm.expectRevert(StablecoinEscrow.ThresholdNotMet.selector);
+        escrow.unlock(burnId, tempoHeight, address(usdc), recipient, normalizedAmount, unlockSigs);
+    }
+
+    function test_UnlockDuplicateSignerReverts() public {
+        address user = makeAddr("user");
+        address recipient = makeAddr("recipient");
+
+        usdc.mint(user, 1000e6);
+        vm.startPrank(user);
+        usdc.approve(address(escrow), 1000e6);
+        escrow.deposit(address(usdc), 1000e6, makeAddr("tempoRecipient"));
+        vm.stopPrank();
+
+        _submitHeader(1);
+
+        bytes32 burnId = keccak256("burn3");
+        bytes32 attestationDigest = keccak256(
+            abi.encodePacked(
+                escrow.BURN_ATTESTATION_DOMAIN(),
+                TEMPO_CHAIN_ID,
+                burnId,
+                uint64(1),
+                uint64(block.chainid),
+                address(usdc),
+                recipient,
+                uint64(1000e6)
+            )
+        );
+
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(PRIVATE_KEY_1, attestationDigest);
+
+        bytes[] memory duplicateSigs = new bytes[](2);
+        duplicateSigs[0] = abi.encodePacked(r, s, v);
+        duplicateSigs[1] = abi.encodePacked(r, s, v);
+
+        vm.expectRevert("Signatures not sorted");
+        escrow.unlock(burnId, 1, address(usdc), recipient, 1000e6, duplicateSigs);
+    }
+
     // --- Helper Functions ---
+
+    function _submitHeader(uint64 height) internal {
+        bytes32 stateRoot = keccak256(abi.encodePacked("state", height));
+        bytes32 receiptsRoot = keccak256(abi.encodePacked("receipts", height));
+        bytes32 headerDigest = keccak256(
+            abi.encodePacked(lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, height, bytes32(0), stateRoot, receiptsRoot, uint64(1))
+        );
+        bytes[] memory sigs = _createSortedSignatures(headerDigest, 2);
+        lightClient.submitHeader(height, bytes32(0), stateRoot, receiptsRoot, 1, sigs);
+    }
+
+    function _createBurnAttestation(
+        bytes32 burnId,
+        uint64 tempoHeight,
+        address token,
+        address recipient,
+        uint64 amount
+    ) internal view returns (bytes[] memory) {
+        bytes32 attestationDigest = keccak256(
+            abi.encodePacked(
+                escrow.BURN_ATTESTATION_DOMAIN(),
+                TEMPO_CHAIN_ID,
+                burnId,
+                tempoHeight,
+                uint64(block.chainid),
+                token,
+                recipient,
+                amount
+            )
+        );
+        return _createSortedSignatures(attestationDigest, 2);
+    }
 
     function _createSortedSignatures(bytes32 digest, uint256 count) internal pure returns (bytes[] memory) {
         require(count <= 3, "Max 3 validators");

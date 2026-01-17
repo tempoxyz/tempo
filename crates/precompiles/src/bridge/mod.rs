@@ -281,7 +281,7 @@ impl Bridge {
     /// properties of the deposit event on the origin chain.
     ///
     /// IMPORTANT: This formula must match `compute_canonical_deposit_id` in bridge-exex.
-    fn compute_request_id(
+    pub(crate) fn compute_request_id(
         origin_chain_id: u64,
         escrow_address: Address,
         origin_tx_hash: B256,
@@ -523,7 +523,7 @@ impl Bridge {
     /// - Domain tag: "TEMPO_BRIDGE_BURN_V1"
     /// - Tempo chain ID: prevents replay across different Tempo networks
     /// - Bridge address: binds burn ID to specific bridge contract
-    fn compute_burn_id(
+    pub(crate) fn compute_burn_id(
         tempo_chain_id: u64,
         origin_chain_id: u64,
         origin_token: Address,
