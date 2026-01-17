@@ -78,12 +78,12 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 
 **Rationale**:
 - Increased from the previous 16,000,000 gas limit
-- Accommodates deployment of maximum-size contracts (24KB) under TIP-1000 state creation costs:
-  - Contract code: `24,000 bytes × 1,000 gas/byte = 24,000,000 gas`
+- Accommodates deployment of maximum-size contracts (24,576 bytes per EIP-170) under TIP-1000 state creation costs:
+  - Contract code: `24,576 bytes × 1,000 gas/byte = 24,576,000 gas`
   - Keccak + codesize fields: 500,000 gas
   - Account creation: 250,000 gas
   - Base transaction cost: ~21,000 gas
-  - **Total**: ~24,771,000 gas (fits within 30M limit)
+  - **Total**: ~25,347,000 gas (fits within 30M limit)
 
 ## Gas Schedule Summary
 
@@ -111,7 +111,7 @@ At full payment lane utilization:
 | TIP-20 transfer (new recipient) | 300,000 | $0.006 (0.6 cent) |
 | First transaction from new account | 300,000 | $0.006 (0.6 cent) |
 | Small contract deployment (1KB) | ~1,750,000 | $0.035 (3.5 cents) |
-| Max contract deployment (24KB) | ~24,750,000 | $0.495 (~50 cents) |
+| Max contract deployment (24,576 bytes) | ~25,350,000 | $0.507 (~51 cents) |
 
 ---
 
