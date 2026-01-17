@@ -14,9 +14,9 @@ use metrics_exporter_prometheus::PrometheusBuilder;
 use poem::{EndpointExt as _, Route, Server, get, listener::TcpListener};
 use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
-    TIP20_FACTORY_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     abi::ITIP20Factory,
-    tip_fee_manager::ITIPFeeAMM,
+    tip_fee_manager::abi::{abiInstance as ITIPFeeAMMInstance, getPoolCall, rebalanceSwapCall},
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
@@ -120,7 +120,7 @@ impl SimpleArbArgs {
             .wallet(wallet)
             .connect_http(self.rpc_url.parse().context("failed to parse RPC URL")?);
 
-        let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+        let fee_amm = ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
         info!("Fetching all pairs...");
         let pairs = fetch_all_pairs(provider.clone()).await?;
@@ -129,28 +129,31 @@ impl SimpleArbArgs {
         for pair in pairs.iter() {
             // Get current pool state
             let pool = fee_amm
-                .getPool(pair.0, pair.1)
+                .call_builder(&getPoolCall {
+                    user_token: pair.0,
+                    validator_token: pair.1,
+                })
                 .call()
                 .await
                 .wrap_err_with(|| {
                     format!("failed to fetch pool for tokens {}, {}", pair.0, pair.1)
                 })?;
 
-            if pool.reserveUserToken > 0
+            if pool.reserve_user_token > 0
                 && let Err(e) = fee_amm
-                    .rebalanceSwap(
-                        pair.0,
-                        pair.1,
-                        U256::from(pool.reserveUserToken),
-                        signer_address,
-                    )
+                    .call_builder(&rebalanceSwapCall {
+                        user_token: pair.0,
+                        validator_token: pair.1,
+                        amount_out: U256::from(pool.reserve_user_token),
+                        to: signer_address,
+                    })
                     .send()
                     .await
             {
                 error!(
                     token_a = %pair.0,
                     token_b = %pair.1,
-                    amount = %pool.reserveUserToken,
+                    amount = %pool.reserve_user_token,
                     err = error_field(&e),
                     "Failed to send initial rebalance transaction"
                 );
@@ -164,23 +167,26 @@ impl SimpleArbArgs {
             for pair in pairs.iter() {
                 // Get current pool state
                 let pool = fee_amm
-                    .getPool(pair.0, pair.1)
+                    .call_builder(&getPoolCall {
+                        user_token: pair.0,
+                        validator_token: pair.1,
+                    })
                     .call()
                     .await
                     .wrap_err_with(|| {
                         format!("failed to fetch pool for tokens {:?}, {:?}", pair.0, pair.1)
                     })?;
 
-                if pool.reserveUserToken > 0 {
+                if pool.reserve_user_token > 0 {
                     let mut pending_txs = vec![];
 
                     match fee_amm
-                        .rebalanceSwap(
-                            pair.0,
-                            pair.1,
-                            U256::from(pool.reserveUserToken),
-                            signer_address,
-                        )
+                        .call_builder(&rebalanceSwapCall {
+                            user_token: pair.0,
+                            validator_token: pair.1,
+                            amount_out: U256::from(pool.reserve_user_token),
+                            to: signer_address,
+                        })
                         .send()
                         .await
                     {
@@ -192,7 +198,7 @@ impl SimpleArbArgs {
                             error!(
                                 token_a = %pair.0,
                                 token_b = %pair.1,
-                                amount = %pool.reserveUserToken,
+                                amount = %pool.reserve_user_token,
                                 err = error_field(&e),
                                 "Failed to send rebalance transaction"
                             );

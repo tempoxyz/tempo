@@ -14,7 +14,7 @@ use reth_provider::{
 use tempo_node::TempoFullNode;
 use tempo_precompiles::{
     storage::StorageCtx,
-    validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config::{Validator, ValidatorConfig, traits::*},
 };
 
 use tracing::{Level, info, instrument, warn};
@@ -106,7 +106,7 @@ pub(super) async fn read_from_contract_at_height(
 
 #[instrument(skip_all, fields(validators_to_decode = contract_vals.len()))]
 async fn decode_from_contract(
-    contract_vals: Vec<IValidatorConfig::Validator>,
+    contract_vals: Vec<Validator>,
 ) -> ordered::Map<PublicKey, DecodedValidator> {
     let mut decoded = HashMap::new();
     for val in contract_vals.into_iter() {
@@ -165,30 +165,30 @@ impl DecodedValidator {
     /// socket addresses (IP:PORT pairs), or fully qualified domain names.
     #[instrument(ret(Display, level = Level::INFO), err(level = Level::WARN))]
     pub(super) fn decode_from_contract(
-        IValidatorConfig::Validator {
+        Validator {
             active,
-            publicKey,
+            public_key: pk,
             index,
-            validatorAddress,
-            inboundAddress,
-            outboundAddress,
-        }: IValidatorConfig::Validator,
+            validator_address,
+            inbound_address,
+            outbound_address,
+        }: Validator,
     ) -> eyre::Result<Self> {
-        let public_key = PublicKey::decode(publicKey.as_ref())
-            .wrap_err("failed decoding publicKey field as ed25519 public key")?;
-        let inbound = inboundAddress
+        let public_key = PublicKey::decode(pk.as_ref())
+            .wrap_err("failed decoding public_key field as ed25519 public key")?;
+        let inbound = inbound_address
             .parse()
-            .wrap_err("inboundAddress was not valid")?;
-        let outbound = outboundAddress
+            .wrap_err("inbound_address was not valid")?;
+        let outbound = outbound_address
             .parse()
-            .wrap_err("outboundAddress was not valid")?;
+            .wrap_err("outbound_address was not valid")?;
         Ok(Self {
             active,
             public_key,
             inbound,
             outbound,
             index,
-            address: validatorAddress,
+            address: validator_address,
         })
     }
 }

@@ -15,9 +15,9 @@ use crate::utils::to_camel_case;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use syn::{
-    punctuated::Punctuated, Attribute, Expr, Fields, FnArg, GenericArgument, Item, ItemConst,
-    ItemEnum, ItemMod, ItemStatic, ItemStruct, ItemTrait, ItemUse, Meta, MetaList, Pat, Path,
-    PathArguments, ReturnType, Signature, Token, TraitItem, Type, Visibility,
+    Attribute, Expr, Fields, FnArg, GenericArgument, Item, ItemConst, ItemEnum, ItemMod,
+    ItemStatic, ItemStruct, ItemTrait, ItemUse, Meta, MetaList, Pat, Path, PathArguments,
+    ReturnType, Signature, Token, TraitItem, Type, Visibility, punctuated::Punctuated,
 };
 
 /// Trait for types that expose a list of (name, type) pairs.
@@ -353,6 +353,8 @@ pub(super) struct UnitEnumDef {
     pub attrs: Vec<Attribute>,
     /// Visibility
     pub vis: Visibility,
+    /// Whether the original enum had `#[derive(Storable)]`
+    pub has_storable: bool,
 }
 
 impl UnitEnumDef {
@@ -388,13 +390,14 @@ impl UnitEnumDef {
             ));
         }
 
-        let (_, other_attrs, _) = extract_derive_attrs(&item.attrs);
+        let (_, other_attrs, has_storable) = extract_derive_attrs(&item.attrs);
 
         Ok(Self {
             name: item.ident.clone(),
             variants,
             attrs: other_attrs,
             vis: item.vis.clone(),
+            has_storable,
         })
     }
 }

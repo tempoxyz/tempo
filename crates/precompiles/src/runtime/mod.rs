@@ -10,16 +10,20 @@ pub mod tip_fee_manager;
 pub mod validator_config;
 
 use crate::{
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    abi::{
+        ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_DEX_ADDRESS,
+        TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+        VALIDATOR_CONFIG_ADDRESS,
+    },
     account_keychain::AccountKeychain,
     error::{IntoPrecompileResult, Result, TempoPrecompileError},
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::StorageCtx,
+    tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, is_tip20_prefix},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
-    tip_fee_manager::TipFeeManager,
     validator_config::ValidatorConfig,
 };
 use alloy::{
@@ -33,10 +37,6 @@ use revm::{
     precompile::{PrecompileError, PrecompileId, PrecompileOutput, PrecompileResult},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
-};
 
 /// Input per word cost. It covers abi decoding and cloning of input into call data.
 ///
@@ -285,7 +285,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PATH_USD_ADDRESS, tip20::{TIP20Token, abi as ITIP20}};
+    use crate::{
+        abi::PATH_USD_ADDRESS,
+        tip20::{TIP20Token, abi as ITIP20},
+    };
     use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{
         EthEvmFactory, EvmEnv, EvmFactory, EvmInternals,

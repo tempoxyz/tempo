@@ -9,14 +9,12 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_contracts::precompiles::{
-    DEFAULT_FEE_TOKEN, IFeeManager, IStablecoinDEX, STABLECOIN_DEX_ADDRESS,
-};
+use tempo_contracts::precompiles::IStablecoinDEX;
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS,
+    DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::{TipFeeManager, abi::setUserTokenCall},
     tip20::{TIP20Token, abi as tip20, is_tip20_prefix},
     tip403_registry::{TIP403Registry, abi::IRegistry as _},
 };
@@ -136,7 +134,7 @@ pub trait TempoStateAccess<M = ()> {
             && fee_payer == tx.caller()
             && let Some((kind, input)) = tx.calls().next()
             && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+            && let Ok(call) = setUserTokenCall::abi_decode(input)
         {
             return Ok(call.token);
         }

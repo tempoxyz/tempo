@@ -18,8 +18,11 @@ use std::{
 };
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::ITIPFeeAMM::{self, ITIPFeeAMMInstance, Mint, Pool},
     abi::ITIP20,
+    tip_fee_manager::{
+        Pool,
+        abi::{Mint, abiInstance as ITIPFeeAMMInstance, getPoolCall},
+    },
 };
 use tracing::{debug, error, info, instrument};
 
@@ -146,12 +149,19 @@ impl MonitorConfig {
             .permutations(2)
             .map(|pair| {
                 let (token_a, token_b) = (*pair[0], *pair[1]);
-                let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+                let fee_amm = ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
                 async move {
-                    match fee_amm.getPool(token_a, token_b).call().await {
+                    match fee_amm
+                        .call_builder(&getPoolCall {
+                            user_token: token_a,
+                            validator_token: token_b,
+                        })
+                        .call()
+                        .await
+                    {
                         Ok(pool) => {
                             // Skip if pool isn't initialized.
-                            if pool.reserveUserToken.is_zero() {
+                            if pool.reserve_user_token.is_zero() {
                                 None
                             } else {
                                 debug!(%token_a, %token_b, "discovered pool");
@@ -229,16 +239,23 @@ impl Monitor {
             .connect(self.rpc_url.as_str())
             .await?;
 
-        let fee_amm: ITIPFeeAMMInstance<_, _> = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider);
+        let fee_amm: ITIPFeeAMMInstance<_, _> =
+            ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
         for &(token_a, token_b) in &self.known_pairs {
             debug!(%token_a, %token_b, "fetching pool");
 
-            let pool: Result<Pool, _> = fee_amm.getPool(token_a, token_b).call().await;
-            match pool {
+            let result = fee_amm
+                .call_builder(&getPoolCall {
+                    user_token: token_a,
+                    validator_token: token_b,
+                })
+                .call()
+                .await;
+            match result {
                 Ok(pool) => {
                     // Skip if pool isn't initialized.
-                    if pool.reserveUserToken.is_zero() {
+                    if pool.reserve_user_token.is_zero() {
                         continue;
                     }
 
@@ -264,7 +281,7 @@ impl Monitor {
     fn update_metrics(&self) {
         for ((token_a_address, token_b_address), pool) in self.pools.iter() {
             let (token_a_balance, token_b_balance) =
-                (pool.reserveUserToken, pool.reserveValidatorToken);
+                (pool.reserve_user_token, pool.reserve_validator_token);
 
             let token_a = match self.tokens.get(token_a_address) {
                 Some(token) => token,

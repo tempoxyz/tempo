@@ -19,8 +19,10 @@ pub use crate::abi::{
     tip20::abi,
 };
 use crate::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    abi::ITIP20::{self, prelude::*},
+    abi::{
+        ITIP20::{self, prelude::*},
+        PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    },
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::Handler,
@@ -28,7 +30,6 @@ use crate::{
     tip403_registry::{TIP403Registry, abi::traits::*},
 };
 pub use roles::DEFAULT_ADMIN_ROLE;
-use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 use tracing::trace;
 
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
@@ -737,11 +738,10 @@ impl TIP20Token {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, U256};
-    use tempo_contracts::precompiles::STABLECOIN_DEX_ADDRESS;
 
     use super::*;
     use crate::{
-        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        abi::{PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, setup_storage},

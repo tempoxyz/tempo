@@ -56,6 +56,7 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
+    abi::validator_config::abi::abiInstance as IValidatorConfigInstance,
     storage::StorageCtx,
     validator_config::{IValidatorConfig, ValidatorConfig},
 };
@@ -142,18 +143,16 @@ impl Builder {
                     .unwrap();
 
                 for (peer, (net_addr, chain_addr)) in validators.iter_pairs() {
-                    validator_config
-                        .add_validator(
-                            admin(),
-                            IValidatorConfig::addValidatorCall {
-                                newValidatorAddress: *chain_addr,
-                                publicKey: peer.encode().as_ref().try_into().unwrap(),
-                                active: true,
-                                inboundAddress: net_addr.to_string(),
-                                outboundAddress: net_addr.to_string(),
-                            },
-                        )
-                        .unwrap();
+                    IValidatorConfig::add_validator(
+                        &mut validator_config,
+                        admin(),
+                        *chain_addr,
+                        peer.encode().as_ref().try_into().unwrap(),
+                        true,
+                        net_addr.to_string(),
+                        net_addr.to_string(),
+                    )
+                    .unwrap();
                 }
             })
         }
@@ -349,7 +348,7 @@ impl ExecutionRuntime {
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
                             let validator_config =
-                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                                IValidatorConfigInstance::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
                                 .addValidator(
                                     address,
@@ -377,7 +376,7 @@ impl ExecutionRuntime {
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
                             let validator_config =
-                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                                IValidatorConfigInstance::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
                                 .changeValidatorStatus(address, active)
                                 .send()
@@ -398,7 +397,7 @@ impl ExecutionRuntime {
                                 .wallet(wallet.clone())
                                 .connect_http(http_url);
                             let validator_config =
-                                IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
+                                IValidatorConfigInstance::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
                                 .setNextFullDkgCeremony(epoch)
                                 .send()

@@ -9,8 +9,9 @@ pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
     quote_to_base, tick_to_price,
 };
-use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
+
+use crate::abi::PATH_USD_ADDRESS;
 
 use crate::{
     STABLECOIN_DEX_ADDRESS,

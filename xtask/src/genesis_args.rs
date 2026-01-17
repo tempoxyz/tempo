@@ -42,22 +42,21 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::IValidatorConfig,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
+    abi::ITIP20::prelude::*,
     account_keychain::AccountKeychain,
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
-    tip_fee_manager::{IFeeManager, TipFeeManager},
-    abi::ITIP20::prelude::*,
+    tip_fee_manager::{IFeeManager, ITIPFeeAMM, TipFeeManager},
     tip20::TIP20Token,
     tip20_factory::{TIP20Factory, abi::IFactory as _},
     tip403_registry::TIP403Registry,
-    validator_config::ValidatorConfig,
+    validator_config::{IValidatorConfig, ValidatorConfig},
 };
 
 /// Generate genesis allocation file for testing
@@ -687,12 +686,7 @@ fn initialize_fee_manager(
         for address in initial_accounts.iter().progress() {
             println!("Setting user token for {user_fee_token_address}");
             fee_manager
-                .set_user_token(
-                    *address,
-                    IFeeManager::setUserTokenCall {
-                        token: user_fee_token_address,
-                    },
-                )
+                .set_user_token(*address, user_fee_token_address)
                 .expect("Could not set fee token");
         }
 
@@ -700,14 +694,7 @@ fn initialize_fee_manager(
         for validator in validators {
             println!("Setting user token for {validator} {validator_fee_token_address}");
             fee_manager
-                .set_validator_token(
-                    validator,
-                    IFeeManager::setValidatorTokenCall {
-                        token: validator_fee_token_address,
-                    },
-                    // use random address to avoid `CannotChangeWithinBlock` error
-                    Address::random(),
-                )
+                .set_validator_token(validator, validator_fee_token_address)
                 .expect("Could not set validator fee token");
         }
     });
@@ -787,28 +774,23 @@ fn initialize_validator_config(
 
             println!("writing {num_validators} validators into contract");
             for (i, validator) in consensus_config.validators.iter().enumerate() {
-                #[expect(non_snake_case, reason = "field of a snakeCase smart contract call")]
-                let newValidatorAddress = onchain_validator_addresses[i];
+                let validator_address = onchain_validator_addresses[i];
                 let public_key = validator.public_key();
                 let addr = validator.addr;
-                validator_config
-                    .add_validator(
-                        admin,
-                        IValidatorConfig::addValidatorCall {
-                            newValidatorAddress,
-                            publicKey: public_key.encode().as_ref().try_into().unwrap(),
-                            active: true,
-                            inboundAddress: addr.to_string(),
-                            outboundAddress: addr.to_string(),
-                        },
-                    )
-                    .wrap_err(
-                        "failed to execute smart contract call to add validator to evm state",
-                    )?;
+                IValidatorConfig::add_validator(
+                    &mut validator_config,
+                    admin,
+                    validator_address,
+                    public_key.encode().as_ref().try_into().unwrap(),
+                    true,
+                    addr.to_string(),
+                    addr.to_string(),
+                )
+                .wrap_err("failed to execute smart contract call to add validator to evm state")?;
                 println!(
                     "added validator\
                 \n\tpublic key: {public_key}\
-                \n\tonchain address: {newValidatorAddress}\
+                \n\tonchain address: {validator_address}\
                 \n\tnet address: {addr}"
                 );
             }
@@ -885,9 +867,15 @@ fn mint_pairwise_liquidity(
         let mut fee_manager = TipFeeManager::new();
 
         for b_token_address in b_tokens {
-            fee_manager
-                .mint(admin, a_token, b_token_address, amount, admin)
-                .expect("Could not mint A -> B Liquidity pool");
+            ITIPFeeAMM::mint(
+                &mut fee_manager,
+                admin,
+                a_token,
+                b_token_address,
+                amount,
+                admin,
+            )
+            .expect("Could not mint A -> B Liquidity pool");
         }
     });
 }

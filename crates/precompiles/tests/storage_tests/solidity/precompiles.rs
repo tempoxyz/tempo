@@ -32,7 +32,7 @@ fn test_tip403_registry_layout() {
 
 #[test]
 fn test_fee_manager_layout() {
-    use tempo_precompiles::tip_fee_manager::{amm::__packing_pool::*, slots};
+    use tempo_precompiles::tip_fee_manager::{abi::__packing_pool::*, slots};
 
     let sol_path = testdata("fee_manager.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -209,7 +209,7 @@ fn export_all_storage_constants() {
 
     // Fee Manager
     {
-        use tempo_precompiles::tip_fee_manager::{amm::__packing_pool::*, slots};
+        use tempo_precompiles::tip_fee_manager::{abi::__packing_pool::*, slots};
 
         let fields = layout_fields!(
             validator_tokens,

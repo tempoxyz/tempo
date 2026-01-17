@@ -316,7 +316,7 @@ impl TIP20Token {
 mod tests {
     use super::*;
     use crate::{
-        abi::ITIP20::{self, traits::IToken as _, PolicyForbids},
+        abi::ITIP20::{self, PolicyForbids, traits::IToken as _},
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,

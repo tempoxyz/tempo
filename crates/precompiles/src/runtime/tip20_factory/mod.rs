@@ -1,10 +1,11 @@
 //! TIP20 token factory implementation.
 
 use crate::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP20_FACTORY_ADDRESS,
     abi::{
         ITIP20::{Error as TIP20Error, traits::IToken as _},
         ITIP20Factory::traits::*,
+        PATH_USD_ADDRESS,
     },
     error::Result,
     tip20::{TIP20Token, USD_CURRENCY, is_tip20_prefix},
