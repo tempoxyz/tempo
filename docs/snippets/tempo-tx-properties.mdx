@@ -460,6 +460,10 @@ in parallel without waiting for sequential nonce confirmation.
 By using different nonce keys, you can submit multiple transactions simultaneously that don't conflict with each other, 
 enabling parallel execution and significantly improved transaction throughput for high-activity accounts.
 
+:::warning
+**Reuse nonce keys instead of generating random ones.** Creating a new nonce key incurs a state creation cost that increases with the number of active keys (see [TIP-1000](/protocol/tips/tip-1000)). For most applications, using a small set of sequential nonce keys (e.g., `1n`, `2n`, `3n`) is sufficient and much more cost-effective than generating random nonce keys for each transaction.
+:::
+
 <div className="-mt-2" />
 
 <Tabs>
@@ -505,12 +509,12 @@ enabling parallel execution and significantly improved transaction throughput fo
 
     const hash1 = await client.sendTransaction({
       data: '0xdeadbeef0000000000000000000000000000000001',
-      nonceKey: 567n, // [!code hl]
+      nonceKey: 1n, // [!code hl]
       to: '0xcafebabecafebabecafebabecafebabecafebabe',
     })
     const hash2 = await client.sendTransaction({
       data: '0xdeadbeef0000000000000000000000000000000001',
-      nonceKey: 789n, // [!code hl]
+      nonceKey: 2n, // [!code hl]
       to: '0xcafebabecafebabecafebabecafebabecafebabe',
     })
     ```
@@ -567,12 +571,12 @@ enabling parallel execution and significantly improved transaction throughput fo
 
     sendTransaction({
       data: '0xdeadbeef0000000000000000000000000000000001',
-      nonceKey: 567n, // [!code hl]
+      nonceKey: 1n, // [!code hl]
       to: '0xcafebabecafebabecafebabecafebabecafebabe',
     })
     sendTransaction({
       data: '0xdeadbeef0000000000000000000000000000000001',
-      nonceKey: 789n, // [!code hl]
+      nonceKey: 2n, // [!code hl]
       to: '0xcafebabecafebabecafebabecafebabecafebabe',
     })
     ```
