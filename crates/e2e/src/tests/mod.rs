@@ -7,6 +7,7 @@ mod backfill;
 mod consensus_rpc;
 mod dkg;
 mod linkage;
+mod metrics;
 mod restart;
 mod subblocks;
 mod sync;

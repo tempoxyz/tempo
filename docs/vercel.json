@@ -52,8 +52,13 @@
     },
     {
       "source": "/errors/tx/SubblockNonceKey",
-      "destination": "/protocol/blockspace/sub-block-specification#4-block-validity-rules",
+      "destination": "/protocol/blockspace/subblock-specification#4-block-validity-rules",
       "permanent": false
+    },
+    {
+      "source": "/protocol/blockspace/sub-block-specification",
+      "destination": "/protocol/blockspace/subblock-specification",
+      "permanent": true
     },
     {
       "source": "/stablecoin-exchange/:path*",

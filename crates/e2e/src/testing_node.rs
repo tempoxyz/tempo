@@ -4,7 +4,7 @@ use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, Executi
 use alloy_primitives::Address;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
-use commonware_runtime::{Handle, deterministic::Context};
+use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
 use reth_ethereum::{
     provider::{
@@ -37,7 +37,7 @@ where
     pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
     pub consensus_config:
-        consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>,
+        consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -61,6 +61,8 @@ where
     /// The chain address of the node. Used for executing validator-config smart
     /// contract calls.
     pub chain_address: Address,
+
+    n_starts: u32,
 }
 
 impl<TClock> TestingNode<TClock>
@@ -78,7 +80,6 @@ where
         oracle: Oracle<PublicKey, TClock>,
         consensus_config: consensus::Builder<
             Control<PublicKey, TClock>,
-            Context,
             SocketManager<PublicKey, TClock>,
         >,
         execution_runtime: ExecutionRuntimeHandle,
@@ -106,6 +107,8 @@ where
             last_db_block_on_stop: None,
             network_address,
             chain_address,
+
+            n_starts: 0,
         }
     }
 
@@ -122,19 +125,14 @@ where
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::Builder<Control<PublicKey, TClock>, Context, SocketManager<PublicKey, TClock>>
-    {
+    ) -> &consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::Builder<
-        Control<PublicKey, TClock>,
-        Context,
-        SocketManager<PublicKey, TClock>,
-    > {
+    ) -> &mut consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &mut self.consensus_config
     }
 
@@ -148,9 +146,10 @@ where
     ///
     /// # Panics
     /// Panics if either consensus or execution is already running.
-    pub async fn start(&mut self) {
+    pub async fn start(&mut self, context: &Context) {
         self.start_execution().await;
-        self.start_consensus().await;
+        self.start_consensus(context).await;
+        self.n_starts += 1;
     }
 
     /// Start the execution node and update consensus config to reference it.
@@ -211,7 +210,7 @@ where
     ///
     /// # Panics
     /// Panics if consensus is already running.
-    async fn start_consensus(&mut self) {
+    async fn start_consensus(&mut self, context: &Context) {
         assert!(
             self.consensus_handle.is_none(),
             "consensus is already running for {}",
@@ -220,7 +219,7 @@ where
         let engine = self
             .consensus_config
             .clone()
-            .try_init()
+            .try_init(context.with_label(&format!("{}_{}", self.uid, self.n_starts)))
             .await
             .expect("must be able to start the engine");
 
@@ -468,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_restart() {
+    async fn just_restart() {
         // Ensures that the node can be stopped completely and brought up inside a test.
         let _ = tempo_eyre::install();
 
@@ -476,7 +475,7 @@ mod tests {
         let (tx_msg, mut rx_msg) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
         std::thread::spawn(move || {
-            runner.start(|context| async move {
+            runner.start(|mut context| async move {
                 let setup = Setup::new()
                     .how_many_signers(1)
                     .linkage(Link {
@@ -486,8 +485,7 @@ mod tests {
                     })
                     .epoch_length(100);
 
-                let (mut nodes, _execution_runtime) =
-                    setup_validators(context.clone(), setup).await;
+                let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
 
                 let mut node = nodes.pop().unwrap();
 
@@ -508,7 +506,7 @@ mod tests {
                             let _ = tx_stopped.send(());
                         }
                         Some(Message::Start(tx_rpc_addr)) => {
-                            node.start().await;
+                            node.start(&context).await;
                             assert!(node.is_running(), "node should be running after start");
 
                             // Get the RPC HTTP address while running

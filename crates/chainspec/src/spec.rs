@@ -1,5 +1,5 @@
 use crate::{
-    bootnodes::{andantino_nodes, moderato_nodes},
+    bootnodes::{andantino_nodes, moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -57,7 +57,7 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["moderato", "testnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -66,6 +66,7 @@ pub const SUPPORTED_CHAINS: &[&str] = &["moderato", "testnet"];
 #[cfg(feature = "cli")]
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
+        "mainnet" => PRESTO.clone(),
         "testnet" => ANDANTINO.clone(),
         "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
@@ -97,6 +98,14 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/moderato.json` must be present and deserializable");
     TempoChainSpec::from_genesis(genesis)
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
+        .into()
+});
+
+pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/presto.json"))
+        .expect("`./genesis/presto.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis)
+        .with_default_follow_url("wss://rpc.presto.tempo.xyz")
         .into()
 });
 
@@ -247,6 +256,7 @@ impl EthChainSpec for TempoChainSpec {
 
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
         match self.inner.chain_id() {
+            4217 => Some(presto_nodes()),
             42429 => Some(andantino_nodes()),
             42431 => Some(moderato_nodes()),
             _ => self.inner.bootnodes(),
@@ -300,31 +310,35 @@ mod tests {
 
     #[test]
     fn test_tempo_chainspec_has_tempo_hardforks() {
-        let chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
 
         // Genesis should be active at timestamp 0
         let activation = chainspec.tempo_fork_activation(TempoHardfork::Genesis);
+        assert_eq!(activation, ForkCondition::Timestamp(0));
+
+        // T0 should be active at timestamp 0
+        let activation = chainspec.tempo_fork_activation(TempoHardfork::T0);
         assert_eq!(activation, ForkCondition::Timestamp(0));
     }
 
     #[test]
     fn test_tempo_chainspec_implements_tempo_hardforks_trait() {
-        let chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
 
         // Should be able to query Tempo hardfork activation through trait
-        let activation = chainspec.tempo_fork_activation(TempoHardfork::Genesis);
+        let activation = chainspec.tempo_fork_activation(TempoHardfork::T0);
         assert_eq!(activation, ForkCondition::Timestamp(0));
     }
 
     #[test]
     fn test_tempo_hardforks_in_inner_hardforks() {
-        let chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
+        let chainspec = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
 
         // Tempo hardforks should be queryable from inner.hardforks via Hardforks trait
-        let activation = chainspec.fork(TempoHardfork::Genesis);
+        let activation = chainspec.fork(TempoHardfork::T0);
         assert_eq!(activation, ForkCondition::Timestamp(0));
 
         // Verify Genesis appears in forks iterator
@@ -336,14 +350,48 @@ mod tests {
 
     #[test]
     fn test_tempo_hardfork_at() {
-        let chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
+        let mainnet_chainspec = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
+
+        // Should always return T0
+        assert_eq!(mainnet_chainspec.tempo_hardfork_at(0), TempoHardfork::T0);
+        assert_eq!(mainnet_chainspec.tempo_hardfork_at(1000), TempoHardfork::T0);
+        assert_eq!(
+            mainnet_chainspec.tempo_hardfork_at(u64::MAX),
+            TempoHardfork::T0
+        );
+
+        let moderato_genesis = super::TempoChainSpecParser::parse("moderato")
+            .expect("the mainnet chainspec must always be well formed");
 
         // Should always return Genesis
-        assert_eq!(chainspec.tempo_hardfork_at(0), TempoHardfork::Genesis);
-        assert_eq!(chainspec.tempo_hardfork_at(1000), TempoHardfork::Genesis);
         assert_eq!(
-            chainspec.tempo_hardfork_at(u64::MAX),
+            moderato_genesis.tempo_hardfork_at(0),
+            TempoHardfork::Genesis
+        );
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(1000),
+            TempoHardfork::Genesis
+        );
+        assert_eq!(
+            moderato_genesis.tempo_hardfork_at(u64::MAX),
+            TempoHardfork::Genesis
+        );
+
+        let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
+            .expect("the mainnet chainspec must always be well formed");
+
+        // Should always return Genesis
+        assert_eq!(
+            testnet_chainspec.tempo_hardfork_at(0),
+            TempoHardfork::Genesis
+        );
+        assert_eq!(
+            testnet_chainspec.tempo_hardfork_at(1000),
+            TempoHardfork::Genesis
+        );
+        assert_eq!(
+            testnet_chainspec.tempo_hardfork_at(u64::MAX),
             TempoHardfork::Genesis
         );
     }

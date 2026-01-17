@@ -134,7 +134,7 @@ impl Default for Setup {
 ///
 /// The oracle is accessible via `TestingNode::oracle()` if needed for dynamic linking.
 pub async fn setup_validators(
-    mut context: Context,
+    context: &mut Context,
     Setup {
         how_many_signers,
         how_many_verifiers,
@@ -154,12 +154,12 @@ pub async fn setup_validators(
     );
     network.start();
 
-    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut context))
+    let mut signer_keys = repeat_with(|| PrivateKey::random(&mut *context))
         .take(how_many_signers as usize)
         .collect::<Vec<_>>();
     signer_keys.sort_by_key(|key| key.public_key());
     let (initial_dkg_outcome, shares) = dkg::deal::<_, _, N3f1>(
-        &mut context,
+        &mut *context,
         Mode::NonZeroCounter,
         ordered::Set::try_from_iter(signer_keys.iter().map(|key| key.public_key())).unwrap(),
     )
@@ -171,7 +171,7 @@ pub async fn setup_validators(
         next_players: shares.keys().clone(),
         is_next_full_dkg: false,
     };
-    let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut context))
+    let mut verifier_keys = repeat_with(|| PrivateKey::random(&mut *context))
         .take(how_many_verifiers as usize)
         .collect::<Vec<_>>();
     verifier_keys.sort_by_key(|key| key.public_key());
@@ -237,7 +237,6 @@ pub async fn setup_validators(
         execution_config.feed_state = Some(feed_state.clone());
 
         let engine_config = consensus::Builder {
-            context: context.with_label(&uid),
             fee_recipient: alloy_primitives::Address::ZERO,
             execution_node: None,
             blocker: oracle.control(private_key.public_key()),
@@ -256,6 +255,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            fcu_heartbeat_interval: Duration::from_secs(300),
             feed_state,
         };
 
@@ -281,11 +281,11 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
-    executor.start(|context| async move {
+    executor.start(|mut context| async move {
         // Setup and run all validators.
-        let (mut nodes, _execution_runtime) = setup_validators(context.clone(), setup).await;
+        let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
 
-        join_all(nodes.iter_mut().map(|node| node.start())).await;
+        join_all(nodes.iter_mut().map(|node| node.start(&context))).await;
 
         loop {
             let metrics = context.encode();

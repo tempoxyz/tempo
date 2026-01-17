@@ -129,11 +129,16 @@ export default defineConfig({
   ),
   ogImageUrl: {
     '/': 'https://docs.tempo.xyz/og-docs.png',
-    '/learn': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/quickstart': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/guide': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/protocol': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
-    '/sdk': 'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/learn':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
   },
   title: 'Tempo',
   titleTemplate: '%s | Tempo Docs',
@@ -257,6 +262,10 @@ export default defineConfig({
               {
                 text: 'Accept a payment',
                 link: '/guide/payments/accept-a-payment',
+              },
+              {
+                text: 'Attach a transfer memo',
+                link: '/guide/payments/transfer-memos',
               },
               {
                 text: 'Pay fees in any stablecoin',
@@ -476,8 +485,8 @@ export default defineConfig({
                 link: '/protocol/blockspace/payment-lane-specification',
               },
               {
-                text: 'Sub-block Specification',
-                link: '/protocol/blockspace/sub-block-specification',
+                text: 'Subblock Specification',
+                link: '/protocol/blockspace/subblock-specification',
               },
             ],
           },

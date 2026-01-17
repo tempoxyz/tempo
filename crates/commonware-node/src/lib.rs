@@ -89,8 +89,6 @@ pub async fn run_consensus_stack(
         .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
 
     let consensus_engine = crate::consensus::engine::Builder {
-        context: context.with_label("engine"),
-
         fee_recipient,
 
         execution_node: Some(execution_node),
@@ -134,10 +132,14 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into().wrap_err(
+            "failed converting argument fcu-heartbeat-interval to regular \
+            duration; was it negative or chosen too large",
+        )?,
 
         feed_state,
     }
-    .try_init()
+    .try_init(context.with_label("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
