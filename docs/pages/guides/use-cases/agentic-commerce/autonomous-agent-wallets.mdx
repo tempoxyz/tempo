@@ -1,0 +1,176 @@
+---
+title: "Autonomous Agent Wallets"
+description: "Build self-sovereign wallets for AI agents with Tempo smart accounts. Programmable spending limits, passkey security, and sub-cent transaction fees."
+---
+
+# Autonomous Agent Wallets
+
+AI agents need financial autonomy to operate effectively. Tempo smart accounts provide the infrastructure for agents to hold, send, and receive payments independently.
+
+## The Agent Wallet Challenge
+
+Traditional payment infrastructure wasn't built for autonomous software:
+
+| Requirement | Traditional Systems | Tempo Smart Accounts |
+|-------------|---------------------|----------------------|
+| Programmatic access | API keys with full access | Granular permissions |
+| Spending controls | Limited | Programmable limits |
+| Transaction costs | High minimums | ~$0.001 per transaction |
+| Setup | Manual KYC process | Instant creation |
+
+## Tempo Smart Accounts for Agents
+
+### Self-Sovereign Design
+
+Each agent controls its own wallet with cryptographic keys:
+
+- **Independent operation** — Agents transact without human intervention
+- **Verifiable identity** — On-chain address serves as agent identity
+- **Portable balance** — Funds move with the agent across platforms
+
+### Programmable Constraints
+
+Configure guardrails for agent spending:
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Create agent wallet with spending limits
+const agentWallet = await tempo.accounts.create({
+  type: 'smart-account',
+  constraints: {
+    maxTransactionAmount: '100.00',
+    dailySpendLimit: '500.00',
+    allowedRecipients: ['0x...service1', '0x...service2'],
+    requireMetadata: ['purpose', 'taskId']
+  }
+});
+```
+
+### Passkey Security
+
+Secure agent wallets with hardware-backed authentication:
+
+- No private keys to manage or leak
+- Revocable access
+- Audit trail of all operations
+
+## Agent Wallet Patterns
+
+### Funded Task Execution
+
+1. System deposits funds for specific task
+2. Agent spends within allocated budget
+3. Unused funds return to treasury
+
+```typescript
+// Fund agent for specific task
+await tempo.payments.create({
+  recipient: agentWallet.address,
+  amount: '50.00',
+  currency: 'USDC',
+  metadata: {
+    taskId: 'task-789',
+    purpose: 'research-budget'
+  }
+});
+
+// Agent executes payments for task
+await agentWallet.pay({
+  recipient: dataProvider.address,
+  amount: '5.00',
+  currency: 'USDC',
+  metadata: {
+    taskId: 'task-789',
+    service: 'data-query'
+  }
+});
+```
+
+### Revenue Collection
+
+Agents can receive payments for services rendered:
+
+```typescript
+// Agent publishes payment address
+const paymentAddress = agentWallet.address;
+
+// Webhook notifies agent of incoming payment
+agentWallet.on('payment.received', async (event) => {
+  const { amount, metadata } = event;
+  await executeServiceFor(metadata.requestId);
+});
+```
+
+### Multi-Agent Coordination
+
+Agents can transact with each other:
+
+```typescript
+// Agent A pays Agent B for sub-task
+await agentA.wallet.pay({
+  recipient: agentB.wallet.address,
+  amount: '10.00',
+  currency: 'USDC',
+  metadata: {
+    taskId: 'task-789',
+    subTask: 'data-processing'
+  }
+});
+```
+
+## Security Model
+
+### Hierarchical Control
+
+```
+Organization Treasury
+    └── Agent Pool Budget
+        └── Individual Agent Wallets
+            └── Per-Task Allocations
+```
+
+### Constraint Enforcement
+
+- **Transaction limits** — Cap individual payment amounts
+- **Daily/weekly budgets** — Limit cumulative spending
+- **Allowlists** — Restrict recipient addresses
+- **Metadata requirements** — Enforce payment documentation
+
+### Emergency Controls
+
+- Pause agent wallet instantly
+- Revoke spending permissions
+- Recover remaining funds
+
+## Observability
+
+### Transaction Monitoring
+
+Track all agent financial activity:
+
+```typescript
+const transactions = await tempo.transactions.list({
+  account: agentWallet.address,
+  startDate: '2024-01-01',
+  endDate: '2024-01-31'
+});
+
+// Analyze spending patterns
+const byPurpose = groupBy(transactions, t => t.metadata.purpose);
+```
+
+### Webhook Events
+
+Real-time notifications for:
+
+- Incoming payments
+- Outgoing payments
+- Spending limit warnings
+- Constraint violations
+
+## Get Started
+
+Explore agent wallet integration at [docs.tempo.xyz](https://docs.tempo.xyz).

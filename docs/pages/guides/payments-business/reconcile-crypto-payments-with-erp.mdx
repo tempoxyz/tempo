@@ -1,0 +1,92 @@
+---
+title: "Reconcile Crypto Payments with ERP"
+description: "Seamlessly reconcile stablecoin payments with your ERP using Tempo's payment metadata, structured exports, and accounting-ready transaction data."
+---
+
+# Reconcile Crypto Payments with ERP
+
+One of the biggest challenges with crypto payments is reconciliation. Traditional blockchains provide transaction hashes, but connecting those to invoices, customers, and general ledger entries requires manual work. Tempo solves this with native payment metadata.
+
+## The Reconciliation Problem
+
+Without structured metadata, crypto payment reconciliation looks like this:
+
+1. Receive payment notification
+2. Look up transaction on block explorer
+3. Match amount and timing to open invoices
+4. Manually enter data into ERP
+5. Hope you don't make mistakes
+
+This process doesn't scale. It's error-prone and time-consuming.
+
+## Tempo's Metadata-First Approach
+
+### Structured Payment Data
+
+Every Tempo transaction supports rich metadata fields:
+
+- Invoice number
+- Customer ID
+- PO reference
+- GL account codes
+- Cost center
+- Project codes
+- Custom fields specific to your business
+
+### Automatic Matching
+
+When payments arrive with invoice numbers attached, your system can automatically match them to open receivables—no manual lookup required.
+
+### Export Formats
+
+Tempo provides transaction exports in formats compatible with major ERP systems:
+
+- CSV for universal import
+- JSON for API integrations
+- Structured formats for specific platforms
+
+## Integration Patterns
+
+### Webhook-Based Real-Time Sync
+
+1. Configure webhooks to receive payment notifications
+2. Parse metadata from the webhook payload
+3. Create journal entries in your ERP automatically
+4. Update invoice status to "paid"
+
+### Batch Export and Import
+
+1. Export transactions for a given period
+2. Map Tempo fields to your ERP's import format
+3. Import as a batch
+4. Review and post entries
+
+### API Integration
+
+1. Query Tempo's API for new transactions
+2. Extract metadata and payment details
+3. Create corresponding entries via your ERP's API
+4. Maintain a sync log for audit purposes
+
+## Benefits
+
+- **Eliminate manual data entry**: Metadata flows directly from payment to ledger
+- **Reduce errors**: No transcription mistakes or missed payments
+- **Real-time visibility**: Know your cash position instantly
+- **Audit-ready records**: Complete transaction history with business context
+
+## Supported ERP Systems
+
+Tempo's flexible metadata and export options work with:
+
+- NetSuite
+- SAP
+- QuickBooks
+- Xero
+- Sage
+- Microsoft Dynamics
+- Custom systems via API
+
+## Get Started
+
+Learn more about metadata configuration and ERP integration at [docs.tempo.xyz](https://docs.tempo.xyz).

@@ -1,0 +1,129 @@
+---
+title: "Stablecoin Vendor Payments"
+description: "Pay suppliers and vendors with stablecoins on Tempo. Instant settlement, ~$0.001 fees, and payment metadata for automated invoice reconciliation."
+---
+
+# Stablecoin Vendor Payments
+
+Paying suppliers shouldn't require expensive wire transfers and days of waiting. Tempo enables instant vendor payments with the metadata your finance team needs.
+
+## Vendor Payment Challenges
+
+Traditional vendor payments create operational friction:
+
+| Challenge | Impact |
+|-----------|--------|
+| Wire transfer fees | $25-50 per payment erodes margins |
+| Settlement delays | 3-5 days affects supplier relationships |
+| International complexity | Correspondent banks add costs and delays |
+| Manual reconciliation | AP teams match payments to invoices manually |
+
+## Tempo for Vendor Payments
+
+### Cost Comparison
+
+For a business making 200 vendor payments monthly:
+
+| Method | Monthly Cost | Annual Savings with Tempo |
+|--------|--------------|---------------------------|
+| Wire transfers | $5,000-10,000 | $59,997+ |
+| ACH | $50-200 | $597+ |
+| **Tempo** | **~$0.20** | — |
+
+### Key Capabilities
+
+**Instant Settlement**
+Vendors receive funds immediately. Improve supplier relationships and negotiate better terms with reliable, fast payments.
+
+**Payment Metadata**
+Every payment carries structured data:
+
+- Invoice number
+- Purchase order reference
+- Vendor ID
+- Payment terms applied
+- Early payment discount taken
+
+**Multi-Stablecoin Support**
+Pay vendors in their preferred stablecoin—USDC, USDT, or other supported assets.
+
+## Implementation
+
+### Accounts Payable Integration
+
+Connect Tempo to your AP workflow:
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Pay approved invoices
+const payment = await tempo.payments.create({
+  recipient: vendor.walletAddress,
+  amount: invoice.amountDue,
+  currency: 'USDC',
+  metadata: {
+    vendorId: vendor.id,
+    invoiceNumber: invoice.number,
+    poReference: invoice.poNumber,
+    paymentTerms: 'Net30',
+    dueDate: invoice.dueDate
+  }
+});
+```
+
+### Batch Processing
+
+Pay multiple vendors in a single transaction:
+
+```typescript
+const batch = await tempo.batch.create({
+  payments: approvedInvoices.map(inv => ({
+    recipient: inv.vendor.walletAddress,
+    amount: inv.amountDue,
+    currency: 'USDC',
+    metadata: {
+      invoiceNumber: inv.number,
+      vendorId: inv.vendorId
+    }
+  }))
+});
+```
+
+### Reconciliation
+
+Transaction metadata flows back to your ERP for automatic matching:
+
+1. Payment executes with invoice reference
+2. Webhook confirms settlement with full metadata
+3. AP system marks invoice as paid
+4. Audit trail preserved on-chain
+
+## Vendor Onboarding
+
+### Collecting Wallet Addresses
+
+Add wallet collection to your vendor onboarding:
+
+1. Vendor provides wallet address in portal
+2. Verify ownership with test transaction
+3. Store address in vendor master record
+
+### Vendor Benefits
+
+Help vendors understand the advantages:
+
+- **Immediate access to funds** — No waiting for bank processing
+- **Lower receiving costs** — No incoming wire fees
+- **Clear remittance data** — Invoice references included in transaction
+
+## Security and Controls
+
+- **Approval thresholds** — Require multi-sig for payments above set amounts
+- **Vendor verification** — Confirm wallet addresses before first payment
+- **Immutable records** — Complete audit trail for compliance
+
+## Get Started
+
+Explore vendor payment integration at [docs.tempo.xyz](https://docs.tempo.xyz).

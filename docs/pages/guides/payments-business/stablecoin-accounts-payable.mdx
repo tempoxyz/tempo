@@ -1,0 +1,92 @@
+---
+title: "Stablecoin Accounts Payable"
+description: "Streamline accounts payable with stablecoin payments on Tempo. Batch payments, ~$0.001 fees, and metadata that syncs with your ERP system."
+---
+
+# Stablecoin Accounts Payable
+
+Accounts payable shouldn't be a manual, expensive process. Yet most AP teams still deal with check runs, wire transfer fees, and tedious data entry. Stablecoin payments on Tempo modernize the entire workflow.
+
+## AP Pain Points Addressed
+
+### High Payment Costs
+
+Every wire transfer costs $25-50. Every ACH payment costs $0.25-1.00. For companies processing hundreds of vendor payments monthly, these fees add up to thousands of dollars.
+
+**Tempo solution**: ~$0.001 per payment, regardless of amount.
+
+### Slow Processing
+
+Wire transfers take 1-5 days. ACH takes 2-3 days. International payments can take a week or more.
+
+**Tempo solution**: Instant settlement. Vendors receive funds in seconds.
+
+### Manual Reconciliation
+
+After payments go out, someone has to match bank statements to invoices, update the ledger, and file documentation.
+
+**Tempo solution**: Payment metadata carries invoice numbers, vendor IDs, and GL codes. Data flows automatically to your ERP.
+
+## Tempo AP Features
+
+### Batch Payments
+
+Process your entire AP run in a single transaction:
+
+1. Export approved invoices from your AP system
+2. Format as a batch payment file (or use API)
+3. Submit to Tempo
+4. All payments execute simultaneously
+5. Each payment includes full metadata
+
+### Rich Metadata
+
+Attach complete business context to every payment:
+
+- Vendor ID
+- Invoice number(s)
+- PO references
+- GL account codes
+- Cost center
+- Payment terms applied
+- Early payment discount taken
+
+### Stablecoin-Native Gas
+
+Pay transaction fees in USDC. Your treasury doesn't need to hold volatile crypto assets.
+
+### Approval Workflows
+
+Configure multi-signature requirements for payments above certain thresholds. Integrate with your existing approval processes via API.
+
+## Implementation Guide
+
+### Vendor Onboarding
+
+Collect wallet addresses from vendors during onboarding. Store them in your vendor master alongside traditional banking details.
+
+### Payment Execution
+
+1. Run your normal AP approval process
+2. Export approved payments with vendor wallet addresses
+3. Include required metadata fields
+4. Submit batch to Tempo
+5. Receive instant confirmation
+
+### ERP Integration
+
+- **Webhook notifications**: Receive confirmation when payments complete
+- **Transaction exports**: Download payment records with full metadata
+- **API sync**: Programmatically update your ledger with payment status
+
+## Cost Comparison
+
+| Monthly Payments | Wire Cost | ACH Cost | Tempo Cost |
+|-----------------|-----------|----------|------------|
+| 100 | $2,500-5,000 | $25-100 | ~$0.10 |
+| 500 | $12,500-25,000 | $125-500 | ~$0.50 |
+| 1,000 | $25,000-50,000 | $250-1,000 | ~$1.00 |
+
+## Get Started
+
+Explore AP automation with Tempo at [docs.tempo.xyz](https://docs.tempo.xyz).

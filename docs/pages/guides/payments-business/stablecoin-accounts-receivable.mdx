@@ -1,0 +1,94 @@
+---
+title: "Stablecoin Accounts Receivable"
+description: "Modernize accounts receivable with stablecoin payments on Tempo. Instant settlement, ~$0.001 fees, and metadata that auto-matches to invoices."
+---
+
+# Stablecoin Accounts Receivable
+
+Accounts receivable is where cash flow lives or dies. Slow payments, manual reconciliation, and high processing fees all drag on your business. Stablecoin payments on Tempo address each of these problems.
+
+## AR Challenges Solved
+
+### Challenge: Slow Payment Receipt
+
+**Traditional**: Wire transfers take 1-5 days. ACH takes 2-3 days. Checks take a week or more.
+
+**Tempo**: Payments settle instantly. When a customer pays, funds are immediately available.
+
+### Challenge: High Processing Costs
+
+**Traditional**: Wire fees of $25-50 per incoming payment. Credit card fees of 2.5-3.5%.
+
+**Tempo**: Transaction fees of approximately $0.001.
+
+### Challenge: Manual Reconciliation
+
+**Traditional**: Payments arrive as undifferentiated deposits. Staff manually matches them to invoices.
+
+**Tempo**: Payment metadata includes invoice numbers, customer IDs, and references. Matching is automatic.
+
+## How Tempo Transforms AR
+
+### Structured Payment Metadata
+
+Every incoming payment carries business context:
+
+- Invoice number
+- Customer ID
+- PO reference
+- Payment amount
+- Optional custom fields
+
+Your AR system reads this metadata and automatically applies payments to the correct invoices.
+
+### Instant Cash Application
+
+No waiting for banks to process. No batch delays. Payments apply to your ledger in real-time.
+
+### Real-Time Visibility
+
+Know your cash position instantly. See payments as they arrive, not days later when banks report them.
+
+## Implementation
+
+### Invoice Setup
+
+Include stablecoin payment instructions on every invoice:
+
+```
+Stablecoin Payment Option:
+Network: Tempo
+Address: 0x...
+Required Reference: [Invoice Number]
+```
+
+### Payment Monitoring
+
+Configure webhooks to receive instant notification when payments arrive. Parse metadata to identify the invoice and customer.
+
+### Auto-Application
+
+Connect Tempo payment data to your AR system:
+
+1. Receive payment webhook
+2. Extract invoice number from metadata
+3. Match to open invoice
+4. Apply payment and update status
+5. Log transaction for audit
+
+### Reconciliation Reports
+
+Export transaction data with full metadata for period-end reconciliation. All business context travels with the payment.
+
+## Benefits Summary
+
+| Metric | Traditional | Tempo |
+|--------|-------------|-------|
+| Settlement time | 1-5 days | Instant |
+| Cost per receipt | $25-50 | ~$0.001 |
+| Reconciliation | Manual | Automated |
+| Cash visibility | Delayed | Real-time |
+
+## Get Started
+
+Learn about AR automation with Tempo at [docs.tempo.xyz](https://docs.tempo.xyz).

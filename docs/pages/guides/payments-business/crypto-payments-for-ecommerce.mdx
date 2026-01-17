@@ -1,0 +1,93 @@
+---
+title: "Crypto Payments for Ecommerce"
+description: "Accept stablecoin payments in your ecommerce store with Tempo. ~$0.001 fees, instant confirmation, and order metadata for seamless fulfillment."
+---
+
+# Crypto Payments for Ecommerce
+
+Credit card fees eat into ecommerce margins. At 2.5-3.5% per transaction plus per-transaction fees, payment processing becomes a significant cost center. Stablecoin payments on Tempo reduce that to approximately $0.001 per transaction.
+
+## The Ecommerce Payment Problem
+
+For a store processing $1M annually:
+
+| Payment Method | Annual Cost |
+|---------------|-------------|
+| Credit cards (3%) | $30,000 |
+| PayPal (2.9% + $0.30) | $29,000+ |
+| **Tempo stablecoins** | **~$100** |
+
+Those savings go straight to your bottom line.
+
+## Benefits for Ecommerce
+
+### Near-Zero Fees
+
+~$0.001 per transaction regardless of order value. A $10 order and a $10,000 order cost the same to process.
+
+### No Chargebacks
+
+Stablecoin payments are final. No fraudulent chargebacks, no disputes to manage, no reserve holdbacks.
+
+### Instant Settlement
+
+Funds are available immediately. No waiting for batch processing or payout schedules.
+
+### Global Customers
+
+Accept payments from customers worldwide without dealing with currency conversion or international card fees.
+
+## How It Works
+
+### Checkout Integration
+
+1. Customer selects stablecoin payment at checkout
+2. Display payment address and amount (QR code + text)
+3. Customer sends payment from their wallet
+4. Tempo confirms the transaction instantly
+5. Order proceeds to fulfillment
+
+### Order Metadata
+
+Attach order details to each payment:
+
+- Order ID
+- Customer ID
+- SKUs purchased
+- Shipping address hash
+- Promo codes applied
+
+This metadata enables automatic order matching and simplifies accounting.
+
+### Payment Confirmation
+
+Tempo's instant finality means you can confirm orders immediately—no waiting for block confirmations or payment verification.
+
+## Integration Options
+
+### API Integration
+
+Integrate Tempo payments directly into your checkout flow:
+
+1. Generate unique payment address per order
+2. Monitor for incoming payments via webhook
+3. Confirm order when payment arrives
+4. Include order ID in payment metadata
+
+### Payment Plugins
+
+Use pre-built integrations for major ecommerce platforms (check [docs.tempo.xyz](https://docs.tempo.xyz) for current availability).
+
+### Hybrid Approach
+
+Offer stablecoins alongside traditional payment methods. Let customers choose based on their preference.
+
+## Operational Considerations
+
+- **Pricing**: Display prices in USD, accept equivalent USDC
+- **Refunds**: Process refunds to the original sending address
+- **Accounting**: Export transaction data with order metadata for reconciliation
+
+## Get Started
+
+Learn about ecommerce payment integration at [docs.tempo.xyz](https://docs.tempo.xyz).

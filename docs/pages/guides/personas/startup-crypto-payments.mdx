@@ -1,0 +1,187 @@
+---
+title: "Startup Crypto Payments Guide"
+description: "Adopt stablecoin payments for your startup with Tempo. Cut payment costs, pay global contractors, and manage treasury without enterprise complexity."
+---
+
+# Startup Crypto Payments Guide
+
+A practical guide for startups adopting stablecoin payments—whether you're paying contractors, accepting customer payments, or managing treasury.
+
+## Why Startups Choose Stablecoins
+
+### Cost Savings
+
+Every dollar matters at a startup. Payment fees add up:
+
+| Monthly Payments | Wire Fees | ACH Fees | Tempo Fees | Annual Savings |
+|------------------|-----------|----------|------------|----------------|
+| 50 contractors | $1,500 | $50 | $0.05 | $17,940 |
+| 200 customers | $6,000 | $200 | $0.20 | $71,760 |
+
+### Global by Default
+
+Pay anyone, anywhere:
+
+- **Remote contractors** — Pay developers in Argentina, designers in Poland, same as local
+- **International customers** — Accept payments without Stripe Atlas complexity
+- **No banking restrictions** — Countries with limited banking infrastructure can still transact
+
+### Speed
+
+- Traditional wire: 3-5 business days
+- ACH: 2-3 business days
+- Tempo: ~0.5 seconds
+
+## Common Startup Use Cases
+
+### Paying Contractors
+
+Most startups start here. Pay your global team in stablecoins:
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Pay contractor
+await tempo.payments.create({
+  recipient: contractor.walletAddress,
+  amount: '5000.00',
+  currency: 'USDC',
+  metadata: {
+    contractorId: contractor.id,
+    period: '2024-01',
+    type: 'monthly-retainer'
+  }
+});
+```
+
+Contractors receive funds instantly. They can:
+- Hold USDC
+- Convert to local currency via exchange
+- Spend directly where crypto is accepted
+
+### Accepting Customer Payments
+
+Add stablecoin checkout to your product:
+
+```typescript
+// Create payment link for customer
+const invoice = await tempo.invoices.create({
+  amount: '999.00',
+  currency: 'USDC',
+  customer: {
+    email: customer.email,
+    name: customer.name
+  },
+  metadata: {
+    plan: 'annual-pro',
+    customerId: customer.id
+  }
+});
+
+// Send payment link
+await sendEmail(customer.email, {
+  subject: 'Your Invoice',
+  paymentLink: invoice.paymentUrl
+});
+```
+
+### Treasury Management
+
+Keep operating capital in stablecoins:
+
+```typescript
+// Check balance
+const balance = await tempo.accounts.getBalance(companyWallet);
+
+// Earn yield on idle funds
+await tempo.yield.deploy({
+  amount: balance * 0.5, // Deploy 50% to yield
+  strategy: 'money-market',
+  currency: 'USDC'
+});
+```
+
+## Getting Started
+
+### Week 1: Setup
+
+1. **Create Tempo account** — Sign up at tempo.xyz
+2. **Fund your wallet** — Transfer USDC from exchange or bank on-ramp
+3. **Collect contractor wallets** — Ask contractors for their wallet addresses
+
+### Week 2: First Payments
+
+1. **Test payment** — Send small amount to verify addresses
+2. **Batch payment** — Process contractor payments
+3. **Document process** — Create runbook for regular payments
+
+### Week 3+: Expand
+
+- Add customer payment acceptance
+- Integrate with your invoicing system
+- Set up recurring payment schedules
+
+## Integration Patterns
+
+### Simple: Manual Payments
+
+Use Tempo dashboard for occasional payments. Good for:
+- Monthly contractor payments
+- Ad-hoc vendor payments
+- Early-stage startups
+
+### Intermediate: API Integration
+
+Connect your systems to Tempo API:
+
+```typescript
+// Integrate with your contractor management system
+app.post('/pay-contractors', async (req, res) => {
+  const contractors = await getActiveContractors();
+  
+  const batch = await tempo.batch.create({
+    payments: contractors.map(c => ({
+      recipient: c.walletAddress,
+      amount: c.monthlyRate,
+      currency: 'USDC',
+      metadata: { contractorId: c.id }
+    }))
+  });
+  
+  return res.json({ batchId: batch.id, count: contractors.length });
+});
+```
+
+### Advanced: Full Automation
+
+Automate end-to-end:
+
+- Invoice generation triggers payment request
+- Payment confirmation updates your systems
+- Reconciliation happens automatically via webhooks
+
+## Common Questions
+
+### Do contractors need crypto knowledge?
+
+Minimal. They need a wallet address—Tempo smart accounts use passkeys (like FaceID), not seed phrases.
+
+### How do contractors convert to local currency?
+
+They can use any exchange (Coinbase, Kraken, local exchanges) or off-ramp services. Many prefer holding USDC.
+
+### What about taxes?
+
+Same reporting requirements as any contractor payment. Tempo provides transaction records with metadata for your records.
+
+### Is this legal?
+
+Stablecoin payments are legal in most jurisdictions. Consult your lawyer for specific situations, especially for employees vs contractors.
+
+## Resources
+
+- API documentation: [docs.tempo.xyz](https://docs.tempo.xyz)
+- SDK: `npm install @tempo/sdk`
+- Discord community: [discord.tempo.xyz](https://discord.tempo.xyz)

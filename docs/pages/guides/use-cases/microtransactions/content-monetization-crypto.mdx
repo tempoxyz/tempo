@@ -1,0 +1,206 @@
+---
+title: "Content Monetization with Crypto"
+description: "Monetize articles, videos, and digital content with stablecoin micropayments. Tempo's ~$0.001 fees enable true pay-per-view content access."
+---
+
+# Content Monetization with Crypto
+
+Unlock new revenue models for digital content with micropayments. Tempo's sub-cent transaction fees make pay-per-article, pay-per-video, and pay-per-access economically viable.
+
+## The Content Monetization Problem
+
+Current models force tradeoffs:
+
+| Model | Problem |
+|-------|---------|
+| Advertising | Degrades user experience, privacy concerns |
+| Subscriptions | Users pay for content they don't consume |
+| Paywalls | High friction kills conversion |
+| Donations | Unpredictable, guilt-based revenue |
+
+### Why Micropayments Failed Before
+
+Traditional payment systems charge minimums that exceed content value:
+
+- Credit card: $0.30 + 2.9% makes $0.10 articles impossible
+- PayPal: Similar fee structure
+- In-app purchases: 30% platform fee
+
+## Tempo for Content Payments
+
+### True Micropayments
+
+Charge what content is actually worth:
+
+| Content Type | Price | Tempo Fee | You Keep |
+|--------------|-------|-----------|----------|
+| Blog article | $0.05 | ~$0.001 | $0.049 |
+| Premium video | $0.25 | ~$0.001 | $0.249 |
+| Research report | $2.00 | ~$0.001 | $1.999 |
+| Music track | $0.10 | ~$0.001 | $0.099 |
+
+### Instant Access
+
+Payment confirms in ~0.5 seconds. Users click, pay, and access content immediately—no checkout friction.
+
+### No Middlemen
+
+Direct creator-to-consumer payments. No platform taking 30%.
+
+## Implementation
+
+### Pay-Per-Article
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Check access before serving content
+app.get('/article/:id', async (req, res) => {
+  const article = await getArticle(req.params.id);
+  const paymentId = req.query.paymentId;
+  
+  if (paymentId) {
+    const payment = await tempo.payments.get(paymentId);
+    
+    if (payment.status === 'confirmed' && 
+        payment.metadata.articleId === article.id) {
+      return res.json({ content: article.fullContent });
+    }
+  }
+  
+  // Return preview with payment request
+  return res.json({
+    preview: article.preview,
+    price: article.price,
+    paymentAddress: creatorWallet,
+    requiredMetadata: { articleId: article.id }
+  });
+});
+```
+
+### Pay-Per-Video
+
+```typescript
+// Generate time-limited access token after payment
+app.post('/video/:id/access', async (req, res) => {
+  const { paymentId } = req.body;
+  const video = await getVideo(req.params.id);
+  
+  const payment = await tempo.payments.get(paymentId);
+  
+  if (payment.status !== 'confirmed') {
+    return res.status(402).json({ error: 'Payment required' });
+  }
+  
+  if (payment.amount < video.price) {
+    return res.status(402).json({ error: 'Insufficient payment' });
+  }
+  
+  // Generate signed URL valid for 24 hours
+  const accessUrl = await generateSignedUrl(video.id, 86400);
+  
+  return res.json({ accessUrl });
+});
+```
+
+### Streaming Payments for Long-Form Content
+
+Charge as users consume:
+
+```typescript
+// Charge per chapter/segment
+async function unlockNextChapter(userId, bookId, chapterNum) {
+  const chapter = await getChapter(bookId, chapterNum);
+  
+  await tempo.payments.charge({
+    from: userWallets[userId],
+    amount: chapter.price,
+    currency: 'USDC',
+    metadata: {
+      bookId,
+      chapter: chapterNum,
+      title: chapter.title
+    }
+  });
+  
+  return chapter.content;
+}
+```
+
+## User Experience
+
+### Wallet Integration
+
+Users connect once, then pay with one click:
+
+```html
+<button onclick="unlockContent()">
+  Read Full Article — $0.05
+</button>
+
+<script>
+async function unlockContent() {
+  const payment = await tempo.pay({
+    amount: 0.05,
+    currency: 'USDC',
+    metadata: { articleId: 'article-123' }
+  });
+  
+  if (payment.confirmed) {
+    window.location.href = `/article/123?paymentId=${payment.id}`;
+  }
+}
+</script>
+```
+
+### Balance Display
+
+Show users their available balance for frictionless payments:
+
+```typescript
+const balance = await tempo.accounts.getBalance(userWallet);
+// Display: "Balance: $4.32 — enough for 86 articles"
+```
+
+## Creator Benefits
+
+- **Immediate payment** — No 30-90 day payment cycles
+- **Full transparency** — See every transaction on-chain
+- **Global audience** — Anyone with stablecoins can pay
+- **No minimums** — Get paid for $0.01 content
+
+## Platform Integration
+
+For content platforms, integrate at the API level:
+
+```typescript
+// Platform charges user, pays creator
+app.post('/purchase', async (req, res) => {
+  const { contentId, userWallet } = req.body;
+  const content = await getContent(contentId);
+  
+  // Charge user
+  await tempo.payments.charge({
+    from: userWallet,
+    amount: content.price,
+    currency: 'USDC'
+  });
+  
+  // Pay creator (minus platform fee)
+  const creatorShare = content.price * 0.90;
+  await tempo.payments.create({
+    recipient: content.creator.wallet,
+    amount: creatorShare,
+    currency: 'USDC',
+    metadata: { contentId, type: 'creator-payment' }
+  });
+  
+  return res.json({ accessGranted: true });
+});
+```
+
+## Get Started
+
+Explore content monetization at [docs.tempo.xyz](https://docs.tempo.xyz).

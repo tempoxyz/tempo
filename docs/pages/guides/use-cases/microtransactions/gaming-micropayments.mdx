@@ -1,0 +1,223 @@
+---
+title: "Gaming Micropayments"
+description: "Enable in-game purchases and player-to-player trading with Tempo. Sub-cent fees make microtransactions profitable for items at any price point."
+---
+
+# Gaming Micropayments
+
+Power in-game economies with stablecoin micropayments. Tempo's sub-cent fees and instant finality enable new monetization models for games of all sizes.
+
+## Gaming Payment Challenges
+
+Current in-game payment systems have limitations:
+
+| Challenge | Impact |
+|-----------|--------|
+| Platform fees | 30% to app stores on every purchase |
+| Minimum transactions | Can't sell $0.10 items profitably |
+| Cross-platform wallets | Balances locked to single platform |
+| Player trading | Complex to enable, often prohibited |
+
+## Tempo for Gaming
+
+### Sub-Cent Transaction Fees
+
+Sell items at any price point:
+
+| Item | Price | Tempo Fee | Developer Keeps |
+|------|-------|-----------|-----------------|
+| Common skin | $0.10 | ~$0.001 | $0.099 (99%) |
+| Consumable | $0.25 | ~$0.001 | $0.249 (99.6%) |
+| Battle pass | $10.00 | ~$0.001 | $9.999 (99.99%) |
+
+Compare to 30% platform fees where developers keep only 70%.
+
+### Instant Finality
+
+Transactions confirm in ~0.5 seconds. Players see purchases immediately—no waiting for payment confirmation.
+
+### Player-Owned Assets
+
+Players hold items in their own wallets. True ownership enables:
+
+- Cross-game asset portability
+- Player-to-player trading
+- Secondary market participation
+
+## Implementation
+
+### In-Game Purchases
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Purchase in-game item
+async function purchaseItem(playerId, itemId) {
+  const player = await getPlayer(playerId);
+  const item = await getItem(itemId);
+  
+  const payment = await tempo.payments.charge({
+    from: player.walletAddress,
+    amount: item.price,
+    currency: 'USDC',
+    metadata: {
+      playerId,
+      itemId,
+      itemName: item.name,
+      gameId: 'game-123'
+    }
+  });
+  
+  if (payment.confirmed) {
+    await grantItem(playerId, itemId);
+    return { success: true, item };
+  }
+}
+```
+
+### Player-to-Player Trading
+
+```typescript
+// Escrow-based trading
+async function executeTrade(trade) {
+  const { sellerId, buyerId, itemId, price } = trade;
+  
+  // Charge buyer
+  const payment = await tempo.payments.create({
+    from: buyers[buyerId].wallet,
+    recipient: sellers[sellerId].wallet,
+    amount: price,
+    currency: 'USDC',
+    metadata: {
+      tradeId: trade.id,
+      itemId,
+      type: 'player-trade'
+    }
+  });
+  
+  if (payment.confirmed) {
+    // Transfer item ownership
+    await transferItem(itemId, sellerId, buyerId);
+    return { success: true };
+  }
+}
+```
+
+### Streaming Payments for Play Time
+
+Charge per minute or per session:
+
+```typescript
+// Start play session
+async function startSession(playerId) {
+  const session = {
+    playerId,
+    startTime: Date.now(),
+    chargedMinutes: 0
+  };
+  
+  // Charge every minute
+  const interval = setInterval(async () => {
+    await tempo.payments.charge({
+      from: players[playerId].wallet,
+      amount: '0.01', // $0.01 per minute
+      currency: 'USDC',
+      metadata: {
+        playerId,
+        sessionId: session.id,
+        minute: session.chargedMinutes++
+      }
+    });
+  }, 60000);
+  
+  return { sessionId: session.id, stop: () => clearInterval(interval) };
+}
+```
+
+### Loot Box / Gacha with Transparency
+
+On-chain randomness for provably fair drops:
+
+```typescript
+async function openLootBox(playerId, boxType) {
+  const player = await getPlayer(playerId);
+  const boxPrice = lootBoxPrices[boxType];
+  
+  // Charge for loot box
+  const payment = await tempo.payments.charge({
+    from: player.walletAddress,
+    amount: boxPrice,
+    currency: 'USDC',
+    metadata: { playerId, boxType, type: 'loot-box' }
+  });
+  
+  // Generate verifiable random drop
+  const drop = await generateDrop(boxType, payment.txHash);
+  
+  await grantItem(playerId, drop.itemId);
+  
+  return {
+    item: drop,
+    txHash: payment.txHash, // Proof of fairness
+    dropRate: drop.probability
+  };
+}
+```
+
+## Economy Design Patterns
+
+### Dual Currency
+
+Combine stablecoins with in-game soft currency:
+
+```typescript
+// Hard currency (USDC) for premium items
+// Soft currency (gold) earned through play
+
+async function purchaseWithGold(playerId, itemId) {
+  // Earned currency, no blockchain transaction needed
+  return deductGold(playerId, item.goldPrice);
+}
+
+async function purchaseWithUSDC(playerId, itemId) {
+  // Premium purchase via Tempo
+  return purchaseItem(playerId, itemId);
+}
+```
+
+### Marketplace Fees
+
+Take a cut of player-to-player trades:
+
+```typescript
+async function marketplaceSale(listing) {
+  const salePrice = listing.price;
+  const platformFee = salePrice * 0.05; // 5% marketplace fee
+  const sellerReceives = salePrice - platformFee;
+  
+  // Buyer pays full price
+  await tempo.payments.charge({
+    from: listing.buyerWallet,
+    amount: salePrice
+  });
+  
+  // Seller receives minus fee
+  await tempo.payments.create({
+    recipient: listing.sellerWallet,
+    amount: sellerReceives
+  });
+}
+```
+
+## Benefits for Studios
+
+- **Higher margins** — Keep 99%+ vs 70% with app stores
+- **Instant settlement** — No 30-60 day payment delays
+- **Global players** — Accept payments from any country
+- **Player ownership** — Enable true digital ownership
+
+## Get Started
+
+Explore gaming integration at [docs.tempo.xyz](https://docs.tempo.xyz).

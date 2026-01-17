@@ -1,0 +1,125 @@
+---
+title: "Crypto Payroll Software"
+description: "Integrate stablecoin payroll into your HR platform with Tempo. Instant global payments, ~$0.001 fees, and metadata for tax compliance and reporting."
+---
+
+# Crypto Payroll Software
+
+HR and payroll platforms can leverage Tempo to offer stablecoin salary payments, expanding their capabilities for global workforce management.
+
+## Why Add Crypto Payroll?
+
+### Growing Demand
+
+Remote workers, contractors, and international employees increasingly prefer stablecoin payments:
+
+- **Instant access** — No waiting for international wire transfers
+- **Lower fees** — Employees keep more of their earnings
+- **Currency choice** — Receive USDC/USDT without forex markups
+
+### Platform Differentiation
+
+Payroll platforms with crypto capabilities attract:
+
+- Companies with global remote teams
+- Web3 and tech-forward organizations
+- Businesses paying international contractors
+
+## Tempo for Payroll Platforms
+
+### Batch Payroll Processing
+
+Execute hundreds of salary payments in a single transaction:
+
+| Feature | Traditional Payroll | Tempo Payroll |
+|---------|---------------------|---------------|
+| International transfers | $25-50 per payment | ~$0.001 per payment |
+| Settlement time | 3-5 business days | Instant |
+| Reconciliation | Manual matching | Automated with metadata |
+
+### Payment Metadata
+
+Attach payroll-specific data to every transaction:
+
+- Employee ID
+- Pay period dates
+- Gross/net amounts
+- Tax jurisdiction
+- Benefits deductions
+- Department/cost center
+
+### Compliance-Ready
+
+- Full audit trail for every payment
+- Immutable records for tax reporting
+- Structured metadata for regulatory requirements
+- Multi-signature approval for large payrolls
+
+## Integration Architecture
+
+### API-First Design
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Process payroll batch
+const payroll = await tempo.batch.create({
+  payments: employees.map(emp => ({
+    recipient: emp.walletAddress,
+    amount: emp.netPay,
+    currency: 'USDC',
+    metadata: {
+      employeeId: emp.id,
+      payPeriod: '2024-01',
+      grossPay: emp.grossPay,
+      taxWithheld: emp.taxWithheld
+    }
+  }))
+});
+```
+
+### Webhook Notifications
+
+Receive real-time confirmation when payments settle:
+
+```typescript
+// Payment confirmed webhook
+{
+  type: 'batch.completed',
+  batchId: 'batch-123',
+  payments: [
+    { employeeId: 'emp-1', status: 'confirmed', txHash: '0x...' }
+  ]
+}
+```
+
+## Employee Experience
+
+### Wallet Onboarding
+
+Employees can:
+
+1. Connect an existing wallet
+2. Create a Tempo smart account with passkey
+3. Provide any EVM-compatible address
+
+### Payment Visibility
+
+Employees see full payment details including:
+
+- Pay period and breakdown
+- Transaction confirmation
+- Historical payment records
+
+## Implementation Path
+
+1. **API integration** — Connect your payroll engine to Tempo's batch API
+2. **Employee onboarding** — Add wallet collection to employee setup
+3. **Approval workflows** — Configure multi-sig for payroll execution
+4. **Reporting** — Export transaction data for tax and accounting
+
+## Get Started
+
+Explore payroll integration at [docs.tempo.xyz](https://docs.tempo.xyz).

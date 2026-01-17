@@ -139,6 +139,8 @@ export default defineConfig({
       'https://docs.tempo.xyz/api/og?title=%title&description=%description',
     '/sdk':
       'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guides':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
   },
   title: 'Tempo',
   titleTemplate: '%s | Tempo Docs',

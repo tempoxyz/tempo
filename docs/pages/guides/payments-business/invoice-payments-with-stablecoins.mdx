@@ -1,0 +1,82 @@
+---
+title: "Invoice Payments with Stablecoins"
+description: "Accept invoice payments in stablecoins with Tempo. ~$0.001 fees, instant settlement, and payment metadata that links directly to your invoices."
+---
+
+# Invoice Payments with Stablecoins
+
+Waiting 30-60 days for invoice payments is painful enough. Waiting another 3-5 days for the wire to clear makes it worse. Stablecoin invoice payments on Tempo settle instantly with fees under a penny.
+
+## Why Stablecoins for Invoice Payments?
+
+### Faster Access to Funds
+
+- **Wire transfer**: 1-5 business days after initiation
+- **ACH**: 2-3 business days
+- **Check**: 5-10 days (plus mail time)
+- **Tempo stablecoin**: Instant
+
+### Lower Costs
+
+Wire transfers cost $25-50. ACH costs $0.25-1.00. Credit card payments take 2.5-3.5%. Tempo transactions cost approximately $0.001.
+
+### Automatic Reconciliation
+
+Traditional payments arrive as undifferentiated deposits. You have to match them to invoices manually. Tempo payments include metadata—the invoice number is attached to the payment itself.
+
+## How It Works
+
+### 1. Generate a Payment Address
+
+Create a unique payment address for each invoice, or use a single address with invoice-specific metadata requirements.
+
+### 2. Include Payment Instructions
+
+Add stablecoin payment details to your invoice:
+
+```
+Pay via stablecoin:
+Network: Tempo
+Address: 0x...
+Amount: 10,000 USDC
+Reference: INV-2024-0142
+```
+
+### 3. Receive Instant Payment
+
+When your customer pays, funds arrive in seconds. The transaction includes the invoice reference in its metadata.
+
+### 4. Automatic Matching
+
+Your system matches the payment metadata to the open invoice and marks it paid—no manual intervention needed.
+
+## Payment Metadata Fields
+
+Tempo supports structured metadata for invoice payments:
+
+- Invoice number
+- Customer ID
+- Due date reference
+- PO number
+- Payment terms applied
+- Early payment discount taken
+
+This data exports directly to your AR system.
+
+## Benefits for Your Customers
+
+- **No wire fees**: They save $25-50 per payment
+- **Faster processing**: No waiting for bank cut-off times
+- **Clear confirmation**: Instant proof of payment
+- **Simple international payments**: No correspondent banking complexity
+
+## Integration Options
+
+- **Manual**: Share payment addresses on invoices
+- **API**: Generate unique payment addresses per invoice programmatically
+- **Webhooks**: Receive real-time notifications when payments arrive
+- **ERP sync**: Automatically update invoice status in your accounting system
+
+## Get Started
+
+Visit [docs.tempo.xyz](https://docs.tempo.xyz) for integration guides, API documentation, and best practices for invoice payment workflows.

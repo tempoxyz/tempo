@@ -1,0 +1,88 @@
+---
+title: "B2B Crypto Payments"
+description: "Streamline B2B payments with stablecoins on Tempo. ~$0.001 transaction fees, instant settlement, and rich metadata for enterprise accounting."
+---
+
+# B2B Crypto Payments
+
+B2B payments are stuck in the past. Wire transfers, ACH batches, and paper checks dominate despite their costs and delays. Stablecoin payments on Tempo offer a modern alternative purpose-built for business transactions.
+
+## The B2B Payment Problem
+
+| Payment Method | Cost | Settlement Time | Reconciliation |
+|---------------|------|-----------------|----------------|
+| Wire transfer | $25-50 | 1-5 days | Manual |
+| ACH | $0.25-1.00 | 2-3 days | Manual |
+| Check | $4-20 | 5-10+ days | Manual |
+| Credit card | 2.5-3.5% | 1-2 days | Semi-automated |
+| **Tempo** | **~$0.001** | **Instant** | **Automated** |
+
+## Why Stablecoins for B2B?
+
+### Cost Efficiency
+
+A $100,000 B2B payment via wire costs $25-50 in fees. Via Tempo, it costs approximately $0.001. The savings compound across hundreds of monthly payments.
+
+### Speed
+
+Instant settlement means better cash flow management. No more timing payments around bank processing windows or waiting for funds to clear.
+
+### Global Simplicity
+
+Pay international suppliers as easily as domestic ones. No correspondent banks, no SWIFT delays, no currency conversion markups.
+
+### Structured Data
+
+Every payment carries metadata—PO numbers, invoice references, contract IDs—that flows directly into your ERP.
+
+## Tempo's B2B Features
+
+### Batch Payments
+
+Process vendor payments in bulk. Upload a file with payment details or integrate via API. All payments execute in a single transaction.
+
+### Payment Metadata
+
+Attach business context to every transaction:
+
+- Vendor ID
+- Invoice number
+- PO reference
+- GL coding
+- Contract reference
+- Custom fields
+
+### Stablecoin-Native Gas
+
+Pay transaction fees in USDC. No need to manage ETH or other volatile assets for gas.
+
+### Multi-Signature Approval
+
+Configure approval thresholds for large payments. Require multiple signers for transactions above certain amounts.
+
+## Implementation
+
+### Accounts Payable
+
+1. Collect vendor wallet addresses during onboarding
+2. Create payment batches from your AP system
+3. Execute batch payments with full metadata
+4. Export transaction records for your ledger
+
+### Accounts Receivable
+
+1. Provide customers with your payment address
+2. Specify required metadata fields (invoice number, customer ID)
+3. Receive instant payment notifications via webhook
+4. Auto-match payments to open invoices
+
+## Security and Compliance
+
+- Complete audit trail for all transactions
+- Immutable payment records
+- Multi-sig support for payment authorization
+- Metadata for regulatory and tax compliance
+
+## Get Started
+
+Explore B2B payment integration at [docs.tempo.xyz](https://docs.tempo.xyz).

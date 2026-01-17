@@ -1,0 +1,138 @@
+---
+title: "Cross-Border B2B Payments"
+description: "Send international business payments with stablecoins on Tempo. Eliminate SWIFT delays, correspondent fees, and FX markups with instant settlement."
+---
+
+# Cross-Border B2B Payments
+
+International B2B payments are expensive and slow. SWIFT transfers, correspondent banks, and currency conversion create friction that stablecoins eliminate entirely.
+
+## The Cross-Border Problem
+
+### Traditional International Payments
+
+| Pain Point | Impact |
+|------------|--------|
+| SWIFT fees | $30-50 per transfer |
+| Correspondent bank fees | Additional $10-30 per intermediary |
+| FX conversion markup | 1-4% hidden in exchange rates |
+| Settlement time | 2-5 business days |
+| Tracking difficulty | Limited visibility into payment status |
+
+### Real Cost Example
+
+Sending $50,000 to an overseas supplier:
+
+| Cost Component | Traditional | Tempo |
+|----------------|-------------|-------|
+| Transfer fee | $40 | ~$0.001 |
+| Correspondent fees | $25 | $0 |
+| FX markup (2%) | $1,000 | $0* |
+| **Total** | **$1,065** | **~$0.001** |
+
+*Parties transact directly in stablecoins
+
+## Tempo for International Payments
+
+### Borderless by Design
+
+Stablecoin payments on Tempo work the same whether the recipient is across the street or across the world:
+
+- **No correspondent banks** — Direct settlement between parties
+- **No SWIFT dependency** — Transactions confirm in seconds
+- **No FX complexity** — Both parties transact in USD-pegged stablecoins
+
+### Instant Settlement
+
+Funds arrive immediately regardless of time zones, banking hours, or holidays. Your overseas supplier receives payment at 2 AM on a Sunday as easily as 2 PM on a Tuesday.
+
+### Complete Visibility
+
+Track every payment on-chain:
+
+- Real-time transaction status
+- Immutable confirmation records
+- Full metadata preserved
+
+## Implementation
+
+### Sending International Payments
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+const payment = await tempo.payments.create({
+  recipient: supplier.walletAddress,
+  amount: '50000.00',
+  currency: 'USDC',
+  metadata: {
+    supplierId: supplier.id,
+    invoiceNumber: 'INV-2024-0892',
+    purchaseOrder: 'PO-45123',
+    paymentTerms: 'Net30',
+    supplierCountry: 'DE'
+  }
+});
+```
+
+### Batch International Payments
+
+Pay suppliers across multiple countries in one transaction:
+
+```typescript
+const batch = await tempo.batch.create({
+  payments: [
+    { recipient: germanySupplier.wallet, amount: '25000', currency: 'USDC' },
+    { recipient: japanSupplier.wallet, amount: '18000', currency: 'USDC' },
+    { recipient: brazilSupplier.wallet, amount: '12000', currency: 'USDC' }
+  ]
+});
+```
+
+### Multi-Currency Strategy
+
+While Tempo transactions are in stablecoins, businesses can integrate with local on/off-ramps:
+
+1. Send payment in USDC via Tempo
+2. Recipient converts to local currency via their preferred exchange
+3. Or recipient holds stablecoins for their own international payments
+
+## Compliance Considerations
+
+### Audit Trail
+
+Every transaction includes:
+
+- Sender and recipient addresses
+- Exact timestamp
+- Payment metadata (invoice, PO, vendor ID)
+- Immutable on-chain record
+
+### Regulatory Readiness
+
+Tempo's structured metadata supports:
+
+- Sanctions screening integration
+- Transaction monitoring
+- Tax reporting requirements
+- Inter-company transfer documentation
+
+## Use Cases
+
+### Manufacturing Supply Chains
+
+Pay component suppliers across Asia with instant confirmation and full traceability.
+
+### Professional Services
+
+Compensate international contractors and consultants without wire transfer delays.
+
+### Software & SaaS
+
+Pay overseas development teams and service providers weekly or bi-weekly without fee overhead.
+
+## Get Started
+
+Explore cross-border payment integration at [docs.tempo.xyz](https://docs.tempo.xyz).

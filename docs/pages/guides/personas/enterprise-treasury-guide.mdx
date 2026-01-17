@@ -1,0 +1,217 @@
+---
+title: "Enterprise Treasury Guide"
+description: "Manage corporate treasury with stablecoins on Tempo. Multi-sig controls, yield optimization, and instant settlement for CFOs and treasury teams."
+---
+
+# Enterprise Treasury Guide
+
+A guide for CFOs and treasury teams evaluating stablecoins for corporate cash management, payments, and yield optimization.
+
+## Why Treasury Teams Consider Stablecoins
+
+### Cash Management Challenges
+
+| Challenge | Traditional Approach | Stablecoin Approach |
+|-----------|---------------------|---------------------|
+| Idle cash yield | 0-2% in bank accounts | 3-5% in DeFi protocols |
+| International transfers | $30-50, 2-5 days | ~$0.001, instant |
+| Operating hours | Banking hours only | 24/7/365 |
+| Visibility | T+1 bank statements | Real-time on-chain |
+
+### Tempo for Treasury
+
+Tempo provides enterprise-grade infrastructure:
+
+- **Multi-signature controls** — Require multiple approvers for transactions
+- **Spending limits** — Enforce daily/weekly transaction caps
+- **Audit trail** — Immutable record of all treasury operations
+- **Stablecoin-native gas** — No volatile asset management required
+
+## Treasury Operations
+
+### Multi-Sig Configuration
+
+Set up approval thresholds appropriate for your organization:
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Create treasury account with multi-sig
+const treasury = await tempo.accounts.create({
+  type: 'multi-sig',
+  signers: [
+    { address: cfo.wallet, weight: 2 },
+    { address: controller.wallet, weight: 1 },
+    { address: treasurer.wallet, weight: 1 }
+  ],
+  thresholds: {
+    default: 2,           // 2 weight required normally
+    highValue: 3          // 3 weight for large transactions
+  },
+  limits: {
+    highValueThreshold: '100000.00'
+  }
+});
+```
+
+### Payment Approval Workflow
+
+1. Treasury analyst initiates payment
+2. System routes to appropriate approvers based on amount
+3. Approvers sign via hardware wallet or passkey
+4. Payment executes when threshold met
+5. Confirmation recorded with full audit trail
+
+### Cash Position Visibility
+
+Real-time view of stablecoin holdings:
+
+```typescript
+// Get treasury positions
+const positions = await tempo.accounts.getBalances(treasury.address);
+
+// Returns:
+{
+  USDC: '2,500,000.00',
+  USDT: '1,200,000.00',
+  totalUSD: '3,700,000.00',
+  lastUpdated: '2024-01-15T14:32:00Z'
+}
+```
+
+## Yield Optimization
+
+### Stablecoin Yield Strategies
+
+Deploy idle cash to earn yield while maintaining liquidity:
+
+| Strategy | Expected Yield | Liquidity | Risk Level |
+|----------|---------------|-----------|------------|
+| Money market protocols | 3-5% | Instant | Low |
+| Liquidity provision | 5-10% | Minutes | Medium |
+| Term deposits | 6-12% | Locked | Low-Medium |
+
+### Treasury Allocation Example
+
+```
+Total Treasury: $10M USDC
+
+Allocation:
+├── Operating Buffer (20%): $2M — Instant access, 0% yield
+├── Short-term (50%): $5M — Money market, 4% yield
+└── Medium-term (30%): $3M — Term deposit, 7% yield
+
+Blended Yield: 4.1% ($410K annually)
+```
+
+### Tempo Yield Integration
+
+```typescript
+// Deploy to yield strategy
+const deployment = await tempo.yield.deploy({
+  amount: '5000000.00',
+  currency: 'USDC',
+  strategy: 'money-market',
+  autoCompound: true,
+  minYield: 0.03 // 3% minimum
+});
+
+// Check current yield
+const status = await tempo.yield.getPosition(deployment.id);
+// Returns current balance, accrued yield, APY
+```
+
+## Payments and Settlements
+
+### Vendor Payments
+
+Execute batch payments with full metadata:
+
+```typescript
+const batch = await tempo.batch.create({
+  account: treasury.address,
+  payments: approvedPayables.map(inv => ({
+    recipient: inv.vendor.wallet,
+    amount: inv.amount,
+    currency: 'USDC',
+    metadata: {
+      invoiceNumber: inv.number,
+      vendorId: inv.vendorId,
+      glCode: inv.glCode,
+      costCenter: inv.costCenter
+    }
+  })),
+  requiredApprovals: 2
+});
+```
+
+### Intercompany Transfers
+
+Move funds between subsidiaries instantly:
+
+```typescript
+await tempo.payments.create({
+  from: treasury.address,
+  recipient: subsidiary.treasury.address,
+  amount: '500000.00',
+  currency: 'USDC',
+  metadata: {
+    type: 'intercompany-transfer',
+    fromEntity: 'US-HQ',
+    toEntity: 'EU-Sub',
+    purpose: 'Q1-operating-capital'
+  }
+});
+```
+
+## Compliance and Controls
+
+### Audit Trail
+
+Every transaction is recorded on-chain with:
+
+- Timestamp
+- Signers who approved
+- Full metadata
+- Immutable transaction hash
+
+### Reporting
+
+Generate reports for auditors and regulators:
+
+```typescript
+const report = await tempo.reports.generate({
+  account: treasury.address,
+  startDate: '2024-01-01',
+  endDate: '2024-03-31',
+  format: 'csv',
+  include: ['transactions', 'approvals', 'balances']
+});
+```
+
+### Segregation of Duties
+
+- Analysts can initiate, not approve
+- Approvers cannot initiate
+- Separate signers required for high-value transactions
+
+## Getting Started
+
+### Pilot Program
+
+1. Fund a small treasury account ($100K-500K)
+2. Execute vendor payments for select suppliers
+3. Measure cost savings and operational efficiency
+4. Expand based on results
+
+### Integration Points
+
+- ERP integration for AP/AR workflows
+- Banking API for on/off-ramp automation
+- Accounting system for reconciliation
+
+## Resources
+
+Full documentation at [docs.tempo.xyz](https://docs.tempo.xyz).

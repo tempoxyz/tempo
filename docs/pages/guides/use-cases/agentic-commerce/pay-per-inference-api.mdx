@@ -1,0 +1,202 @@
+---
+title: "Pay-Per-Inference API"
+description: "Monetize AI inference with per-request payments on Tempo. Sub-cent fees enable true pay-per-use pricing for LLM and ML model API access."
+---
+
+# Pay-Per-Inference API
+
+Charge for AI model inference on a per-request basis. Tempo's sub-cent transaction fees make pay-per-use pricing economically viable for the first time.
+
+## The Inference Pricing Problem
+
+Traditional payment systems can't support per-request billing:
+
+| Pricing Model | Challenge |
+|---------------|-----------|
+| Monthly subscription | Users pay for unused capacity |
+| Credit card per-request | 2.9% + $0.30 makes small payments impossible |
+| Prepaid credits | Complex accounting, unused balances |
+| Usage invoicing | Delayed payment, collection risk |
+
+### The Economics
+
+A $0.001 inference call with credit card processing:
+
+- API revenue: $0.001
+- Card fee: $0.30 + 2.9%
+- **Net loss: -$0.299**
+
+The same call with Tempo:
+
+- API revenue: $0.001
+- Transaction fee: ~$0.0001
+- **Net profit: $0.0009**
+
+## Tempo for Inference Payments
+
+### True Pay-Per-Use
+
+Charge exactly what each inference costs:
+
+```typescript
+// Pricing per model
+const pricing = {
+  'gpt-4-turbo': 0.01,      // $0.01 per request
+  'claude-3-opus': 0.015,   // $0.015 per request
+  'llama-70b': 0.001,       // $0.001 per request
+  'whisper-large': 0.006    // $0.006 per request
+};
+```
+
+### Instant Settlement
+
+Receive payment before executing inference. No credit risk, no invoicing delays.
+
+### Granular Metering
+
+Charge based on actual resource consumption:
+
+- Input tokens
+- Output tokens
+- Compute time
+- Model tier
+
+## Implementation
+
+### Payment-Gated Inference
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+app.post('/v1/inference', async (req, res) => {
+  const { model, prompt, paymentId } = req.body;
+  
+  // Verify payment received
+  const payment = await tempo.payments.get(paymentId);
+  
+  if (payment.status !== 'confirmed') {
+    return res.status(402).json({ error: 'Payment required' });
+  }
+  
+  // Verify amount covers inference cost
+  const cost = calculateInferenceCost(model, prompt);
+  if (payment.amount < cost) {
+    return res.status(402).json({ error: 'Insufficient payment' });
+  }
+  
+  // Execute inference
+  const result = await runInference(model, prompt);
+  
+  return res.json({
+    result,
+    cost,
+    paymentId
+  });
+});
+```
+
+### Streaming Payments
+
+For long-running inference, charge incrementally:
+
+```typescript
+// Stream payments alongside token generation
+async function* streamWithPayment(model, prompt, userWallet) {
+  const stream = await runStreamingInference(model, prompt);
+  
+  let tokenCount = 0;
+  let pendingCharge = 0;
+  
+  for await (const token of stream) {
+    tokenCount++;
+    pendingCharge += getTokenCost(model);
+    
+    // Charge every 100 tokens
+    if (tokenCount % 100 === 0) {
+      await tempo.payments.charge({
+        from: userWallet,
+        amount: pendingCharge,
+        metadata: { model, tokens: 100 }
+      });
+      pendingCharge = 0;
+    }
+    
+    yield token;
+  }
+  
+  // Charge remaining tokens
+  if (pendingCharge > 0) {
+    await tempo.payments.charge({
+      from: userWallet,
+      amount: pendingCharge,
+      metadata: { model, tokens: tokenCount % 100 }
+    });
+  }
+}
+```
+
+### User Account Setup
+
+Users fund their account once, then consume inference:
+
+```typescript
+// User deposits funds
+const deposit = await tempo.payments.create({
+  recipient: apiProviderAddress,
+  amount: '10.00',
+  currency: 'USDC',
+  metadata: { userId: user.id, type: 'deposit' }
+});
+
+// Track balance in your system
+await updateUserBalance(user.id, 10.00);
+
+// Deduct per inference
+async function chargeInference(userId, cost, model) {
+  const balance = await getUserBalance(userId);
+  if (balance < cost) throw new Error('Insufficient balance');
+  
+  await updateUserBalance(userId, balance - cost);
+  return true;
+}
+```
+
+## Pricing Strategies
+
+### Token-Based Pricing
+
+```typescript
+const tokenPricing = {
+  'gpt-4': {
+    input: 0.00003,   // $0.03 per 1K input tokens
+    output: 0.00006   // $0.06 per 1K output tokens
+  }
+};
+
+function calculateCost(model, inputTokens, outputTokens) {
+  const rates = tokenPricing[model];
+  return (inputTokens * rates.input) + (outputTokens * rates.output);
+}
+```
+
+### Compute-Time Pricing
+
+```typescript
+function calculateCost(model, computeMs) {
+  const ratePerSecond = modelRates[model];
+  return (computeMs / 1000) * ratePerSecond;
+}
+```
+
+## Benefits
+
+- **Zero minimum transaction** — Charge $0.0001 if that's the cost
+- **Instant finality** — Confirm payment before executing
+- **No chargebacks** — Payments are final
+- **Global access** — Any user with stablecoins can pay
+
+## Get Started
+
+Explore inference payment integration at [docs.tempo.xyz](https://docs.tempo.xyz).

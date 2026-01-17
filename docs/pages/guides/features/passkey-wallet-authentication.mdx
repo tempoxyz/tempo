@@ -1,0 +1,30 @@
+---
+title: "Passkey Wallet Authentication"
+description: "Sign Tempo transactions with Face ID or Touch ID using passkey-based wallets. Secure, familiar authentication without seed phrases or browser extensions."
+---
+
+# Passkey Wallet Authentication
+
+Tempo supports passkey-based wallets, letting you sign transactions with Face ID, Touch ID, or Windows Hello—no seed phrases required.
+
+## What Are Passkeys?
+
+Passkeys are cryptographic credentials stored securely on your device and protected by biometrics. They're the same technology you use to unlock your phone or log into websites without passwords.
+
+## Benefits
+
+- **Familiar UX** — Use the same Face ID or Touch ID you already know
+- **No seed phrases** — Nothing to write down or lose
+- **Phishing resistant** — Passkeys are bound to specific domains
+- **Device security** — Keys never leave your secure enclave
+
+## How It Works
+
+1. Create a wallet using your device's biometric authentication
+2. Your private key is generated and stored in the secure enclave
+3. Sign transactions by authenticating with Face ID or Touch ID
+4. Keys sync across your devices via iCloud Keychain or similar
+
+## Getting Started
+
+Set up a passkey wallet using the [Tempo documentation](https://docs.tempo.xyz).

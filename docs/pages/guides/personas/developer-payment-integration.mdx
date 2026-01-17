@@ -1,0 +1,72 @@
+---
+title: "Developer Guide to Payment Integration"
+description: "Integrate stablecoin payments into your application with Tempo's APIs. SDKs, webhooks, and code examples for USDC and USDT payment processing."
+---
+
+# Developer Guide to Payment Integration
+
+Build stablecoin payment flows into your application with Tempo's developer tools.
+
+## Why Developers Choose Tempo
+
+- **Simple APIs** — RESTful endpoints and typed SDKs
+- **Fast finality** — Confirm payments in ~0.5 seconds, no polling for confirmations
+- **Rich metadata** — Attach structured data to every transaction
+- **Predictable costs** — Sub-cent fees that don't fluctuate
+
+## Integration Overview
+
+### Payment Flow
+
+1. Generate a payment request with amount and metadata
+2. Customer sends payment to provided address
+3. Webhook notifies your server of payment receipt
+4. Verify payment details and fulfill order
+
+### Key APIs
+
+- **Addresses** — Generate unique receiving addresses
+- **Transactions** — Query payment status and history
+- **Webhooks** — Real-time payment notifications
+- **Metadata** — Attach and retrieve payment references
+
+## Quick Start
+
+### Install the SDK
+
+```bash
+npm install @tempo/sdk
+```
+
+### Create a Payment Request
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+const payment = await tempo.payments.create({
+  amount: '100.00',
+  currency: 'USDC',
+  metadata: {
+    orderId: 'order-123',
+    customerId: 'cust-456'
+  }
+});
+```
+
+### Handle Webhooks
+
+```typescript
+app.post('/webhooks/tempo', (req, res) => {
+  const event = tempo.webhooks.verify(req.body, req.headers);
+  
+  if (event.type === 'payment.received') {
+    // Fulfill order
+  }
+});
+```
+
+## Documentation
+
+Full API reference at [docs.tempo.xyz](https://docs.tempo.xyz).

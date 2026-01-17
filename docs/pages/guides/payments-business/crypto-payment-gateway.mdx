@@ -1,0 +1,144 @@
+---
+title: "Crypto Payment Gateway"
+description: "Accept stablecoin payments as a merchant with Tempo. Sub-second confirmation, ~$0.001 fees, and webhooks for seamless e-commerce integration."
+---
+
+# Crypto Payment Gateway
+
+Accept stablecoin payments from customers with the speed and reliability merchants expect from traditional payment processors—at a fraction of the cost.
+
+## Why Stablecoin Payments for Merchants?
+
+### Fee Comparison
+
+| Payment Method | Fee | Settlement |
+|----------------|-----|------------|
+| Credit cards | 2.5-3.5% | 1-2 days |
+| PayPal | 2.9% + $0.30 | 1-2 days |
+| Wire transfer | $25+ | 1-3 days |
+| **Tempo** | **~$0.001** | **Instant** |
+
+For a merchant processing $100,000/month:
+- Credit card fees: $2,500-3,500/month
+- Tempo fees: ~$1/month
+
+### No Chargebacks
+
+Stablecoin payments are final. No disputes, no reversals, no chargeback fraud.
+
+### Global Customers
+
+Accept payments from customers worldwide without international payment complexity.
+
+## Tempo Gateway Features
+
+### Fast Finality
+
+Transactions confirm in ~0.5 seconds. Customers see immediate confirmation, just like traditional card payments.
+
+### Payment Metadata
+
+Attach order context to every transaction:
+
+- Order ID
+- Customer ID
+- Cart contents
+- Shipping address hash
+- Discount codes applied
+
+### Stablecoin-Native Gas
+
+Customers pay transaction fees in stablecoins—no need to hold ETH or other tokens.
+
+## Integration Guide
+
+### Payment Flow
+
+1. Customer selects stablecoin checkout
+2. Display payment amount and address
+3. Customer sends payment
+4. Webhook confirms receipt
+5. Fulfill order
+
+### SDK Integration
+
+```typescript
+import { Tempo } from '@tempo/sdk';
+
+const tempo = new Tempo({ apiKey: 'your-api-key' });
+
+// Create payment request
+const payment = await tempo.payments.create({
+  amount: cart.total,
+  currency: 'USDC',
+  metadata: {
+    orderId: order.id,
+    customerId: customer.id
+  }
+});
+
+// Return payment details to frontend
+return {
+  address: payment.address,
+  amount: payment.amount,
+  paymentId: payment.id
+};
+```
+
+### Webhook Handler
+
+```typescript
+app.post('/webhooks/tempo', async (req, res) => {
+  const event = tempo.webhooks.verify(req.body, req.headers);
+  
+  if (event.type === 'payment.received') {
+    const { orderId } = event.metadata;
+    
+    // Verify amount matches order
+    const order = await getOrder(orderId);
+    if (event.amount === order.total) {
+      await fulfillOrder(orderId);
+    }
+  }
+  
+  res.status(200).send('OK');
+});
+```
+
+### Checkout Widget
+
+Embed a pre-built checkout component:
+
+```html
+<script src="https://js.tempo.xyz/checkout.js"></script>
+<div id="tempo-checkout" 
+     data-amount="99.00" 
+     data-currency="USDC"
+     data-order-id="order-123">
+</div>
+```
+
+## E-Commerce Platform Plugins
+
+Pre-built integrations for popular platforms:
+
+- Shopify
+- WooCommerce
+- Magento
+- Custom API integration
+
+## Refund Handling
+
+Process refunds through the same API:
+
+```typescript
+const refund = await tempo.payments.refund({
+  originalPaymentId: payment.id,
+  amount: refundAmount,
+  reason: 'Customer request'
+});
+```
+
+## Get Started
+
+Explore merchant integration at [docs.tempo.xyz](https://docs.tempo.xyz).

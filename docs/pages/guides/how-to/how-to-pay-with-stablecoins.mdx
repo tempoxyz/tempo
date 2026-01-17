@@ -1,0 +1,59 @@
+---
+title: "How to Pay with Stablecoins"
+description: "Make stablecoin payments on Tempo for invoices, subscriptions, and purchases. Attach metadata for automatic reconciliation with accounting systems."
+---
+
+# How to Pay with Stablecoins
+
+Use Tempo to pay invoices, subscriptions, and vendors with USDC or USDT.
+
+## Prerequisites
+
+- A Tempo wallet with stablecoin balance
+- Payment details (address, amount, any required references)
+
+## Paying an Invoice
+
+### 1. Get Payment Details
+
+Your vendor provides:
+
+- Their Tempo address
+- Amount due
+- Invoice reference (optional but recommended)
+
+### 2. Initiate Payment
+
+Open the Tempo app and start a new transfer:
+
+- **To** — Vendor's Tempo address
+- **Amount** — Invoice amount
+- **Metadata** — Invoice number, PO reference, etc.
+
+### 3. Confirm Payment
+
+Review details and confirm. The payment finalizes in ~0.5 seconds.
+
+### 4. Share Confirmation
+
+Send the transaction ID to your vendor as payment confirmation.
+
+## Attaching Payment Metadata
+
+Include references to streamline accounting:
+
+```
+Invoice: INV-2024-001234
+Vendor ID: V-5678
+Description: Q4 Software License
+```
+
+This metadata is stored on-chain and can be read by accounting integrations.
+
+## Recurring Payments
+
+For subscriptions, set up scheduled payments through the Tempo API.
+
+## Documentation
+
+See the payments API in the [Tempo documentation](https://docs.tempo.xyz).
