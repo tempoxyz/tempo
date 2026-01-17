@@ -170,8 +170,7 @@ async fn get_identity_transition_proof_after_full_dkg() {
     let executor_handle = std::thread::spawn(move || {
         let executor = Runner::from(cfg);
         executor.start(|mut context| async move {
-            let (mut validators, execution_runtime) =
-                setup_validators(&mut context, setup).await;
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
             join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
@@ -259,7 +258,10 @@ async fn get_identity_transition_proof_after_full_dkg() {
     let old_pubkey_bytes = hex::decode(&transition.old_identity).unwrap();
     let old_pubkey = <MinSig as Variant>::Public::read(&mut old_pubkey_bytes.as_slice())
         .expect("valid BLS public key");
-    let proof = transition.proof.as_ref().expect("non-genesis transition should have proof");
+    let proof = transition
+        .proof
+        .as_ref()
+        .expect("non-genesis transition should have proof");
     let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::read(
         &mut hex::decode(&proof.finalization_certificate)
             .unwrap()
