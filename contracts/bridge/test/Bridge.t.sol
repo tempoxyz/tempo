@@ -180,6 +180,23 @@ contract BridgeTest is Test {
         assertFalse(escrow.supportedTokens(address(usdc)));
     }
 
+    function test_EverSupportedTokensSetOnAdd() public {
+        address token = makeAddr("newToken");
+        escrow.addToken(token);
+        assertTrue(escrow.supportedTokens(token));
+        assertTrue(escrow.everSupportedTokens(token));
+    }
+
+    function test_EverSupportedTokensPersistsAfterRemoval() public {
+        assertTrue(escrow.supportedTokens(address(usdc)));
+        assertTrue(escrow.everSupportedTokens(address(usdc)));
+        
+        escrow.removeToken(address(usdc));
+        
+        assertFalse(escrow.supportedTokens(address(usdc)));
+        assertTrue(escrow.everSupportedTokens(address(usdc)));
+    }
+
     function test_Deposit() public {
         address user = makeAddr("user");
         address tempoRecipient = makeAddr("tempoRecipient");

@@ -33,8 +33,8 @@ impl Precompile for Bridge {
             IBridgeCalls::registerDeposit(c) => {
                 mutate(c, msg_sender, |s, c| self.register_deposit(s, c))
             }
-            IBridgeCalls::submitDepositSignature(c) => {
-                mutate_void(c, msg_sender, |s, c| self.submit_deposit_signature(s, c))
+            IBridgeCalls::submitDepositVote(c) => {
+                mutate_void(c, msg_sender, |s, c| self.submit_deposit_vote(s, c))
             }
             IBridgeCalls::finalizeDeposit(c) => {
                 mutate_void(c, msg_sender, |s, c| self.finalize_deposit(s, c))
@@ -200,6 +200,7 @@ mod tests {
             // Register deposit via dispatch
             let deposit_call = IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: B256::random(),
                 originLogIndex: 0,
@@ -250,6 +251,7 @@ mod tests {
                 sender,
                 IBridge::registerDepositCall {
                     originChainId: origin_chain_id,
+                    originEscrow: Address::repeat_byte(0xEE),
                     originToken: origin_token,
                     originTxHash: B256::random(),
                     originLogIndex: 0,

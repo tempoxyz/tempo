@@ -54,6 +54,7 @@ hex = "0.4"
 
 # Crypto
 k256 = "0.13"
+blst = "0.3"
 
 # AWS KMS
 aws-config = { version = "1.5", optional = true }

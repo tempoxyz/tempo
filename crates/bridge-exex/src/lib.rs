@@ -4,6 +4,7 @@
 //! signatures to the Tempo bridge precompile.
 
 pub mod config;
+pub mod deposit_id;
 
 #[cfg(test)]
 mod tests;

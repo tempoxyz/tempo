@@ -12278,6 +12278,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-kms",
  "axum",
+ "blst",
  "eyre",
  "futures",
  "hex",

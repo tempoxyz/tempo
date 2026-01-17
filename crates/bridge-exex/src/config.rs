@@ -38,6 +38,12 @@ pub struct BridgeConfig {
     /// Tempo chain ID
     pub tempo_chain_id: u64,
 
+    /// Test mode flag. When true, the bridge will use empty signatures for
+    /// burns when no consensus client is configured. In production (test_mode = false),
+    /// the bridge will fail to start if no consensus client is configured.
+    #[serde(default)]
+    pub test_mode: bool,
+
     /// Health server port (disabled if not set)
     pub health_port: Option<u16>,
 
@@ -180,6 +186,7 @@ impl BridgeConfig {
 
         Self {
             tempo_chain_id: 62049,
+            test_mode: true,
             health_port: None,
             tempo_rpc_url: Some("http://localhost:8551".to_string()),
             tempo_secondary_rpc_url: None,

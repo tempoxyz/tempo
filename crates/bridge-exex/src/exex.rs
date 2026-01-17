@@ -121,6 +121,16 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
     pub async fn run(mut self) -> Result<()> {
         info!("Starting Bridge ExEx");
 
+        // Validate that consensus client is configured in production mode.
+        // Without a consensus client, the bridge cannot obtain BLS threshold signatures
+        // for header relay, which would cause burns to use empty signatures.
+        if self.consensus_client.is_none() && !self.config.test_mode {
+            return Err(eyre::eyre!(
+                "Bridge ExEx requires consensus client in production. \
+                 Set consensus_rpc_url in config or enable test_mode for development."
+            ));
+        }
+
         // Start health server if configured
         if let Some(port) = self.config.health_port {
             let health_state = HealthState {
@@ -240,6 +250,7 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
                     if let Err(e) = tempo_client
                         .register_deposit(
                             deposit.origin_chain_id,
+                            deposit.origin_escrow,
                             deposit.origin_token,
                             deposit.tx_hash,
                             deposit.log_index,
@@ -260,6 +271,7 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
                 if let Err(e) = tempo_client
                     .register_deposit(
                         deposit.origin_chain_id,
+                        deposit.origin_escrow,
                         deposit.origin_token,
                         deposit.tx_hash,
                         deposit.log_index,
@@ -274,19 +286,17 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
             }
         }
 
-        // Sign the request
-        let signature = signer.sign_deposit(&request_id).await?;
-
         info!(
             request_id = %request_id,
             validator = %signer.address(),
-            "Submitting deposit signature to bridge precompile"
+            "Submitting deposit vote to bridge precompile"
         );
 
-        // Submit signature to bridge precompile
-        match tempo_client
-            .submit_deposit_signature(request_id, signature)
-            .await
+        // Submit vote to bridge precompile
+        // Security model: The validator's vote is authenticated by the transaction sender address.
+        // No separate signature is required because submitting this transaction from a registered
+        // validator address already proves the validator's intent to vote for this deposit.
+        match tempo_client.submit_deposit_vote(request_id).await
         {
             Ok(tx_hash) => {
                 if !tx_hash.is_zero() {
@@ -498,10 +508,11 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
                     }
                 }
                 None => {
-                    // No consensus client configured - use empty signature (test mode only)
-                    warn!(
+                    // No consensus client configured - use empty signature.
+                    // This path is only reachable in test_mode (validated at startup).
+                    debug!(
                         tempo_block = %burn.tempo_block_number,
-                        "No consensus client configured, using empty signature (test mode)"
+                        "No consensus client configured, using empty signature (test_mode=true)"
                     );
                     (0u64, alloy::primitives::Bytes::new())
                 }

@@ -15,12 +15,6 @@ use crate::{
 use alloy::primitives::{Address, B256, U256, keccak256};
 use tracing::trace;
 
-/// Type hash for deposit domain separation
-/// Computed as: keccak256("TEMPO_BRIDGE_DEPOSIT_V1")
-pub fn deposit_type_hash() -> B256 {
-    keccak256(b"TEMPO_BRIDGE_DEPOSIT_V1")
-}
-
 /// Domain separator for burn requests
 pub const BURN_DOMAIN: &[u8] = b"TEMPO_BRIDGE_BURN_V1";
 
@@ -40,6 +34,7 @@ pub const BURN_STATUS_FINALIZED: u8 = 2;
 #[derive(Debug, Clone, Storable)]
 pub struct DepositRequest {
     pub origin_chain_id: u64,
+    pub origin_escrow: Address,
     pub origin_token: Address,
     pub origin_tx_hash: B256,
     pub origin_log_index: u32,
@@ -183,34 +178,25 @@ impl Bridge {
         })
     }
 
-    /// Compute deposit request ID
+    /// Compute canonical deposit request ID.
     ///
-    /// Domain separation includes:
-    /// - Type hash: keccak256("TEMPO_BRIDGE_DEPOSIT_V1")
-    /// - Tempo chain ID: prevents replay across different Tempo networks
-    /// - Bridge address: binds signature to specific bridge contract
+    /// Formula: keccak256(origin_chain_id || escrow_address || origin_tx_hash || origin_log_index)
+    ///
+    /// This uses tx_hash + log_index for global uniqueness, as these are immutable
+    /// properties of the deposit event on the origin chain.
+    ///
+    /// IMPORTANT: This formula must match `compute_canonical_deposit_id` in bridge-exex.
     fn compute_request_id(
-        tempo_chain_id: u64,
         origin_chain_id: u64,
-        origin_token: Address,
+        escrow_address: Address,
         origin_tx_hash: B256,
         origin_log_index: u32,
-        tempo_recipient: Address,
-        amount: u64,
-        origin_block_number: u64,
     ) -> B256 {
-        let type_hash = deposit_type_hash();
-        let mut buf = Vec::with_capacity(32 + 8 + 20 + 8 + 20 + 32 + 4 + 20 + 8 + 8);
-        buf.extend_from_slice(type_hash.as_slice());
-        buf.extend_from_slice(&tempo_chain_id.to_be_bytes());
-        buf.extend_from_slice(BRIDGE_ADDRESS.as_slice());
+        let mut buf = Vec::with_capacity(8 + 20 + 32 + 4);
         buf.extend_from_slice(&origin_chain_id.to_be_bytes());
-        buf.extend_from_slice(origin_token.as_slice());
+        buf.extend_from_slice(escrow_address.as_slice());
         buf.extend_from_slice(origin_tx_hash.as_slice());
         buf.extend_from_slice(&origin_log_index.to_be_bytes());
-        buf.extend_from_slice(tempo_recipient.as_slice());
-        buf.extend_from_slice(&amount.to_be_bytes());
-        buf.extend_from_slice(&origin_block_number.to_be_bytes());
         keccak256(&buf)
     }
 
@@ -237,17 +223,12 @@ impl Bridge {
             return Err(BridgeError::token_mapping_not_found().into());
         }
 
-        // Compute request ID with domain separation (tempo chain ID + bridge address)
-        let tempo_chain_id = self.storage.chain_id();
+        // Compute canonical request ID (must match bridge-exex computation)
         let request_id = Self::compute_request_id(
-            tempo_chain_id,
             call.originChainId,
-            call.originToken,
+            call.originEscrow,
             call.originTxHash,
             call.originLogIndex,
-            call.tempoRecipient,
-            call.amount,
-            call.originBlockNumber,
         );
 
         // Check if already exists
@@ -259,6 +240,7 @@ impl Bridge {
         // Store deposit
         let deposit = DepositRequest {
             origin_chain_id: call.originChainId,
+            origin_escrow: call.originEscrow,
             origin_token: call.originToken,
             origin_tx_hash: call.originTxHash,
             origin_log_index: call.originLogIndex,
@@ -283,13 +265,17 @@ impl Bridge {
         Ok(request_id)
     }
 
-    /// Submit validator signature for a deposit
-    pub fn submit_deposit_signature(
+    /// Submit a validator's vote for a deposit.
+    ///
+    /// Security model: The validator's vote is authenticated by the transaction sender address.
+    /// No separate signature is required because submitting this transaction from a registered
+    /// validator address already proves the validator's intent to vote for this deposit.
+    pub fn submit_deposit_vote(
         &mut self,
         sender: Address,
-        call: IBridge::submitDepositSignatureCall,
+        call: IBridge::submitDepositVoteCall,
     ) -> Result<()> {
-        // Verify sender is an active validator
+        // Verify sender is an active validator - this IS the authentication
         let validator_config = ValidatorConfig::new();
         let validator = validator_config.validators(sender)?;
         if !validator.active || validator.publicKey.is_zero() {
@@ -305,24 +291,19 @@ impl Bridge {
             return Err(BridgeError::deposit_already_finalized().into());
         }
 
-        // Check if already signed
+        // Check if already voted
         if self.deposit_signatures[call.requestId][sender].read()? {
             return Err(BridgeError::already_signed().into());
         }
 
-        // Verify signature (ECDSA over requestId)
-        // For simplicity, we trust the validator's submission since they're already authenticated
-        // In production, we'd verify the signature matches
-        let _ = &call.signature; // Signature verification would go here
-
-        // Mark as signed
+        // Record the vote - authenticated by tx sender being a registered validator
         self.deposit_signatures[call.requestId][sender].write(true)?;
 
         // Increment voting power (each validator = 1 vote for now)
         deposit.voting_power_signed += 1;
         self.deposits[call.requestId].write(deposit.clone())?;
 
-        self.emit_event(IBridge::DepositSignatureSubmitted {
+        self.emit_event(IBridge::DepositVoteSubmitted {
             requestId: call.requestId,
             validator: sender,
             votingPowerSigned: deposit.voting_power_signed,
@@ -385,6 +366,7 @@ impl Bridge {
         let deposit = self.deposits[call.requestId].read()?;
         Ok(IBridge::DepositRequest {
             originChainId: deposit.origin_chain_id,
+            originEscrow: deposit.origin_escrow,
             originToken: deposit.origin_token,
             originTxHash: deposit.origin_tx_hash,
             originLogIndex: deposit.origin_log_index,

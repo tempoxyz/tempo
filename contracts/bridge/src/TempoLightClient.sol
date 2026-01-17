@@ -8,6 +8,25 @@ import "./libraries/BLS12381.sol";
 /// @title TempoLightClient
 /// @notice Maintains finalized Tempo headers and validator BLS public key
 /// @dev Supports both BLS12-381 (production) and ECDSA (testing) signature verification
+///
+/// ## Finality Semantics
+///
+/// A header is considered "finalized" on Ethereum once it has been successfully submitted
+/// via `submitHeader()` with valid cryptographic proof:
+///
+/// - **BLS Mode (Production)**: The aggregated BLS signature from threshold validators
+///   proves that ≥2/3 of the Tempo validator set has attested to this header. This mirrors
+///   Tempo's on-chain consensus finality - if validators have signed, the block is final
+///   on Tempo and cannot be reverted without ≥1/3 Byzantine stake.
+///
+/// - **ECDSA Mode (Testing)**: Requires threshold (2/3) of registered validator ECDSA
+///   signatures. Used for testing environments where BLS precompiles are unavailable.
+///
+/// Once a header hash is stored in `headerHashes[height]`, it is immutable - no mechanism
+/// exists to overwrite or remove it. The `finalizedAt` timestamp records when finality
+/// was established on Ethereum for audit trail purposes.
+///
+/// @custom:security-contact security@tempo.xyz
 contract TempoLightClient is Ownable2Step {
     /// @notice Domain separator for header signatures
     bytes32 public constant HEADER_DOMAIN = keccak256("TEMPO_HEADER_V1");
@@ -33,6 +52,11 @@ contract TempoLightClient is Ownable2Step {
 
     /// @notice Mapping of height to receipts root
     mapping(uint64 => bytes32) public receiptsRoots;
+
+    /// @notice Timestamp when each header was finalized on Ethereum (for audit trail)
+    /// @dev Records block.timestamp when submitHeader() succeeds, enabling off-chain
+    ///      systems to verify when finality was established and detect any delays
+    mapping(uint64 => uint256) public finalizedAt;
 
     /// @notice Whether to use ECDSA mode (for testing) instead of BLS
     bool public useEcdsaMode;
@@ -119,10 +143,13 @@ contract TempoLightClient is Ownable2Step {
     }
 
     /// @notice Submit a finalized Tempo header with validator signatures
-    /// @param height Block height
-    /// @param parentHash Parent block hash
+    /// @dev In BLS mode, the aggregated signature proves that ≥2/3 of Tempo validators
+    ///      have attested to this header, establishing consensus finality. Once stored,
+    ///      the header cannot be overwritten - finality is permanent on this contract.
+    /// @param height Block height (must be contiguous with latestFinalizedHeight)
+    /// @param parentHash Parent block hash (must match stored hash at height-1)
     /// @param stateRoot State root
-    /// @param receiptsRoot Receipts root
+    /// @param receiptsRoot Receipts root (used for cross-chain message verification)
     /// @param epoch Validator set epoch
     /// @param signature For BLS mode: single aggregated signature (128 bytes G1 point)
     ///                  For ECDSA mode: encoded array of individual signatures
@@ -160,6 +187,7 @@ contract TempoLightClient is Ownable2Step {
         bytes32 headerHash = keccak256(abi.encodePacked(height, parentHash, stateRoot, receiptsRoot, epoch));
         headerHashes[height] = headerHash;
         receiptsRoots[height] = receiptsRoot;
+        finalizedAt[height] = block.timestamp;
         latestFinalizedHeight = height;
 
         emit HeaderSubmitted(height, headerHash, receiptsRoot);
@@ -206,6 +234,7 @@ contract TempoLightClient is Ownable2Step {
         bytes32 headerHash = keccak256(abi.encodePacked(height, parentHash, stateRoot, receiptsRoot, epoch));
         headerHashes[height] = headerHash;
         receiptsRoots[height] = receiptsRoot;
+        finalizedAt[height] = block.timestamp;
         latestFinalizedHeight = height;
 
         emit HeaderSubmitted(height, headerHash, receiptsRoot);
@@ -272,6 +301,14 @@ contract TempoLightClient is Ownable2Step {
     }
 
     /// @notice Check if a header is finalized
+    /// @dev A header is finalized once it has been stored via submitHeader() with valid
+    ///      cryptographic proof (BLS aggregated signature or ECDSA threshold signatures).
+    ///      In BLS mode, finalization implies ≥2/3 of Tempo validators attested to this
+    ///      header, which mirrors Tempo's consensus finality guarantees.
+    ///      Use `finalizedAt[height]` to retrieve the Ethereum timestamp when finality
+    ///      was established for audit or timing verification purposes.
+    /// @param height The Tempo block height to check
+    /// @return True if the header has been finalized and stored, false otherwise
     function isHeaderFinalized(uint64 height) external view returns (bool) {
         return headerHashes[height] != bytes32(0);
     }

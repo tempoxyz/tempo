@@ -19,6 +19,7 @@ crate::sol! {
         /// Deposit request info
         struct DepositRequest {
             uint64 originChainId;
+            address originEscrow;
             address originToken;
             bytes32 originTxHash;
             uint32 originLogIndex;
@@ -74,6 +75,7 @@ crate::sol! {
         /// Returns the unique requestId
         function registerDeposit(
             uint64 originChainId,
+            address originEscrow,
             address originToken,
             bytes32 originTxHash,
             uint32 originLogIndex,
@@ -82,12 +84,13 @@ crate::sol! {
             uint64 originBlockNumber
         ) external returns (bytes32 requestId);
 
-        /// Submit validator signature share for a deposit
-        /// Only callable by active validators
-        function submitDepositSignature(
-            bytes32 requestId,
-            bytes calldata signature  // secp256k1 signature over requestId
-        ) external;
+        /// Submit validator vote for a deposit
+        ///
+        /// Security model: The validator's vote is authenticated by the transaction sender address.
+        /// No separate signature is required because submitting this transaction from a registered
+        /// validator address already proves the validator's intent to vote for this deposit.
+        /// Only callable by active validators registered in ValidatorConfig.
+        function submitDepositVote(bytes32 requestId) external;
 
         /// Finalize deposit and mint TIP-20 (anyone can call once threshold reached)
         function finalizeDeposit(bytes32 requestId) external;
@@ -125,7 +128,7 @@ crate::sol! {
             uint64 amount
         );
 
-        event DepositSignatureSubmitted(
+        event DepositVoteSubmitted(
             bytes32 indexed requestId,
             address indexed validator,
             uint64 votingPowerSigned

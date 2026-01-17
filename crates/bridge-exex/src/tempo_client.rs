@@ -3,7 +3,7 @@
 use alloy::{
     eips::BlockNumberOrTag,
     network::EthereumWallet,
-    primitives::{Address, Bytes, B256},
+    primitives::{Address, B256},
     providers::{Provider, ProviderBuilder, RootProvider},
     signers::local::PrivateKeySigner,
     sol_types::{SolCall, SolEvent, SolType},
@@ -251,6 +251,7 @@ impl TempoClient {
     pub async fn register_deposit(
         &self,
         origin_chain_id: u64,
+        origin_escrow: Address,
         origin_token: Address,
         origin_tx_hash: B256,
         origin_log_index: u32,
@@ -260,6 +261,7 @@ impl TempoClient {
     ) -> Result<B256> {
         let call = IBridge::registerDepositCall {
             originChainId: origin_chain_id,
+            originEscrow: origin_escrow,
             originToken: origin_token,
             originTxHash: origin_tx_hash,
             originLogIndex: origin_log_index,
@@ -298,18 +300,18 @@ impl TempoClient {
         eyre::bail!("DepositRegistered event not found in receipt")
     }
 
-    /// Submit a validator signature for a deposit
-    pub async fn submit_deposit_signature(
-        &self,
-        request_id: B256,
-        signature: Bytes,
-    ) -> Result<B256> {
-        // Check if already signed
+    /// Submit a validator vote for a deposit.
+    ///
+    /// Security model: The validator's vote is authenticated by the transaction sender address.
+    /// No separate signature is required because submitting this transaction from a registered
+    /// validator address already proves the validator's intent to vote for this deposit.
+    pub async fn submit_deposit_vote(&self, request_id: B256) -> Result<B256> {
+        // Check if already voted
         if self.has_signed_deposit(request_id).await? {
             warn!(
                 %request_id,
                 validator = %self.validator_address,
-                "Already signed this deposit, skipping"
+                "Already voted for this deposit, skipping"
             );
             return Ok(B256::ZERO);
         }
@@ -317,15 +319,14 @@ impl TempoClient {
         // Verify quorum before submitting
         self.verify_quorum_before_submit().await?;
 
-        let call = IBridge::submitDepositSignatureCall {
+        let call = IBridge::submitDepositVoteCall {
             requestId: request_id,
-            signature,
         };
 
         debug!(
             %request_id,
             validator = %self.validator_address,
-            "Submitting deposit signature"
+            "Submitting deposit vote"
         );
 
         let tx = alloy::rpc::types::TransactionRequest::default()
@@ -338,7 +339,7 @@ impl TempoClient {
         info!(
             tx_hash = %receipt.transaction_hash,
             %request_id,
-            "Deposit signature submitted"
+            "Deposit vote submitted"
         );
 
         Ok(receipt.transaction_hash)

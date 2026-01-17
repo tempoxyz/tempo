@@ -21,8 +21,11 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
     /// @notice Tempo chain ID
     uint64 public immutable tempoChainId;
 
-    /// @notice Mapping of supported tokens
+    /// @notice Mapping of supported tokens (for new deposits)
     mapping(address => bool) public supportedTokens;
+
+    /// @notice Mapping of tokens that were ever supported (for unlocking existing burns)
+    mapping(address => bool) public everSupportedTokens;
 
     /// @notice Mapping of deposit nonces per user
     mapping(address => uint64) public depositNonces;
@@ -69,6 +72,7 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
     /// @notice Add a supported token
     function addToken(address token) external onlyOwner {
         supportedTokens[token] = true;
+        everSupportedTokens[token] = true;
         emit TokenAdded(token);
     }
 
@@ -100,8 +104,12 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
 
+        // Note: depositId emitted here is a placeholder. The canonical deposit ID used by the
+        // bridge precompile is computed from (origin_chain_id, escrow_address, origin_tx_hash, 
+        // origin_log_index) which are only available after the transaction is mined.
+        // This emitted depositId is for off-chain tracking only.
         depositId = keccak256(
-            abi.encodePacked(block.chainid, address(this), token, msg.sender, normalizedAmount, tempoRecipient, nonce)
+            abi.encodePacked(block.chainid, address(this), token, tempoRecipient, normalizedAmount, msg.sender, nonce)
         );
 
         emit Deposited(depositId, token, msg.sender, normalizedAmount, tempoRecipient, nonce);
@@ -166,8 +174,8 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
 
         if (originChainId != uint64(block.chainid)) revert InvalidBurnEvent();
         
-        // Security: only allow unlocking tokens that are/were supported
-        if (!supportedTokens[originToken]) revert TokenNotSupported();
+        // Security: only allow unlocking tokens that were ever supported
+        if (!everSupportedTokens[originToken]) revert TokenNotSupported();
 
         if (spentBurnIds[burnId]) revert BurnAlreadySpent();
         spentBurnIds[burnId] = true;
@@ -207,8 +215,8 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
         if (amount != uint64(expectedAmount)) revert InvalidBurnEvent();
         if (originChainId != uint64(block.chainid)) revert InvalidBurnEvent();
         
-        // Security: only allow unlocking tokens that are/were supported
-        if (!supportedTokens[originToken]) revert TokenNotSupported();
+        // Security: only allow unlocking tokens that were ever supported
+        if (!everSupportedTokens[originToken]) revert TokenNotSupported();
 
         // Already checked at the start of unlockWithProof, but double-check after decode
         if (spentBurnIds[burnId]) revert BurnAlreadySpent();

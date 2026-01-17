@@ -145,6 +145,7 @@ fn test_register_deposit() -> eyre::Result<()> {
             sender,
             IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: origin_tx_hash,
                 originLogIndex: 0,
@@ -179,7 +180,7 @@ fn test_register_deposit() -> eyre::Result<()> {
 }
 
 #[test]
-fn test_submit_deposit_signature() -> eyre::Result<()> {
+fn test_submit_deposit_vote() -> eyre::Result<()> {
     let mut storage = HashMapStorageProvider::new(1);
     let owner = Address::random();
     let validator1 = Address::random();
@@ -212,6 +213,7 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
             Address::random(),
             IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: B256::random(),
                 originLogIndex: 0,
@@ -222,11 +224,10 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         )?;
 
         // Only active validators can sign
-        let result = bridge.submit_deposit_signature(
+        let result = bridge.submit_deposit_vote(
             non_validator,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         );
         assert_eq!(
@@ -237,11 +238,10 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         );
 
         // Validator1 signs
-        bridge.submit_deposit_signature(
+        bridge.submit_deposit_vote(
             validator1,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         )?;
 
@@ -260,11 +260,10 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         );
 
         // Duplicates rejected
-        let result = bridge.submit_deposit_signature(
+        let result = bridge.submit_deposit_vote(
             validator1,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         );
         assert_eq!(
@@ -275,11 +274,10 @@ fn test_submit_deposit_signature() -> eyre::Result<()> {
         );
 
         // Second validator can still sign
-        bridge.submit_deposit_signature(
+        bridge.submit_deposit_vote(
             validator2,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         )?;
 
@@ -333,6 +331,7 @@ fn test_finalize_deposit() -> eyre::Result<()> {
             Address::random(),
             IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: B256::random(),
                 originLogIndex: 0,
@@ -342,12 +341,11 @@ fn test_finalize_deposit() -> eyre::Result<()> {
             },
         )?;
 
-        // Only 1 signature - threshold not reached (need 2/3)
-        bridge.submit_deposit_signature(
+        // Only 1 vote - threshold not reached (need 2/3)
+        bridge.submit_deposit_vote(
             validator1,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         )?;
 
@@ -365,11 +363,10 @@ fn test_finalize_deposit() -> eyre::Result<()> {
         );
 
         // Get second signature to reach 2/3 threshold
-        bridge.submit_deposit_signature(
+        bridge.submit_deposit_vote(
             validator2,
-            IBridge::submitDepositSignatureCall {
+            IBridge::submitDepositVoteCall {
                 requestId: request_id,
-                signature: vec![].into(),
             },
         )?;
 
@@ -504,6 +501,7 @@ fn test_replay_prevention() -> eyre::Result<()> {
 
         let deposit_call = IBridge::registerDepositCall {
             originChainId: origin_chain_id,
+            originEscrow: Address::repeat_byte(0xEE),
             originToken: origin_token,
             originTxHash: origin_tx_hash,
             originLogIndex: 0,
@@ -528,6 +526,7 @@ fn test_replay_prevention() -> eyre::Result<()> {
         // Different log index is a different deposit
         let different_deposit = IBridge::registerDepositCall {
             originChainId: origin_chain_id,
+            originEscrow: Address::repeat_byte(0xEE),
             originToken: origin_token,
             originTxHash: origin_tx_hash,
             originLogIndex: 1, // Different log index
@@ -567,6 +566,7 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
             sender,
             IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: B256::random(),
                 originLogIndex: 0,
@@ -585,6 +585,7 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
             sender,
             IBridge::registerDepositCall {
                 originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: origin_token,
                 originTxHash: B256::random(),
                 originLogIndex: 0,
@@ -605,6 +606,7 @@ fn test_register_deposit_validation() -> eyre::Result<()> {
             sender,
             IBridge::registerDepositCall {
                 originChainId: 999, // Unknown chain
+                originEscrow: Address::repeat_byte(0xEE),
                 originToken: Address::random(),
                 originTxHash: B256::random(),
                 originLogIndex: 0,

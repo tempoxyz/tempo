@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::{config::ChainConfig, retry::with_retry};
+use crate::{config::ChainConfig, deposit_id::compute_canonical_deposit_id, retry::with_retry};
 
 sol! {
     /// Deposit event from StablecoinEscrow
@@ -31,6 +31,7 @@ sol! {
 pub struct DetectedDeposit {
     pub deposit_id: B256,
     pub origin_chain_id: u64,
+    pub origin_escrow: Address,
     pub origin_token: Address,
     pub depositor: Address,
     pub amount: u64,
@@ -166,16 +167,28 @@ impl OriginWatcher {
     fn parse_deposit_log(&self, log: &alloy::rpc::types::Log) -> Option<DetectedDeposit> {
         let decoded = Deposited::decode_log(log.as_ref()).ok()?;
 
+        let tx_hash = log.transaction_hash?;
+        let log_index = log.log_index? as u32;
+
+        // Compute canonical deposit ID (must match Bridge::compute_request_id in precompile)
+        let deposit_id = compute_canonical_deposit_id(
+            self.config.chain_id,
+            self.config.escrow_address,
+            tx_hash,
+            log_index,
+        );
+
         Some(DetectedDeposit {
-            deposit_id: decoded.depositId,
+            deposit_id,
             origin_chain_id: self.config.chain_id,
+            origin_escrow: self.config.escrow_address,
             origin_token: decoded.token,
             depositor: decoded.depositor,
             amount: decoded.amount,
             tempo_recipient: decoded.tempoRecipient,
             nonce: decoded.nonce,
-            tx_hash: log.transaction_hash?,
-            log_index: log.log_index? as u32,
+            tx_hash,
+            log_index,
             block_number: log.block_number?,
         })
     }
