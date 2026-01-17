@@ -1,0 +1,19 @@
+{
+  "transactions": [
+    {
+      "rpc": "http://localhost:9545"
+    },
+    {
+      "rpc": "http://localhost:9545"
+    },
+    {
+      "rpc": "http://localhost:9545"
+    },
+    {
+      "rpc": "http://localhost:9545"
+    },
+    {
+      "rpc": "http://localhost:9545"
+    }
+  ]
+}

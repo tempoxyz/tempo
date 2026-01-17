@@ -95,6 +95,8 @@ contract TempoLightClient is Ownable2Step {
         currentEpoch = _initialEpoch;
         // Default to ECDSA mode for backwards compatibility
         useEcdsaMode = true;
+        // Initialize threshold to 1 to prevent 0-threshold edge case if no validators added
+        threshold = 1;
     }
 
     /// @notice Set the signature verification mode
