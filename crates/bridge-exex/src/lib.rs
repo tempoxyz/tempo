@@ -27,6 +27,8 @@ pub use exex::BridgeExEx;
 pub use metrics::BridgeMetrics;
 pub use origin_client::OriginClient;
 pub use persistence::StateManager;
-pub use proof::{BurnProof, ProofGenerator, TempoBlockHeader, verify_simplified_proof};
+pub use proof::{AttestationGenerator, BurnAttestation, TempoBlockHeader};
+#[allow(deprecated)]
+pub use proof::{BurnProof, ProofGenerator};
 pub use signer::{AttestationSigner, BridgeSigner, KmsSigner, LocalSigner};
 pub use tempo_client::TempoClient;

@@ -18,7 +18,7 @@ use crate::{
     origin_client::OriginClient,
     origin_watcher::{DetectedDeposit, OriginWatcher},
     persistence::{ProcessedBurn, SignedDeposit, StateManager},
-    proof::ProofGenerator,
+    proof::AttestationGenerator,
     signer::BridgeSigner,
     tempo_client::TempoClient,
     tempo_watcher::{DetectedBurn, TempoWatcher},
@@ -589,39 +589,59 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
             );
         }
 
-        // Generate receipt Merkle proof
+        // Generate validator-attested burn proof
+        // F-03 fix: Use validator attestations instead of binary Merkle proofs
+        // Binary Merkle proofs are incompatible with Ethereum's MPT receipt trie
         let proof_start = std::time::Instant::now();
-        let burn_proof = match ProofGenerator::<()>::generate_receipt_proof(
-            &receipts,
-            tx_index,
-            log_index,
-        ) {
-            Ok(proof) => {
-                self.metrics
-                    .record_proof_generation(proof_start.elapsed().as_secs_f64());
-                proof
+        
+        let mut attestation = AttestationGenerator::<()>::create_unsigned_attestation(
+            burn.burn_id,
+            burn.tempo_block_number,
+            burn.origin_chain_id,
+            burn.origin_token,
+            burn.origin_recipient,
+            burn.amount,
+        );
+
+        // Sign the attestation with our validator key
+        // In production, multiple validators would sign and we'd collect threshold signatures
+        let Some(signer) = &self.signer else {
+            error!(
+                burn_id = %burn.burn_id,
+                "No signer configured for burn attestation"
+            );
+            return Ok(());
+        };
+
+        let tempo_chain_id = self.config.tempo_chain_id;
+        let attestation_digest = attestation.compute_digest(tempo_chain_id);
+        
+        match signer.sign_hash(&attestation_digest).await {
+            Ok(signature) => {
+                let sig_bytes: Vec<u8> = signature.to_vec();
+                attestation.signatures.push(alloy::primitives::Bytes::from(sig_bytes));
+                self.metrics.record_proof_generation(proof_start.elapsed().as_secs_f64());
             }
             Err(e) => {
                 error!(
                     burn_id = %burn.burn_id,
                     error = %e,
-                    "Failed to generate receipt proof"
+                    "Failed to sign burn attestation"
                 );
                 return Ok(());
             }
-        };
+        }
 
         info!(
             burn_id = %burn.burn_id,
-            receipt_rlp_len = burn_proof.receipt_rlp.len(),
-            proof_nodes = burn_proof.receipt_proof.len(),
-            "Generated burn proof"
+            signatures = attestation.signatures.len(),
+            "Generated burn attestation"
         );
 
-        // Encode proof for on-chain verification
+        // Encode attestation for on-chain verification
         // The escrow's unlockWithProof expects ABI-encoded:
-        // (uint64 tempoHeight, bytes receiptRlp, bytes[] receiptProof, uint256 logIndex)
-        let encoded_proof = encode_burn_proof_for_escrow(&burn_proof, burn.tempo_block_number);
+        // (bytes32 burnId, uint64 tempoHeight, address originToken, address recipient, uint64 amount, bytes[] signatures)
+        let encoded_proof = attestation.encode_proof();
 
         match origin_client
             .unlock_with_proof(
@@ -679,51 +699,4 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
     }
 }
 
-/// Encode a burn proof for the StablecoinEscrow.unlockWithProof function.
-///
-/// The proof is ABI-encoded as: (uint64 tempoHeight, bytes receiptRlp, bytes[] receiptProof, uint256 logIndex)
-///
-/// ## Proof Format
-///
-/// The `receiptProof` is an array of 33-byte elements where each element contains:
-/// - 32 bytes: sibling hash in the binary Merkle tree
-/// - 1 byte: position flag (0x01 = current node is left, 0x00 = current node is right)
-///
-/// This allows the contract to correctly order the hash concatenation when
-/// recomputing the Merkle root.
-///
-/// ## Verification
-///
-/// The contract verifies by iterating through proof elements:
-/// ```solidity
-/// for each (sibling, isLeft) in proof:
-///     if isLeft:
-///         hash = keccak256(current || sibling)
-///     else:
-///         hash = keccak256(sibling || current)
-/// ```
-fn encode_burn_proof_for_escrow(
-    proof: &crate::proof::BurnProof,
-    tempo_block_number: u64,
-) -> alloy::primitives::Bytes {
-    use alloy::sol_types::SolValue;
 
-    // Convert proof nodes to Vec<Bytes> for ABI encoding
-    let proof_nodes: Vec<alloy::primitives::Bytes> = proof
-        .receipt_proof
-        .iter()
-        .cloned()
-        .collect();
-
-    // ABI encode as: (uint64, bytes, bytes[], uint256)
-    // This matches what Solidity's abi.decode expects
-    let encoded = (
-        tempo_block_number,
-        proof.receipt_rlp.clone(),
-        proof_nodes,
-        alloy::primitives::U256::from(proof.log_index),
-    )
-        .abi_encode();
-
-    alloy::primitives::Bytes::from(encoded)
-}

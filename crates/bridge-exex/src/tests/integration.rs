@@ -6,9 +6,11 @@
 use super::fixtures::*;
 use crate::{
     persistence::{ProcessedBurn, SignedDeposit, StateManager},
-    proof::{BurnProof, ProofGenerator, TempoBlockHeader, verify_simplified_proof},
+    proof::{AttestationGenerator, BurnAttestation, TempoBlockHeader},
     signer::BridgeSigner,
 };
+#[allow(deprecated)]
+use crate::proof::BurnProof;
 use alloy::{
     consensus::{Receipt, ReceiptEnvelope, ReceiptWithBloom},
     primitives::{keccak256, Address, Bytes, LogData, B256},
@@ -268,38 +270,41 @@ mod burn_flow {
             create_mock_receipt(true, 3),
         ];
 
-        let proof = ProofGenerator::<()>::generate_receipt_proof(&receipts, 1, 0).unwrap();
+        // Generate attestation instead of binary Merkle proof (F-03 fix)
+        let attestation = AttestationGenerator::<()>::create_unsigned_attestation(
+            B256::repeat_byte(0x11), // burn_id
+            100,                      // tempo_height
+            1,                        // origin_chain_id
+            Address::repeat_byte(0x22), // origin_token
+            Address::repeat_byte(0x33), // recipient
+            1_000_000,                // amount
+        );
 
-        assert!(!proof.receipt_rlp.is_empty());
-        assert!(!proof.receipt_proof.is_empty());
-        assert_eq!(proof.log_index, 0);
+        assert_eq!(attestation.tempo_height, 100);
+        assert_eq!(attestation.amount, 1_000_000);
+        assert!(attestation.signatures.is_empty());
     }
 
     #[tokio::test]
-    async fn test_burn_proof_verification() {
-        let receipts = vec![
-            create_mock_receipt(true, 1),
-            create_mock_receipt(true, 2),
-        ];
+    async fn test_burn_attestation_digest() {
+        let attestation = BurnAttestation {
+            burn_id: B256::repeat_byte(0x11),
+            tempo_height: 100,
+            origin_chain_id: 1,
+            origin_token: Address::repeat_byte(0x22),
+            recipient: Address::repeat_byte(0x33),
+            amount: 1_000_000,
+            signatures: vec![],
+        };
 
-        fn encode_receipt(receipt: &TransactionReceipt) -> Vec<u8> {
-            use alloy::consensus::ReceiptEnvelope;
-            use alloy_rlp::Encodable;
-            let primitive_envelope: ReceiptEnvelope =
-                receipt.inner.clone().map_logs(|log| log.inner);
-            let mut buf = Vec::new();
-            primitive_envelope.encode(&mut buf);
-            buf
-        }
-
-        let hashes: Vec<B256> = receipts.iter().map(|r| keccak256(encode_receipt(r))).collect();
-        let expected_root = keccak256([hashes[0].as_slice(), hashes[1].as_slice()].concat());
-
-        let proof = ProofGenerator::<()>::generate_receipt_proof(&receipts, 0, 0).unwrap();
-
-        let receipt_hash = keccak256(&proof.receipt_rlp);
-        let verified = verify_simplified_proof(receipt_hash, &proof.receipt_proof, expected_root);
-        assert!(verified, "Proof verification should succeed");
+        let digest1 = attestation.compute_digest(42);
+        let digest2 = attestation.compute_digest(42);
+        
+        // Digest should be deterministic
+        assert_eq!(digest1, digest2);
+        
+        // Digest should not be zero
+        assert!(!digest1.is_zero());
     }
 
     #[tokio::test]
@@ -504,34 +509,47 @@ mod multi_validator {
     }
 }
 
-mod proof_generation {
+mod attestation_generation {
     use super::*;
 
     #[tokio::test]
-    async fn test_proof_for_single_receipt() {
-        let receipts = vec![create_mock_receipt(true, 1)];
-        let proof = ProofGenerator::<()>::generate_receipt_proof(&receipts, 0, 0).unwrap();
+    async fn test_create_unsigned_attestation() {
+        let attestation = AttestationGenerator::<()>::create_unsigned_attestation(
+            B256::repeat_byte(0x11),
+            1000,
+            1,
+            Address::repeat_byte(0x22),
+            Address::repeat_byte(0x33),
+            500_000,
+        );
 
-        assert!(proof.receipt_proof.is_empty(), "Single receipt needs no proof siblings");
-        assert!(!proof.receipt_rlp.is_empty());
+        assert_eq!(attestation.burn_id, B256::repeat_byte(0x11));
+        assert_eq!(attestation.tempo_height, 1000);
+        assert_eq!(attestation.origin_chain_id, 1);
+        assert_eq!(attestation.origin_token, Address::repeat_byte(0x22));
+        assert_eq!(attestation.recipient, Address::repeat_byte(0x33));
+        assert_eq!(attestation.amount, 500_000);
+        assert!(attestation.signatures.is_empty());
     }
 
     #[tokio::test]
-    async fn test_proof_for_multiple_receipts() {
-        let receipts: Vec<_> = (0..8).map(|i| create_mock_receipt(true, i)).collect();
+    async fn test_attestation_digest_deterministic() {
+        let attestation = BurnAttestation {
+            burn_id: B256::repeat_byte(0xAB),
+            tempo_height: 12345,
+            origin_chain_id: 1,
+            origin_token: Address::repeat_byte(0xCD),
+            recipient: Address::repeat_byte(0xEF),
+            amount: 1_000_000,
+            signatures: vec![],
+        };
 
-        for i in 0..receipts.len() {
-            let proof = ProofGenerator::<()>::generate_receipt_proof(&receipts, i, 0).unwrap();
-            assert!(!proof.receipt_rlp.is_empty());
-            assert!(proof.receipt_proof.len() >= 1);
-        }
-    }
+        let digest1 = attestation.compute_digest(42);
+        let digest2 = attestation.compute_digest(42);
+        assert_eq!(digest1, digest2, "Same inputs should produce same digest");
 
-    #[tokio::test]
-    async fn test_proof_invalid_index() {
-        let receipts = vec![create_mock_receipt(true, 1)];
-        let result = ProofGenerator::<()>::generate_receipt_proof(&receipts, 5, 0);
-        assert!(result.is_err());
+        let digest3 = attestation.compute_digest(43);
+        assert_ne!(digest1, digest3, "Different chain ID should produce different digest");
     }
 
     #[tokio::test]
@@ -550,7 +568,8 @@ mod proof_generation {
     }
 
     #[tokio::test]
-    async fn test_burn_proof_struct() {
+    #[allow(deprecated)]
+    async fn test_legacy_burn_proof_struct() {
         let proof = BurnProof {
             receipt_rlp: Bytes::from_static(&[1, 2, 3, 4]),
             receipt_proof: vec![
@@ -563,6 +582,13 @@ mod proof_generation {
         assert_eq!(proof.log_index, 2);
         assert_eq!(proof.receipt_rlp.len(), 4);
         assert_eq!(proof.receipt_proof.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_compute_receipts_root() {
+        let receipts: Vec<TransactionReceipt> = vec![];
+        let root = AttestationGenerator::<()>::compute_receipts_root(&receipts);
+        assert_eq!(root, alloy_trie::EMPTY_ROOT_HASH);
     }
 }
 

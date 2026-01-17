@@ -13,6 +13,7 @@ impl Precompile for Bridge {
         dispatch_call(calldata, IBridgeCalls::abi_decode, |call| match call {
             // View functions
             IBridgeCalls::owner(c) => view(c, |_| self.owner()),
+            IBridgeCalls::paused(c) => view(c, |_| self.paused()),
             IBridgeCalls::getTip20ForOriginToken(c) => {
                 view(c, |c| self.get_tip20_for_origin_token(c))
             }
@@ -27,6 +28,8 @@ impl Precompile for Bridge {
             IBridgeCalls::changeOwner(c) => {
                 mutate_void(c, msg_sender, |s, c| self.change_owner(s, c))
             }
+            IBridgeCalls::pause(c) => mutate_void(c, msg_sender, |s, _| self.pause(s)),
+            IBridgeCalls::unpause(c) => mutate_void(c, msg_sender, |s, _| self.unpause(s)),
             IBridgeCalls::registerTokenMapping(c) => {
                 mutate_void(c, msg_sender, |s, c| self.register_token_mapping(s, c))
             }

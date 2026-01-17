@@ -1,3 +1,72 @@
+//! # Bridge Precompile
+//!
+//! Cross-chain bridge for moving stablecoins between Ethereum L1 and Tempo.
+//!
+//! ## Security Model: Validator-Attested Deposits
+//!
+//! **This bridge uses a validator-attested model, NOT trustless on-chain proofs.**
+//!
+//! When a user deposits tokens on Ethereum L1:
+//! 1. The deposit is locked in the L1 escrow contract
+//! 2. Tempo validators observe the deposit event via the bridge-exex component
+//! 3. Each validator independently verifies the deposit and submits an attestation
+//! 4. Once 2/3+ of active validators have attested, anyone can finalize the deposit
+//! 5. Finalization mints the corresponding TIP-20 tokens to the recipient
+//!
+//! ### Trust Assumptions
+//!
+//! **Users must trust that a supermajority (>2/3) of validators are honest.**
+//!
+//! - If 2/3+ of validators collude, they could attest to fake deposits and mint
+//!   unbacked tokens
+//! - If 2/3+ of validators go offline, deposits cannot be finalized
+//! - Validators are economically incentivized to behave honestly (staking/slashing TBD)
+//!
+//! This is similar to the security model of many PoS bridges (e.g., early versions
+//! of cross-chain bridges before ZK proofs became practical).
+//!
+//! ### Why Not Trustless?
+//!
+//! A fully trustless bridge would require verifying Ethereum state proofs on Tempo,
+//! which needs either:
+//! - An Ethereum light client running on Tempo (complex, requires tracking sync committees)
+//! - ZK proofs of Ethereum consensus (computationally expensive)
+//!
+//! The validator-attested model was chosen for simplicity and speed at launch.
+//! A future upgrade could add trustless verification as defense-in-depth.
+//!
+//! ### Defense-in-Depth (Separate Implementation)
+//!
+//! The following safeguards should be added to limit damage from validator compromise:
+//! - Per-deposit caps (e.g., max $1M per deposit)
+//! - Rate limits (e.g., max $10M per hour across all deposits)
+//! - Time-delayed finalization for large deposits
+//! - Circuit breaker that pauses the bridge if anomalies are detected
+//!
+//! ## Deposit Flow
+//!
+//! ```text
+//! L1: User deposits to Escrow → DepositRegistered event
+//!                                      ↓
+//! Tempo: bridge-exex observes event → calls register_deposit()
+//!                                      ↓
+//! Tempo: Validators call submit_deposit_vote() with their attestation
+//!                                      ↓
+//! Tempo: Once threshold reached → anyone calls finalize_deposit()
+//!                                      ↓
+//! Tempo: TIP-20 tokens minted to recipient
+//! ```
+//!
+//! ## Burn/Unlock Flow
+//!
+//! ```text
+//! Tempo: User calls burn_for_unlock() → tokens burned, BurnInitiated event
+//!                                      ↓
+//! L1: Relayer observes event → submits unlock proof to Escrow
+//!                                      ↓
+//! L1: Escrow verifies & releases tokens to recipient
+//! ```
+
 pub mod dispatch;
 #[cfg(test)]
 mod tests;
@@ -72,6 +141,9 @@ pub struct TokenMapping {
 pub struct Bridge {
     owner: Address,
 
+    /// Whether the contract is paused
+    paused: bool,
+
     /// Token mappings: hash(chainId, originToken) -> TokenMapping
     token_mappings: Mapping<B256, TokenMapping>,
 
@@ -106,6 +178,29 @@ impl Bridge {
             return Err(BridgeError::unauthorized().into());
         }
         Ok(())
+    }
+
+    fn check_not_paused(&self) -> Result<()> {
+        if self.paused.read()? {
+            return Err(BridgeError::contract_paused().into());
+        }
+        Ok(())
+    }
+
+    pub fn paused(&self) -> Result<bool> {
+        self.paused.read()
+    }
+
+    pub fn pause(&mut self, sender: Address) -> Result<()> {
+        self.check_owner(sender)?;
+        self.paused.write(true)?;
+        self.emit_event(IBridge::Paused { account: sender })
+    }
+
+    pub fn unpause(&mut self, sender: Address) -> Result<()> {
+        self.check_owner(sender)?;
+        self.paused.write(false)?;
+        self.emit_event(IBridge::Unpaused { account: sender })
     }
 
     pub fn change_owner(&mut self, sender: Address, call: IBridge::changeOwnerCall) -> Result<()> {
@@ -200,12 +295,24 @@ impl Bridge {
         keccak256(&buf)
     }
 
-    /// Register a deposit from origin chain
+    /// Register a deposit from origin chain.
+    ///
+    /// # Security Note
+    ///
+    /// This function does NOT verify that the deposit actually occurred on L1.
+    /// It merely records the deposit request for validators to attest to.
+    /// The actual security comes from the validator attestation threshold in
+    /// `finalize_deposit` - tokens are only minted after 2/3+ validators confirm.
+    ///
+    /// Anyone can call this function, but without validator attestations,
+    /// the deposit cannot be finalized and no tokens will be minted.
     pub fn register_deposit(
         &mut self,
         _sender: Address,
         call: IBridge::registerDepositCall,
     ) -> Result<B256> {
+        self.check_not_paused()?;
+
         // Validate amount
         if call.amount == 0 {
             return Err(BridgeError::zero_amount().into());
@@ -310,12 +417,31 @@ impl Bridge {
         })
     }
 
-    /// Finalize deposit and mint TIP-20
+    /// Finalize a deposit and mint TIP-20 tokens to the recipient.
+    ///
+    /// # Security Model: Validator-Attested (NOT Trustless)
+    ///
+    /// **This function enforces the 2/3 validator threshold but does NOT verify
+    /// on-chain proofs of the L1 deposit.** Security relies on the assumption that
+    /// 2/3+ of validators have independently verified the deposit occurred on L1.
+    ///
+    /// See module-level documentation for full trust model explanation.
+    ///
+    /// # Caller Permissions
+    ///
+    /// **Anyone can call this function once the voting threshold is reached.**
+    ///
+    /// This is intentional:
+    /// - **Permissionless finalization**: Any relayer can finalize on behalf of users
+    /// - **No value extraction**: Recipient is immutably set at registration
+    /// - **Idempotent**: Reverts if already finalized
     pub fn finalize_deposit(
         &mut self,
         _sender: Address,
         call: IBridge::finalizeDepositCall,
     ) -> Result<()> {
+        self.check_not_paused()?;
+
         let mut deposit = self.deposits[call.requestId].read()?;
         if deposit.status == DEPOSIT_STATUS_NONE {
             return Err(BridgeError::deposit_not_found().into());
@@ -426,6 +552,8 @@ impl Bridge {
         sender: Address,
         call: IBridge::burnForUnlockCall,
     ) -> Result<B256> {
+        self.check_not_paused()?;
+
         // Validate amount
         if call.amount == 0 {
             return Err(BridgeError::zero_amount().into());

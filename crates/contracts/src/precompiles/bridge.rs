@@ -54,6 +54,15 @@ crate::sol! {
         function owner() external view returns (address);
         function changeOwner(address newOwner) external;
 
+        /// Returns true if the contract is paused
+        function paused() external view returns (bool);
+
+        /// Pause the contract (owner only)
+        function pause() external;
+
+        /// Unpause the contract (owner only)
+        function unpause() external;
+
         /// Register a token mapping (owner only)
         function registerTokenMapping(
             uint64 originChainId,
@@ -157,6 +166,9 @@ crate::sol! {
             address indexed tempoTip20
         );
 
+        event Paused(address indexed account);
+        event Unpaused(address indexed account);
+
         // --- Errors ---
         error Unauthorized();
         error InvalidToken();
@@ -173,6 +185,7 @@ crate::sol! {
         error InsufficientBalance();
         error ZeroAmount();
         error InvalidRecipient();
+        error ContractPaused();
     }
 }
 
@@ -235,5 +248,9 @@ impl BridgeError {
 
     pub const fn invalid_recipient() -> Self {
         Self::InvalidRecipient(IBridge::InvalidRecipient {})
+    }
+
+    pub const fn contract_paused() -> Self {
+        Self::ContractPaused(IBridge::ContractPaused {})
     }
 }

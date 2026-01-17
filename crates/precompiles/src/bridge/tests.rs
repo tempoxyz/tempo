@@ -793,3 +793,250 @@ fn test_burn_replay_prevention() -> eyre::Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn test_pause_unpause() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+    let non_owner = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+
+        // Initially not paused
+        assert!(!bridge.paused()?);
+
+        // Non-owner cannot pause
+        let result = bridge.pause(non_owner);
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::unauthorized()
+            ))
+        );
+
+        // Owner can pause
+        bridge.pause(owner)?;
+        assert!(bridge.paused()?);
+
+        // Verify Paused event was emitted
+        let events = bridge.emitted_events();
+        assert!(!events.is_empty());
+
+        // Non-owner cannot unpause
+        let result = bridge.unpause(non_owner);
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::unauthorized()
+            ))
+        );
+
+        // Owner can unpause
+        bridge.unpause(owner)?;
+        assert!(!bridge.paused()?);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_pause_blocks_register_deposit() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+    let sender = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let tempo_tip20 = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        let mut bridge = setup_bridge(owner)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
+
+        // Pause the bridge
+        bridge.pause(owner)?;
+
+        // register_deposit should fail when paused
+        let result = bridge.register_deposit(
+            sender,
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: Address::random(),
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::contract_paused()
+            ))
+        );
+
+        // Unpause and try again - should succeed
+        bridge.unpause(owner)?;
+        let request_id = bridge.register_deposit(
+            sender,
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: Address::random(),
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        )?;
+        assert!(!request_id.is_zero());
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_pause_blocks_finalize_deposit() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let owner = Address::random();
+    let validator = Address::random();
+    let recipient = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let tempo_tip20 = Address::random();
+
+    StorageCtx::enter(&mut storage, || {
+        // Setup validator config with single validator
+        let mut validator_config = ValidatorConfig::new();
+        validator_config.initialize(owner)?;
+        add_validator(&mut validator_config, owner, validator, true)?;
+
+        // Setup bridge
+        let mut bridge = setup_bridge(owner)?;
+        register_mapping(
+            &mut bridge,
+            owner,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
+
+        // Register deposit
+        let request_id = bridge.register_deposit(
+            Address::random(),
+            IBridge::registerDepositCall {
+                originChainId: origin_chain_id,
+                originEscrow: Address::repeat_byte(0xEE),
+                originToken: origin_token,
+                originTxHash: B256::random(),
+                originLogIndex: 0,
+                tempoRecipient: recipient,
+                amount: 1000000,
+                originBlockNumber: 12345,
+            },
+        )?;
+
+        // Validator signs
+        bridge.submit_deposit_vote(
+            validator,
+            IBridge::submitDepositVoteCall {
+                requestId: request_id,
+            },
+        )?;
+
+        // Pause the bridge
+        bridge.pause(owner)?;
+
+        // finalize_deposit should fail when paused
+        let result = bridge.finalize_deposit(
+            Address::random(),
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::contract_paused()
+            ))
+        );
+
+        Ok(())
+    })
+}
+
+#[test]
+fn test_pause_blocks_burn_for_unlock() -> eyre::Result<()> {
+    let mut storage = HashMapStorageProvider::new(1);
+    let admin = Address::random();
+    let user = Address::random();
+    let origin_chain_id = 1u64;
+    let origin_token = Address::random();
+    let amount = 1000000u64;
+
+    StorageCtx::enter(&mut storage, || {
+        // Create TIP-20 token and mint to user
+        let token = TIP20Setup::create("Bridged Token", "BT", admin)
+            .with_issuer(admin)
+            .with_role(user, *ISSUER_ROLE)
+            .with_mint(user, U256::from(amount))
+            .apply()?;
+        let tempo_tip20 = token.address();
+
+        // Setup bridge
+        let mut bridge = setup_bridge(admin)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
+
+        // Pause the bridge
+        bridge.pause(admin)?;
+
+        // burn_for_unlock should fail when paused
+        let result = bridge.burn_for_unlock(
+            user,
+            IBridge::burnForUnlockCall {
+                originChainId: origin_chain_id,
+                originToken: origin_token,
+                originRecipient: Address::random(),
+                amount,
+                nonce: 0,
+            },
+        );
+        assert_eq!(
+            result,
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::contract_paused()
+            ))
+        );
+
+        // Unpause and try again - should succeed
+        bridge.unpause(admin)?;
+        let burn_id = bridge.burn_for_unlock(
+            user,
+            IBridge::burnForUnlockCall {
+                originChainId: origin_chain_id,
+                originToken: origin_token,
+                originRecipient: Address::random(),
+                amount,
+                nonce: 0,
+            },
+        )?;
+        assert!(!burn_id.is_zero());
+
+        Ok(())
+    })
+}

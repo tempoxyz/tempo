@@ -22,6 +22,9 @@ pub trait AttestationSigner: Send + Sync {
 
     /// Sign a deposit request ID (raw hash signing)
     async fn sign_deposit(&self, request_id: &B256) -> Result<Bytes>;
+
+    /// Sign an arbitrary hash (for burn attestations)
+    async fn sign_hash(&self, hash: &B256) -> Result<Bytes>;
 }
 
 /// Local signer using an in-memory private key.
@@ -47,6 +50,11 @@ impl AttestationSigner for LocalSigner {
 
     async fn sign_deposit(&self, request_id: &B256) -> Result<Bytes> {
         let signature = self.signer.sign_hash(request_id).await?;
+        Ok(Bytes::from(signature.as_bytes().to_vec()))
+    }
+
+    async fn sign_hash(&self, hash: &B256) -> Result<Bytes> {
+        let signature = self.signer.sign_hash(hash).await?;
         Ok(Bytes::from(signature.as_bytes().to_vec()))
     }
 }
@@ -138,6 +146,10 @@ mod kms_impl {
         async fn sign_deposit(&self, request_id: &B256) -> Result<Bytes> {
             self.sign_digest(request_id).await
         }
+
+        async fn sign_hash(&self, hash: &B256) -> Result<Bytes> {
+            self.sign_digest(hash).await
+        }
     }
 }
 
@@ -165,6 +177,12 @@ impl AttestationSigner for KmsSigner {
     }
 
     async fn sign_deposit(&self, _request_id: &B256) -> Result<Bytes> {
+        Err(eyre::eyre!(
+            "KMS signing requires the 'kms' feature. Rebuild with --features kms"
+        ))
+    }
+
+    async fn sign_hash(&self, _hash: &B256) -> Result<Bytes> {
         Err(eyre::eyre!(
             "KMS signing requires the 'kms' feature. Rebuild with --features kms"
         ))
@@ -210,6 +228,11 @@ impl BridgeSigner {
     /// Sign a deposit request ID
     pub async fn sign_deposit(&self, request_id: &B256) -> Result<Bytes> {
         self.inner.sign_deposit(request_id).await
+    }
+
+    /// Sign an arbitrary hash (for burn attestations)
+    pub async fn sign_hash(&self, hash: &B256) -> Result<Bytes> {
+        self.inner.sign_hash(hash).await
     }
 
     /// Compute deposit request ID (must match precompile)
