@@ -134,6 +134,7 @@ contract TempoLightClient is Ownable2Step {
         uint64 epoch,
         bytes calldata signature
     ) external {
+        require(height == latestFinalizedHeight + 1 || latestFinalizedHeight == 0, "non-contiguous");
         if (height <= latestFinalizedHeight && latestFinalizedHeight > 0) {
             revert HeightNotMonotonic();
         }
@@ -174,6 +175,7 @@ contract TempoLightClient is Ownable2Step {
         uint64 epoch,
         bytes[] calldata signatures
     ) external {
+        require(height == latestFinalizedHeight + 1 || latestFinalizedHeight == 0, "non-contiguous");
         if (height <= latestFinalizedHeight && latestFinalizedHeight > 0) {
             revert HeightNotMonotonic();
         }

@@ -59,6 +59,7 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
     error InvalidReceiptProof();
     error InvalidBurnEvent();
     error InvalidProofFormat();
+    error AmountTooLarge();
 
     constructor(address _lightClient, uint64 _tempoChainId) Ownable(msg.sender) {
         lightClient = _lightClient;
@@ -227,12 +228,16 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
 
     function _normalizeAmount(address token, uint256 amount) internal view returns (uint64) {
         uint8 decimals = _getDecimals(token);
+        uint256 normalized;
         if (decimals > 6) {
-            return uint64(amount / (10 ** (decimals - 6)));
+            normalized = amount / (10 ** (decimals - 6));
         } else if (decimals < 6) {
-            return uint64(amount * (10 ** (6 - decimals)));
+            normalized = amount * (10 ** (6 - decimals));
+        } else {
+            normalized = amount;
         }
-        return uint64(amount);
+        if (normalized > type(uint64).max) revert AmountTooLarge();
+        return uint64(normalized);
     }
 
     function _denormalizeAmount(address token, uint64 amount) internal view returns (uint256) {
@@ -318,15 +323,15 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
         pure
         returns (bytes32 burnId, uint64 originChainId, address originToken, address originRecipient, uint64 amount)
     {
-        bytes memory receiptBytes = receiptRlp;
+        bytes memory receiptBytes;
         
         // Handle typed transactions (EIP-2718): strip the transaction type prefix byte
         // Type 0x01 = EIP-2930, Type 0x02 = EIP-1559, Type 0x03 = EIP-4844
-        if (receiptBytes.length > 0 && uint8(receiptBytes[0]) < 0x80) {
-            assembly {
-                receiptBytes := add(receiptBytes, 1)
-                mstore(receiptBytes, sub(mload(add(receiptBytes, 0x1f)), 1))
-            }
+        if (receiptRlp.length > 0 && uint8(receiptRlp[0]) < 0x80) {
+            // Safe slicing: create new array without type prefix
+            receiptBytes = receiptRlp[1:];
+        } else {
+            receiptBytes = receiptRlp;
         }
         
         // Receipt structure: [status, cumulativeGasUsed, logsBloom, logs[]]
@@ -378,15 +383,19 @@ contract StablecoinEscrow is Ownable2Step, ReentrancyGuard {
         pure
         returns (bytes32 burnId, uint64 originChainId, address originToken, address originRecipient, uint64 amount)
     {
-        bytes memory receiptBytes = receiptRlp;
+        bytes memory receiptBytes;
         
         // Handle typed transactions (EIP-2718): strip the transaction type prefix byte
         // Type 0x01 = EIP-2930, Type 0x02 = EIP-1559, Type 0x03 = EIP-4844
-        if (receiptBytes.length > 0 && uint8(receiptBytes[0]) < 0x80) {
-            assembly {
-                receiptBytes := add(receiptBytes, 1)
-                mstore(receiptBytes, sub(mload(add(receiptBytes, 0x1f)), 1))
+        if (receiptRlp.length > 0 && uint8(receiptRlp[0]) < 0x80) {
+            // Safe slicing: create new array without type prefix
+            uint256 newLen = receiptRlp.length - 1;
+            receiptBytes = new bytes(newLen);
+            for (uint256 i = 0; i < newLen; i++) {
+                receiptBytes[i] = receiptRlp[i + 1];
             }
+        } else {
+            receiptBytes = receiptRlp;
         }
         
         // Receipt structure: [status, cumulativeGasUsed, logsBloom, logs[]]

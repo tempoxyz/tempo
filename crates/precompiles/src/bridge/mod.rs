@@ -410,7 +410,13 @@ impl Bridge {
     }
 
     /// Compute burn ID
+    ///
+    /// Domain separation includes:
+    /// - Domain tag: "TEMPO_BRIDGE_BURN_V1"
+    /// - Tempo chain ID: prevents replay across different Tempo networks
+    /// - Bridge address: binds burn ID to specific bridge contract
     fn compute_burn_id(
+        tempo_chain_id: u64,
         origin_chain_id: u64,
         origin_token: Address,
         origin_recipient: Address,
@@ -418,9 +424,11 @@ impl Bridge {
         nonce: u64,
         sender: Address,
     ) -> B256 {
-        // abi.encodePacked(BURN_DOMAIN, origin_chain_id, origin_token, origin_recipient, amount, nonce, sender)
-        let mut buf = Vec::with_capacity(BURN_DOMAIN.len() + 8 + 20 + 20 + 8 + 8 + 20);
+        // abi.encodePacked(BURN_DOMAIN, tempo_chain_id, BRIDGE_ADDRESS, origin_chain_id, origin_token, origin_recipient, amount, nonce, sender)
+        let mut buf = Vec::with_capacity(BURN_DOMAIN.len() + 8 + 20 + 8 + 20 + 20 + 8 + 8 + 20);
         buf.extend_from_slice(BURN_DOMAIN);
+        buf.extend_from_slice(&tempo_chain_id.to_be_bytes());
+        buf.extend_from_slice(BRIDGE_ADDRESS.as_slice());
         buf.extend_from_slice(&origin_chain_id.to_be_bytes());
         buf.extend_from_slice(origin_token.as_slice());
         buf.extend_from_slice(origin_recipient.as_slice());
@@ -453,8 +461,10 @@ impl Bridge {
             return Err(BridgeError::token_mapping_not_found().into());
         }
 
-        // Compute burn ID
+        // Compute burn ID with domain separation (tempo chain ID + bridge address)
+        let tempo_chain_id = self.storage.chain_id();
         let burn_id = Self::compute_burn_id(
+            tempo_chain_id,
             call.originChainId,
             call.originToken,
             call.originRecipient,

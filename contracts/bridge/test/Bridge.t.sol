@@ -20,6 +20,19 @@ contract MockUSDC is ERC20 {
     }
 }
 
+/// @dev Mock 18-decimal token for testing amount normalization
+contract MockDAI is ERC20 {
+    constructor() ERC20("Dai Stablecoin", "DAI") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 18;
+    }
+}
+
 contract BridgeTest is Test {
     TempoLightClient public lightClient;
     StablecoinEscrow public escrow;
@@ -239,6 +252,59 @@ contract BridgeTest is Test {
         assertEq(usdc.balanceOf(address(escrow)), 5000e6);
     }
 
+    // --- F-09: Amount Truncation Tests ---
+
+    function test_DepositExactlyMaxUint64() public {
+        address user = makeAddr("user");
+        address tempoRecipient = makeAddr("tempoRecipient");
+        uint256 amount = type(uint64).max;
+
+        usdc.mint(user, amount);
+
+        vm.startPrank(user);
+        usdc.approve(address(escrow), amount);
+
+        bytes32 depositId = escrow.deposit(address(usdc), amount, tempoRecipient);
+        vm.stopPrank();
+
+        assertFalse(depositId == bytes32(0));
+        assertEq(usdc.balanceOf(address(escrow)), amount);
+    }
+
+    function test_DepositMaxUint64PlusOneReverts() public {
+        address user = makeAddr("user");
+        address tempoRecipient = makeAddr("tempoRecipient");
+        uint256 amount = uint256(type(uint64).max) + 1;
+
+        usdc.mint(user, amount);
+
+        vm.startPrank(user);
+        usdc.approve(address(escrow), amount);
+
+        vm.expectRevert(StablecoinEscrow.AmountTooLarge.selector);
+        escrow.deposit(address(usdc), amount, tempoRecipient);
+        vm.stopPrank();
+    }
+
+    function test_DepositTruncationTo18DecimalTokenReverts() public {
+        MockDAI dai = new MockDAI();
+        escrow.addToken(address(dai));
+
+        address user = makeAddr("user");
+        address tempoRecipient = makeAddr("tempoRecipient");
+        
+        uint256 amount = uint256(2 ** 64) * (10 ** 12);
+
+        dai.mint(user, amount);
+
+        vm.startPrank(user);
+        dai.approve(address(escrow), amount);
+
+        vm.expectRevert(StablecoinEscrow.AmountTooLarge.selector);
+        escrow.deposit(address(dai), amount, tempoRecipient);
+        vm.stopPrank();
+    }
+
     // --- Security Tests ---
 
     function test_OnlyOwnerCanAddValidator() public {
@@ -257,6 +323,33 @@ contract BridgeTest is Test {
         escrow.addToken(makeAddr("evil"));
     }
 
+    function test_SubmitHeaderSkipHeightReverts() public {
+        // First submit height 1
+        bytes32 stateRoot1 = keccak256("state1");
+        bytes32 receiptsRoot1 = keccak256("receipts1");
+        bytes32 headerDigest1 = keccak256(
+            abi.encodePacked(
+                lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, uint64(1), bytes32(0), stateRoot1, receiptsRoot1, uint64(1)
+            )
+        );
+        bytes[] memory sigs1 = _createSortedSignatures(headerDigest1, 2);
+        lightClient.submitHeader(1, bytes32(0), stateRoot1, receiptsRoot1, 1, sigs1);
+
+        // Now try to skip height 2 and submit height 3
+        bytes32 prevHash = keccak256(abi.encodePacked(uint64(1), bytes32(0), stateRoot1, receiptsRoot1, uint64(1)));
+        bytes32 stateRoot3 = keccak256("state3");
+        bytes32 receiptsRoot3 = keccak256("receipts3");
+        bytes32 headerDigest3 = keccak256(
+            abi.encodePacked(
+                lightClient.HEADER_DOMAIN(), TEMPO_CHAIN_ID, uint64(3), prevHash, stateRoot3, receiptsRoot3, uint64(1)
+            )
+        );
+        bytes[] memory sigs3 = _createSortedSignatures(headerDigest3, 2);
+
+        vm.expectRevert("non-contiguous");
+        lightClient.submitHeader(3, prevHash, stateRoot3, receiptsRoot3, 1, sigs3);
+    }
+
     function test_SignatureReplayPrevention() public {
         bytes32 stateRoot = keccak256("state");
         bytes32 receiptsRoot = keccak256("receipts");
@@ -270,7 +363,7 @@ contract BridgeTest is Test {
         bytes[] memory sigs = _createSortedSignatures(headerDigest, 2);
         lightClient.submitHeader(1, bytes32(0), stateRoot, receiptsRoot, 1, sigs);
 
-        vm.expectRevert(TempoLightClient.HeightNotMonotonic.selector);
+        vm.expectRevert("non-contiguous");
         lightClient.submitHeader(1, bytes32(0), stateRoot, receiptsRoot, 1, sigs);
     }
 
