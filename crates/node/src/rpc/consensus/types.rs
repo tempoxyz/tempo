@@ -100,6 +100,9 @@ pub struct IdentityTransitionResponse {
 /// This proves that the network transitioned from `old_identity` to
 /// `new_identity` at the given epoch, with a certificate signed by
 /// the old network identity.
+///
+/// For genesis (epoch 0), `proof` will be `None` since there is no
+/// finalization certificate for the genesis block.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IdentityTransition {
@@ -109,8 +112,9 @@ pub struct IdentityTransition {
     pub old_identity: String,
     /// Hex-encoded BLS public key after the transition.
     pub new_identity: String,
-    /// Proof of the transition.
-    pub proof: TransitionProofData,
+    /// Proof of the transition. `None` for genesis identity (epoch 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<TransitionProofData>,
 }
 
 /// Cryptographic proof data for an identity transition.

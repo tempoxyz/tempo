@@ -208,9 +208,23 @@ impl ConsensusFeed for FeedStateHandle {
         let mut transitions = Vec::new();
 
         // Walk backwards comparing public keys to detect full DKG transitions.
+        // On errors, we return what we've collected so far rather than failing entirely.
         let mut search_epoch = start_epoch.saturating_sub(1);
+        let mut reached_genesis = start_epoch == 0;
+
         while search_epoch > 0 {
-            let prev_outcome = get_outcome(&mut marshal, &epocher, search_epoch - 1).await?;
+            let prev_outcome = match get_outcome(&mut marshal, &epocher, search_epoch - 1).await {
+                Ok(o) => o,
+                Err(err) => {
+                    tracing::debug!(
+                        ?err,
+                        start_epoch,
+                        search_epoch,
+                        "stopping identity transition walk early (failed to fetch previous outcome)"
+                    );
+                    break;
+                }
+            };
             let prev_pubkey = *prev_outcome.sharing().public();
 
             // If keys differ, there was a full DKG at search_epoch
@@ -219,26 +233,38 @@ impl ConsensusFeed for FeedStateHandle {
                 let proof_height = epocher
                     .last(Epoch::new(search_epoch))
                     .expect("fixed epocher is valid for all epochs");
-                let proof_block = marshal
-                    .get_block(proof_height)
-                    .await
-                    .ok_or(IdentityProofError::PrunedData(proof_height.get()))?;
-                let finalization = marshal
-                    .get_finalization(proof_height)
-                    .await
-                    .ok_or(IdentityProofError::PrunedData(proof_height.get()))?;
+
+                let Some(proof_block) = marshal.get_block(proof_height).await else {
+                    tracing::debug!(
+                        height = proof_height.get(),
+                        start_epoch,
+                        search_epoch,
+                        "stopping identity transition walk early (proof block pruned)"
+                    );
+                    break;
+                };
+
+                let Some(finalization) = marshal.get_finalization(proof_height).await else {
+                    tracing::debug!(
+                        height = proof_height.get(),
+                        start_epoch,
+                        search_epoch,
+                        "stopping identity transition walk early (finalization pruned)"
+                    );
+                    break;
+                };
 
                 transitions.push(IdentityTransition {
                     transition_epoch: search_epoch,
                     old_identity: hex::encode(prev_pubkey.encode()),
                     new_identity: hex::encode(curr_pubkey.encode()),
-                    proof: TransitionProofData {
+                    proof: Some(TransitionProofData {
                         header: TempoHeaderResponse::from_consensus_header(
                             proof_block.clone_sealed_header(),
                             0,
                         ),
                         finalization_certificate: hex::encode(finalization.encode()),
-                    },
+                    }),
                 });
 
                 if !full {
@@ -248,6 +274,34 @@ impl ConsensusFeed for FeedStateHandle {
 
             curr_pubkey = prev_pubkey;
             search_epoch -= 1;
+        }
+
+        // If we walked all the way to epoch 0, we reached genesis
+        if full && search_epoch == 0 {
+            reached_genesis = true;
+        }
+
+        // Include genesis identity as explicit terminal marker when we reached it.
+        // There is never a finalization certificate for genesis, so proof is None.
+        if full && reached_genesis {
+            match get_outcome(&mut marshal, &epocher, 0).await {
+                Ok(genesis_outcome) => {
+                    let genesis_pubkey = *genesis_outcome.sharing().public();
+                    let genesis_identity = hex::encode(genesis_pubkey.encode());
+                    transitions.push(IdentityTransition {
+                        transition_epoch: 0,
+                        old_identity: genesis_identity.clone(),
+                        new_identity: genesis_identity,
+                        proof: None,
+                    });
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        ?err,
+                        "failed to fetch genesis outcome; omitting genesis marker"
+                    );
+                }
+            }
         }
 
         Ok(IdentityTransitionResponse {
