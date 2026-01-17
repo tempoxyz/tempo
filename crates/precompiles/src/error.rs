@@ -4,14 +4,15 @@ use std::{
 };
 
 use crate::abi::{
-    IAccountKeychain, ITIP20, ITIP20Factory, ITIP403Registry, ITipFeeManager, IValidatorConfig,
+    IAccountKeychain, INonce, ITIP20, ITIP20Factory, ITIP403Registry, ITipFeeManager,
+    IValidatorConfig,
 };
 use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use tempo_contracts::precompiles::{NonceError, StablecoinDEXError, UnknownFunctionSelector};
+use tempo_contracts::precompiles::{StablecoinDEXError, UnknownFunctionSelector};
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(
@@ -40,7 +41,7 @@ pub enum TempoPrecompileError {
 
     /// Error from Tempo Transaction nonce manager
     #[error("Tempo Transaction nonce error: {0:?}")]
-    Nonce(NonceError),
+    Nonce(INonce::Error),
 
     #[error("Panic({0:?})")]
     Panic(PanicKind),
