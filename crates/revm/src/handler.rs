@@ -648,7 +648,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
             let now: u64 = block.timestamp().saturating_to();
 
-            StorageCtx::enter_evm(journal, block, cfg, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
                 nonce_manager
@@ -667,7 +667,7 @@ where
             })?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
