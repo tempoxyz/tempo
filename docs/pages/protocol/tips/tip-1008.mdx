@@ -1,13 +1,13 @@
 ---
-title: "TIP-1007: Temporary Nonce Storage"
+title: "TIP-1008: Temporary Nonce Storage"
 description: Reduced gas costs for 2D nonce keys by leveraging transaction validity windows and block hash availability.
 ---
 
-# TIP-1007: Temporary Nonce Storage
+# TIP-1008: Temporary Nonce Storage
 
 This document defines reduced gas costs for 2D nonce key creation by treating nonce storage as temporary when bounded by transaction validity windows.
 
-- **TIP ID**: TIP-1007
+- **TIP ID**: TIP-1008
 - **Authors/Owners**: Georgios Konstantopoulos @gakonst
 - **Status**: Draft
 - **Related Specs/TIPs**: [TIP-1000](/protocol/tips/tip-1000)
@@ -70,7 +70,7 @@ A nonce key creation qualifies for temporary storage pricing when ALL of the fol
 
 ### Gas Schedule Summary
 
-| Operation | Standard Cost (TIP-1000) | Temporary Cost (TIP-1007) | Savings |
+| Operation | Standard Cost (TIP-1000) | Temporary Cost (TIP-1008) | Savings |
 |-----------|--------------------------|---------------------------|---------|
 | New nonce key (eligible) | 250,000 | 20,000 | 230,000 |
 | New nonce key (not eligible) | 250,000 | 250,000 | 0 |
