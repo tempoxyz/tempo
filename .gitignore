@@ -17,6 +17,7 @@ localnet/**
 
 .claude/
 !docs/.claude/
+CLAUDE.local.md
 
 # Docs
 docs/dist
