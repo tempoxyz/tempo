@@ -77,20 +77,30 @@ contract Nonce {
     
     // Expiring nonce storage
     mapping(bytes32 => uint64) public expiringNonceSeen;                    // slot 1: txHash => expiry
-    mapping(uint32 => bytes32) public expiringNonceRing;                    // slot 2: circular buffer
-    uint32 public expiringNonceRingPtr;                                     // slot 3: buffer pointer
+    mapping(uint64 => bytes32) public expiringNonceBuffer;                  // slot 2: unbounded buffer
+    uint64 public expiringNonceHead;                                        // slot 3: head pointer (oldest)
+    uint64 public expiringNonceTail;                                        // slot 4: tail pointer (next write)
 }
 ```
 
-### Circular Buffer Design
+### Unbounded Buffer Design
 
-The circular buffer has a fixed capacity:
+The buffer uses head/tail pointers instead of a fixed-size circular buffer:
+
+- **Tail pointer**: Where new transaction hashes are appended
+- **Head pointer**: Points to the oldest entry (for cleanup)
+
+This design allows the buffer to grow under high load and shrink during quiet periods, using only the space it needs on average. There is no fixed capacity limit.
+
+### Cascading Cleanup
+
+To ensure the buffer shrinks efficiently, every write triggers cascading cleanup:
 
 ```
-EXPIRING_NONCE_SET_CAPACITY = 300,000
+MAX_CASCADE_CLEANUP = 10
 ```
 
-This capacity is sized for 10,000 TPS × 30 seconds = 300,000 transactions, ensuring entries expire before being overwritten.
+When inserting a new entry, the algorithm checks entries at the head. If an entry is expired, it clears it and checks the next one, up to `MAX_CASCADE_CLEANUP` entries per write. This ensures the buffer contracts quickly during low-traffic periods.
 
 ### Algorithm
 
@@ -101,20 +111,15 @@ When processing an expiring nonce transaction:
 2. **Replay check**: Read `expiringNonceSeen[txHash]`
    - If entry exists and `expiry > now`, reject as replay
 
-3. **Get buffer position**: Read `expiringNonceRingPtr`, compute `idx = ptr % CAPACITY`
+3. **Cascading cleanup at head**: While `head < tail` and cleaned < `MAX_CASCADE_CLEANUP`:
+   - Read `expiringNonceBuffer[head]` to get `oldHash`
+   - If `oldHash` is expired or empty, clear it and advance head
+   - If `oldHash` is still valid, stop cleanup
 
-4. **Read existing entry**: Read `expiringNonceRing[idx]` to get `oldHash`
-
-5. **Eviction check** (safety): If `oldHash != 0`:
-   - Read `expiringNonceSeen[oldHash]`
-   - If `expiry > now`, reject (buffer full of valid entries)
-   - Clear `expiringNonceSeen[oldHash] = 0`
-
-6. **Insert new entry**:
-   - Write `expiringNonceRing[idx] = txHash`
+4. **Insert new entry at tail**:
+   - Write `expiringNonceBuffer[tail] = txHash`
    - Write `expiringNonceSeen[txHash] = validBefore`
-
-7. **Advance pointer**: Write `expiringNonceRingPtr = ptr + 1`
+   - Advance tail pointer
 
 ### Pseudocode
 
@@ -131,24 +136,44 @@ function checkAndMarkExpiringNonce(
     uint64 seenExpiry = expiringNonceSeen[txHash];
     require(seenExpiry == 0 || seenExpiry <= now, "Replay");
     
-    // 3-4. Get buffer position and existing entry
-    uint32 ptr = expiringNonceRingPtr;
-    uint32 idx = ptr % CAPACITY;
-    bytes32 oldHash = expiringNonceRing[idx];
+    // 3. Cascading cleanup at head
+    cleanupExpiredHead(now);
     
-    // 5. Eviction check (safety)
-    if (oldHash != bytes32(0)) {
+    // 4. Insert new entry at tail
+    uint64 tail = expiringNonceTail;
+    expiringNonceBuffer[tail] = txHash;
+    expiringNonceSeen[txHash] = validBefore;
+    expiringNonceTail = tail + 1;
+}
+
+function cleanupExpiredHead(uint64 now) internal {
+    uint64 head = expiringNonceHead;
+    uint64 tail = expiringNonceTail;
+    uint32 cleaned = 0;
+    
+    while (head < tail && cleaned < MAX_CASCADE_CLEANUP) {
+        bytes32 oldHash = expiringNonceBuffer[head];
+        if (oldHash == bytes32(0)) {
+            head++;
+            cleaned++;
+            continue;
+        }
+        
         uint64 oldExpiry = expiringNonceSeen[oldHash];
-        require(oldExpiry == 0 || oldExpiry <= now, "BufferFull");
+        if (oldExpiry != 0 && oldExpiry > now) {
+            break; // Entry still valid, stop cleanup
+        }
+        
+        // Clear expired entry
         expiringNonceSeen[oldHash] = 0;
+        expiringNonceBuffer[head] = bytes32(0);
+        head++;
+        cleaned++;
     }
     
-    // 6. Insert new entry
-    expiringNonceRing[idx] = txHash;
-    expiringNonceSeen[txHash] = validBefore;
-    
-    // 7. Advance pointer
-    expiringNonceRingPtr = ptr + 1;
+    if (cleaned > 0) {
+        expiringNonceHead = head;
+    }
 }
 ```
 

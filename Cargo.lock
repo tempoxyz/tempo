@@ -12126,6 +12126,7 @@ dependencies = [
  "reth-ethereum-primitives",
  "reth-primitives-traits",
  "reth-rpc-convert",
+ "revm",
  "serde",
  "serde_json",
  "sha2 0.10.9",

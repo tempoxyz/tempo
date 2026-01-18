@@ -11,8 +11,10 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256};
 
-/// Capacity of the expiring nonce seen set (supports 10k TPS for 30 seconds).
-pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
+/// Maximum number of cascading head cleanups per write.
+/// When checking the head for expiry, if expired, also check the next entries.
+/// This allows the buffer to shrink quickly during low-traffic periods.
+pub const MAX_CASCADE_CLEANUP: u32 = 10;
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -23,15 +25,17 @@ pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
 ///     
 ///     // Expiring nonce storage (for hash-based replay protection)
 ///     mapping(bytes32 => uint64) public expiringNonceSeen;               // slot 1: txHash => expiry
-///     mapping(uint32 => bytes32) public expiringNonceRing;               // slot 2: circular buffer of tx hashes
-///     uint32 public expiringNonceRingPtr;                                // slot 3: current position (wraps at CAPACITY)
+///     mapping(uint64 => bytes32) public expiringNonceBuffer;             // slot 2: unbounded buffer of tx hashes
+///     uint64 public expiringNonceHead;                                   // slot 3: head pointer (oldest entry)
+///     uint64 public expiringNonceTail;                                   // slot 4: tail pointer (next write position)
 /// }
 /// ```
 ///
 /// - Slot 0: 2D nonce mapping - keccak256(abi.encode(nonce_key, keccak256(abi.encode(account, 0))))
 /// - Slot 1: Expiring nonce seen set - txHash => expiry timestamp
-/// - Slot 2: Expiring nonce circular buffer - index => txHash
-/// - Slot 3: Circular buffer pointer (current position, wraps at CAPACITY)
+/// - Slot 2: Unbounded buffer - index => txHash (grows/shrinks dynamically)
+/// - Slot 3: Head pointer - points to oldest entry (for cleanup)
+/// - Slot 4: Tail pointer - points to next write position
 ///
 /// Note: Protocol nonce (key 0) is stored directly in account state, not here.
 /// Only user nonce keys (1-N) are managed by this precompile.
@@ -39,8 +43,9 @@ pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
 pub struct NonceManager {
     nonces: Mapping<Address, Mapping<U256, u64>>,
     expiring_nonce_seen: Mapping<B256, u64>,
-    expiring_nonce_ring: Mapping<u32, B256>,
-    expiring_nonce_ring_ptr: u32,
+    expiring_nonce_buffer: Mapping<u64, B256>,
+    expiring_nonce_head: u64,
+    expiring_nonce_tail: u64,
 }
 
 impl NonceManager {
@@ -100,18 +105,18 @@ impl NonceManager {
 
     /// Checks and marks an expiring nonce transaction.
     ///
-    /// Uses a circular buffer that overwrites expired entries as the pointer advances.
+    /// Uses an unbounded buffer with head/tail pointers that grows and shrinks dynamically.
+    /// Every write to the tail also cleans up expired entries at the head (with cascading cleanup).
     ///
     /// This is called during transaction execution to:
     /// 1. Validate the expiry is within the allowed window
     /// 2. Check for replay (tx hash already seen and not expired)
-    /// 3. Check if we can evict the entry at current pointer (must be expired or empty)
-    /// 4. Mark the tx hash as seen
+    /// 3. Clean up expired entries at the head (cascading up to MAX_CASCADE_CLEANUP)
+    /// 4. Mark the tx hash as seen at the tail
     ///
     /// Returns an error if:
     /// - The expiry is not within (now, now + max_skew]
     /// - The tx hash has already been seen and not expired
-    /// - The entry at current pointer is not expired (buffer full of valid entries)
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         tx_hash: B256,
@@ -130,30 +135,54 @@ impl NonceManager {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
-        // 3. Get current pointer and the entry we're about to overwrite
-        let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr % EXPIRING_NONCE_SET_CAPACITY;
-        let old_hash = self.expiring_nonce_ring[idx].read()?;
+        // 3. Clean up expired entries at the head (cascading cleanup)
+        self.cleanup_expired_head(now)?;
 
-        // 4. If there's an existing entry, check if it's expired (can be evicted)
-        // Safety check: buffer is sized so entries should always be expired, but verify
-        // in case TPS exceeds expectations.
-        if old_hash != B256::ZERO {
+        // 4. Insert new entry at tail
+        let tail = self.expiring_nonce_tail.read()?;
+        self.expiring_nonce_buffer[tail].write(tx_hash)?;
+        self.expiring_nonce_seen[tx_hash].write(valid_before)?;
+        self.expiring_nonce_tail.write(tail.wrapping_add(1))?;
+
+        Ok(())
+    }
+
+    /// Cleans up expired entries at the head of the buffer.
+    ///
+    /// Uses cascading cleanup: if an entry is expired, check the next one too.
+    /// This allows the buffer to shrink quickly during low-traffic periods.
+    /// Cleans up to MAX_CASCADE_CLEANUP entries per call.
+    fn cleanup_expired_head(&mut self, now: u64) -> Result<()> {
+        let mut head = self.expiring_nonce_head.read()?;
+        let tail = self.expiring_nonce_tail.read()?;
+
+        let mut cleaned = 0u32;
+        while head < tail && cleaned < MAX_CASCADE_CLEANUP {
+            let old_hash = self.expiring_nonce_buffer[head].read()?;
+            if old_hash == B256::ZERO {
+                // Empty slot, skip
+                head = head.wrapping_add(1);
+                cleaned += 1;
+                continue;
+            }
+
             let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
             if old_expiry != 0 && old_expiry > now {
-                // Entry is still valid, cannot evict - buffer is full
-                return Err(NonceError::expiring_nonce_set_full().into());
+                // Entry is still valid, stop cleanup
+                break;
             }
-            // Clear the old entry from seen set
+
+            // Entry is expired, clear it and advance head
             self.expiring_nonce_seen[old_hash].write(0)?;
+            self.expiring_nonce_buffer[head].write(B256::ZERO)?;
+            head = head.wrapping_add(1);
+            cleaned += 1;
         }
 
-        // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(tx_hash)?;
-        self.expiring_nonce_seen[tx_hash].write(valid_before)?;
-
-        // 6. Advance pointer (wraps automatically via modulo on next read)
-        self.expiring_nonce_ring_ptr.write(ptr.wrapping_add(1))?;
+        // Update head pointer if we cleaned anything
+        if cleaned > 0 {
+            self.expiring_nonce_head.write(head)?;
+        }
 
         Ok(())
     }
@@ -356,14 +385,79 @@ mod tests {
             // After expiry, it should no longer be "seen" (expired)
             assert!(!mgr.is_expiring_nonce_seen(tx_hash1, valid_before + 1)?);
 
-            // Insert second tx after first has expired - should evict first
+            // Insert second tx after first has expired - should clean up first at head
             let new_now = valid_before + 1;
             let new_valid_before = new_now + 20;
             mgr.check_and_mark_expiring_nonce(tx_hash2, new_valid_before, new_now, max_skew)?;
 
-            // tx_hash1 should now be fully evicted (since it was at ring position 0)
-            // and tx_hash2 replaces it
+            // tx_hash1 should now be fully evicted (cleaned up at head)
+            // tx_hash2 is now in the buffer
             assert!(mgr.is_expiring_nonce_seen(tx_hash2, new_now)?);
+
+            // Verify head/tail pointers advanced correctly
+            assert_eq!(mgr.expiring_nonce_head.read()?, 1); // head advanced past tx_hash1
+            assert_eq!(mgr.expiring_nonce_tail.read()?, 2); // tail at position 2
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expiring_nonce_cascading_cleanup() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let now = 1000;
+            let valid_before = now + 20;
+            let max_skew = 30;
+
+            // Insert multiple txs that will all expire at the same time
+            for i in 0..5u8 {
+                let tx_hash = B256::repeat_byte(i);
+                mgr.check_and_mark_expiring_nonce(tx_hash, valid_before, now, max_skew)?;
+            }
+
+            // Verify tail advanced
+            assert_eq!(mgr.expiring_nonce_tail.read()?, 5);
+            assert_eq!(mgr.expiring_nonce_head.read()?, 0);
+
+            // Now insert a new tx after all previous ones expired
+            // Cascading cleanup should clean up multiple entries
+            let new_now = valid_before + 1;
+            let new_valid_before = new_now + 20;
+            let new_tx_hash = B256::repeat_byte(0x99);
+            mgr.check_and_mark_expiring_nonce(new_tx_hash, new_valid_before, new_now, max_skew)?;
+
+            // Head should have advanced (cleaned up expired entries)
+            assert!(mgr.expiring_nonce_head.read()? >= 5);
+            assert!(mgr.is_expiring_nonce_seen(new_tx_hash, new_now)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expiring_nonce_unbounded_growth() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let mut now = 1000u64;
+            let max_skew = 30;
+
+            // Insert many txs - buffer should grow without limit
+            for i in 0..1000u64 {
+                let tx_hash = B256::from(U256::from(i));
+                let valid_before = now + 20;
+                mgr.check_and_mark_expiring_nonce(tx_hash, valid_before, now, max_skew)?;
+                now += 1; // Small time increments so entries don't expire
+            }
+
+            // All entries should be in the buffer (none expired yet)
+            assert_eq!(mgr.expiring_nonce_tail.read()?, 1000);
+            // Head might have advanced slightly due to cascading cleanup
+            // but most entries should still be there
 
             Ok(())
         })
