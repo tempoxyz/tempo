@@ -1,0 +1,457 @@
+---
+title: "Para Wallet SDK for Tempo"
+description: "Embedded wallet and authentication for Tempo with Para. Passwordless login, social auth, and seamless onboarding."
+---
+
+# Para Wallet SDK for Tempo
+
+[Para](https://getpara.com) provides embedded wallet and authentication infrastructure for Tempo applications with frictionless onboarding.
+
+## Features
+
+- **Passwordless auth** — Email and phone OTP login
+- **Social login** — Google, Apple, Twitter authentication
+- **Embedded wallets** — Non-custodial wallets with recovery
+- **Session management** — Persistent user sessions
+
+## SDK Setup
+
+```bash
+npm install @getpara/react-sdk viem
+```
+
+```typescript
+import { ParaProvider } from '@getpara/react-sdk'
+
+const PARA_APP_ID = process.env.NEXT_PUBLIC_PARA_APP_ID!
+```
+
+## Provider Setup
+
+```typescript
+import { ParaProvider } from '@getpara/react-sdk'
+import { tempo } from 'viem/chains'
+
+function App({ children }) {
+  return (
+    <ParaProvider
+      paraClientConfig={{
+        env: 'production', // or 'development'
+        apiKey: PARA_APP_ID
+      }}
+    >
+      {children}
+    </ParaProvider>
+  )
+}
+```
+
+## Authentication
+
+Para v2 uses individual hooks for different operations. See the [official documentation](https://docs.getpara.com/v2/react/guides/hooks) for the complete API.
+
+### Login Flow
+
+```typescript
+import { 
+  useAccount, 
+  useSignUpOrLogIn, 
+  useLogout,
+  useModal 
+} from '@getpara/react-sdk'
+
+function LoginButton() {
+  const { isConnected, address } = useAccount()
+  const { openModal } = useModal()
+  const { logout } = useLogout()
+
+  if (isConnected) {
+    return (
+      <div>
+        <p>Connected: {address}</p>
+        <button onClick={logout}>Logout</button>
+      </div>
+    )
+  }
+
+  return (
+    <button onClick={() => openModal()}>
+      Connect with Para
+    </button>
+  )
+}
+```
+
+### Custom Login Flow
+
+```typescript
+import { useSignUpOrLogIn, useVerifyEmail } from '@getpara/react-sdk'
+import { useState } from 'react'
+
+function CustomLogin() {
+  const { signUpOrLogIn, isLoading } = useSignUpOrLogIn()
+  const { verifyEmail } = useVerifyEmail()
+  const [email, setEmail] = useState('')
+  const [otp, setOtp] = useState('')
+  const [step, setStep] = useState<'email' | 'otp'>('email')
+
+  async function handleEmailSubmit() {
+    try {
+      await signUpOrLogIn({ email })
+      setStep('otp')
+    } catch (error) {
+      console.error('Login failed:', error)
+    }
+  }
+
+  async function handleOtpVerify() {
+    try {
+      await verifyEmail({ verificationCode: otp })
+      // User is now logged in
+    } catch (error) {
+      console.error('Verification failed:', error)
+    }
+  }
+
+  if (step === 'otp') {
+    return (
+      <div>
+        <p>Welcome, {user.email}</p>
+        <p>Wallet: {user.wallet.address}</p>
+        <button onClick={logout}>Logout</button>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <input
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="Enter email"
+      />
+      <button onClick={handleEmailLogin}>Login with Email</button>
+      
+      <div>
+        <button onClick={() => handleSocialLogin('google')}>Google</button>
+        <button onClick={() => handleSocialLogin('apple')}>Apple</button>
+        <button onClick={() => handleSocialLogin('twitter')}>Twitter</button>
+      </div>
+    </div>
+  )
+}
+```
+
+### OTP Verification
+
+```typescript
+function OTPVerification() {
+  const { verifyOTP, pendingLogin } = usePara()
+  const [otp, setOtp] = useState('')
+
+  if (!pendingLogin) return null
+
+  async function handleVerify() {
+    try {
+      await verifyOTP(otp)
+      // Login complete
+    } catch (error) {
+      console.error('Invalid OTP')
+    }
+  }
+
+  return (
+    <div>
+      <p>Enter the code sent to {pendingLogin.email}</p>
+      <input
+        type="text"
+        value={otp}
+        onChange={(e) => setOtp(e.target.value)}
+        placeholder="Enter OTP"
+        maxLength={6}
+      />
+      <button onClick={handleVerify}>Verify</button>
+    </div>
+  )
+}
+```
+
+## Wallet Operations
+
+### Get Wallet
+
+```typescript
+import { usePara } from '@getpara/react-sdk'
+
+function WalletInfo() {
+  const { user, wallet } = usePara()
+
+  if (!wallet) return <div>Not connected</div>
+
+  return (
+    <div>
+      <p>Address: {wallet.address}</p>
+      <p>Chain: {wallet.chainId}</p>
+    </div>
+  )
+}
+```
+
+### Send Transaction
+
+```typescript
+import { usePara } from '@getpara/react-sdk'
+import { parseEther } from 'viem'
+
+function SendTransaction() {
+  const { sendTransaction, wallet } = usePara()
+  const [to, setTo] = useState('')
+  const [amount, setAmount] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSend() {
+    if (!wallet) return
+    
+    setLoading(true)
+    try {
+      const tx = await sendTransaction({
+        to: to as `0x${string}`,
+        value: parseEther(amount)
+      })
+      
+      console.log('Transaction sent:', tx.hash)
+    } catch (error) {
+      console.error('Transaction failed:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div>
+      <input
+        placeholder="Recipient address"
+        value={to}
+        onChange={(e) => setTo(e.target.value)}
+      />
+      <input
+        placeholder="Amount"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+      />
+      <button onClick={handleSend} disabled={loading}>
+        {loading ? 'Sending...' : 'Send'}
+      </button>
+    </div>
+  )
+}
+```
+
+### Sign Message
+
+```typescript
+function SignMessage() {
+  const { signMessage, wallet } = usePara()
+  const [message, setMessage] = useState('')
+  const [signature, setSignature] = useState('')
+
+  async function handleSign() {
+    if (!wallet) return
+    
+    const sig = await signMessage(message)
+    setSignature(sig)
+  }
+
+  return (
+    <div>
+      <input
+        placeholder="Message to sign"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+      />
+      <button onClick={handleSign}>Sign Message</button>
+      {signature && <p>Signature: {signature}</p>}
+    </div>
+  )
+}
+```
+
+### Contract Interaction
+
+```typescript
+import { encodeFunctionData } from 'viem'
+import { erc20Abi } from 'viem'
+
+function TokenTransfer() {
+  const { sendTransaction } = usePara()
+
+  async function transferToken(
+    tokenAddress: string,
+    recipient: string,
+    amount: bigint
+  ) {
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [recipient as `0x${string}`, amount]
+    })
+
+    const tx = await sendTransaction({
+      to: tokenAddress as `0x${string}`,
+      data
+    })
+
+    return tx.hash
+  }
+
+  return (/* UI */)
+}
+```
+
+## Viem Integration
+
+```typescript
+import { createWalletClient, custom } from 'viem'
+import { tempo } from 'viem/chains'
+import { usePara } from '@getpara/react-sdk'
+
+function useViemClient() {
+  const { wallet, provider } = usePara()
+
+  if (!wallet || !provider) return null
+
+  return createWalletClient({
+    account: wallet.address as `0x${string}`,
+    chain: tempo,
+    transport: custom(provider)
+  })
+}
+```
+
+## Wagmi Integration
+
+```typescript
+import { WagmiConfig, createConfig } from 'wagmi'
+import { paraConnector } from '@getpara/wagmi-connector'
+import { tempo } from 'viem/chains'
+
+const config = createConfig({
+  chains: [tempo],
+  connectors: [
+    paraConnector({
+      appId: PARA_APP_ID
+    })
+  ]
+})
+
+function App({ children }) {
+  return (
+    <WagmiConfig config={config}>
+      {children}
+    </WagmiConfig>
+  )
+}
+```
+
+## Session Management
+
+```typescript
+import { usePara } from '@getpara/react-sdk'
+
+function SessionManager() {
+  const { user, session, refreshSession, logout } = usePara()
+
+  // Check if session is about to expire
+  useEffect(() => {
+    if (session && session.expiresAt < Date.now() + 60000) {
+      refreshSession()
+    }
+  }, [session])
+
+  return (
+    <div>
+      {user && (
+        <>
+          <p>Session expires: {new Date(session.expiresAt).toLocaleString()}</p>
+          <button onClick={refreshSession}>Refresh Session</button>
+          <button onClick={logout}>Logout</button>
+        </>
+      )}
+    </div>
+  )
+}
+```
+
+## Recovery
+
+```typescript
+function WalletRecovery() {
+  const { exportRecoveryKey, importRecoveryKey } = usePara()
+  const [recoveryKey, setRecoveryKey] = useState('')
+
+  async function handleExport() {
+    const key = await exportRecoveryKey()
+    // Show key to user for secure storage
+    alert(`Save this key securely: ${key}`)
+  }
+
+  async function handleRecover() {
+    try {
+      await importRecoveryKey(recoveryKey)
+      alert('Wallet recovered successfully')
+    } catch (error) {
+      alert('Recovery failed')
+    }
+  }
+
+  return (
+    <div>
+      <button onClick={handleExport}>Export Recovery Key</button>
+      
+      <input
+        placeholder="Enter recovery key"
+        value={recoveryKey}
+        onChange={(e) => setRecoveryKey(e.target.value)}
+      />
+      <button onClick={handleRecover}>Recover Wallet</button>
+    </div>
+  )
+}
+```
+
+## Theme Customization
+
+```typescript
+<ParaProvider
+  appId={PARA_APP_ID}
+  chains={[tempo]}
+  options={{
+    theme: {
+      mode: 'dark',
+      colors: {
+        primary: '#your-primary-color',
+        background: '#your-bg-color',
+        text: '#your-text-color'
+      },
+      borderRadius: 'lg',
+      fontFamily: 'Inter, sans-serif'
+    },
+    logo: '/your-logo.svg'
+  }}
+>
+  {children}
+</ParaProvider>
+```
+
+## Environment Variables
+
+```bash
+NEXT_PUBLIC_PARA_APP_ID=your-app-id
+```
+
+## Resources
+
+- [Para Documentation](https://docs.getpara.com)
+- [Para SDK](https://github.com/getpara/para-sdk)
+- [Para Dashboard](https://dashboard.getpara.com)

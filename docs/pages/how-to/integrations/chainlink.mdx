@@ -1,0 +1,255 @@
+---
+title: "Chainlink Oracles for Tempo"
+description: "Integrate Chainlink price feeds and CCIP on Tempo. Oracle data, cross-chain messaging, and data verification."
+---
+
+# Chainlink Oracles for Tempo
+
+[Chainlink](https://chain.link) provides oracle infrastructure for Tempo including price feeds and cross-chain messaging.
+
+## Price Feeds
+
+### Consumer Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+
+contract TempoPriceConsumer {
+    AggregatorV3Interface public priceFeed;
+
+    constructor(address _priceFeed) {
+        priceFeed = AggregatorV3Interface(_priceFeed);
+    }
+
+    function getLatestPrice() public view returns (int256, uint8) {
+        (
+            ,
+            int256 price,
+            ,
+            uint256 updatedAt,
+            
+        ) = priceFeed.latestRoundData();
+
+        require(updatedAt > 0, "Round not complete");
+        require(price > 0, "Invalid price");
+
+        return (price, priceFeed.decimals());
+    }
+
+    function getPriceWithValidation(
+        uint256 maxStalenessSeconds
+    ) public view returns (int256) {
+        (
+            ,
+            int256 price,
+            ,
+            uint256 updatedAt,
+            
+        ) = priceFeed.latestRoundData();
+
+        require(
+            block.timestamp - updatedAt <= maxStalenessSeconds,
+            "Price is stale"
+        );
+
+        return price;
+    }
+}
+```
+
+### Testing with Mocks
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {Test} from "forge-std/Test.sol";
+import {MockV3Aggregator} from "@chainlink/local/src/data-feeds/MockV3Aggregator.sol";
+import {TempoPriceConsumer} from "../src/TempoPriceConsumer.sol";
+
+contract PriceFeedTest is Test {
+    MockV3Aggregator public priceFeed;
+    TempoPriceConsumer public consumer;
+
+    function setUp() public {
+        priceFeed = new MockV3Aggregator(8, 100000000000); // $1000
+        consumer = new TempoPriceConsumer(address(priceFeed));
+    }
+
+    function test_getLatestPrice() public {
+        (int256 price, uint8 decimals) = consumer.getLatestPrice();
+        assertEq(price, 100000000000);
+        assertEq(decimals, 8);
+    }
+
+    function test_priceUpdate() public {
+        priceFeed.updateAnswer(150000000000); // $1500
+        (int256 price, ) = consumer.getLatestPrice();
+        assertEq(price, 150000000000);
+    }
+}
+```
+
+## CCIP Cross-Chain
+
+### Sender Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {IRouterClient} from "@chainlink/contracts-ccip/contracts/interfaces/IRouterClient.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
+contract TempoCCIPSender {
+    IRouterClient public router;
+    IERC20 public linkToken;
+
+    event MessageSent(bytes32 messageId, uint64 destChain);
+
+    constructor(address _router, address _link) {
+        router = IRouterClient(_router);
+        linkToken = IERC20(_link);
+    }
+
+    function sendMessage(
+        uint64 destChainSelector,
+        address receiver,
+        string calldata data,
+        address token,
+        uint256 amount
+    ) external returns (bytes32) {
+        Client.EVMTokenAmount[] memory tokens = new Client.EVMTokenAmount[](1);
+        tokens[0] = Client.EVMTokenAmount({
+            token: token,
+            amount: amount
+        });
+
+        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+            receiver: abi.encode(receiver),
+            data: abi.encode(data),
+            tokenAmounts: tokens,
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({gasLimit: 200_000})
+            ),
+            feeToken: address(linkToken)
+        });
+
+        uint256 fee = router.getFee(destChainSelector, message);
+        linkToken.approve(address(router), fee);
+        IERC20(token).approve(address(router), amount);
+
+        bytes32 messageId = router.ccipSend(destChainSelector, message);
+        emit MessageSent(messageId, destChainSelector);
+        return messageId;
+    }
+}
+```
+
+### Receiver Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {CCIPReceiver} from "@chainlink/contracts-ccip/contracts/applications/CCIPReceiver.sol";
+import {Client} from "@chainlink/contracts-ccip/contracts/libraries/Client.sol";
+
+contract TempoCCIPReceiver is CCIPReceiver {
+    mapping(uint64 => bool) public allowedChains;
+    mapping(address => bool) public allowedSenders;
+
+    event MessageReceived(bytes32 messageId, string data);
+
+    constructor(address _router) CCIPReceiver(_router) {}
+
+    function allowChain(uint64 chainSelector, bool allowed) external {
+        allowedChains[chainSelector] = allowed;
+    }
+
+    function allowSender(address sender, bool allowed) external {
+        allowedSenders[sender] = allowed;
+    }
+
+    function _ccipReceive(
+        Client.Any2EVMMessage memory message
+    ) internal override {
+        require(
+            allowedChains[message.sourceChainSelector],
+            "Chain not allowed"
+        );
+
+        address sender = abi.decode(message.sender, (address));
+        require(allowedSenders[sender], "Sender not allowed");
+
+        string memory data = abi.decode(message.data, (string));
+        emit MessageReceived(message.messageId, data);
+    }
+}
+```
+
+## Installation
+
+```bash
+# Foundry
+forge install smartcontractkit/chainlink-local
+
+# Add remappings
+echo "@chainlink/local/=lib/chainlink-local/src/" >> remappings.txt
+echo "@chainlink/contracts/=lib/chainlink/contracts/" >> remappings.txt
+```
+
+## Testing CCIP
+
+```solidity
+import {CCIPLocalSimulator} from "@chainlink/local/src/ccip/CCIPLocalSimulator.sol";
+
+contract CCIPTest is Test {
+    CCIPLocalSimulator public simulator;
+    TempoCCIPSender public sender;
+    TempoCCIPReceiver public receiver;
+
+    function setUp() public {
+        simulator = new CCIPLocalSimulator();
+        
+        (
+            uint64 chainSelector,
+            IRouterClient router,
+            ,
+            ,
+            address link,
+            ,
+        ) = simulator.configuration();
+
+        sender = new TempoCCIPSender(address(router), link);
+        receiver = new TempoCCIPReceiver(address(router));
+
+        receiver.allowChain(chainSelector, true);
+        receiver.allowSender(address(sender), true);
+
+        simulator.requestLinkFromFaucet(address(sender), 10 ether);
+    }
+
+    function test_crossChainMessage() public {
+        bytes32 messageId = sender.sendMessage(
+            chainSelector,
+            address(receiver),
+            "Hello Tempo!",
+            address(0), // No tokens
+            0
+        );
+        
+        assertNotEq(messageId, bytes32(0));
+    }
+}
+```
+
+## Resources
+
+- [Chainlink Documentation](https://docs.chain.link)
+- [CCIP Documentation](https://docs.chain.link/ccip)
+- [Chainlink Local](https://github.com/smartcontractkit/chainlink-local)

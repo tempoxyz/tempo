@@ -1,0 +1,400 @@
+---
+title: "Hyperlane Interoperability for Tempo"
+description: "Permissionless cross-chain messaging for Tempo with Hyperlane. Deploy interchain applications with modular security."
+---
+
+# Hyperlane Interoperability for Tempo
+
+[Hyperlane](https://hyperlane.xyz) provides permissionless cross-chain messaging with modular security, enabling Tempo applications to communicate with any blockchain.
+
+## Features
+
+- **Permissionless deployment** — Deploy to any chain without governance
+- **Modular security** — Choose your security model with ISMs
+- **Warp Routes** — Bridge any token across chains
+- **Interchain accounts** — Control accounts on remote chains
+
+## SDK Setup
+
+```bash
+npm install @hyperlane-xyz/sdk viem
+```
+
+```typescript
+import { MultiProvider, HyperlaneCore } from '@hyperlane-xyz/sdk'
+import { createWalletClient, http } from 'viem'
+import { tempo } from 'viem/chains'
+
+const multiProvider = new MultiProvider({
+  tempo: {
+    chainId: TEMPO_CHAIN_ID,
+    name: 'Tempo',
+    rpcUrls: [{ http: 'https://rpc.tempo.network' }]
+  }
+})
+
+const core = HyperlaneCore.fromEnvironment('mainnet', multiProvider)
+```
+
+## Send Cross-Chain Message
+
+### Solidity Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import { IMailbox } from "@hyperlane-xyz/core/contracts/interfaces/IMailbox.sol";
+import { IInterchainGasPaymaster } from "@hyperlane-xyz/core/contracts/interfaces/IInterchainGasPaymaster.sol";
+
+contract TempoMessenger {
+    IMailbox public mailbox;
+    IInterchainGasPaymaster public igp;
+
+    constructor(address _mailbox, address _igp) {
+        mailbox = IMailbox(_mailbox);
+        igp = IInterchainGasPaymaster(_igp);
+    }
+
+    function sendMessage(
+        uint32 destinationDomain,
+        bytes32 recipient,
+        bytes calldata message
+    ) external payable returns (bytes32 messageId) {
+        // Send the message
+        messageId = mailbox.dispatch(
+            destinationDomain,
+            recipient,
+            message
+        );
+
+        // Pay for interchain gas
+        igp.payForGas{ value: msg.value }(
+            messageId,
+            destinationDomain,
+            300000, // Gas limit on destination
+            msg.sender
+        );
+    }
+
+    function handle(
+        uint32 _origin,
+        bytes32 _sender,
+        bytes calldata _message
+    ) external {
+        require(msg.sender == address(mailbox), "Only mailbox");
+        // Process incoming message
+    }
+}
+```
+
+### TypeScript Integration
+
+```typescript
+import { addressToBytes32 } from '@hyperlane-xyz/utils'
+
+const mailboxAbi = [
+  {
+    name: 'dispatch',
+    type: 'function',
+    inputs: [
+      { name: 'destinationDomain', type: 'uint32' },
+      { name: 'recipientAddress', type: 'bytes32' },
+      { name: 'messageBody', type: 'bytes' }
+    ],
+    outputs: [{ name: 'messageId', type: 'bytes32' }]
+  },
+  {
+    name: 'quoteDispatch',
+    type: 'function',
+    inputs: [
+      { name: 'destinationDomain', type: 'uint32' },
+      { name: 'recipientAddress', type: 'bytes32' },
+      { name: 'messageBody', type: 'bytes' }
+    ],
+    outputs: [{ name: 'fee', type: 'uint256' }]
+  }
+] as const
+
+async function sendMessage(
+  destinationDomain: number,
+  recipientAddress: string,
+  message: `0x${string}`
+) {
+  const recipient = addressToBytes32(recipientAddress)
+
+  // Quote gas cost
+  const fee = await publicClient.readContract({
+    address: MAILBOX_ADDRESS,
+    abi: mailboxAbi,
+    functionName: 'quoteDispatch',
+    args: [destinationDomain, recipient, message]
+  })
+
+  // Send message
+  const hash = await walletClient.writeContract({
+    address: MAILBOX_ADDRESS,
+    abi: mailboxAbi,
+    functionName: 'dispatch',
+    args: [destinationDomain, recipient, message],
+    value: fee
+  })
+
+  return hash
+}
+```
+
+## Warp Routes (Token Bridging)
+
+### Deploy Warp Route
+
+```typescript
+import { WarpCoreConfig, WarpRouteDeployConfig } from '@hyperlane-xyz/sdk'
+
+const warpConfig: WarpRouteDeployConfig = {
+  tempo: {
+    type: 'native', // or 'collateral' for ERC20
+    mailbox: TEMPO_MAILBOX_ADDRESS,
+    interchainSecurityModule: ISM_ADDRESS
+  },
+  ethereum: {
+    type: 'synthetic',
+    mailbox: ETH_MAILBOX_ADDRESS,
+    interchainSecurityModule: ISM_ADDRESS
+  }
+}
+
+// Deploy warp route contracts
+const warpRoute = await deployWarpRoute(warpConfig)
+```
+
+### Bridge Tokens
+
+```typescript
+const warpRouteAbi = [
+  {
+    name: 'transferRemote',
+    type: 'function',
+    inputs: [
+      { name: 'destination', type: 'uint32' },
+      { name: 'recipient', type: 'bytes32' },
+      { name: 'amount', type: 'uint256' }
+    ],
+    outputs: [{ name: 'messageId', type: 'bytes32' }]
+  },
+  {
+    name: 'quoteGasPayment',
+    type: 'function',
+    inputs: [{ name: 'destination', type: 'uint32' }],
+    outputs: [{ name: 'fee', type: 'uint256' }]
+  }
+] as const
+
+async function bridgeTokens(
+  warpRouteAddress: string,
+  destinationDomain: number,
+  recipient: string,
+  amount: bigint
+) {
+  const recipientBytes32 = addressToBytes32(recipient)
+
+  // Get gas quote
+  const gasFee = await publicClient.readContract({
+    address: warpRouteAddress as `0x${string}`,
+    abi: warpRouteAbi,
+    functionName: 'quoteGasPayment',
+    args: [destinationDomain]
+  })
+
+  // Execute transfer
+  const hash = await walletClient.writeContract({
+    address: warpRouteAddress as `0x${string}`,
+    abi: warpRouteAbi,
+    functionName: 'transferRemote',
+    args: [destinationDomain, recipientBytes32, amount],
+    value: gasFee
+  })
+
+  return hash
+}
+```
+
+## Interchain Accounts
+
+```typescript
+import { InterchainAccount } from '@hyperlane-xyz/sdk'
+
+// Get the interchain account address on remote chain
+async function getRemoteAccountAddress(
+  localAddress: string,
+  remoteDomain: number
+) {
+  const ica = new InterchainAccount(core)
+  const remoteAccount = await ica.getAccountAddress(
+    'tempo',
+    remoteDomain,
+    localAddress
+  )
+  return remoteAccount
+}
+
+// Execute call on remote chain
+async function executeRemoteCall(
+  remoteDomain: number,
+  targetContract: string,
+  callData: `0x${string}`,
+  value: bigint = 0n
+) {
+  const ica = new InterchainAccount(core)
+  
+  const call = {
+    to: targetContract,
+    data: callData,
+    value
+  }
+
+  const hash = await ica.callRemote(
+    'tempo',
+    remoteDomain,
+    [call]
+  )
+
+  return hash
+}
+```
+
+## Interchain Security Modules (ISM)
+
+### Configure Security
+
+```solidity
+// Custom ISM that requires multiple validators
+contract MultiSigISM is IInterchainSecurityModule {
+    address[] public validators;
+    uint8 public threshold;
+
+    function verify(
+        bytes calldata _metadata,
+        bytes calldata _message
+    ) external view returns (bool) {
+        // Verify threshold signatures from validators
+        bytes32 digest = MessageHashUtils.toEthSignedMessageHash(
+            keccak256(_message)
+        );
+        
+        uint8 validSignatures = 0;
+        for (uint i = 0; i < validators.length; i++) {
+            if (hasValidSignature(_metadata, digest, validators[i])) {
+                validSignatures++;
+            }
+        }
+        
+        return validSignatures >= threshold;
+    }
+
+    function moduleType() external pure returns (uint8) {
+        return 3; // MULTISIG
+    }
+}
+```
+
+### Use Aggregation ISM
+
+```typescript
+import { AggregationIsmConfig } from '@hyperlane-xyz/sdk'
+
+const aggregationConfig: AggregationIsmConfig = {
+  type: 'aggregation',
+  threshold: 2,
+  modules: [
+    { type: 'multisig', validators: [...], threshold: 3 },
+    { type: 'merkleRootMultisig', validators: [...], threshold: 2 }
+  ]
+}
+```
+
+## Track Message Status
+
+```typescript
+interface MessageStatus {
+  messageId: string
+  status: 'dispatched' | 'delivered' | 'failed'
+  origin: { chain: string; txHash: string }
+  destination?: { chain: string; txHash: string }
+}
+
+async function getMessageStatus(messageId: string): Promise<MessageStatus> {
+  const message = await core.getDispatchedMessages({ 
+    messageId 
+  })
+
+  const delivered = await core.getDeliveredMessages({
+    messageId
+  })
+
+  return {
+    messageId,
+    status: delivered ? 'delivered' : 'dispatched',
+    origin: {
+      chain: message.origin,
+      txHash: message.transactionHash
+    },
+    destination: delivered ? {
+      chain: message.destination,
+      txHash: delivered.transactionHash
+    } : undefined
+  }
+}
+```
+
+## Hyperlane Explorer Integration
+
+```typescript
+async function getExplorerUrl(messageId: string) {
+  return `https://explorer.hyperlane.xyz/message/${messageId}`
+}
+
+async function searchMessages(params: {
+  origin?: string
+  destination?: string
+  sender?: string
+  recipient?: string
+}) {
+  const response = await fetch(
+    `https://explorer.hyperlane.xyz/api/v1/messages?` +
+    new URLSearchParams(params as any)
+  )
+  return response.json()
+}
+```
+
+## Domain IDs
+
+| Chain | Domain ID |
+|-------|-----------|
+| Tempo | TBD |
+| Ethereum | 1 |
+| Arbitrum | 42161 |
+| Optimism | 10 |
+| Polygon | 137 |
+
+## Contract Addresses
+
+| Contract | Address |
+|----------|---------|
+| Mailbox | `0x...` (Tempo) |
+| IGP | `0x...` (Tempo) |
+| Validator Announce | `0x...` (Tempo) |
+
+## Environment Variables
+
+```bash
+HYPERLANE_PRIVATE_KEY=your-private-key
+```
+
+## Resources
+
+- [Hyperlane Documentation](https://docs.hyperlane.xyz)
+- [Hyperlane SDK](https://github.com/hyperlane-xyz/hyperlane-monorepo)
+- [Hyperlane Explorer](https://explorer.hyperlane.xyz)
+- [Deploy Guide](https://docs.hyperlane.xyz/deploy)

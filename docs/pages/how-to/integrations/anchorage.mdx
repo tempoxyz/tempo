@@ -1,0 +1,396 @@
+---
+title: "Anchorage Digital Custody for Tempo"
+description: "Institutional-grade digital asset custody for Tempo with Anchorage. Regulatory compliance, insurance, and enterprise security."
+---
+
+# Anchorage Digital Custody for Tempo
+
+[Anchorage Digital](https://anchorage.com) provides institutional-grade custody, trading, and staking services for Tempo assets.
+
+> **Note:** Anchorage Digital's API access is provided to institutional clients after onboarding. The examples in this guide illustrate common custody API patterns and should be verified against Anchorage's official documentation.
+
+## Features
+
+- **Qualified custody** — SEC-qualified custodian
+- **Insurance coverage** — Comprehensive asset protection
+- **Multi-sig governance** — Configurable approval policies
+- **API access** — Programmatic custody operations
+
+## API Setup
+
+```typescript
+const ANCHORAGE_API_KEY = process.env.ANCHORAGE_API_KEY
+const ANCHORAGE_API_SECRET = process.env.ANCHORAGE_API_SECRET
+const ANCHORAGE_BASE_URL = 'https://api.anchorage.com'
+
+async function anchorageRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const timestamp = Date.now().toString()
+  const signature = createSignature(
+    options.method || 'GET',
+    endpoint,
+    timestamp,
+    options.body
+  )
+
+  const response = await fetch(`${ANCHORAGE_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Anchorage-Api-Key': ANCHORAGE_API_KEY!,
+      'X-Anchorage-Timestamp': timestamp,
+      'X-Anchorage-Signature': signature
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+
+function createSignature(
+  method: string,
+  endpoint: string,
+  timestamp: string,
+  body?: any
+) {
+  const crypto = require('crypto')
+  const message = `${timestamp}${method}${endpoint}${body ? JSON.stringify(body) : ''}`
+  return crypto
+    .createHmac('sha256', ANCHORAGE_API_SECRET)
+    .update(message)
+    .digest('hex')
+}
+```
+
+## Vault Management
+
+### List Vaults
+
+```typescript
+interface Vault {
+  id: string
+  name: string
+  type: string
+  assets: Array<{
+    asset: string
+    balance: string
+    balanceUsd: number
+  }>
+}
+
+async function listVaults(): Promise<Vault[]> {
+  const data = await anchorageRequest('/v1/vaults')
+
+  return data.vaults.map((vault: any) => ({
+    id: vault.vault_id,
+    name: vault.name,
+    type: vault.type,
+    assets: vault.balances.map((b: any) => ({
+      asset: b.asset_type,
+      balance: b.balance,
+      balanceUsd: b.usd_value
+    }))
+  }))
+}
+```
+
+### Get Vault Balance
+
+```typescript
+async function getVaultBalance(vaultId: string, asset = 'ETH') {
+  const data = await anchorageRequest(
+    `/v1/vaults/${vaultId}/balances?asset=${asset}`
+  )
+
+  return {
+    vaultId,
+    asset,
+    available: data.available_balance,
+    pending: data.pending_balance,
+    total: data.total_balance,
+    usdValue: data.usd_value
+  }
+}
+```
+
+## Addresses
+
+### Generate Deposit Address
+
+```typescript
+async function generateDepositAddress(vaultId: string, asset: string) {
+  const data = await anchorageRequest(`/v1/vaults/${vaultId}/addresses`, {
+    method: 'POST',
+    body: {
+      asset_type: asset,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    address: data.address,
+    asset,
+    network: 'tempo',
+    vaultId
+  }
+}
+```
+
+### List Addresses
+
+```typescript
+async function listAddresses(vaultId: string) {
+  const data = await anchorageRequest(`/v1/vaults/${vaultId}/addresses`)
+
+  return data.addresses.map((addr: any) => ({
+    address: addr.address,
+    asset: addr.asset_type,
+    network: addr.network,
+    createdAt: addr.created_at
+  }))
+}
+```
+
+## Withdrawals
+
+### Create Withdrawal
+
+```typescript
+interface WithdrawalRequest {
+  vaultId: string
+  asset: string
+  amount: string
+  destinationAddress: string
+  note?: string
+}
+
+async function createWithdrawal(request: WithdrawalRequest) {
+  const data = await anchorageRequest(
+    `/v1/vaults/${request.vaultId}/withdrawals`,
+    {
+      method: 'POST',
+      body: {
+        asset_type: request.asset,
+        amount: request.amount,
+        destination_address: request.destinationAddress,
+        network: 'tempo',
+        note: request.note
+      }
+    }
+  )
+
+  return {
+    withdrawalId: data.withdrawal_id,
+    status: data.status,
+    amount: data.amount,
+    asset: data.asset_type,
+    destination: data.destination_address,
+    requiredApprovals: data.required_approvals,
+    currentApprovals: data.current_approvals
+  }
+}
+```
+
+### Get Withdrawal Status
+
+```typescript
+async function getWithdrawalStatus(vaultId: string, withdrawalId: string) {
+  const data = await anchorageRequest(
+    `/v1/vaults/${vaultId}/withdrawals/${withdrawalId}`
+  )
+
+  return {
+    id: data.withdrawal_id,
+    status: data.status,
+    amount: data.amount,
+    asset: data.asset_type,
+    destination: data.destination_address,
+    txHash: data.transaction_hash,
+    approvals: data.approvals,
+    createdAt: data.created_at,
+    completedAt: data.completed_at
+  }
+}
+```
+
+## Policies
+
+### Get Approval Policy
+
+```typescript
+async function getApprovalPolicy(vaultId: string) {
+  const data = await anchorageRequest(`/v1/vaults/${vaultId}/policies`)
+
+  return {
+    vaultId,
+    withdrawalPolicy: {
+      threshold: data.withdrawal_policy.threshold,
+      approvers: data.withdrawal_policy.approvers,
+      limits: data.withdrawal_policy.limits?.map((l: any) => ({
+        amount: l.amount,
+        currency: l.currency,
+        period: l.period,
+        approvalsRequired: l.approvals_required
+      }))
+    }
+  }
+}
+```
+
+### Approve Withdrawal
+
+```typescript
+async function approveWithdrawal(
+  vaultId: string,
+  withdrawalId: string,
+  approverId: string
+) {
+  const data = await anchorageRequest(
+    `/v1/vaults/${vaultId}/withdrawals/${withdrawalId}/approve`,
+    {
+      method: 'POST',
+      body: {
+        approver_id: approverId
+      }
+    }
+  )
+
+  return {
+    withdrawalId,
+    status: data.status,
+    approvals: data.approvals
+  }
+}
+```
+
+## Transaction History
+
+```typescript
+async function getTransactionHistory(
+  vaultId: string,
+  options: {
+    asset?: string
+    startDate?: Date
+    endDate?: Date
+    limit?: number
+  } = {}
+) {
+  const params = new URLSearchParams()
+  if (options.asset) params.set('asset', options.asset)
+  if (options.startDate) params.set('start_date', options.startDate.toISOString())
+  if (options.endDate) params.set('end_date', options.endDate.toISOString())
+  if (options.limit) params.set('limit', options.limit.toString())
+
+  const data = await anchorageRequest(
+    `/v1/vaults/${vaultId}/transactions?${params}`
+  )
+
+  return data.transactions.map((tx: any) => ({
+    id: tx.transaction_id,
+    type: tx.type,
+    asset: tx.asset_type,
+    amount: tx.amount,
+    status: tx.status,
+    txHash: tx.blockchain_transaction_hash,
+    timestamp: tx.timestamp,
+    counterparty: tx.counterparty_address
+  }))
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.ANCHORAGE_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/anchorage', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-anchorage-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.event_type) {
+    case 'deposit.confirmed':
+      handleDeposit(event.data)
+      break
+    case 'withdrawal.pending_approval':
+      handlePendingApproval(event.data)
+      break
+    case 'withdrawal.completed':
+      handleWithdrawalComplete(event.data)
+      break
+    case 'withdrawal.failed':
+      handleWithdrawalFailed(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Reporting
+
+```typescript
+async function generateReport(
+  vaultId: string,
+  reportType: 'balance' | 'transactions' | 'tax',
+  startDate: Date,
+  endDate: Date
+) {
+  const data = await anchorageRequest(`/v1/vaults/${vaultId}/reports`, {
+    method: 'POST',
+    body: {
+      report_type: reportType,
+      start_date: startDate.toISOString(),
+      end_date: endDate.toISOString(),
+      format: 'csv'
+    }
+  })
+
+  return {
+    reportId: data.report_id,
+    status: data.status,
+    downloadUrl: data.download_url
+  }
+}
+```
+
+## Best Practices
+
+1. **Whitelisted addresses** — Pre-approve withdrawal destinations
+2. **Multi-approval** — Require multiple approvers for large withdrawals
+3. **Rate limits** — Implement withdrawal velocity limits
+4. **Monitoring** — Set up alerts for unusual activity
+5. **Audit trail** — Log all API operations
+
+## Environment Variables
+
+```bash
+ANCHORAGE_API_KEY=your-api-key
+ANCHORAGE_API_SECRET=your-api-secret
+ANCHORAGE_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Anchorage Documentation](https://docs.anchorage.com)
+- [Anchorage API Reference](https://docs.anchorage.com/api)
+- [Anchorage Platform](https://app.anchorage.com)

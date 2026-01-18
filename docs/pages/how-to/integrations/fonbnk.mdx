@@ -1,0 +1,436 @@
+---
+title: "Fonbnk Mobile Money Ramps for Tempo"
+description: "Mobile money to crypto infrastructure for Tempo with Fonbnk. Enable on/off-ramps via airtime and mobile money across emerging markets."
+---
+
+# Fonbnk Mobile Money Ramps for Tempo
+
+[Fonbnk](https://fonbnk.com) provides mobile money and airtime-to-crypto infrastructure, enabling seamless on/off-ramps across emerging markets.
+
+## Features
+
+- **Airtime conversion** — Convert airtime to crypto
+- **Mobile money** — Direct mobile wallet integration
+- **Emerging markets** — Focus on underbanked regions
+- **Micro-transactions** — Support for small amounts
+
+## API Setup
+
+```typescript
+const FONBNK_API_KEY = process.env.FONBNK_API_KEY
+const FONBNK_SECRET = process.env.FONBNK_SECRET
+const FONBNK_BASE_URL = 'https://api.fonbnk.com/v1'
+
+async function fonbnkRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const response = await fetch(`${FONBNK_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': FONBNK_API_KEY!,
+      'X-API-Secret': FONBNK_SECRET!
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Get Supported Countries
+
+```typescript
+interface Country {
+  code: string
+  name: string
+  currency: string
+  operators: Array<{
+    id: string
+    name: string
+    type: 'airtime' | 'mobile_money'
+  }>
+}
+
+async function getSupportedCountries(): Promise<Country[]> {
+  const data = await fonbnkRequest('/countries')
+  
+  return data.countries.map((country: any) => ({
+    code: country.code,
+    name: country.name,
+    currency: country.currency,
+    operators: country.operators.map((op: any) => ({
+      id: op.id,
+      name: op.name,
+      type: op.type
+    }))
+  }))
+}
+```
+
+## Get Exchange Rates
+
+```typescript
+interface ExchangeRate {
+  countryCode: string
+  operatorId: string
+  localCurrency: string
+  buyRate: number
+  sellRate: number
+  minAmount: number
+  maxAmount: number
+}
+
+async function getExchangeRate(
+  countryCode: string,
+  operatorId: string
+): Promise<ExchangeRate> {
+  const data = await fonbnkRequest(
+    `/rates?country=${countryCode}&operator=${operatorId}`
+  )
+  
+  return {
+    countryCode,
+    operatorId,
+    localCurrency: data.local_currency,
+    buyRate: data.buy_rate,
+    sellRate: data.sell_rate,
+    minAmount: data.min_amount,
+    maxAmount: data.max_amount
+  }
+}
+```
+
+## On-Ramp (Buy Crypto)
+
+### Create Airtime Order
+
+```typescript
+interface AirtimeOrderRequest {
+  countryCode: string
+  operatorId: string
+  phoneNumber: string
+  localAmount: number
+  cryptoAddress: string
+  crypto: 'USDC' | 'USDT'
+}
+
+async function createAirtimeOrder(request: AirtimeOrderRequest) {
+  const data = await fonbnkRequest('/orders/airtime', {
+    method: 'POST',
+    body: {
+      country: request.countryCode,
+      operator: request.operatorId,
+      phone: request.phoneNumber,
+      amount: request.localAmount,
+      crypto: request.crypto,
+      network: 'tempo',
+      address: request.cryptoAddress
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    localAmount: data.local_amount,
+    cryptoAmount: data.crypto_amount,
+    rate: data.rate,
+    instructions: data.instructions, // How to send airtime
+    expiresAt: data.expires_at
+  }
+}
+```
+
+### Create Mobile Money Order
+
+```typescript
+interface MobileMoneyOrderRequest {
+  countryCode: string
+  operatorId: string
+  phoneNumber: string
+  localAmount: number
+  cryptoAddress: string
+  crypto: 'USDC' | 'USDT'
+}
+
+async function createMobileMoneyOrder(request: MobileMoneyOrderRequest) {
+  const data = await fonbnkRequest('/orders/mobile-money', {
+    method: 'POST',
+    body: {
+      country: request.countryCode,
+      operator: request.operatorId,
+      phone: request.phoneNumber,
+      amount: request.localAmount,
+      crypto: request.crypto,
+      network: 'tempo',
+      address: request.cryptoAddress
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    localAmount: data.local_amount,
+    cryptoAmount: data.crypto_amount,
+    paymentDetails: data.payment_details,
+    expiresAt: data.expires_at
+  }
+}
+```
+
+## Off-Ramp (Sell Crypto)
+
+### Create Sell Order
+
+```typescript
+interface SellOrderRequest {
+  countryCode: string
+  operatorId: string
+  phoneNumber: string
+  cryptoAmount: number
+  crypto: 'USDC' | 'USDT'
+}
+
+async function createSellOrder(request: SellOrderRequest) {
+  const data = await fonbnkRequest('/orders/sell', {
+    method: 'POST',
+    body: {
+      country: request.countryCode,
+      operator: request.operatorId,
+      phone: request.phoneNumber,
+      crypto_amount: request.cryptoAmount,
+      crypto: request.crypto,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    depositAddress: data.deposit_address,
+    depositAmount: data.deposit_amount,
+    localAmount: data.local_amount,
+    expiresAt: data.expires_at
+  }
+}
+```
+
+### Confirm Sell Order
+
+```typescript
+async function confirmSellOrder(orderId: string, txHash: string) {
+  const data = await fonbnkRequest(`/orders/${orderId}/confirm`, {
+    method: 'POST',
+    body: {
+      tx_hash: txHash
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    estimatedDelivery: data.estimated_delivery
+  }
+}
+```
+
+## Order Status
+
+```typescript
+interface OrderStatus {
+  orderId: string
+  type: 'buy' | 'sell'
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'expired'
+  localAmount: number
+  cryptoAmount: number
+  txHash?: string
+  completedAt?: string
+}
+
+async function getOrderStatus(orderId: string): Promise<OrderStatus> {
+  const data = await fonbnkRequest(`/orders/${orderId}`)
+  
+  return {
+    orderId: data.order_id,
+    type: data.type,
+    status: data.status,
+    localAmount: data.local_amount,
+    cryptoAmount: data.crypto_amount,
+    txHash: data.tx_hash,
+    completedAt: data.completed_at
+  }
+}
+```
+
+## Widget Integration
+
+```typescript
+// Embed Fonbnk widget in your app
+function FonbnkWidget({ walletAddress }: { walletAddress: string }) {
+  const widgetUrl = `https://widget.fonbnk.com?` +
+    `apiKey=${FONBNK_API_KEY}` +
+    `&address=${walletAddress}` +
+    `&network=tempo` +
+    `&crypto=USDC`
+
+  return (
+    <iframe
+      src={widgetUrl}
+      width="400"
+      height="600"
+      style={{ border: 'none' }}
+    />
+  )
+}
+```
+
+## React Integration
+
+```typescript
+import { useState } from 'react'
+
+function useFonbnkOnRamp() {
+  const [loading, setLoading] = useState(false)
+  const [order, setOrder] = useState<any>(null)
+  const [error, setError] = useState<Error | null>(null)
+
+  const createOrder = async (
+    type: 'airtime' | 'mobile_money',
+    request: any
+  ) => {
+    setLoading(true)
+    setError(null)
+    
+    try {
+      const result = type === 'airtime'
+        ? await createAirtimeOrder(request)
+        : await createMobileMoneyOrder(request)
+      
+      setOrder(result)
+      return result
+    } catch (e) {
+      setError(e as Error)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const checkStatus = async () => {
+    if (!order) return null
+    
+    const status = await getOrderStatus(order.orderId)
+    setOrder({ ...order, ...status })
+    return status
+  }
+
+  return { createOrder, checkStatus, loading, order, error }
+}
+
+// Usage
+function BuyCryptoForm() {
+  const { createOrder, loading, order } = useFonbnkOnRamp()
+  const [phone, setPhone] = useState('')
+  const [amount, setAmount] = useState('')
+
+  async function handleSubmit() {
+    await createOrder('mobile_money', {
+      countryCode: 'KE',
+      operatorId: 'mpesa',
+      phoneNumber: phone,
+      localAmount: parseFloat(amount),
+      cryptoAddress: userWallet,
+      crypto: 'USDC'
+    })
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        placeholder="Phone number"
+        value={phone}
+        onChange={(e) => setPhone(e.target.value)}
+      />
+      <input
+        placeholder="Amount (KES)"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+      />
+      <button type="submit" disabled={loading}>
+        {loading ? 'Processing...' : 'Buy USDC'}
+      </button>
+    </form>
+  )
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.FONBNK_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/fonbnk', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-fonbnk-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'order.payment_received':
+      handlePaymentReceived(event.data)
+      break
+    case 'order.crypto_sent':
+      handleCryptoSent(event.data)
+      break
+    case 'order.completed':
+      handleOrderCompleted(event.data)
+      break
+    case 'order.failed':
+      handleOrderFailed(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Supported Markets
+
+| Country | Currency | Airtime | Mobile Money |
+|---------|----------|---------|--------------|
+| Kenya | KES | ✓ | M-Pesa |
+| Nigeria | NGN | ✓ | Multiple |
+| Ghana | GHS | ✓ | MTN, Vodafone |
+| Uganda | UGX | ✓ | MTN, Airtel |
+| Tanzania | TZS | ✓ | M-Pesa, Tigo |
+
+## Environment Variables
+
+```bash
+FONBNK_API_KEY=your-api-key
+FONBNK_SECRET=your-secret
+FONBNK_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Fonbnk Documentation](https://docs.fonbnk.com)
+- [Fonbnk API Reference](https://docs.fonbnk.com/api)
+- [Fonbnk Dashboard](https://dashboard.fonbnk.com)

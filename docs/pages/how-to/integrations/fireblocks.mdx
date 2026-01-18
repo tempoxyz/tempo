@@ -1,0 +1,570 @@
+---
+title: "Fireblocks Enterprise Custody for Tempo"
+description: "Institutional wallet infrastructure for Tempo with Fireblocks. MPC signing, vault management, and enterprise-grade security."
+---
+
+# Fireblocks Enterprise Custody for Tempo
+
+[Fireblocks](https://www.fireblocks.com) provides institutional-grade wallet infrastructure for Tempo with MPC-based signing, vault management, and enterprise security controls.
+
+## Why Fireblocks
+
+- **MPC security** — Multi-party computation eliminates single points of failure
+- **Policy engine** — Granular transaction approval workflows
+- **Vault management** — Hierarchical account structure
+- **Compliance** — SOC 2 Type II, ISO 27001 certified
+
+## Installation
+
+### JavaScript/TypeScript
+
+```bash
+pnpm install fireblocks-sdk viem
+```
+
+### Python
+
+```bash
+pip install fireblocks-sdk web3
+```
+
+## SDK Setup
+
+### JavaScript/TypeScript
+
+```typescript
+import { FireblocksSDK } from 'fireblocks-sdk'
+import fs from 'fs'
+
+const apiSecret = fs.readFileSync('./fireblocks_secret.key', 'utf8')
+
+const fireblocks = new FireblocksSDK(
+  apiSecret,
+  process.env.FIREBLOCKS_API_KEY!,
+  process.env.FIREBLOCKS_API_URL || 'https://api.fireblocks.io'
+)
+```
+
+### Python
+
+```python
+from fireblocks_sdk import FireblocksSDK
+
+api_secret = open('./fireblocks_secret.key', 'r').read()
+
+fireblocks = FireblocksSDK(
+    private_key=api_secret,
+    api_key=os.environ['FIREBLOCKS_API_KEY'],
+    api_base_url=os.environ.get('FIREBLOCKS_API_URL', 'https://api.fireblocks.io')
+)
+```
+
+## Network Configuration
+
+Configure Tempo as a custom EVM network in Fireblocks:
+
+| Parameter | Testnet | Mainnet |
+|-----------|---------|---------|
+| Network Name | Tempo Testnet | Tempo |
+| Chain ID | 42431 | 4217 |
+| RPC URL | `https://rpc.moderato.tempo.xyz` | `https://rpc.presto.tempo.xyz` |
+| Explorer | `https://explorer.moderato.tempo.xyz` | `https://explorer.presto.tempo.xyz` |
+| Asset Symbol | USD | USD |
+
+## Vault Management
+
+### Create a Vault Account
+
+```typescript
+const vault = await fireblocks.createVaultAccount({
+  name: 'Tempo Treasury',
+  hiddenOnUI: false,
+  customerRefId: 'treasury-001',
+  autoFuel: false
+})
+
+console.log('Vault ID:', vault.id)
+console.log('Vault Name:', vault.name)
+```
+
+### List Vault Accounts
+
+```typescript
+const vaults = await fireblocks.getVaultAccountsWithPageInfo({
+  namePrefix: 'Tempo',
+  orderBy: 'ASC',
+  limit: 100
+})
+
+for (const vault of vaults.accounts) {
+  console.log(`${vault.name}: ${vault.id}`)
+}
+```
+
+### Get Vault Details
+
+```typescript
+const vault = await fireblocks.getVaultAccountById(vaultId)
+
+console.log('Name:', vault.name)
+console.log('Assets:', vault.assets)
+```
+
+## Asset Management
+
+### Add Tempo Asset to Vault
+
+```typescript
+// Add Tempo (custom EVM) to a vault
+const asset = await fireblocks.createVaultAsset(
+  vaultId,
+  'TEMPO' // Asset ID configured in Fireblocks
+)
+
+console.log('Address:', asset.address)
+```
+
+### Get Asset Balance
+
+```typescript
+const balance = await fireblocks.getVaultAccountAsset(
+  vaultId,
+  'TEMPO'
+)
+
+console.log('Balance:', balance.total)
+console.log('Available:', balance.available)
+console.log('Pending:', balance.pending)
+```
+
+### Refresh Asset Balance
+
+```typescript
+const balance = await fireblocks.refreshVaultAssetBalance(
+  vaultId,
+  'TEMPO'
+)
+
+console.log('Updated balance:', balance.total)
+```
+
+## Transaction Signing
+
+### Send Transaction
+
+```typescript
+import { TransactionOperation, PeerType } from 'fireblocks-sdk'
+
+const tx = await fireblocks.createTransaction({
+  operation: TransactionOperation.TRANSFER,
+  assetId: 'TEMPO',
+  source: {
+    type: PeerType.VAULT_ACCOUNT,
+    id: sourceVaultId
+  },
+  destination: {
+    type: PeerType.ONE_TIME_ADDRESS,
+    oneTimeAddress: {
+      address: '0xRecipientAddress'
+    }
+  },
+  amount: '100', // 100 USD
+  note: 'Payment for services',
+  customerRefId: 'payment-001'
+})
+
+console.log('Transaction ID:', tx.id)
+console.log('Status:', tx.status)
+```
+
+### Contract Interaction
+
+```typescript
+import { TransactionOperation, PeerType } from 'fireblocks-sdk'
+import { encodeFunctionData, erc20Abi } from 'viem'
+
+const USDC_ADDRESS = '0x20c0000000000000000000000000000000000001'
+
+// Encode the transfer function call
+const data = encodeFunctionData({
+  abi: erc20Abi,
+  functionName: 'transfer',
+  args: ['0xRecipient', 1000000n] // 1 USDC
+})
+
+const tx = await fireblocks.createTransaction({
+  operation: TransactionOperation.CONTRACT_CALL,
+  assetId: 'TEMPO',
+  source: {
+    type: PeerType.VAULT_ACCOUNT,
+    id: sourceVaultId
+  },
+  destination: {
+    type: PeerType.ONE_TIME_ADDRESS,
+    oneTimeAddress: {
+      address: USDC_ADDRESS
+    }
+  },
+  amount: '0',
+  extraParameters: {
+    contractCallData: data
+  },
+  note: 'USDC Transfer'
+})
+
+console.log('Transaction ID:', tx.id)
+```
+
+### Raw Message Signing
+
+```typescript
+import { TransactionOperation } from 'fireblocks-sdk'
+
+const message = 'Hello from Tempo!'
+const messageHash = keccak256(toBytes(message))
+
+const tx = await fireblocks.createTransaction({
+  operation: TransactionOperation.RAW,
+  assetId: 'TEMPO',
+  source: {
+    type: PeerType.VAULT_ACCOUNT,
+    id: vaultId
+  },
+  extraParameters: {
+    rawMessageData: {
+      messages: [{
+        content: messageHash.slice(2), // Remove 0x prefix
+        bip44addressIndex: 0
+      }]
+    }
+  }
+})
+
+// Wait for completion and get signature
+const result = await waitForTransaction(tx.id)
+console.log('Signature:', result.signedMessages[0].signature)
+```
+
+### Monitor Transaction Status
+
+```typescript
+async function waitForTransaction(txId: string): Promise<any> {
+  while (true) {
+    const tx = await fireblocks.getTransactionById(txId)
+    
+    if (['COMPLETED', 'FAILED', 'CANCELLED', 'BLOCKED'].includes(tx.status)) {
+      return tx
+    }
+    
+    console.log(`Status: ${tx.status}`)
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  }
+}
+
+const result = await waitForTransaction(tx.id)
+
+if (result.status === 'COMPLETED') {
+  console.log('Transaction hash:', result.txHash)
+} else {
+  console.error('Transaction failed:', result.subStatus)
+}
+```
+
+## Policy Controls
+
+### Create Transaction Policy
+
+Configure policies in the Fireblocks console or via API:
+
+```typescript
+// Example policy: Require approval for transfers > $10,000
+const policy = await fireblocks.setTransactionApprovalPolicy({
+  rules: [
+    {
+      transactionType: 'TRANSFER',
+      asset: 'TEMPO',
+      amountCurrency: 'USD',
+      amountScope: 'SINGLE_TX',
+      amount: 10000,
+      operator: 'GREATER_THAN',
+      action: 'REQUIRE_APPROVAL',
+      authorizationGroups: [
+        {
+          users: ['user-1', 'user-2'],
+          threshold: 2 // 2-of-2 approval required
+        }
+      ]
+    }
+  ]
+})
+```
+
+### Spending Limits
+
+```typescript
+// Set daily spending limit
+const policy = await fireblocks.setTransactionApprovalPolicy({
+  rules: [
+    {
+      transactionType: 'TRANSFER',
+      asset: 'TEMPO',
+      amountCurrency: 'USD',
+      amountScope: 'TIME_PERIOD',
+      timePeriod: {
+        value: 1,
+        unit: 'DAY'
+      },
+      amount: 100000,
+      operator: 'GREATER_THAN',
+      action: 'BLOCK'
+    }
+  ]
+})
+```
+
+### Whitelist Destinations
+
+```typescript
+// Create a whitelisted address
+const whitelist = await fireblocks.createExternalWallet({
+  name: 'Approved Vendor',
+  customerRefId: 'vendor-001'
+})
+
+await fireblocks.createExternalWalletAsset(
+  whitelist.id,
+  'TEMPO',
+  '0xVendorAddress'
+)
+
+// Transaction to whitelisted address
+const tx = await fireblocks.createTransaction({
+  operation: TransactionOperation.TRANSFER,
+  assetId: 'TEMPO',
+  source: {
+    type: PeerType.VAULT_ACCOUNT,
+    id: vaultId
+  },
+  destination: {
+    type: PeerType.EXTERNAL_WALLET,
+    id: whitelist.id
+  },
+  amount: '5000'
+})
+```
+
+## Python Examples
+
+### Create and Fund Vault
+
+```python
+from fireblocks_sdk import FireblocksSDK, TransferPeerPath, DestinationTransferPeerPath
+
+# Create vault
+vault = fireblocks.create_vault_account(name='Tempo Operations')
+print(f"Vault ID: {vault['id']}")
+
+# Add Tempo asset
+asset = fireblocks.create_vault_asset(vault['id'], 'TEMPO')
+print(f"Address: {asset['address']}")
+```
+
+### Send Transaction
+
+```python
+from fireblocks_sdk import TransferPeerPath, DestinationTransferPeerPath, TRANSACTION_TRANSFER
+
+tx = fireblocks.create_transaction(
+    asset_id='TEMPO',
+    source=TransferPeerPath(
+        peer_type='VAULT_ACCOUNT',
+        peer_id=vault_id
+    ),
+    destination=DestinationTransferPeerPath(
+        peer_type='ONE_TIME_ADDRESS',
+        one_time_address={
+            'address': '0xRecipientAddress'
+        }
+    ),
+    amount='100',
+    tx_type=TRANSACTION_TRANSFER,
+    note='Payment'
+)
+
+print(f"Transaction ID: {tx['id']}")
+```
+
+### Contract Call
+
+```python
+from web3 import Web3
+
+# Encode function call
+w3 = Web3()
+contract = w3.eth.contract(
+    address='0x20c0000000000000000000000000000000000001',
+    abi=erc20_abi
+)
+data = contract.encodeABI('transfer', ['0xRecipient', 1000000])
+
+tx = fireblocks.create_transaction(
+    asset_id='TEMPO',
+    source=TransferPeerPath(
+        peer_type='VAULT_ACCOUNT',
+        peer_id=vault_id
+    ),
+    destination=DestinationTransferPeerPath(
+        peer_type='ONE_TIME_ADDRESS',
+        one_time_address={
+            'address': '0x20c0000000000000000000000000000000000001'
+        }
+    ),
+    amount='0',
+    tx_type=TRANSACTION_CONTRACT_CALL,
+    extra_parameters={
+        'contractCallData': data
+    }
+)
+```
+
+## Monitoring
+
+### Transaction History
+
+```typescript
+const transactions = await fireblocks.getTransactions({
+  sourceType: 'VAULT_ACCOUNT',
+  sourceId: vaultId,
+  status: 'COMPLETED',
+  limit: 100
+})
+
+for (const tx of transactions) {
+  console.log(`${tx.id}: ${tx.amount} ${tx.assetId} - ${tx.status}`)
+}
+```
+
+### Webhooks
+
+Configure webhooks in Fireblocks console for real-time notifications:
+
+```typescript
+// Express webhook handler
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+app.post('/fireblocks-webhook', express.json(), (req, res) => {
+  // Verify webhook signature
+  const signature = req.headers['fireblocks-signature']
+  const payload = JSON.stringify(req.body)
+  
+  const expectedSignature = crypto
+    .createHmac('sha512', process.env.FIREBLOCKS_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  
+  if (signature !== expectedSignature) {
+    return res.status(401).send('Invalid signature')
+  }
+  
+  const { type, data } = req.body
+  
+  switch (type) {
+    case 'TRANSACTION_STATUS_UPDATED':
+      console.log(`Transaction ${data.id} status: ${data.status}`)
+      break
+    case 'VAULT_ACCOUNT_ADDED':
+      console.log(`New vault: ${data.name}`)
+      break
+  }
+  
+  res.status(200).send('OK')
+})
+```
+
+### Audit Logs
+
+```typescript
+const auditLogs = await fireblocks.getAuditLogs({
+  timeStart: Date.now() - 86400000, // Last 24 hours
+  limit: 100
+})
+
+for (const log of auditLogs) {
+  console.log(`${log.timestamp}: ${log.action} by ${log.userId}`)
+}
+```
+
+## Enterprise Use Cases
+
+### Treasury Management
+
+```typescript
+// Multi-sig treasury setup
+const treasuryVault = await fireblocks.createVaultAccount({
+  name: 'Company Treasury'
+})
+
+// Apply policy: 3-of-5 approval for large transfers
+await fireblocks.setTransactionApprovalPolicy({
+  rules: [{
+    vaultAccountId: treasuryVault.id,
+    transactionType: 'TRANSFER',
+    amount: 50000,
+    operator: 'GREATER_THAN',
+    action: 'REQUIRE_APPROVAL',
+    authorizationGroups: [{
+      users: ['cfo', 'ceo', 'coo', 'treasurer', 'controller'],
+      threshold: 3
+    }]
+  }]
+})
+```
+
+### Automated Payments
+
+```typescript
+// Service account for automated payments
+async function processPayroll(payments: Array<{address: string, amount: string}>) {
+  const transactions = []
+  
+  for (const payment of payments) {
+    const tx = await fireblocks.createTransaction({
+      operation: TransactionOperation.TRANSFER,
+      assetId: 'TEMPO',
+      source: {
+        type: PeerType.VAULT_ACCOUNT,
+        id: payrollVaultId
+      },
+      destination: {
+        type: PeerType.ONE_TIME_ADDRESS,
+        oneTimeAddress: { address: payment.address }
+      },
+      amount: payment.amount,
+      note: 'Payroll'
+    })
+    
+    transactions.push(tx)
+  }
+  
+  return transactions
+}
+```
+
+## Environment Variables
+
+```bash
+# .env
+FIREBLOCKS_API_KEY=your-api-key
+FIREBLOCKS_API_URL=https://api.fireblocks.io
+FIREBLOCKS_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Fireblocks Documentation](https://docs.fireblocks.com)
+- [Fireblocks Console](https://console.fireblocks.io)
+- [Fireblocks SDK Reference](https://docs.fireblocks.com/api)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

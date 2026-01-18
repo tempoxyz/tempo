@@ -1,0 +1,372 @@
+---
+title: "Zerion Wallet & Data APIs for Tempo"
+description: "Wallet infrastructure and portfolio APIs for Tempo with Zerion. Real-time balances, transaction history, and DeFi positions."
+---
+
+# Zerion Wallet & Data APIs for Tempo
+
+[Zerion](https://zerion.io) provides wallet infrastructure and comprehensive portfolio data APIs for Tempo applications.
+
+## Features
+
+- **Portfolio API** — Real-time token and NFT balances
+- **Transaction API** — Complete transaction history
+- **DeFi positions** — Track lending, staking, and LP positions
+- **Wallet SDK** — Embedded wallet experience
+
+## API Setup
+
+```typescript
+const ZERION_API_KEY = process.env.ZERION_API_KEY
+const ZERION_BASE_URL = 'https://api.zerion.io/v1'
+
+async function zerionRequest(endpoint: string) {
+  const response = await fetch(`${ZERION_BASE_URL}${endpoint}`, {
+    headers: {
+      'Authorization': `Basic ${Buffer.from(ZERION_API_KEY + ':').toString('base64')}`,
+      'Content-Type': 'application/json'
+    }
+  })
+  return response.json()
+}
+```
+
+## Portfolio Data
+
+### Get Token Balances
+
+```typescript
+interface TokenBalance {
+  symbol: string
+  name: string
+  address: string
+  balance: string
+  balanceUsd: number
+  price: number
+  priceChange24h: number
+}
+
+async function getTokenBalances(address: string): Promise<TokenBalance[]> {
+  const data = await zerionRequest(
+    `/wallets/${address}/positions/?filter[chain_ids]=tempo&currency=usd`
+  )
+
+  return data.data
+    .filter((p: any) => p.attributes.position_type === 'wallet')
+    .map((position: any) => ({
+      symbol: position.attributes.fungible_info.symbol,
+      name: position.attributes.fungible_info.name,
+      address: position.attributes.fungible_info.implementations[0]?.address,
+      balance: position.attributes.quantity.numeric,
+      balanceUsd: position.attributes.value,
+      price: position.attributes.price,
+      priceChange24h: position.attributes.changes?.percent_1d || 0
+    }))
+}
+```
+
+### Get Portfolio Value
+
+```typescript
+interface PortfolioSummary {
+  totalValueUsd: number
+  change24hUsd: number
+  change24hPercent: number
+  chains: Array<{ chain: string; valueUsd: number }>
+}
+
+async function getPortfolioSummary(address: string): Promise<PortfolioSummary> {
+  const data = await zerionRequest(
+    `/wallets/${address}/portfolio/?currency=usd`
+  )
+
+  const portfolio = data.data.attributes
+
+  return {
+    totalValueUsd: portfolio.total.positions,
+    change24hUsd: portfolio.changes.absolute_1d,
+    change24hPercent: portfolio.changes.percent_1d,
+    chains: Object.entries(portfolio.positions_distribution_by_chain).map(
+      ([chain, value]) => ({ chain, valueUsd: value as number })
+    )
+  }
+}
+```
+
+### Get NFT Holdings
+
+```typescript
+interface NFTHolding {
+  collectionName: string
+  tokenId: string
+  name: string
+  imageUrl: string
+  floorPriceUsd: number
+}
+
+async function getNFTHoldings(address: string): Promise<NFTHolding[]> {
+  const data = await zerionRequest(
+    `/wallets/${address}/nft-positions/?filter[chain_ids]=tempo`
+  )
+
+  return data.data.map((nft: any) => ({
+    collectionName: nft.attributes.nft_info.collection?.name,
+    tokenId: nft.attributes.nft_info.token_id,
+    name: nft.attributes.nft_info.name,
+    imageUrl: nft.attributes.nft_info.content?.preview?.url,
+    floorPriceUsd: nft.attributes.nft_info.collection?.floor_price
+  }))
+}
+```
+
+## Transaction History
+
+### Get Transactions
+
+```typescript
+interface Transaction {
+  hash: string
+  type: string
+  status: string
+  timestamp: number
+  from: string
+  to: string
+  value: string
+  valueUsd: number
+  fee: string
+  feeUsd: number
+}
+
+async function getTransactionHistory(
+  address: string,
+  limit = 50
+): Promise<Transaction[]> {
+  const data = await zerionRequest(
+    `/wallets/${address}/transactions/?filter[chain_ids]=tempo&page[size]=${limit}`
+  )
+
+  return data.data.map((tx: any) => ({
+    hash: tx.attributes.hash,
+    type: tx.attributes.operation_type,
+    status: tx.attributes.status,
+    timestamp: new Date(tx.attributes.mined_at).getTime(),
+    from: tx.attributes.sent_from,
+    to: tx.attributes.sent_to,
+    value: tx.attributes.transfers?.[0]?.quantity?.numeric || '0',
+    valueUsd: tx.attributes.transfers?.[0]?.value || 0,
+    fee: tx.attributes.fee?.quantity?.numeric || '0',
+    feeUsd: tx.attributes.fee?.value || 0
+  }))
+}
+```
+
+### Get Specific Transaction
+
+```typescript
+async function getTransaction(hash: string) {
+  const data = await zerionRequest(`/transactions/${hash}`)
+
+  const tx = data.data.attributes
+  return {
+    hash: tx.hash,
+    chain: tx.chain_id,
+    status: tx.status,
+    type: tx.operation_type,
+    timestamp: tx.mined_at,
+    from: tx.sent_from,
+    to: tx.sent_to,
+    transfers: tx.transfers?.map((t: any) => ({
+      direction: t.direction,
+      asset: t.fungible_info.symbol,
+      amount: t.quantity.numeric,
+      valueUsd: t.value
+    }))
+  }
+}
+```
+
+## DeFi Positions
+
+### Get All Positions
+
+```typescript
+interface DeFiPosition {
+  protocol: string
+  type: string
+  valueUsd: number
+  tokens: Array<{
+    symbol: string
+    amount: string
+    valueUsd: number
+  }>
+}
+
+async function getDeFiPositions(address: string): Promise<DeFiPosition[]> {
+  const data = await zerionRequest(
+    `/wallets/${address}/positions/?filter[chain_ids]=tempo&filter[position_types]=deposit,staked,locked,lending`
+  )
+
+  return data.data.map((position: any) => ({
+    protocol: position.attributes.protocol,
+    type: position.attributes.position_type,
+    valueUsd: position.attributes.value,
+    tokens: [{
+      symbol: position.attributes.fungible_info.symbol,
+      amount: position.attributes.quantity.numeric,
+      valueUsd: position.attributes.value
+    }]
+  }))
+}
+```
+
+## Token Data
+
+### Get Token Info
+
+```typescript
+async function getTokenInfo(tokenAddress: string) {
+  const data = await zerionRequest(`/fungibles/${tokenAddress}`)
+
+  const token = data.data.attributes
+  return {
+    symbol: token.symbol,
+    name: token.name,
+    decimals: token.implementations[0]?.decimals,
+    price: token.market_data?.price,
+    marketCap: token.market_data?.market_cap,
+    volume24h: token.market_data?.total_volume,
+    priceChange24h: token.market_data?.changes?.percent_1d
+  }
+}
+```
+
+### Get Token Price History
+
+```typescript
+async function getTokenPriceHistory(
+  tokenAddress: string,
+  period: '1d' | '1w' | '1m' | '1y' = '1w'
+) {
+  const data = await zerionRequest(
+    `/fungibles/${tokenAddress}/charts/${period}?currency=usd`
+  )
+
+  return data.data.attributes.points.map((point: any) => ({
+    timestamp: point[0],
+    price: point[1]
+  }))
+}
+```
+
+## Gas Prices
+
+```typescript
+async function getGasPrices(chainId: string = 'tempo') {
+  const data = await zerionRequest(`/gas-prices/?filter[chain_ids]=${chainId}`)
+
+  return {
+    slow: data.data.attributes.slow,
+    standard: data.data.attributes.standard,
+    fast: data.data.attributes.fast
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+async function createWebhook(address: string, webhookUrl: string) {
+  const response = await fetch(`${ZERION_BASE_URL}/webhooks`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${Buffer.from(ZERION_API_KEY + ':').toString('base64')}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      url: webhookUrl,
+      events: ['transaction.confirmed', 'position.changed'],
+      filters: {
+        addresses: [address],
+        chain_ids: ['tempo']
+      }
+    })
+  })
+
+  return response.json()
+}
+```
+
+### Handle Webhook
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/zerion', express.json(), (req, res) => {
+  const event = req.body
+
+  switch (event.type) {
+    case 'transaction.confirmed':
+      handleNewTransaction(event.data)
+      break
+    case 'position.changed':
+      handlePositionChange(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## React Hooks
+
+```typescript
+import { useState, useEffect } from 'react'
+
+function usePortfolio(address: string) {
+  const [portfolio, setPortfolio] = useState<PortfolioSummary | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function fetch() {
+      setLoading(true)
+      const data = await getPortfolioSummary(address)
+      setPortfolio(data)
+      setLoading(false)
+    }
+    fetch()
+  }, [address])
+
+  return { portfolio, loading }
+}
+
+function useTokenBalances(address: string) {
+  const [balances, setBalances] = useState<TokenBalance[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function fetch() {
+      setLoading(true)
+      const data = await getTokenBalances(address)
+      setBalances(data)
+      setLoading(false)
+    }
+    fetch()
+  }, [address])
+
+  return { balances, loading }
+}
+```
+
+## Environment Variables
+
+```bash
+ZERION_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Zerion API Documentation](https://developers.zerion.io)
+- [Zerion API Reference](https://developers.zerion.io/reference)
+- [Zerion Wallet](https://zerion.io)

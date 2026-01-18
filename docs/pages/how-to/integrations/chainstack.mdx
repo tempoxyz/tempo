@@ -1,0 +1,363 @@
+---
+title: "Chainstack Node Infrastructure for Tempo"
+description: "Enterprise blockchain infrastructure for Tempo with Chainstack. Dedicated nodes, elastic APIs, and global deployment."
+---
+
+# Chainstack Node Infrastructure for Tempo
+
+[Chainstack](https://chainstack.com) provides enterprise-grade blockchain node infrastructure with dedicated nodes, elastic APIs, and global deployment options.
+
+## Features
+
+- **Dedicated nodes** — Private, high-performance nodes
+- **Elastic APIs** — Auto-scaling shared infrastructure
+- **Global regions** — Deploy nodes worldwide
+- **Archive data** — Full historical blockchain access
+
+## RPC Configuration
+
+```typescript
+import { createPublicClient, createWalletClient, http } from 'viem'
+import { tempo } from 'viem/chains'
+
+const CHAINSTACK_ENDPOINT = process.env.CHAINSTACK_ENDPOINT!
+const CHAINSTACK_WS_ENDPOINT = process.env.CHAINSTACK_WS_ENDPOINT!
+
+const publicClient = createPublicClient({
+  chain: tempo,
+  transport: http(CHAINSTACK_ENDPOINT)
+})
+
+const walletClient = createWalletClient({
+  chain: tempo,
+  transport: http(CHAINSTACK_ENDPOINT)
+})
+```
+
+## WebSocket Subscriptions
+
+```typescript
+import { createPublicClient, webSocket } from 'viem'
+
+const wsClient = createPublicClient({
+  chain: tempo,
+  transport: webSocket(CHAINSTACK_WS_ENDPOINT)
+})
+
+// Watch new blocks
+const unwatchBlocks = wsClient.watchBlockNumber({
+  onBlockNumber: (blockNumber) => {
+    console.log('New block:', blockNumber)
+  }
+})
+
+// Watch contract events
+const unwatchEvents = wsClient.watchContractEvent({
+  address: CONTRACT_ADDRESS,
+  abi: contractAbi,
+  eventName: 'Transfer',
+  onLogs: (logs) => {
+    logs.forEach(log => {
+      console.log('Transfer:', log.args)
+    })
+  }
+})
+```
+
+## Archive Node Queries
+
+```typescript
+async function getHistoricalState(
+  address: string,
+  blockNumber: bigint
+) {
+  // Get balance at specific block
+  const balance = await publicClient.getBalance({
+    address: address as `0x${string}`,
+    blockNumber
+  })
+
+  // Get storage at specific block
+  const storage = await publicClient.getStorageAt({
+    address: address as `0x${string}`,
+    slot: '0x0',
+    blockNumber
+  })
+
+  return { balance, storage }
+}
+
+async function replayTransaction(txHash: string) {
+  const trace = await publicClient.request({
+    method: 'debug_traceTransaction',
+    params: [txHash, { tracer: 'callTracer' }]
+  })
+
+  return trace
+}
+```
+
+## Batch Requests
+
+```typescript
+async function batchGetBalances(addresses: string[]) {
+  const calls = addresses.map(address => ({
+    address: address as `0x${string}`,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [userAddress]
+  }))
+
+  const results = await publicClient.multicall({ contracts: calls })
+
+  return addresses.map((address, i) => ({
+    address,
+    balance: results[i].result
+  }))
+}
+```
+
+## Log Queries
+
+```typescript
+async function getContractLogs(
+  contractAddress: string,
+  fromBlock: bigint,
+  toBlock: bigint
+) {
+  const logs = await publicClient.getLogs({
+    address: contractAddress as `0x${string}`,
+    fromBlock,
+    toBlock
+  })
+
+  return logs.map(log => ({
+    blockNumber: log.blockNumber,
+    transactionHash: log.transactionHash,
+    logIndex: log.logIndex,
+    topics: log.topics,
+    data: log.data
+  }))
+}
+
+// Get specific event type
+async function getTransferEvents(
+  tokenAddress: string,
+  fromBlock: bigint,
+  toBlock: bigint
+) {
+  const logs = await publicClient.getLogs({
+    address: tokenAddress as `0x${string}`,
+    event: {
+      type: 'event',
+      name: 'Transfer',
+      inputs: [
+        { type: 'address', indexed: true, name: 'from' },
+        { type: 'address', indexed: true, name: 'to' },
+        { type: 'uint256', indexed: false, name: 'value' }
+      ]
+    },
+    fromBlock,
+    toBlock
+  })
+
+  return logs
+}
+```
+
+## Transaction Simulation
+
+```typescript
+async function simulateTransaction(tx: {
+  from: string
+  to: string
+  data: string
+  value?: bigint
+}) {
+  try {
+    const result = await publicClient.simulateContract({
+      address: tx.to as `0x${string}`,
+      abi: contractAbi,
+      functionName: 'transfer',
+      args: [recipient, amount],
+      account: tx.from as `0x${string}`
+    })
+
+    return {
+      success: true,
+      result: result.result
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error.message
+    }
+  }
+}
+```
+
+## Gas Optimization
+
+```typescript
+async function getOptimalGasParams() {
+  const block = await publicClient.getBlock()
+  const gasPrice = await publicClient.getGasPrice()
+  const maxPriorityFee = await publicClient.estimateMaxPriorityFeePerGas()
+
+  const baseFee = block.baseFeePerGas || 0n
+
+  return {
+    gasPrice,
+    maxFeePerGas: baseFee * 2n + maxPriorityFee,
+    maxPriorityFeePerGas: maxPriorityFee,
+    baseFee
+  }
+}
+```
+
+## Node Health Check
+
+```typescript
+async function checkNodeHealth() {
+  const startTime = Date.now()
+
+  try {
+    const [blockNumber, syncing, chainId] = await Promise.all([
+      publicClient.getBlockNumber(),
+      publicClient.request({ method: 'eth_syncing', params: [] }),
+      publicClient.getChainId()
+    ])
+
+    const latency = Date.now() - startTime
+    const block = await publicClient.getBlock({ blockNumber })
+    const blockAge = Date.now() / 1000 - Number(block.timestamp)
+
+    return {
+      healthy: true,
+      blockNumber,
+      chainId,
+      syncing,
+      latency,
+      blockAge,
+      isSynced: !syncing && blockAge < 30
+    }
+  } catch (error) {
+    return {
+      healthy: false,
+      error: error.message
+    }
+  }
+}
+```
+
+## Connection Pool
+
+```typescript
+import { http, fallback } from 'viem'
+
+const endpoints = [
+  process.env.CHAINSTACK_ENDPOINT_1!,
+  process.env.CHAINSTACK_ENDPOINT_2!,
+  process.env.CHAINSTACK_ENDPOINT_3!
+]
+
+const pooledClient = createPublicClient({
+  chain: tempo,
+  transport: fallback(
+    endpoints.map(url => http(url)),
+    {
+      rank: true,
+      retryCount: 3,
+      retryDelay: 1000
+    }
+  )
+})
+```
+
+## Retry Logic
+
+```typescript
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  delay = 1000
+): Promise<T> {
+  let lastError: Error
+
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn()
+    } catch (error) {
+      lastError = error as Error
+      
+      // Don't retry on user errors
+      if (error.code === -32000) throw error
+      
+      if (i < maxRetries - 1) {
+        await new Promise(r => setTimeout(r, delay * (i + 1)))
+      }
+    }
+  }
+
+  throw lastError!
+}
+
+// Usage
+const balance = await withRetry(() =>
+  publicClient.getBalance({ address: userAddress })
+)
+```
+
+## Metrics Collection
+
+```typescript
+class RpcMetrics {
+  private requestCount = 0
+  private errorCount = 0
+  private totalLatency = 0
+
+  async trackRequest<T>(fn: () => Promise<T>): Promise<T> {
+    const start = Date.now()
+    this.requestCount++
+
+    try {
+      const result = await fn()
+      this.totalLatency += Date.now() - start
+      return result
+    } catch (error) {
+      this.errorCount++
+      throw error
+    }
+  }
+
+  getMetrics() {
+    return {
+      totalRequests: this.requestCount,
+      errorRate: this.errorCount / this.requestCount,
+      avgLatency: this.totalLatency / this.requestCount
+    }
+  }
+}
+
+const metrics = new RpcMetrics()
+
+// Wrap client calls
+const balance = await metrics.trackRequest(() =>
+  publicClient.getBalance({ address: userAddress })
+)
+```
+
+## Environment Variables
+
+```bash
+CHAINSTACK_ENDPOINT=https://your-node.chainstack.com/abc123
+CHAINSTACK_WS_ENDPOINT=wss://your-node.chainstack.com/abc123
+CHAINSTACK_ENDPOINT_1=https://node1.chainstack.com
+CHAINSTACK_ENDPOINT_2=https://node2.chainstack.com
+```
+
+## Resources
+
+- [Chainstack Documentation](https://docs.chainstack.com)
+- [Chainstack Console](https://console.chainstack.com)
+- [Chainstack API Reference](https://docs.chainstack.com/reference)

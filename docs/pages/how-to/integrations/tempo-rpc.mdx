@@ -1,0 +1,195 @@
+---
+title: "Tempo RPC: Connect to the Tempo Network"
+description: "How to connect to Tempo blockchain via RPC. Public endpoints, partner providers like QuickNode and Alchemy, and configuration for Viem, Ethers, and Wagmi."
+---
+
+# Tempo RPC: Connect to the Tempo Network
+
+Connect your application to Tempo using RPC endpoints. This guide covers public endpoints, partner providers, and configuration for popular libraries.
+
+## Quick Reference
+
+| Network | Chain ID | RPC URL | WebSocket |
+|---------|----------|---------|-----------|
+| Tempo Testnet (Moderato) | `42431` | `https://rpc.moderato.tempo.xyz` | `wss://rpc.moderato.tempo.xyz` |
+| Tempo Mainnet (Presto) | `4217` | `https://rpc.presto.tempo.xyz` | `wss://rpc.presto.tempo.xyz` |
+
+## Public RPC Endpoints
+
+Tempo provides free public RPC endpoints for development and production:
+
+```bash
+# Testnet (Moderato)
+https://rpc.moderato.tempo.xyz
+
+# Mainnet (Presto)
+https://rpc.presto.tempo.xyz
+```
+
+Test your connection:
+
+```bash
+curl -X POST https://rpc.moderato.tempo.xyz \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+```
+
+## Partner RPC Providers
+
+For production applications requiring higher rate limits, dedicated endpoints, and advanced features, use our infrastructure partners:
+
+### QuickNode
+
+[QuickNode](https://quicknode.com) provides enterprise-grade RPC infrastructure for Tempo.
+
+1. Visit [QuickNode's Tempo page](https://www.quicknode.com/chains/tempo)
+2. Create an endpoint for Tempo
+3. Use your dedicated URL in your application
+
+### Tenderly
+
+[Tenderly](https://tenderly.co) offers RPC with integrated debugging, simulation, and monitoring.
+
+1. Create a project at [dashboard.tenderly.co](https://dashboard.tenderly.co)
+2. Add Tempo as a custom network
+3. Use the provided RPC URL
+
+## Configuration Examples
+
+### Viem
+
+```typescript
+import { createPublicClient, http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const client = createPublicClient({
+  chain: tempoTestnet({
+    feeToken: '0x20c0000000000000000000000000000000000001' // USDC
+  }),
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+const blockNumber = await client.getBlockNumber()
+```
+
+### Wagmi
+
+```typescript
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'wagmi/chains'
+
+export const config = createConfig({
+  chains: [tempoTestnet({ feeToken: alphaUsd })],
+  transports: {
+    [tempoTestnet.id]: http('https://rpc.moderato.tempo.xyz')
+  }
+})
+```
+
+### Ethers.js
+
+```typescript
+import { JsonRpcProvider } from 'ethers'
+
+const provider = new JsonRpcProvider('https://rpc.moderato.tempo.xyz', {
+  chainId: 42431,
+  name: 'tempo-testnet'
+})
+
+const blockNumber = await provider.getBlockNumber()
+```
+
+### Hardhat
+
+```typescript
+// hardhat.config.ts
+import { HardhatUserConfig } from 'hardhat/config'
+
+const config: HardhatUserConfig = {
+  networks: {
+    tempo: {
+      url: 'https://rpc.moderato.tempo.xyz',
+      chainId: 42431,
+      accounts: [process.env.PRIVATE_KEY]
+    }
+  }
+}
+
+export default config
+```
+
+### Foundry
+
+```toml
+# foundry.toml
+[rpc_endpoints]
+tempo = "https://rpc.moderato.tempo.xyz"
+tempo_mainnet = "https://rpc.presto.tempo.xyz"
+```
+
+```bash
+# Deploy with Foundry
+forge create src/Contract.sol:Contract \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY
+```
+
+## WebSocket Connections
+
+For real-time data and subscriptions:
+
+```typescript
+import { createPublicClient, webSocket } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const client = createPublicClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: webSocket('wss://rpc.moderato.tempo.xyz')
+})
+
+// Subscribe to new blocks
+const unwatch = client.watchBlocks({
+  onBlock: block => console.log('New block:', block.number)
+})
+```
+
+## Network Details
+
+### Tempo Testnet (Moderato)
+
+- **Chain ID**: `42431`
+- **Currency**: USD (stablecoin-native gas)
+- **Block Explorer**: [explore.tempo.xyz](https://explore.tempo.xyz)
+- **Faucet**: [docs.tempo.xyz/quickstart/faucet](https://docs.tempo.xyz/quickstart/faucet)
+
+### Tempo Mainnet (Presto)
+
+- **Chain ID**: `4217`
+- **Currency**: USD (stablecoin-native gas)
+- **Block Explorer**: [explore.tempo.xyz](https://explore.tempo.xyz)
+
+## EVM Compatibility
+
+Tempo is fully EVM-compatible. Standard JSON-RPC methods work as expected:
+
+- `eth_chainId`, `eth_blockNumber`, `eth_getBalance`
+- `eth_call`, `eth_estimateGas`, `eth_sendRawTransaction`
+- `eth_getLogs`, `eth_getTransactionReceipt`
+- All standard subscription methods
+
+### Tempo-Specific Features
+
+Tempo extends EVM with:
+
+- **Stablecoin-native gas**: Pay fees in USDC, USDT, or other stablecoins
+- **Transaction memos**: Attach metadata to any transaction
+- **Sub-cent fees**: Predictable, low transaction costs
+
+See [EVM Compatibility](/quickstart/evm-compatibility) for details.
+
+## Next Steps
+
+- [Set up QuickNode for Tempo](/how-to/integrations/quicknode)
+- [Configure Tenderly for debugging](/how-to/integrations/tenderly)
+- [Add wallet connection with Privy](/how-to/integrations/privy)
+- [Deploy contracts with thirdweb](/how-to/integrations/thirdweb)

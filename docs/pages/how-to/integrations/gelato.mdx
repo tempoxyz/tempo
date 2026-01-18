@@ -1,0 +1,276 @@
+---
+title: "Gelato Automation for Tempo"
+description: "Automate smart contracts on Tempo with Gelato. Gasless transactions, task automation, and web3 functions."
+---
+
+# Gelato Automation for Tempo
+
+[Gelato](https://gelato.network) provides smart contract automation and gasless infrastructure for Tempo.
+
+## Features
+
+- **Automate** — Scheduled and event-driven contract execution
+- **Relay** — Gasless transactions for users
+- **Web3 Functions** — Serverless off-chain compute
+- **VRF** — Verifiable random numbers
+
+## Installation
+
+```bash
+pnpm install @gelatonetwork/automate-sdk @gelatonetwork/relay-sdk
+```
+
+## Task Automation
+
+### Create Automated Task
+
+```typescript
+import { AutomateSDK, TriggerType } from '@gelatonetwork/automate-sdk'
+import { ethers } from 'ethers'
+
+const provider = new ethers.JsonRpcProvider('https://rpc.moderato.tempo.xyz')
+const signer = new ethers.Wallet(PRIVATE_KEY, provider)
+
+const automate = new AutomateSDK(42431, signer) // Tempo chain ID
+
+// Create time-based task
+async function createScheduledTask() {
+  const { taskId, tx } = await automate.createTask({
+    execAddress: CONTRACT_ADDRESS,
+    execSelector: '0x...', // Function selector
+    execAbi: CONTRACT_ABI,
+    trigger: {
+      type: TriggerType.TIME,
+      interval: 3600 * 1000, // Every hour
+    },
+    name: 'Hourly Settlement',
+  })
+
+  await tx.wait()
+  console.log('Task created:', taskId)
+}
+
+// Create event-triggered task
+async function createEventTask() {
+  const { taskId, tx } = await automate.createTask({
+    execAddress: CONTRACT_ADDRESS,
+    execSelector: '0x...',
+    execAbi: CONTRACT_ABI,
+    trigger: {
+      type: TriggerType.EVENT,
+      filter: {
+        address: TOKEN_ADDRESS,
+        topics: [ethers.id('Transfer(address,address,uint256)')]
+      }
+    },
+    name: 'On Transfer',
+  })
+
+  await tx.wait()
+  console.log('Task created:', taskId)
+}
+```
+
+### Automatable Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {AutomateTaskCreator} from "@gelatonetwork/automate-contracts/contracts/AutomateTaskCreator.sol";
+
+contract TempoAutomation is AutomateTaskCreator {
+    uint256 public lastExecution;
+    uint256 public counter;
+
+    constructor(address _automate, address _taskCreator)
+        AutomateTaskCreator(_automate, _taskCreator)
+    {}
+
+    function createTask() external {
+        ModuleData memory moduleData = ModuleData({
+            modules: new Module[](1),
+            args: new bytes[](1)
+        });
+
+        moduleData.modules[0] = Module.TIME;
+        moduleData.args[0] = _timeModuleArg(
+            block.timestamp,
+            3600 // Every hour
+        );
+
+        bytes32 taskId = _createTask(
+            address(this),
+            abi.encode(this.execute.selector),
+            moduleData,
+            ETH // Pay in native token
+        );
+    }
+
+    function execute() external onlyDedicatedMsgSender {
+        counter++;
+        lastExecution = block.timestamp;
+
+        (uint256 fee, address feeToken) = _getFeeDetails();
+        _transfer(fee, feeToken);
+    }
+}
+```
+
+## Gasless Transactions (Relay)
+
+### Sponsor User Transactions
+
+```typescript
+import { GelatoRelay, SponsoredCallRequest } from '@gelatonetwork/relay-sdk'
+
+const relay = new GelatoRelay()
+
+async function sponsorTransaction(
+  contractAddress: string,
+  data: string,
+  userAddress: string
+) {
+  const request: SponsoredCallRequest = {
+    chainId: 42431n, // Tempo
+    target: contractAddress,
+    data: data,
+    user: userAddress,
+  }
+
+  const { taskId } = await relay.sponsoredCall(
+    request,
+    GELATO_API_KEY
+  )
+
+  console.log('Relay task:', taskId)
+  return taskId
+}
+```
+
+### ERC2771 Context
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {ERC2771Context} from "@gelatonetwork/relay-context/contracts/ERC2771Context.sol";
+
+contract TempoGasless is ERC2771Context {
+    mapping(address => uint256) public balances;
+
+    constructor(address trustedForwarder) ERC2771Context(trustedForwarder) {}
+
+    function transfer(address to, uint256 amount) external {
+        address sender = _msgSender(); // Gets real sender, not relay
+        require(balances[sender] >= amount, "Insufficient balance");
+        
+        balances[sender] -= amount;
+        balances[to] += amount;
+    }
+}
+```
+
+## Web3 Functions
+
+Serverless off-chain compute:
+
+```typescript
+// web3-functions/price-update/index.ts
+import { Web3Function, Web3FunctionContext } from '@gelatonetwork/web3-functions-sdk'
+
+Web3Function.onRun(async (context: Web3FunctionContext) => {
+  const { storage, multiChainProvider } = context
+
+  // Fetch price from API
+  const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=usd-coin&vs_currencies=usd')
+  const data = await response.json()
+  const price = data['usd-coin'].usd
+
+  // Get last price from storage
+  const lastPrice = await storage.get('lastPrice')
+  
+  if (Math.abs(price - Number(lastPrice)) > 0.01) {
+    // Price changed significantly, update on-chain
+    const provider = multiChainProvider.default()
+    const contract = new ethers.Contract(ORACLE_ADDRESS, ABI, provider)
+
+    return {
+      canExec: true,
+      callData: [{
+        to: ORACLE_ADDRESS,
+        data: contract.interface.encodeFunctionData('updatePrice', [
+          ethers.parseUnits(price.toString(), 8)
+        ])
+      }]
+    }
+  }
+
+  return { canExec: false, message: 'Price unchanged' }
+})
+```
+
+### Deploy Web3 Function
+
+```bash
+# Install CLI
+npm install -g @gelatonetwork/web3-functions-sdk
+
+# Create project
+npx w3f init my-function
+
+# Deploy
+npx w3f deploy web3-functions/price-update
+```
+
+## VRF (Random Numbers)
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {GelatoVRFConsumerBase} from "@gelatonetwork/vrf-contracts/contracts/GelatoVRFConsumerBase.sol";
+
+contract TempoLottery is GelatoVRFConsumerBase {
+    address[] public players;
+    uint256 public requestId;
+    address public winner;
+
+    constructor(address _operator) GelatoVRFConsumerBase(_operator) {}
+
+    function enter() external payable {
+        require(msg.value >= 0.1 ether, "Min 0.1 USD");
+        players.push(msg.sender);
+    }
+
+    function pickWinner() external {
+        require(players.length > 0, "No players");
+        requestId = _requestRandomness("");
+    }
+
+    function _fulfillRandomness(
+        uint256 randomness,
+        uint256,
+        bytes memory
+    ) internal override {
+        uint256 index = randomness % players.length;
+        winner = players[index];
+        
+        payable(winner).transfer(address(this).balance);
+        delete players;
+    }
+}
+```
+
+## Environment Variables
+
+```bash
+GELATO_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Gelato Documentation](https://docs.gelato.network)
+- [Automate SDK](https://www.npmjs.com/package/@gelatonetwork/automate-sdk)
+- [Relay SDK](https://www.npmjs.com/package/@gelatonetwork/relay-sdk)
+- [Web3 Functions](https://docs.gelato.network/web3-services/web3-functions)

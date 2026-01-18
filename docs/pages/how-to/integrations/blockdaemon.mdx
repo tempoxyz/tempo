@@ -1,0 +1,413 @@
+---
+title: "Blockdaemon Infrastructure for Tempo"
+description: "Institutional blockchain infrastructure for Tempo with Blockdaemon. Staking, node hosting, and wallet APIs."
+---
+
+# Blockdaemon Infrastructure for Tempo
+
+[Blockdaemon](https://blockdaemon.com) provides institutional-grade blockchain infrastructure including staking, node hosting, and wallet APIs.
+
+## Features
+
+- **Dedicated nodes** — Private RPC endpoints
+- **Staking platform** — Institutional staking services
+- **Wallet API** — Custody and transaction management
+- **Data APIs** — Block and transaction data
+
+## API Setup
+
+```typescript
+const BLOCKDAEMON_API_KEY = process.env.BLOCKDAEMON_API_KEY
+const BLOCKDAEMON_BASE_URL = 'https://svc.blockdaemon.com'
+
+async function blockdaemonRequest(endpoint: string) {
+  const response = await fetch(`${BLOCKDAEMON_BASE_URL}${endpoint}`, {
+    headers: {
+      'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+      'Content-Type': 'application/json'
+    }
+  })
+  return response.json()
+}
+```
+
+## Node Access
+
+### Dedicated RPC
+
+```typescript
+import { createPublicClient, http } from 'viem'
+import { tempo } from 'viem/chains'
+
+const dedicatedRpc = `https://svc.blockdaemon.com/tempo/mainnet/native?apiKey=${BLOCKDAEMON_API_KEY}`
+
+const client = createPublicClient({
+  chain: tempo,
+  transport: http(dedicatedRpc)
+})
+
+// Use like any viem client
+const blockNumber = await client.getBlockNumber()
+```
+
+### WebSocket Connection
+
+```typescript
+import { createPublicClient, webSocket } from 'viem'
+import { tempo } from 'viem/chains'
+
+const wsClient = createPublicClient({
+  chain: tempo,
+  transport: webSocket(
+    `wss://svc.blockdaemon.com/tempo/mainnet/native/ws?apiKey=${BLOCKDAEMON_API_KEY}`
+  )
+})
+
+// Subscribe to new blocks
+const unwatch = wsClient.watchBlockNumber({
+  onBlockNumber: (blockNumber) => {
+    console.log('New block:', blockNumber)
+  }
+})
+```
+
+## Universal API
+
+### Get Account Balance
+
+```typescript
+async function getAccountBalance(address: string) {
+  const data = await blockdaemonRequest(
+    `/universal/v1/tempo/mainnet/account/${address}`
+  )
+
+  return {
+    address,
+    nativeBalance: data.native_balance,
+    nativeBalanceFormatted: data.native_balance_formatted,
+    tokens: data.tokens?.map((t: any) => ({
+      symbol: t.symbol,
+      balance: t.balance,
+      contractAddress: t.contract_address
+    }))
+  }
+}
+```
+
+### Get Transaction
+
+```typescript
+async function getTransaction(txHash: string) {
+  const data = await blockdaemonRequest(
+    `/universal/v1/tempo/mainnet/tx/${txHash}`
+  )
+
+  return {
+    hash: data.hash,
+    blockNumber: data.block_number,
+    timestamp: data.timestamp,
+    from: data.from,
+    to: data.to,
+    value: data.value,
+    gasUsed: data.gas_used,
+    gasPrice: data.gas_price,
+    status: data.status
+  }
+}
+```
+
+### Get Account Transactions
+
+```typescript
+async function getAccountTransactions(
+  address: string,
+  options: { limit?: number; cursor?: string } = {}
+) {
+  const params = new URLSearchParams()
+  if (options.limit) params.set('limit', options.limit.toString())
+  if (options.cursor) params.set('cursor', options.cursor)
+
+  const data = await blockdaemonRequest(
+    `/universal/v1/tempo/mainnet/account/${address}/txs?${params}`
+  )
+
+  return {
+    transactions: data.data.map((tx: any) => ({
+      hash: tx.hash,
+      blockNumber: tx.block_number,
+      timestamp: tx.timestamp,
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      status: tx.status
+    })),
+    nextCursor: data.next_cursor
+  }
+}
+```
+
+### Get Block
+
+```typescript
+async function getBlock(blockNumber: number | 'latest') {
+  const data = await blockdaemonRequest(
+    `/universal/v1/tempo/mainnet/block/${blockNumber}`
+  )
+
+  return {
+    number: data.number,
+    hash: data.hash,
+    timestamp: data.timestamp,
+    parentHash: data.parent_hash,
+    transactionCount: data.transaction_count,
+    gasUsed: data.gas_used,
+    gasLimit: data.gas_limit
+  }
+}
+```
+
+## Wallet API
+
+### Create Wallet
+
+```typescript
+async function createWallet(name: string) {
+  const response = await fetch(`${BLOCKDAEMON_BASE_URL}/wallet/v1/wallets`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      name,
+      protocol: 'ethereum' // Tempo is EVM-compatible
+    })
+  })
+
+  const data = await response.json()
+  return {
+    walletId: data.wallet_id,
+    address: data.address,
+    name: data.name
+  }
+}
+```
+
+### Sign Transaction
+
+```typescript
+async function signTransaction(
+  walletId: string,
+  transaction: {
+    to: string
+    value: string
+    data?: string
+    gasLimit?: string
+    gasPrice?: string
+  }
+) {
+  const response = await fetch(
+    `${BLOCKDAEMON_BASE_URL}/wallet/v1/wallets/${walletId}/sign`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        transaction,
+        chain_id: TEMPO_CHAIN_ID
+      })
+    }
+  )
+
+  const data = await response.json()
+  return {
+    signedTransaction: data.signed_transaction,
+    txHash: data.transaction_hash
+  }
+}
+```
+
+### Broadcast Transaction
+
+```typescript
+async function broadcastTransaction(signedTx: string) {
+  const response = await fetch(
+    `${BLOCKDAEMON_BASE_URL}/universal/v1/tempo/mainnet/tx/send`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        tx: signedTx
+      })
+    }
+  )
+
+  const data = await response.json()
+  return {
+    txHash: data.hash,
+    status: data.status
+  }
+}
+```
+
+## Staking API
+
+### Get Staking Info
+
+```typescript
+async function getStakingInfo() {
+  const data = await blockdaemonRequest(
+    `/staking/v1/tempo/mainnet/info`
+  )
+
+  return {
+    protocol: data.protocol,
+    apy: data.current_apy,
+    minStake: data.minimum_stake,
+    unbondingPeriod: data.unbonding_period,
+    validators: data.validators
+  }
+}
+```
+
+### Stake Assets
+
+```typescript
+async function stake(
+  walletId: string,
+  validatorAddress: string,
+  amount: string
+) {
+  const response = await fetch(
+    `${BLOCKDAEMON_BASE_URL}/staking/v1/tempo/mainnet/stake`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        wallet_id: walletId,
+        validator: validatorAddress,
+        amount
+      })
+    }
+  )
+
+  const data = await response.json()
+  return {
+    stakeId: data.stake_id,
+    txHash: data.transaction_hash,
+    status: data.status
+  }
+}
+```
+
+## Event Streaming
+
+```typescript
+async function subscribeToEvents(
+  address: string,
+  callback: (event: any) => void
+) {
+  const ws = new WebSocket(
+    `wss://svc.blockdaemon.com/universal/v1/tempo/mainnet/events?apiKey=${BLOCKDAEMON_API_KEY}`
+  )
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      action: 'subscribe',
+      addresses: [address],
+      event_types: ['transaction', 'token_transfer']
+    }))
+  }
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    callback(data)
+  }
+
+  return () => ws.close()
+}
+```
+
+## Webhooks
+
+```typescript
+async function createWebhook(address: string, callbackUrl: string) {
+  const response = await fetch(
+    `${BLOCKDAEMON_BASE_URL}/webhooks/v1/hooks`,
+    {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${BLOCKDAEMON_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        protocol: 'tempo',
+        network: 'mainnet',
+        callback_url: callbackUrl,
+        addresses: [address],
+        events: ['confirmed_tx', 'pending_tx']
+      })
+    }
+  )
+
+  return response.json()
+}
+
+// Webhook handler
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/blockdaemon', express.json(), (req, res) => {
+  const event = req.body
+
+  switch (event.event_type) {
+    case 'confirmed_tx':
+      handleConfirmedTransaction(event.data)
+      break
+    case 'pending_tx':
+      handlePendingTransaction(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Monitoring
+
+```typescript
+async function getNodeHealth() {
+  const data = await blockdaemonRequest(
+    `/monitoring/v1/tempo/mainnet/health`
+  )
+
+  return {
+    status: data.status,
+    blockHeight: data.block_height,
+    syncStatus: data.sync_status,
+    peerCount: data.peer_count,
+    latency: data.latency_ms
+  }
+}
+```
+
+## Environment Variables
+
+```bash
+BLOCKDAEMON_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Blockdaemon Documentation](https://docs.blockdaemon.com)
+- [Blockdaemon API Reference](https://docs.blockdaemon.com/reference)
+- [Blockdaemon Dashboard](https://app.blockdaemon.com)

@@ -1,0 +1,436 @@
+---
+title: "OpenFX for Tempo"
+description: "Real-time 24/7 FX liquidity for Tempo with OpenFX. Eliminate pre-funding and reduce FX costs for cross-border payments."
+---
+
+# OpenFX for Tempo
+
+[OpenFX](https://openfx.com) provides real-time, 24/7 FX liquidity for cross-border payments, helping institutions eliminate pre-funding and reduce FX costs.
+
+> **Note:** OpenFX API documentation requires institutional partnership. The examples in this guide demonstrate typical FX API patterns and should be verified with OpenFX's official documentation after onboarding.
+
+## Features
+
+- **24/7 FX liquidity** — Trade any time, including weekends
+- **Instant settlement** — Real-time cross-currency swaps
+- **No pre-funding** — Eliminate trapped liquidity
+- **Multi-currency** — Support for 80+ currency pairs
+
+## API Setup
+
+```typescript
+const OPENFX_API_KEY = process.env.OPENFX_API_KEY
+const OPENFX_SECRET = process.env.OPENFX_SECRET
+const OPENFX_BASE_URL = 'https://api.openfx.com/v1'
+
+async function openfxRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const timestamp = Date.now().toString()
+  const signature = createSignature(
+    options.method || 'GET',
+    endpoint,
+    timestamp,
+    options.body
+  )
+
+  const response = await fetch(`${OPENFX_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-OpenFX-Key': OPENFX_API_KEY!,
+      'X-OpenFX-Timestamp': timestamp,
+      'X-OpenFX-Signature': signature
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+
+function createSignature(
+  method: string,
+  endpoint: string,
+  timestamp: string,
+  body?: any
+) {
+  const crypto = require('crypto')
+  const message = `${timestamp}${method}${endpoint}${body ? JSON.stringify(body) : ''}`
+  return crypto
+    .createHmac('sha256', OPENFX_SECRET)
+    .update(message)
+    .digest('hex')
+}
+```
+
+## Get FX Rates
+
+### Real-Time Quote
+
+```typescript
+interface FXQuote {
+  quoteId: string
+  baseCurrency: string
+  quoteCurrency: string
+  rate: number
+  inverseRate: number
+  validUntil: number
+  spread: number
+}
+
+async function getFXQuote(
+  baseCurrency: string,
+  quoteCurrency: string,
+  amount: number,
+  side: 'buy' | 'sell'
+): Promise<FXQuote> {
+  const data = await openfxRequest('/quotes', {
+    method: 'POST',
+    body: {
+      base_currency: baseCurrency,
+      quote_currency: quoteCurrency,
+      amount,
+      side
+    }
+  })
+
+  return {
+    quoteId: data.quote_id,
+    baseCurrency: data.base_currency,
+    quoteCurrency: data.quote_currency,
+    rate: data.rate,
+    inverseRate: data.inverse_rate,
+    validUntil: data.valid_until,
+    spread: data.spread
+  }
+}
+
+// Example: Get USD/EUR rate
+const quote = await getFXQuote('USD', 'EUR', 10000, 'sell')
+```
+
+### Streaming Rates
+
+```typescript
+import WebSocket from 'ws'
+
+function streamRates(
+  pairs: string[],
+  callback: (rate: any) => void
+) {
+  const ws = new WebSocket(`wss://stream.openfx.com/v1/rates`, {
+    headers: { 'X-OpenFX-Key': OPENFX_API_KEY }
+  })
+
+  ws.on('open', () => {
+    ws.send(JSON.stringify({
+      action: 'subscribe',
+      pairs
+    }))
+  })
+
+  ws.on('message', (data) => {
+    const rate = JSON.parse(data.toString())
+    callback(rate)
+  })
+
+  return () => ws.close()
+}
+
+// Usage
+const unsubscribe = streamRates(['USD/EUR', 'USD/GBP'], (rate) => {
+  console.log(`${rate.pair}: ${rate.bid}/${rate.ask}`)
+})
+```
+
+## Execute FX Trade
+
+### Instant Trade
+
+```typescript
+interface FXTrade {
+  tradeId: string
+  quoteId: string
+  baseCurrency: string
+  quoteCurrency: string
+  baseAmount: number
+  quoteAmount: number
+  rate: number
+  status: string
+  settledAt?: string
+}
+
+async function executeTrade(quoteId: string): Promise<FXTrade> {
+  const data = await openfxRequest('/trades', {
+    method: 'POST',
+    body: {
+      quote_id: quoteId
+    }
+  })
+
+  return {
+    tradeId: data.trade_id,
+    quoteId: data.quote_id,
+    baseCurrency: data.base_currency,
+    quoteCurrency: data.quote_currency,
+    baseAmount: data.base_amount,
+    quoteAmount: data.quote_amount,
+    rate: data.rate,
+    status: data.status,
+    settledAt: data.settled_at
+  }
+}
+```
+
+### Trade with Stablecoin Settlement
+
+```typescript
+async function tradeWithStablecoinSettlement(
+  sellCurrency: string,
+  buyCurrency: string,
+  sellAmount: number,
+  settlementAddress: string
+) {
+  // Get quote
+  const quote = await getFXQuote(sellCurrency, buyCurrency, sellAmount, 'sell')
+  
+  // Execute with stablecoin settlement
+  const data = await openfxRequest('/trades', {
+    method: 'POST',
+    body: {
+      quote_id: quote.quoteId,
+      settlement: {
+        type: 'stablecoin',
+        network: 'tempo',
+        address: settlementAddress,
+        stablecoin: 'USDC'
+      }
+    }
+  })
+
+  return {
+    tradeId: data.trade_id,
+    settlementTxHash: data.settlement_tx_hash,
+    settledAmount: data.settled_amount
+  }
+}
+```
+
+## Multi-Currency Swap
+
+```typescript
+interface SwapRoute {
+  path: string[]
+  rates: number[]
+  effectiveRate: number
+  fees: number
+}
+
+async function getSwapRoute(
+  fromCurrency: string,
+  toCurrency: string,
+  amount: number
+): Promise<SwapRoute> {
+  const data = await openfxRequest('/routes', {
+    method: 'POST',
+    body: {
+      from_currency: fromCurrency,
+      to_currency: toCurrency,
+      amount
+    }
+  })
+
+  return {
+    path: data.path,
+    rates: data.rates,
+    effectiveRate: data.effective_rate,
+    fees: data.total_fees
+  }
+}
+
+async function executeSwap(
+  fromCurrency: string,
+  toCurrency: string,
+  amount: number
+) {
+  const route = await getSwapRoute(fromCurrency, toCurrency, amount)
+  
+  const data = await openfxRequest('/swaps', {
+    method: 'POST',
+    body: {
+      from_currency: fromCurrency,
+      to_currency: toCurrency,
+      amount,
+      route: route.path
+    }
+  })
+
+  return {
+    swapId: data.swap_id,
+    fromAmount: data.from_amount,
+    toAmount: data.to_amount,
+    effectiveRate: data.effective_rate,
+    status: data.status
+  }
+}
+```
+
+## Treasury Management
+
+### Get Balances
+
+```typescript
+async function getBalances() {
+  const data = await openfxRequest('/treasury/balances')
+  
+  return data.balances.map((balance: any) => ({
+    currency: balance.currency,
+    available: balance.available,
+    pending: balance.pending,
+    reserved: balance.reserved
+  }))
+}
+```
+
+### Fund Account
+
+```typescript
+async function getFundingInstructions(currency: string) {
+  const data = await openfxRequest(`/treasury/funding?currency=${currency}`)
+  
+  return {
+    currency,
+    bankDetails: data.bank_details,
+    wireInstructions: data.wire_instructions,
+    cryptoAddress: data.crypto_address
+  }
+}
+```
+
+### Withdraw Funds
+
+```typescript
+async function withdraw(
+  currency: string,
+  amount: number,
+  destination: {
+    type: 'bank' | 'crypto'
+    details: any
+  }
+) {
+  const data = await openfxRequest('/treasury/withdrawals', {
+    method: 'POST',
+    body: {
+      currency,
+      amount,
+      destination_type: destination.type,
+      destination_details: destination.details
+    }
+  })
+
+  return {
+    withdrawalId: data.withdrawal_id,
+    status: data.status,
+    estimatedArrival: data.estimated_arrival
+  }
+}
+```
+
+## Tempo Integration
+
+### Cross-Border Payment with FX
+
+```typescript
+async function sendCrossBorderPayment(
+  usdcAmount: number,
+  destinationCurrency: string,
+  recipientDetails: any
+) {
+  // 1. Get FX rate
+  const quote = await getFXQuote('USD', destinationCurrency, usdcAmount, 'sell')
+  
+  // 2. Execute FX trade
+  const trade = await executeTrade(quote.quoteId)
+  
+  // 3. Send to recipient via local rails
+  const payout = await sendLocalPayout(
+    destinationCurrency,
+    trade.quoteAmount,
+    recipientDetails
+  )
+
+  return {
+    tradeId: trade.tradeId,
+    fxRate: trade.rate,
+    localAmount: trade.quoteAmount,
+    localCurrency: destinationCurrency,
+    payoutId: payout.id
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/openfx', express.json(), (req, res) => {
+  const event = req.body
+
+  switch (event.type) {
+    case 'trade.settled':
+      handleTradeSettled(event.data)
+      break
+    case 'withdrawal.completed':
+      handleWithdrawalCompleted(event.data)
+      break
+    case 'rate.alert':
+      handleRateAlert(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Rate Alerts
+
+```typescript
+async function createRateAlert(
+  pair: string,
+  targetRate: number,
+  direction: 'above' | 'below'
+) {
+  const data = await openfxRequest('/alerts', {
+    method: 'POST',
+    body: {
+      pair,
+      target_rate: targetRate,
+      direction,
+      webhook_url: 'https://your-api.com/webhooks/openfx'
+    }
+  })
+
+  return {
+    alertId: data.alert_id,
+    pair,
+    targetRate,
+    direction
+  }
+}
+```
+
+## Environment Variables
+
+```bash
+OPENFX_API_KEY=your-api-key
+OPENFX_SECRET=your-secret
+```
+
+## Resources
+
+- [OpenFX Documentation](https://docs.openfx.com)
+- [OpenFX API Reference](https://docs.openfx.com/api)
+- [OpenFX Dashboard](https://app.openfx.com)

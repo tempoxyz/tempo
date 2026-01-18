@@ -1,0 +1,361 @@
+---
+title: "Artemis Analytics for Tempo"
+description: "Crypto analytics and on-chain data for Tempo with Artemis. Protocol metrics, stablecoin flows, and market intelligence."
+---
+
+# Artemis Analytics for Tempo
+
+[Artemis](https://artemis.xyz) provides comprehensive crypto analytics, protocol metrics, and on-chain intelligence for Tempo applications.
+
+> **Note:** Artemis provides an official Python SDK (`artemis-py`). The TypeScript examples in this guide demonstrate the REST API patterns and are provided for illustration purposes. For production Python applications, use the official SDK.
+
+## Features
+
+- **Protocol metrics** — TVL, revenue, user activity
+- **Stablecoin data** — Supply, flows, and velocity
+- **Developer activity** — Code commits and contributors
+- **Market data** — Prices, volumes, market caps
+
+## API Setup
+
+```typescript
+const ARTEMIS_API_KEY = process.env.ARTEMIS_API_KEY
+const ARTEMIS_BASE_URL = 'https://api.artemis.xyz'
+
+async function artemisRequest(endpoint: string, params?: Record<string, any>) {
+  const url = new URL(`${ARTEMIS_BASE_URL}${endpoint}`)
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      url.searchParams.set(key, String(value))
+    })
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      'x-api-key': ARTEMIS_API_KEY!
+    }
+  })
+  return response.json()
+}
+```
+
+## Chain Metrics
+
+### Get Daily Active Addresses
+
+```typescript
+async function getDailyActiveAddresses(days = 30) {
+  const data = await artemisRequest('/data/chain/tempo/active-addresses', {
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return data.data.map((point: any) => ({
+    date: point.date,
+    activeAddresses: point.value
+  }))
+}
+```
+
+### Get Transaction Volume
+
+```typescript
+async function getTransactionVolume(days = 30) {
+  const data = await artemisRequest('/data/chain/tempo/txns', {
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return data.data.map((point: any) => ({
+    date: point.date,
+    transactions: point.value
+  }))
+}
+```
+
+### Get Fees
+
+```typescript
+async function getChainFees(days = 30) {
+  const data = await artemisRequest('/data/chain/tempo/fees', {
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return data.data.map((point: any) => ({
+    date: point.date,
+    feesUsd: point.value
+  }))
+}
+```
+
+## Stablecoin Analytics
+
+### Get Stablecoin Supply
+
+```typescript
+async function getStablecoinSupply(stablecoin: 'usdc' | 'usdt' | 'dai') {
+  const data = await artemisRequest(`/data/stablecoin/${stablecoin}/supply`, {
+    chain: 'tempo'
+  })
+
+  return {
+    totalSupply: data.current_supply,
+    supplyChange24h: data.change_24h,
+    supplyChange7d: data.change_7d,
+    history: data.data.map((point: any) => ({
+      date: point.date,
+      supply: point.value
+    }))
+  }
+}
+```
+
+### Get Stablecoin Flows
+
+```typescript
+async function getStablecoinFlows(days = 7) {
+  const data = await artemisRequest('/data/stablecoin/flows', {
+    chain: 'tempo',
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return {
+    netInflow: data.net_inflow,
+    inflows: data.inflows,
+    outflows: data.outflows,
+    byStablecoin: data.by_stablecoin
+  }
+}
+```
+
+### Get Stablecoin Velocity
+
+```typescript
+async function getStablecoinVelocity(stablecoin: string, days = 30) {
+  const data = await artemisRequest(`/data/stablecoin/${stablecoin}/velocity`, {
+    chain: 'tempo',
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return data.data.map((point: any) => ({
+    date: point.date,
+    velocity: point.value,
+    volume: point.volume,
+    supply: point.supply
+  }))
+}
+```
+
+## Protocol Metrics
+
+### Get TVL
+
+```typescript
+async function getProtocolTVL(protocol: string, days = 30) {
+  const data = await artemisRequest(`/data/protocol/${protocol}/tvl`, {
+    chain: 'tempo',
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return {
+    currentTvl: data.current_tvl,
+    change24h: data.change_24h,
+    change7d: data.change_7d,
+    history: data.data.map((point: any) => ({
+      date: point.date,
+      tvl: point.value
+    }))
+  }
+}
+```
+
+### Get Protocol Revenue
+
+```typescript
+async function getProtocolRevenue(protocol: string, days = 30) {
+  const data = await artemisRequest(`/data/protocol/${protocol}/revenue`, {
+    chain: 'tempo',
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return {
+    totalRevenue: data.total_revenue,
+    averageDaily: data.average_daily,
+    history: data.data.map((point: any) => ({
+      date: point.date,
+      revenue: point.value
+    }))
+  }
+}
+```
+
+## Developer Activity
+
+### Get Developer Metrics
+
+```typescript
+async function getDeveloperActivity(days = 90) {
+  const data = await artemisRequest('/data/chain/tempo/developer-activity', {
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return {
+    totalCommits: data.total_commits,
+    activeContributors: data.active_contributors,
+    repositories: data.repositories,
+    weeklyCommits: data.weekly_commits
+  }
+}
+```
+
+## Market Data
+
+### Get Token Price
+
+```typescript
+async function getTokenPrice(tokenId: string, days = 30) {
+  const data = await artemisRequest(`/data/token/${tokenId}/price`, {
+    start_date: getDateDaysAgo(days),
+    end_date: getTodayDate()
+  })
+
+  return {
+    currentPrice: data.current_price,
+    change24h: data.change_24h,
+    change7d: data.change_7d,
+    history: data.data.map((point: any) => ({
+      date: point.date,
+      price: point.value
+    }))
+  }
+}
+```
+
+### Get Market Cap
+
+```typescript
+async function getMarketCap(tokenId: string) {
+  const data = await artemisRequest(`/data/token/${tokenId}/market-cap`)
+
+  return {
+    marketCap: data.market_cap,
+    fullyDilutedValuation: data.fdv,
+    circulatingSupply: data.circulating_supply,
+    totalSupply: data.total_supply
+  }
+}
+```
+
+## Comparison Data
+
+### Compare Chains
+
+```typescript
+async function compareChains(chains: string[], metric: string, days = 30) {
+  const promises = chains.map(chain =>
+    artemisRequest(`/data/chain/${chain}/${metric}`, {
+      start_date: getDateDaysAgo(days),
+      end_date: getTodayDate()
+    })
+  )
+
+  const results = await Promise.all(promises)
+
+  return chains.map((chain, i) => ({
+    chain,
+    current: results[i].current_value,
+    change7d: results[i].change_7d,
+    data: results[i].data
+  }))
+}
+
+// Usage
+const comparison = await compareChains(
+  ['tempo', 'ethereum', 'arbitrum'],
+  'active-addresses',
+  30
+)
+```
+
+## React Hooks
+
+```typescript
+import { useState, useEffect } from 'react'
+
+function useArtemisData<T>(
+  endpoint: string,
+  params?: Record<string, any>,
+  deps: any[] = []
+) {
+  const [data, setData] = useState<T | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    async function fetch() {
+      setLoading(true)
+      try {
+        const result = await artemisRequest(endpoint, params)
+        setData(result)
+      } catch (e) {
+        setError(e as Error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetch()
+  }, deps)
+
+  return { data, loading, error }
+}
+
+// Usage
+function ChainMetrics() {
+  const { data, loading } = useArtemisData<any>(
+    '/data/chain/tempo/active-addresses',
+    { start_date: getDateDaysAgo(30), end_date: getTodayDate() }
+  )
+
+  if (loading) return <div>Loading...</div>
+
+  return (
+    <div>
+      <h2>Active Addresses</h2>
+      {/* Render chart */}
+    </div>
+  )
+}
+```
+
+## Helper Functions
+
+```typescript
+function getDateDaysAgo(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+  return date.toISOString().split('T')[0]
+}
+
+function getTodayDate(): string {
+  return new Date().toISOString().split('T')[0]
+}
+```
+
+## Environment Variables
+
+```bash
+ARTEMIS_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Artemis Documentation](https://docs.artemis.xyz)
+- [Artemis Terminal](https://app.artemis.xyz)
+- [API Reference](https://docs.artemis.xyz/api)

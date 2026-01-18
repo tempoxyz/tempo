@@ -1,0 +1,417 @@
+---
+title: "LI.FI Cross-Chain for Tempo"
+description: "Multi-bridge aggregation and cross-chain swaps for Tempo with LI.FI. Find optimal routes across bridges and DEXs."
+---
+
+# LI.FI Cross-Chain for Tempo
+
+[LI.FI](https://li.fi) aggregates bridges and DEXs to find optimal cross-chain swap routes, connecting Tempo to the broader multi-chain ecosystem.
+
+## Features
+
+- **Bridge aggregation** — Compare routes across multiple bridges
+- **Cross-chain swaps** — Swap tokens across chains in one transaction
+- **Gas optimization** — Find the cheapest routes
+- **Route customization** — Filter by speed, cost, or specific bridges
+
+## SDK Setup
+
+```bash
+npm install @lifi/sdk viem
+```
+
+```typescript
+import { createConfig, getQuote, getRoutes, executeRoute } from '@lifi/sdk'
+import { createWalletClient, http } from 'viem'
+
+const lifiConfig = createConfig({
+  integrator: 'your-app-name',
+  apiUrl: 'https://li.quest/v1'
+})
+```
+
+## Get Routes
+
+### Find Best Route
+
+```typescript
+interface RouteRequest {
+  fromChainId: number
+  toChainId: number
+  fromToken: string
+  toToken: string
+  fromAmount: string
+  fromAddress: string
+  toAddress?: string
+}
+
+interface Route {
+  id: string
+  fromChainId: number
+  toChainId: number
+  fromToken: { symbol: string; address: string }
+  toToken: { symbol: string; address: string }
+  fromAmount: string
+  toAmount: string
+  estimatedDuration: number
+  gasCosts: { amount: string; token: string }[]
+  steps: RouteStep[]
+}
+
+async function findBestRoute(request: RouteRequest): Promise<Route> {
+  const result = await getRoutes({
+    fromChainId: request.fromChainId,
+    toChainId: request.toChainId,
+    fromTokenAddress: request.fromToken, // Note: SDK uses fromTokenAddress
+    toTokenAddress: request.toToken,     // Note: SDK uses toTokenAddress
+    fromAmount: request.fromAmount,
+    fromAddress: request.fromAddress,
+    toAddress: request.toAddress || request.fromAddress
+  })
+
+  const bestRoute = result.routes[0]
+  
+  return {
+    id: bestRoute.id,
+    fromChainId: bestRoute.fromChainId,
+    toChainId: bestRoute.toChainId,
+    fromToken: bestRoute.fromToken,
+    toToken: bestRoute.toToken,
+    fromAmount: bestRoute.fromAmount,
+    toAmount: bestRoute.toAmount,
+    estimatedDuration: bestRoute.steps.reduce((acc, step) => 
+      acc + (step.estimate?.executionDuration || 0), 0
+    ),
+    gasCosts: bestRoute.gasCostUSD,
+    steps: bestRoute.steps
+  }
+}
+
+// Example: Find route from Ethereum USDC to Tempo USDC
+const route = await findBestRoute({
+  fromChainId: 1,
+  toChainId: TEMPO_CHAIN_ID,
+  fromToken: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC on Ethereum
+  toToken: TEMPO_USDC_ADDRESS,
+  fromAmount: '1000000000', // 1000 USDC
+  fromAddress: '0x...'
+})
+```
+
+### Get Multiple Routes
+
+```typescript
+async function getAllRoutes(request: RouteRequest) {
+  const result = await getRoutes({
+    ...request,
+    options: {
+      slippage: 0.01, // 1%
+      order: 'RECOMMENDED', // or 'FASTEST', 'CHEAPEST', 'SAFEST'
+      allowSwitchChain: true
+    }
+  })
+
+  return result.routes.map(route => ({
+    id: route.id,
+    fromAmount: route.fromAmount,
+    toAmount: route.toAmount,
+    toAmountMin: route.toAmountMin,
+    estimatedDuration: route.steps.reduce((acc, step) => 
+      acc + (step.estimate?.executionDuration || 0), 0
+    ),
+    gasCostUSD: route.gasCostUSD,
+    bridges: route.steps
+      .filter(s => s.type === 'cross')
+      .map(s => s.tool),
+    dexs: route.steps
+      .filter(s => s.type === 'swap')
+      .map(s => s.tool)
+  }))
+}
+```
+
+## Execute Route
+
+### Simple Execution
+
+```typescript
+async function executeSwap(route: any, walletClient: any) {
+  const result = await executeRoute(route, {
+    updateRouteHook: (updatedRoute) => {
+      console.log('Route updated:', updatedRoute)
+    },
+    acceptSlippageUpdateHook: async (params) => {
+      // Auto-accept slippage updates under 2%
+      return params.newSlippage < 0.02
+    }
+  })
+
+  return {
+    status: result.status,
+    txHashes: result.steps.map(s => s.execution?.txHash).filter(Boolean)
+  }
+}
+```
+
+### Step-by-Step Execution
+
+```typescript
+import { getStepTransaction } from '@lifi/sdk'
+
+async function executeStepByStep(route: any, walletClient: any) {
+  const results = []
+
+  for (const step of route.steps) {
+    // Get transaction data for this step
+    const stepTx = await getStepTransaction(step)
+
+    // Execute the transaction
+    const hash = await walletClient.sendTransaction({
+      to: stepTx.to,
+      data: stepTx.data,
+      value: BigInt(stepTx.value || '0'),
+      gasLimit: BigInt(stepTx.gasLimit)
+    })
+
+    // Wait for confirmation
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    
+    results.push({
+      step: step.type,
+      tool: step.tool,
+      txHash: hash,
+      status: receipt.status
+    })
+
+    // For cross-chain steps, wait for destination confirmation
+    if (step.type === 'cross') {
+      await waitForBridgeComplete(step, hash)
+    }
+  }
+
+  return results
+}
+```
+
+## Quote API
+
+```typescript
+async function getQuickQuote(
+  fromChain: number,
+  toChain: number,
+  fromToken: string,
+  toToken: string,
+  amount: string
+) {
+  const quote = await getQuote({
+    fromChain,
+    toChain,
+    fromToken,
+    toToken,
+    fromAmount: amount,
+    fromAddress: '0x0000000000000000000000000000000000000000' // Placeholder for quote
+  })
+
+  return {
+    fromAmount: quote.estimate.fromAmount,
+    toAmount: quote.estimate.toAmount,
+    toAmountMin: quote.estimate.toAmountMin,
+    executionDuration: quote.estimate.executionDuration,
+    gasCosts: quote.estimate.gasCosts,
+    feeCosts: quote.estimate.feeCosts
+  }
+}
+```
+
+## Bridge Filtering
+
+```typescript
+async function getRoutesWithPreferences(
+  request: RouteRequest,
+  preferences: {
+    bridges?: string[]
+    exchanges?: string[]
+    maxSlippage?: number
+    maxPriceImpact?: number
+  }
+) {
+  const result = await getRoutes({
+    ...request,
+    options: {
+      slippage: preferences.maxSlippage || 0.01,
+      bridges: {
+        allow: preferences.bridges // e.g., ['across', 'hop', 'stargate']
+      },
+      exchanges: {
+        allow: preferences.exchanges // e.g., ['uniswap', 'sushiswap']
+      },
+      maxPriceImpact: preferences.maxPriceImpact || 0.05
+    }
+  })
+
+  return result.routes
+}
+
+// Only use specific bridges
+const routes = await getRoutesWithPreferences(request, {
+  bridges: ['across', 'stargate'],
+  maxSlippage: 0.005 // 0.5%
+})
+```
+
+## Track Transaction Status
+
+```typescript
+import { getStatus } from '@lifi/sdk'
+
+interface TransactionStatus {
+  status: 'pending' | 'done' | 'failed'
+  substatus: string
+  sending: { txHash: string; txLink: string }
+  receiving?: { txHash: string; txLink: string }
+}
+
+async function getTransactionStatus(
+  txHash: string,
+  fromChain: number,
+  toChain: number
+): Promise<TransactionStatus> {
+  const status = await getStatus({
+    txHash,
+    fromChain,
+    toChain
+  })
+
+  return {
+    status: status.status,
+    substatus: status.substatus,
+    sending: {
+      txHash: status.sending.txHash,
+      txLink: status.sending.txLink
+    },
+    receiving: status.receiving ? {
+      txHash: status.receiving.txHash,
+      txLink: status.receiving.txLink
+    } : undefined
+  }
+}
+
+// Poll until complete
+async function waitForComplete(
+  txHash: string,
+  fromChain: number,
+  toChain: number
+) {
+  while (true) {
+    const status = await getTransactionStatus(txHash, fromChain, toChain)
+    
+    if (status.status === 'done') {
+      return status
+    }
+    
+    if (status.status === 'failed') {
+      throw new Error(`Transaction failed: ${status.substatus}`)
+    }
+    
+    await new Promise(r => setTimeout(r, 10000))
+  }
+}
+```
+
+## React Integration
+
+```typescript
+import { useState, useCallback } from 'react'
+import { useLiFi, useRoutes, useExecuteRoute } from '@lifi/widget'
+
+function useCrossChainSwap() {
+  const [loading, setLoading] = useState(false)
+  const [routes, setRoutes] = useState<Route[]>([])
+  const [status, setStatus] = useState<string>('')
+
+  const findRoutes = useCallback(async (request: RouteRequest) => {
+    setLoading(true)
+    try {
+      const allRoutes = await getAllRoutes(request)
+      setRoutes(allRoutes)
+      return allRoutes
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const execute = useCallback(async (route: any, walletClient: any) => {
+    setLoading(true)
+    setStatus('Executing...')
+    try {
+      const result = await executeSwap(route, walletClient)
+      setStatus('Complete')
+      return result
+    } catch (error) {
+      setStatus('Failed')
+      throw error
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  return { findRoutes, execute, loading, routes, status }
+}
+```
+
+## Widget Integration
+
+```typescript
+import { LiFiWidget, WidgetConfig } from '@lifi/widget'
+
+const widgetConfig: WidgetConfig = {
+  integrator: 'your-app',
+  fromChain: 1, // Ethereum
+  toChain: TEMPO_CHAIN_ID,
+  fromToken: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+  theme: {
+    palette: {
+      primary: { main: '#your-brand-color' }
+    }
+  },
+  appearance: 'light',
+  hiddenUI: ['poweredBy']
+}
+
+function CrossChainWidget() {
+  return <LiFiWidget config={widgetConfig} />
+}
+```
+
+## Supported Chains
+
+```typescript
+import { getChains, getTokens } from '@lifi/sdk'
+
+async function getSupportedChains() {
+  const chains = await getChains()
+  return chains.map(chain => ({
+    id: chain.id,
+    name: chain.name,
+    nativeCurrency: chain.nativeCurrency
+  }))
+}
+
+async function getTokensForChain(chainId: number) {
+  const tokens = await getTokens({ chains: [chainId] })
+  return tokens.tokens[chainId]
+}
+```
+
+## Environment Variables
+
+```bash
+LIFI_API_KEY=your-api-key # Optional, for higher rate limits
+```
+
+## Resources
+
+- [LI.FI Documentation](https://docs.li.fi)
+- [LI.FI SDK](https://github.com/lifinance/sdk)
+- [LI.FI Widget](https://docs.li.fi/integrate-li.fi-widget)
+- [LI.FI Explorer](https://explorer.li.fi)

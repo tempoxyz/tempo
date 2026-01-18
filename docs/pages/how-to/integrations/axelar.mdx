@@ -1,0 +1,430 @@
+---
+title: "Axelar Interoperability for Tempo"
+description: "Cross-chain messaging and asset transfers for Tempo with Axelar. Connect Tempo to 50+ blockchain networks."
+---
+
+# Axelar Interoperability for Tempo
+
+[Axelar](https://axelar.network) provides secure cross-chain communication, enabling Tempo to connect with 50+ blockchain networks for messaging and asset transfers.
+
+## Features
+
+- **General Message Passing (GMP)** — Cross-chain contract calls
+- **Asset transfers** — Bridge tokens across chains
+- **Interchain tokens** — Deploy tokens across multiple chains
+- **Squid Router** — Optimized cross-chain swaps
+
+## SDK Setup
+
+```bash
+npm install @axelar-network/axelarjs-sdk viem
+```
+
+```typescript
+import { AxelarQueryAPI, AxelarGMPRecoveryAPI, Environment } from '@axelar-network/axelarjs-sdk'
+
+const axelarQuery = new AxelarQueryAPI({
+  environment: Environment.MAINNET
+})
+
+const gmpRecovery = new AxelarGMPRecoveryAPI({
+  environment: Environment.MAINNET
+})
+```
+
+## General Message Passing (GMP)
+
+### Send Cross-Chain Message
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import { AxelarExecutable } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/executable/AxelarExecutable.sol';
+import { IAxelarGateway } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGateway.sol';
+import { IAxelarGasService } from '@axelar-network/axelar-gmp-sdk-solidity/contracts/interfaces/IAxelarGasService.sol';
+
+contract TempoMessenger is AxelarExecutable {
+    IAxelarGasService public immutable gasService;
+
+    constructor(
+        address gateway_,
+        address gasService_
+    ) AxelarExecutable(gateway_) {
+        gasService = IAxelarGasService(gasService_);
+    }
+
+    function sendMessage(
+        string calldata destinationChain,
+        string calldata destinationAddress,
+        bytes calldata payload
+    ) external payable {
+        // Pay for gas on destination chain
+        gasService.payNativeGasForContractCall{ value: msg.value }(
+            address(this),
+            destinationChain,
+            destinationAddress,
+            payload,
+            msg.sender
+        );
+
+        // Send the message
+        gateway.callContract(destinationChain, destinationAddress, payload);
+    }
+
+    function _execute(
+        string calldata sourceChain,
+        string calldata sourceAddress,
+        bytes calldata payload
+    ) internal override {
+        // Handle incoming message
+        (address recipient, uint256 amount) = abi.decode(payload, (address, uint256));
+        // Process the cross-chain message...
+    }
+}
+```
+
+### TypeScript Integration
+
+```typescript
+import { createWalletClient, http, encodeFunctionData } from 'viem'
+import { tempo } from 'viem/chains'
+
+const messengerAbi = [
+  {
+    name: 'sendMessage',
+    type: 'function',
+    inputs: [
+      { name: 'destinationChain', type: 'string' },
+      { name: 'destinationAddress', type: 'string' },
+      { name: 'payload', type: 'bytes' }
+    ]
+  }
+] as const
+
+async function sendCrossChainMessage(
+  destinationChain: string,
+  destinationContract: string,
+  payload: `0x${string}`
+) {
+  // Estimate gas for destination chain
+  const gasFee = await axelarQuery.estimateGasFee(
+    'tempo',
+    destinationChain,
+    700000, // Estimated gas limit
+    1.1 // Gas multiplier
+  )
+
+  const walletClient = createWalletClient({
+    chain: tempo,
+    transport: http()
+  })
+
+  const hash = await walletClient.writeContract({
+    address: MESSENGER_ADDRESS,
+    abi: messengerAbi,
+    functionName: 'sendMessage',
+    args: [destinationChain, destinationContract, payload],
+    value: BigInt(gasFee)
+  })
+
+  return hash
+}
+```
+
+## Asset Transfers
+
+### Bridge Tokens
+
+```typescript
+import { AxelarAssetTransfer, Environment } from '@axelar-network/axelarjs-sdk'
+
+const assetTransfer = new AxelarAssetTransfer({
+  environment: Environment.MAINNET
+})
+
+async function bridgeToTempo(
+  sourceChain: string,
+  asset: string,
+  amount: string,
+  recipientAddress: string
+) {
+  const depositAddress = await assetTransfer.getDepositAddress({
+    fromChain: sourceChain,
+    toChain: 'tempo',
+    destinationAddress: recipientAddress,
+    asset
+  })
+
+  return {
+    depositAddress,
+    instructions: `Send ${amount} ${asset} to ${depositAddress} on ${sourceChain}`
+  }
+}
+
+async function bridgeFromTempo(
+  destinationChain: string,
+  asset: string,
+  amount: string,
+  recipientAddress: string
+) {
+  const depositAddress = await assetTransfer.getDepositAddress({
+    fromChain: 'tempo',
+    toChain: destinationChain,
+    destinationAddress: recipientAddress,
+    asset
+  })
+
+  return {
+    depositAddress,
+    instructions: `Send ${amount} ${asset} to ${depositAddress} on Tempo`
+  }
+}
+```
+
+### Send with Call
+
+```typescript
+async function bridgeWithCall(
+  destinationChain: string,
+  destinationContract: string,
+  asset: string,
+  amount: bigint,
+  payload: `0x${string}`
+) {
+  // This sends tokens AND executes a contract call on destination
+  const gasFee = await axelarQuery.estimateGasFee(
+    'tempo',
+    destinationChain,
+    500000,
+    1.1,
+    asset
+  )
+
+  const hash = await walletClient.writeContract({
+    address: GATEWAY_ADDRESS,
+    abi: gatewayAbi,
+    functionName: 'callContractWithToken',
+    args: [
+      destinationChain,
+      destinationContract,
+      payload,
+      asset,
+      amount
+    ],
+    value: BigInt(gasFee)
+  })
+
+  return hash
+}
+```
+
+## Track Transfer Status
+
+```typescript
+interface TransferStatus {
+  status: 'pending' | 'executed' | 'error'
+  sourceChain: string
+  destinationChain: string
+  txHash: string
+  executeTxHash?: string
+  error?: string
+}
+
+async function getTransferStatus(txHash: string): Promise<TransferStatus> {
+  const status = await gmpRecovery.queryTransactionStatus(txHash)
+
+  return {
+    status: mapStatus(status.status),
+    sourceChain: status.call?.chain || '',
+    destinationChain: status.call?.returnValues?.destinationChain || '',
+    txHash,
+    executeTxHash: status.executed?.transactionHash,
+    error: status.error?.message
+  }
+}
+
+function mapStatus(status: string) {
+  switch (status) {
+    case 'executed':
+      return 'executed'
+    case 'error':
+      return 'error'
+    default:
+      return 'pending'
+  }
+}
+
+// Poll for completion
+async function waitForExecution(txHash: string, maxWaitMs = 600000) {
+  const startTime = Date.now()
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    const status = await getTransferStatus(txHash)
+    
+    if (status.status === 'executed') {
+      return status
+    }
+    
+    if (status.status === 'error') {
+      throw new Error(status.error)
+    }
+    
+    await new Promise(r => setTimeout(r, 10000))
+  }
+  
+  throw new Error('Transfer timeout')
+}
+```
+
+## Squid Router Integration
+
+```typescript
+import { Squid } from '@0xsquid/sdk'
+
+const squid = new Squid({
+  baseUrl: 'https://api.squidrouter.com'
+})
+
+await squid.init()
+
+async function swapAndBridge(
+  fromChain: string,
+  toChain: string,
+  fromToken: string,
+  toToken: string,
+  amount: string,
+  recipient: string
+) {
+  const route = await squid.getRoute({
+    fromChain,
+    toChain,
+    fromToken,
+    toToken,
+    fromAmount: amount,
+    toAddress: recipient,
+    slippage: 1
+  })
+
+  const tx = await squid.executeRoute({
+    signer: walletClient,
+    route
+  })
+
+  return {
+    txHash: tx.hash,
+    estimatedOutput: route.estimate.toAmount,
+    route: route.estimate.route
+  }
+}
+```
+
+## Interchain Token Service
+
+```typescript
+// Deploy a token that exists on multiple chains
+async function deployInterchainToken(
+  name: string,
+  symbol: string,
+  decimals: number,
+  initialSupply: bigint,
+  destinationChains: string[]
+) {
+  // Deploy on Tempo first
+  const tokenId = await deployLocalToken(name, symbol, decimals, initialSupply)
+  
+  // Register on other chains
+  for (const chain of destinationChains) {
+    await registerRemoteToken(tokenId, chain)
+  }
+
+  return tokenId
+}
+
+async function transferInterchainToken(
+  tokenId: string,
+  destinationChain: string,
+  recipient: string,
+  amount: bigint
+) {
+  const gasFee = await axelarQuery.estimateGasFee(
+    'tempo',
+    destinationChain,
+    200000,
+    1.1
+  )
+
+  const hash = await walletClient.writeContract({
+    address: ITS_ADDRESS,
+    abi: itsAbi,
+    functionName: 'interchainTransfer',
+    args: [tokenId, destinationChain, recipient, amount, '0x'],
+    value: BigInt(gasFee)
+  })
+
+  return hash
+}
+```
+
+## Gas Estimation
+
+```typescript
+async function estimateGas(
+  sourceChain: string,
+  destinationChain: string,
+  gasLimit: number,
+  includeToken = false
+) {
+  const gasFee = await axelarQuery.estimateGasFee(
+    sourceChain,
+    destinationChain,
+    gasLimit,
+    1.1, // 10% buffer
+    includeToken ? 'USDC' : undefined
+  )
+
+  return {
+    gasLimit,
+    estimatedFee: gasFee,
+    sourceChain,
+    destinationChain
+  }
+}
+```
+
+## Supported Chains
+
+```typescript
+async function getSupportedChains() {
+  const chains = await axelarQuery.getActiveChains()
+  
+  return chains.map(chain => ({
+    id: chain.id,
+    name: chain.name,
+    nativeToken: chain.nativeToken,
+    gateway: chain.contracts?.gateway?.address,
+    gasService: chain.contracts?.gasService?.address
+  }))
+}
+```
+
+## Contract Addresses
+
+| Contract | Address |
+|----------|---------|
+| Gateway | `0x...` (Tempo mainnet) |
+| Gas Service | `0x...` (Tempo mainnet) |
+| ITS | `0x...` (Tempo mainnet) |
+
+## Environment Variables
+
+```bash
+AXELAR_RPC_URL=https://rpc.axelar.network
+```
+
+## Resources
+
+- [Axelar Documentation](https://docs.axelar.dev)
+- [Axelar SDK](https://github.com/axelarnetwork/axelarjs-sdk)
+- [Squid Router](https://docs.squidrouter.com)
+- [Axelar Explorer](https://axelarscan.io)

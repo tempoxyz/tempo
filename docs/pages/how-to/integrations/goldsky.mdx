@@ -1,0 +1,249 @@
+---
+title: "Goldsky Indexing for Tempo"
+description: "Index Tempo blockchain data with Goldsky. Subgraph deployment, data streaming, and real-time APIs."
+---
+
+# Goldsky Indexing for Tempo
+
+[Goldsky](https://goldsky.com) provides blockchain indexing and data streaming for Tempo.
+
+## Quick Start
+
+### Install CLI
+
+```bash
+npm install -g @goldsky/cli
+goldsky auth
+```
+
+### Create Subgraph
+
+```bash
+goldsky subgraph create tempo-indexer
+cd tempo-indexer
+```
+
+## Subgraph Configuration
+
+### No-Code Config
+
+Create `config.json` for simple event indexing:
+
+```json
+{
+  "version": "1",
+  "name": "tempo-transfers/1.0.0",
+  "abis": {
+    "erc20": [
+      {
+        "anonymous": false,
+        "inputs": [
+          { "indexed": true, "name": "from", "type": "address" },
+          { "indexed": true, "name": "to", "type": "address" },
+          { "indexed": false, "name": "value", "type": "uint256" }
+        ],
+        "name": "Transfer",
+        "type": "event"
+      }
+    ]
+  },
+  "instances": [
+    {
+      "abi": "erc20",
+      "address": "0x20c0000000000000000000000000000000000001",
+      "startBlock": 1,
+      "chain": "tempo"
+    }
+  ]
+}
+```
+
+### Custom Subgraph
+
+Create `subgraph.yaml`:
+
+```yaml
+specVersion: 1.1.0
+description: Tempo Token Indexer
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum/contract
+    name: USDC
+    network: tempo
+    source:
+      address: "0x20c0000000000000000000000000000000000001"
+      abi: ERC20
+      startBlock: 1
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Transfer
+      abis:
+        - name: ERC20
+          file: ./abis/ERC20.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleTransfer
+      file: ./src/mappings.ts
+```
+
+### GraphQL Schema
+
+Create `schema.graphql`:
+
+```graphql
+type Transfer @entity {
+  id: ID!
+  from: Bytes!
+  to: Bytes!
+  amount: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  txHash: Bytes!
+}
+
+type Account @entity {
+  id: ID!
+  address: Bytes!
+  balance: BigInt!
+  transferCount: Int!
+}
+
+type DailyVolume @aggregation(intervals: ["day"], source: "Transfer") {
+  id: ID!
+  timestamp: Timestamp!
+  volume: BigDecimal! @aggregate(fn: "sum", arg: "amount")
+  count: Int! @aggregate(fn: "count")
+}
+```
+
+### Mapping Handler
+
+Create `src/mappings.ts`:
+
+```typescript
+import { Transfer as TransferEvent } from '../generated/USDC/ERC20'
+import { Transfer, Account } from '../generated/schema'
+
+export function handleTransfer(event: TransferEvent): void {
+  let transfer = new Transfer(
+    event.transaction.hash.toHex() + '-' + event.logIndex.toString()
+  )
+  
+  transfer.from = event.params.from
+  transfer.to = event.params.to
+  transfer.amount = event.params.value
+  transfer.blockNumber = event.block.number
+  transfer.timestamp = event.block.timestamp
+  transfer.txHash = event.transaction.hash
+  transfer.save()
+
+  // Update accounts
+  updateAccount(event.params.from.toHex(), event.params.value.neg())
+  updateAccount(event.params.to.toHex(), event.params.value)
+}
+
+function updateAccount(address: string, delta: BigInt): void {
+  let account = Account.load(address)
+  if (!account) {
+    account = new Account(address)
+    account.address = Bytes.fromHexString(address)
+    account.balance = BigInt.zero()
+    account.transferCount = 0
+  }
+  account.balance = account.balance.plus(delta)
+  account.transferCount += 1
+  account.save()
+}
+```
+
+## Deployment
+
+```bash
+# Build
+goldsky subgraph build
+
+# Deploy
+goldsky subgraph deploy tempo-indexer/1.0.0 --from-build
+```
+
+## Query API
+
+```bash
+curl -X POST https://api.goldsky.com/api/public/project_xxx/subgraphs/tempo-indexer/1.0.0/gn \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{ transfers(first: 10, orderBy: timestamp, orderDirection: desc) { id from to amount timestamp } }"
+  }'
+```
+
+## Mirror Pipelines
+
+Stream data to databases:
+
+### Pipeline Config
+
+Create `pipeline.yaml`:
+
+```yaml
+name: tempo-transfers-pipeline
+version: 1
+apiVersion: 3
+
+sources:
+  tempo.transfers:
+    type: subgraph_entity
+    name: Transfer
+    subgraphs:
+      - name: tempo-indexer
+        version: 1.0.0
+
+transforms:
+  clean_transfers:
+    primary_key: id
+    sql: >
+      SELECT
+        id,
+        from as sender,
+        to as recipient,
+        CAST(amount AS DECIMAL) / 1e18 AS amount_decimal,
+        timestamp,
+        txHash as tx_hash
+      FROM tempo.transfers
+
+sinks:
+  postgres:
+    type: postgres
+    table: tempo_transfers
+    schema: public
+    secret_name: PG_SECRET
+    from: clean_transfers
+```
+
+### Deploy Pipeline
+
+```bash
+# Add secret
+goldsky secrets create PG_SECRET \
+  --postgres-connection-string "postgresql://user:pass@host:5432/db"
+
+# Deploy
+goldsky pipeline deploy pipeline.yaml
+```
+
+## Tempo Network Config
+
+| Parameter | Value |
+|-----------|-------|
+| Network | `tempo` |
+| Chain ID | `42431` |
+| RPC | `https://rpc.moderato.tempo.xyz` |
+
+## Resources
+
+- [Goldsky Documentation](https://docs.goldsky.com)
+- [Goldsky Dashboard](https://app.goldsky.com)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

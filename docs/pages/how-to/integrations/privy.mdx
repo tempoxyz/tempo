@@ -1,0 +1,460 @@
+---
+title: "Privy Wallet Integration for Tempo"
+description: "Add Privy authentication and embedded wallets to your Tempo app. Email, SMS, social login, and smart wallet support with full code examples."
+---
+
+# Privy Wallet Integration for Tempo
+
+[Privy](https://privy.io) makes it easy to onboard users to Tempo with email, SMS, social login, and embedded wallets.
+
+## Why Privy
+
+- **Easy onboarding** — Email, SMS, and social login for non-crypto users
+- **Embedded wallets** — Non-custodial wallets without browser extensions
+- **Smart wallets** — Account abstraction for batch transactions and gas sponsorship
+- **Multi-chain** — EVM, Solana, and custom chain support
+
+## Installation
+
+```bash
+pnpm install @privy-io/react-auth @tanstack/react-query viem wagmi
+```
+
+## Quick Start
+
+### 1. Get Your App ID
+
+Create an app at [dashboard.privy.io](https://dashboard.privy.io) and copy your App ID.
+
+### 2. Configure the Provider
+
+```typescript
+// providers.tsx
+'use client'
+
+import { PrivyProvider } from '@privy-io/react-auth'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { tempoTestnet } from 'viem/chains'
+
+const queryClient = new QueryClient()
+
+// Configure Tempo chain with fee token
+const tempo = tempoTestnet({
+  feeToken: '0x20c0000000000000000000000000000000000001' // USDC
+})
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <PrivyProvider
+      appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID!}
+      config={{
+        loginMethods: ['email', 'sms', 'wallet', 'google', 'apple'],
+        defaultChain: tempo,
+        supportedChains: [tempo],
+        appearance: {
+          theme: 'dark'
+        },
+        embeddedWallets: {
+          createOnLogin: 'users-without-wallets'
+        }
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    </PrivyProvider>
+  )
+}
+```
+
+### 3. Add Login Button
+
+```typescript
+'use client'
+
+import { usePrivy } from '@privy-io/react-auth'
+
+export function LoginButton() {
+  const { ready, authenticated, login, logout, user } = usePrivy()
+
+  if (!ready) return <div>Loading...</div>
+
+  if (authenticated) {
+    return (
+      <div>
+        <p>Welcome, {user?.email?.address || user?.wallet?.address}</p>
+        <button onClick={logout}>Logout</button>
+      </div>
+    )
+  }
+
+  return <button onClick={login}>Login</button>
+}
+```
+
+## Authentication Methods
+
+Configure which login methods are available:
+
+```typescript
+config={{
+  loginMethods: [
+    'email',      // Email with OTP
+    'sms',        // Phone with OTP
+    'wallet',     // External wallet connection
+    'google',     // Google OAuth
+    'apple',      // Apple ID
+    'twitter',    // Twitter/X
+    'discord',    // Discord
+    'github',     // GitHub
+    'farcaster'   // Farcaster
+  ]
+}}
+```
+
+## Embedded Wallets
+
+Privy creates non-custodial embedded wallets for users without existing wallets.
+
+### Access User's Wallet
+
+```typescript
+'use client'
+
+import { usePrivy, useWallets } from '@privy-io/react-auth'
+
+export function WalletInfo() {
+  const { user } = usePrivy()
+  const { wallets } = useWallets()
+
+  // Get the embedded wallet
+  const embeddedWallet = wallets.find(w => w.walletClientType === 'privy')
+
+  return (
+    <div>
+      <p>Address: {embeddedWallet?.address}</p>
+      <p>Chain: {embeddedWallet?.chainId}</p>
+    </div>
+  )
+}
+```
+
+### Create Additional Wallets
+
+```typescript
+import { useCreateWallet } from '@privy-io/react-auth'
+
+export function CreateWalletButton() {
+  const { createWallet, isLoading } = useCreateWallet({
+    onSuccess: ({ wallet }) => {
+      console.log('New wallet:', wallet.address)
+    }
+  })
+
+  return (
+    <button 
+      onClick={() => createWallet({ createAdditional: true })}
+      disabled={isLoading}
+    >
+      Create New Wallet
+    </button>
+  )
+}
+```
+
+### Export Wallet
+
+Users can export their private key:
+
+```typescript
+import { usePrivy } from '@privy-io/react-auth'
+
+export function ExportButton({ address }: { address: string }) {
+  const { exportWallet } = usePrivy()
+
+  return (
+    <button onClick={() => exportWallet({ address })}>
+      Export Private Key
+    </button>
+  )
+}
+```
+
+## Sending Transactions
+
+### With Viem
+
+```typescript
+'use client'
+
+import { usePrivy, useWallets } from '@privy-io/react-auth'
+import { createWalletClient, custom, parseEther } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+export function SendTransaction() {
+  const { wallets } = useWallets()
+
+  const send = async () => {
+    const wallet = wallets[0]
+    await wallet.switchChain(42431) // Tempo testnet
+
+    const provider = await wallet.getEthereumProvider()
+    
+    const client = createWalletClient({
+      chain: tempoTestnet({ feeToken: alphaUsd }),
+      transport: custom(provider)
+    })
+
+    const hash = await client.sendTransaction({
+      to: '0xRecipient',
+      value: parseEther('10') // 10 USD
+    })
+
+    console.log('Transaction hash:', hash)
+  }
+
+  return <button onClick={send}>Send 10 USD</button>
+}
+```
+
+### Sign Messages
+
+```typescript
+export function SignMessage() {
+  const { wallets } = useWallets()
+
+  const sign = async () => {
+    const wallet = wallets[0]
+    const provider = await wallet.getEthereumProvider()
+    
+    const client = createWalletClient({
+      chain: tempoTestnet({ feeToken: alphaUsd }),
+      transport: custom(provider)
+    })
+
+    const signature = await client.signMessage({
+      message: 'Hello from Tempo!'
+    })
+
+    console.log('Signature:', signature)
+  }
+
+  return <button onClick={sign}>Sign Message</button>
+}
+```
+
+## Smart Wallets (Account Abstraction)
+
+Enable smart wallets for batch transactions and gas sponsorship.
+
+### Enable in Dashboard
+
+1. Go to [dashboard.privy.io](https://dashboard.privy.io)
+2. Navigate to Embedded Wallets → Smart Wallets
+3. Enable for your app
+
+### Configure Provider
+
+```typescript
+import { PrivyProvider } from '@privy-io/react-auth'
+import { SmartWalletsProvider } from '@privy-io/react-auth/smart-wallets'
+
+export function Providers({ children }) {
+  return (
+    <PrivyProvider appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID!} config={...}>
+      <SmartWalletsProvider>
+        {children}
+      </SmartWalletsProvider>
+    </PrivyProvider>
+  )
+}
+```
+
+### Batch Transactions
+
+```typescript
+import { useSmartWallets } from '@privy-io/react-auth/smart-wallets'
+import { encodeFunctionData, erc20Abi } from 'viem'
+
+export function BatchTransfer() {
+  const { client } = useSmartWallets()
+
+  const batchTransfer = async () => {
+    // Approve and transfer in one transaction
+    await client.sendTransaction({
+      calls: [
+        {
+          to: USDC_ADDRESS,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: 'approve',
+            args: [spenderAddress, amount]
+          })
+        },
+        {
+          to: USDC_ADDRESS,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: 'transfer',
+            args: [recipientAddress, amount]
+          })
+        }
+      ]
+    })
+  }
+
+  return <button onClick={batchTransfer}>Approve & Transfer</button>
+}
+```
+
+## Wagmi Integration
+
+For type-safe contract interactions:
+
+```typescript
+// providers.tsx
+import { PrivyProvider } from '@privy-io/react-auth'
+import { WagmiProvider, createConfig } from '@privy-io/wagmi'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const tempo = tempoTestnet({ feeToken: alphaUsd })
+
+const wagmiConfig = createConfig({
+  chains: [tempo],
+  transports: {
+    [tempo.id]: http('https://rpc.moderato.tempo.xyz')
+  }
+})
+
+const queryClient = new QueryClient()
+
+export function Providers({ children }) {
+  return (
+    <PrivyProvider appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID!} config={...}>
+      <QueryClientProvider client={queryClient}>
+        <WagmiProvider config={wagmiConfig}>
+          {children}
+        </WagmiProvider>
+      </QueryClientProvider>
+    </PrivyProvider>
+  )
+}
+```
+
+### Use Wagmi Hooks
+
+```typescript
+import { useSendTransaction, useBalance } from 'wagmi'
+import { parseEther } from 'viem'
+
+export function WagmiTransaction() {
+  const { sendTransaction, isPending } = useSendTransaction()
+  const { data: balance } = useBalance({ address: userAddress })
+
+  const send = () => {
+    sendTransaction({
+      to: '0xRecipient',
+      value: parseEther('10')
+    })
+  }
+
+  return (
+    <div>
+      <p>Balance: {balance?.formatted} {balance?.symbol}</p>
+      <button onClick={send} disabled={isPending}>
+        {isPending ? 'Sending...' : 'Send'}
+      </button>
+    </div>
+  )
+}
+```
+
+## Link Additional Accounts
+
+Let users link multiple authentication methods:
+
+```typescript
+import { useLinkAccount } from '@privy-io/react-auth'
+
+export function LinkAccounts() {
+  const {
+    linkEmail,
+    linkPhone,
+    linkWallet,
+    linkGoogle,
+    linkTwitter
+  } = useLinkAccount({
+    onSuccess: ({ linkMethod }) => {
+      console.log(`${linkMethod} linked successfully`)
+    }
+  })
+
+  return (
+    <div>
+      <button onClick={linkEmail}>Link Email</button>
+      <button onClick={linkPhone}>Link Phone</button>
+      <button onClick={linkWallet}>Link Wallet</button>
+      <button onClick={linkGoogle}>Link Google</button>
+      <button onClick={linkTwitter}>Link Twitter</button>
+    </div>
+  )
+}
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_PRIVY_APP_ID=your-app-id
+```
+
+## Full Example
+
+```typescript
+// app/layout.tsx
+import { Providers } from './providers'
+
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  )
+}
+
+// app/page.tsx
+'use client'
+
+import { usePrivy, useWallets } from '@privy-io/react-auth'
+
+export default function Home() {
+  const { ready, authenticated, login, logout, user } = usePrivy()
+  const { wallets } = useWallets()
+
+  if (!ready) return <div>Loading...</div>
+
+  if (!authenticated) {
+    return <button onClick={login}>Login to Tempo</button>
+  }
+
+  return (
+    <div>
+      <h1>Welcome to Tempo</h1>
+      <p>Email: {user?.email?.address}</p>
+      <p>Wallet: {wallets[0]?.address}</p>
+      <button onClick={logout}>Logout</button>
+    </div>
+  )
+}
+```
+
+## Resources
+
+- [Privy Documentation](https://docs.privy.io)
+- [Privy Dashboard](https://dashboard.privy.io)
+- [Privy Examples](https://github.com/privy-io/examples)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

@@ -1,0 +1,582 @@
+---
+title: "Dynamic Wallet SDK for Tempo"
+description: "Integrate Dynamic for wallet authentication on Tempo. Social login, embedded wallets, and multi-chain support."
+---
+
+# Dynamic Wallet SDK for Tempo
+
+[Dynamic](https://www.dynamic.xyz) provides a complete wallet authentication solution for Tempo with social login, embedded wallets, and seamless multi-chain support.
+
+## Why Dynamic
+
+- **Social login** — Email, Google, Apple, Twitter, and more
+- **Embedded wallets** — Non-custodial wallets without browser extensions
+- **Multi-chain** — EVM, Solana, Bitcoin, and custom chains
+- **Customizable UI** — Theming and white-label options
+
+## Installation
+
+```bash
+pnpm install @dynamic-labs/sdk-react-core @dynamic-labs/ethereum viem wagmi @tanstack/react-query
+```
+
+## Quick Start
+
+### 1. Get Your Environment ID
+
+Create an app at [app.dynamic.xyz](https://app.dynamic.xyz) and copy your Environment ID.
+
+### 2. Configure Tempo Networks
+
+Define Tempo chains for Dynamic:
+
+```typescript
+// config/chains.ts
+import type { EvmNetwork } from '@dynamic-labs/sdk-react-core'
+
+export const tempoTestnet: EvmNetwork = {
+  blockExplorerUrls: ['https://explorer.moderato.tempo.xyz'],
+  chainId: 42431,
+  chainName: 'Tempo Testnet',
+  iconUrls: ['https://tempo.xyz/logo.png'],
+  name: 'Tempo Testnet',
+  nativeCurrency: {
+    decimals: 18,
+    name: 'USD',
+    symbol: 'USD',
+  },
+  networkId: 42431,
+  rpcUrls: ['https://rpc.moderato.tempo.xyz'],
+  vanityName: 'Tempo Testnet',
+}
+
+export const tempoMainnet: EvmNetwork = {
+  blockExplorerUrls: ['https://explorer.presto.tempo.xyz'],
+  chainId: 4217,
+  chainName: 'Tempo',
+  iconUrls: ['https://tempo.xyz/logo.png'],
+  name: 'Tempo',
+  nativeCurrency: {
+    decimals: 18,
+    name: 'USD',
+    symbol: 'USD',
+  },
+  networkId: 4217,
+  rpcUrls: ['https://rpc.presto.tempo.xyz'],
+  vanityName: 'Tempo',
+}
+```
+
+### 3. Set Up the Provider
+
+```typescript
+// providers.tsx
+'use client'
+
+import { DynamicContextProvider } from '@dynamic-labs/sdk-react-core'
+import { EthereumWalletConnectors } from '@dynamic-labs/ethereum'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { tempoTestnet, tempoMainnet } from './config/chains'
+
+const queryClient = new QueryClient()
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return (
+    <DynamicContextProvider
+      settings={{
+        environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+        walletConnectors: [EthereumWalletConnectors],
+        evmNetworks: [tempoTestnet, tempoMainnet],
+        initialAuthenticationMode: 'connect-and-sign',
+      }}
+    >
+      <QueryClientProvider client={queryClient}>
+        {children}
+      </QueryClientProvider>
+    </DynamicContextProvider>
+  )
+}
+```
+
+### 4. Add Login Button
+
+```typescript
+'use client'
+
+import { DynamicWidget } from '@dynamic-labs/sdk-react-core'
+
+export function LoginButton() {
+  return <DynamicWidget />
+}
+```
+
+## Social Login Configuration
+
+### Enable Login Methods
+
+Configure in the Dynamic dashboard or via code:
+
+```typescript
+<DynamicContextProvider
+  settings={{
+    environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+    walletConnectors: [EthereumWalletConnectors],
+    evmNetworks: [tempoTestnet, tempoMainnet],
+    socialProvidersFilter: (providers) => 
+      providers.filter(p => 
+        ['google', 'apple', 'twitter', 'discord', 'github'].includes(p.name)
+      )
+  }}
+>
+```
+
+### Custom Login UI
+
+```typescript
+'use client'
+
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+
+export function CustomLogin() {
+  const { setShowAuthFlow, handleLogOut, primaryWallet, user } = useDynamicContext()
+
+  if (primaryWallet) {
+    return (
+      <div>
+        <p>Welcome, {user?.email || primaryWallet.address}</p>
+        <button onClick={handleLogOut}>Logout</button>
+      </div>
+    )
+  }
+
+  return (
+    <button onClick={() => setShowAuthFlow(true)}>
+      Connect Wallet
+    </button>
+  )
+}
+```
+
+## Embedded Wallets
+
+### Enable Embedded Wallets
+
+```typescript
+<DynamicContextProvider
+  settings={{
+    environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+    walletConnectors: [EthereumWalletConnectors],
+    evmNetworks: [tempoTestnet, tempoMainnet],
+    embeddedWallets: {
+      createOnLogin: 'all-users', // or 'users-without-wallets'
+      showWalletLoginOptions: true,
+    }
+  }}
+>
+```
+
+### Access Embedded Wallet
+
+```typescript
+'use client'
+
+import { useDynamicContext, useEmbeddedWallet } from '@dynamic-labs/sdk-react-core'
+
+export function WalletInfo() {
+  const { primaryWallet } = useDynamicContext()
+  const { embeddedWallet } = useEmbeddedWallet()
+
+  return (
+    <div>
+      <p>Address: {primaryWallet?.address}</p>
+      <p>Is Embedded: {embeddedWallet ? 'Yes' : 'No'}</p>
+    </div>
+  )
+}
+```
+
+### Export Embedded Wallet
+
+```typescript
+import { useEmbeddedWallet } from '@dynamic-labs/sdk-react-core'
+
+export function ExportWallet() {
+  const { userHasEmbeddedWallet, exportWallet } = useEmbeddedWallet()
+
+  if (!userHasEmbeddedWallet()) return null
+
+  return (
+    <button onClick={exportWallet}>
+      Export Private Key
+    </button>
+  )
+}
+```
+
+## Transaction Signing
+
+### Sign and Send Transaction
+
+```typescript
+'use client'
+
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { createWalletClient, custom, parseEther } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+export function SendTransaction() {
+  const { primaryWallet } = useDynamicContext()
+
+  const send = async () => {
+    if (!primaryWallet) return
+
+    const provider = await primaryWallet.getWalletClient()
+    
+    const client = createWalletClient({
+      chain: tempoTestnet({
+        feeToken: '0x20c0000000000000000000000000000000000001'
+      }),
+      transport: custom(provider)
+    })
+
+    const hash = await client.sendTransaction({
+      to: '0xRecipient',
+      value: parseEther('10')
+    })
+
+    console.log('Transaction hash:', hash)
+  }
+
+  return <button onClick={send}>Send 10 USD</button>
+}
+```
+
+### Sign Message
+
+```typescript
+export function SignMessage() {
+  const { primaryWallet } = useDynamicContext()
+
+  const sign = async () => {
+    if (!primaryWallet) return
+
+    const signature = await primaryWallet.signMessage('Hello from Tempo!')
+    console.log('Signature:', signature)
+  }
+
+  return <button onClick={sign}>Sign Message</button>
+}
+```
+
+### Sign Typed Data (EIP-712)
+
+```typescript
+export function SignTypedData() {
+  const { primaryWallet } = useDynamicContext()
+
+  const sign = async () => {
+    if (!primaryWallet) return
+
+    const provider = await primaryWallet.getWalletClient()
+    
+    const signature = await provider.signTypedData({
+      domain: {
+        name: 'My App',
+        version: '1',
+        chainId: 42431,
+        verifyingContract: '0x...'
+      },
+      types: {
+        Transfer: [
+          { name: 'to', type: 'address' },
+          { name: 'amount', type: 'uint256' }
+        ]
+      },
+      primaryType: 'Transfer',
+      message: {
+        to: '0xRecipient',
+        amount: parseEther('100')
+      }
+    })
+
+    console.log('Signature:', signature)
+  }
+
+  return <button onClick={sign}>Sign Typed Data</button>
+}
+```
+
+## Chain Switching
+
+### Switch to Tempo
+
+```typescript
+'use client'
+
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+
+export function ChainSwitcher() {
+  const { primaryWallet, network } = useDynamicContext()
+
+  const switchToTempoTestnet = async () => {
+    if (!primaryWallet) return
+    await primaryWallet.switchNetwork(42431)
+  }
+
+  const switchToTempoMainnet = async () => {
+    if (!primaryWallet) return
+    await primaryWallet.switchNetwork(4217)
+  }
+
+  return (
+    <div>
+      <p>Current Chain: {network?.chainId}</p>
+      <button onClick={switchToTempoTestnet}>Switch to Testnet</button>
+      <button onClick={switchToTempoMainnet}>Switch to Mainnet</button>
+    </div>
+  )
+}
+```
+
+### Auto-Switch on Connect
+
+```typescript
+<DynamicContextProvider
+  settings={{
+    environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+    walletConnectors: [EthereumWalletConnectors],
+    evmNetworks: [tempoTestnet, tempoMainnet],
+    defaultNetwork: 42431, // Default to Tempo Testnet
+  }}
+>
+```
+
+## Multi-Wallet Support
+
+### Access All Connected Wallets
+
+```typescript
+import { useDynamicContext } from '@dynamic-labs/sdk-react-core'
+
+export function WalletList() {
+  const { connectedWallets, primaryWallet, setPrimaryWallet } = useDynamicContext()
+
+  return (
+    <div>
+      <h3>Connected Wallets</h3>
+      {connectedWallets.map((wallet) => (
+        <div key={wallet.address}>
+          <p>{wallet.address}</p>
+          <p>{wallet.connector?.name}</p>
+          {wallet !== primaryWallet && (
+            <button onClick={() => setPrimaryWallet(wallet)}>
+              Set as Primary
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+```
+
+## Customization
+
+### Theme Configuration
+
+```typescript
+<DynamicContextProvider
+  settings={{
+    environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+    walletConnectors: [EthereumWalletConnectors],
+    evmNetworks: [tempoTestnet, tempoMainnet],
+    cssOverrides: `
+      .dynamic-widget-card {
+        background-color: #1a1a1a;
+        border-radius: 12px;
+      }
+      .dynamic-widget-card__header {
+        color: #ffffff;
+      }
+    `
+  }}
+>
+```
+
+### Custom Modal
+
+```typescript
+import { DynamicConnectButton } from '@dynamic-labs/sdk-react-core'
+
+export function CustomConnectButton() {
+  return (
+    <DynamicConnectButton>
+      <button className="my-custom-button">
+        Connect to Tempo
+      </button>
+    </DynamicConnectButton>
+  )
+}
+```
+
+## Wagmi Integration
+
+### Configure with Wagmi
+
+```typescript
+// providers.tsx
+import { DynamicContextProvider } from '@dynamic-labs/sdk-react-core'
+import { DynamicWagmiConnector } from '@dynamic-labs/wagmi-connector'
+import { EthereumWalletConnectors } from '@dynamic-labs/ethereum'
+import { createConfig, WagmiProvider, http } from 'wagmi'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { tempoTestnet, tempoMainnet } from './config/chains'
+
+const wagmiConfig = createConfig({
+  chains: [tempoTestnet, tempoMainnet],
+  transports: {
+    [tempoTestnet.chainId]: http('https://rpc.moderato.tempo.xyz'),
+    [tempoMainnet.chainId]: http('https://rpc.presto.tempo.xyz'),
+  },
+})
+
+const queryClient = new QueryClient()
+
+export function Providers({ children }) {
+  return (
+    <DynamicContextProvider
+      settings={{
+        environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+        walletConnectors: [EthereumWalletConnectors],
+        evmNetworks: [tempoTestnet, tempoMainnet],
+      }}
+    >
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={queryClient}>
+          <DynamicWagmiConnector>
+            {children}
+          </DynamicWagmiConnector>
+        </QueryClientProvider>
+      </WagmiProvider>
+    </DynamicContextProvider>
+  )
+}
+```
+
+### Use Wagmi Hooks
+
+```typescript
+import { useBalance, useSendTransaction } from 'wagmi'
+import { parseEther } from 'viem'
+
+export function WagmiExample() {
+  const { data: balance } = useBalance({ address: '0x...' })
+  const { sendTransaction, isPending } = useSendTransaction()
+
+  return (
+    <div>
+      <p>Balance: {balance?.formatted} {balance?.symbol}</p>
+      <button 
+        onClick={() => sendTransaction({ to: '0x...', value: parseEther('10') })}
+        disabled={isPending}
+      >
+        Send
+      </button>
+    </div>
+  )
+}
+```
+
+## Event Handlers
+
+```typescript
+<DynamicContextProvider
+  settings={{
+    environmentId: process.env.NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID!,
+    walletConnectors: [EthereumWalletConnectors],
+    evmNetworks: [tempoTestnet, tempoMainnet],
+    events: {
+      onAuthSuccess: (args) => {
+        console.log('Auth successful:', args.user)
+      },
+      onLogout: () => {
+        console.log('User logged out')
+      },
+      onWalletAdded: (wallet) => {
+        console.log('Wallet connected:', wallet.address)
+      },
+      onWalletRemoved: (wallet) => {
+        console.log('Wallet disconnected:', wallet.address)
+      }
+    }
+  }}
+>
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_DYNAMIC_ENVIRONMENT_ID=your-environment-id
+```
+
+## Full Example
+
+```typescript
+// app/layout.tsx
+import { Providers } from './providers'
+
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  )
+}
+
+// app/page.tsx
+'use client'
+
+import { DynamicWidget, useDynamicContext } from '@dynamic-labs/sdk-react-core'
+import { parseEther } from 'viem'
+
+export default function Home() {
+  const { primaryWallet, user } = useDynamicContext()
+
+  const sendTransaction = async () => {
+    if (!primaryWallet) return
+    
+    const client = await primaryWallet.getWalletClient()
+    const hash = await client.sendTransaction({
+      to: '0xRecipient',
+      value: parseEther('10')
+    })
+    
+    console.log('Transaction:', hash)
+  }
+
+  return (
+    <div>
+      <DynamicWidget />
+      
+      {primaryWallet && (
+        <div>
+          <h2>Welcome to Tempo</h2>
+          <p>Email: {user?.email}</p>
+          <p>Wallet: {primaryWallet.address}</p>
+          <button onClick={sendTransaction}>Send 10 USD</button>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+## Resources
+
+- [Dynamic Documentation](https://docs.dynamic.xyz)
+- [Dynamic Dashboard](https://app.dynamic.xyz)
+- [Dynamic Examples](https://github.com/dynamic-labs/sdk-examples)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

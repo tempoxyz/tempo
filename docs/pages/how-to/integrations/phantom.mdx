@@ -1,0 +1,201 @@
+---
+title: "Phantom Wallet for Tempo"
+description: "Connect Phantom wallet to Tempo blockchain. EVM wallet integration, transaction signing, and network configuration."
+---
+
+# Phantom Wallet for Tempo
+
+[Phantom](https://phantom.app) is a popular multi-chain wallet that supports EVM chains including Tempo.
+
+## Add Tempo to Phantom
+
+Phantom automatically detects EVM chains. Add Tempo network:
+
+1. Open Phantom → Settings → Networks
+2. Click "Add Network"
+3. Enter Tempo details:
+
+| Field | Testnet | Mainnet |
+|-------|---------|---------|
+| Network Name | Tempo Testnet | Tempo Mainnet |
+| RPC URL | `https://rpc.moderato.tempo.xyz` | `https://rpc.presto.tempo.xyz` |
+| Chain ID | `42431` | `4217` |
+| Currency | `USD` | `USD` |
+| Explorer | `https://explore.tempo.xyz` | `https://explore.tempo.xyz` |
+
+## Programmatic Connection
+
+### With Wagmi + RainbowKit
+
+```typescript
+import { getDefaultConfig, RainbowKitProvider } from '@rainbow-me/rainbowkit'
+import { WagmiProvider, createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'viem/chains'
+
+const tempo = tempoTestnet({ feeToken: alphaUsd })
+
+const config = getDefaultConfig({
+  appName: 'My Tempo App',
+  projectId: 'YOUR_WALLETCONNECT_PROJECT_ID',
+  chains: [tempo],
+  transports: {
+    [tempo.id]: http('https://rpc.moderato.tempo.xyz')
+  }
+})
+
+export function App() {
+  return (
+    <WagmiProvider config={config}>
+      <RainbowKitProvider>
+        {/* Phantom appears in wallet list */}
+      </RainbowKitProvider>
+    </WagmiProvider>
+  )
+}
+```
+
+### Direct Provider Access
+
+```typescript
+async function connectPhantom() {
+  // Phantom injects window.ethereum for EVM
+  if (!window.ethereum?.isPhantom) {
+    window.open('https://phantom.app/', '_blank')
+    return
+  }
+
+  // Request accounts
+  const accounts = await window.ethereum.request({
+    method: 'eth_requestAccounts'
+  })
+
+  // Add Tempo network
+  await window.ethereum.request({
+    method: 'wallet_addEthereumChain',
+    params: [{
+      chainId: '0xA5CF', // 42431
+      chainName: 'Tempo Testnet',
+      nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 18 },
+      rpcUrls: ['https://rpc.moderato.tempo.xyz'],
+      blockExplorerUrls: ['https://explore.tempo.xyz']
+    }]
+  })
+
+  return accounts[0]
+}
+```
+
+## Transaction Signing
+
+### Send Transaction
+
+```typescript
+import { ethers } from 'ethers'
+
+async function sendTransaction(to: string, amount: string) {
+  const provider = new ethers.BrowserProvider(window.ethereum)
+  const signer = await provider.getSigner()
+
+  const tx = await signer.sendTransaction({
+    to,
+    value: ethers.parseEther(amount)
+  })
+
+  const receipt = await tx.wait()
+  return receipt.hash
+}
+```
+
+### Sign Message
+
+```typescript
+async function signMessage(message: string) {
+  const provider = new ethers.BrowserProvider(window.ethereum)
+  const signer = await provider.getSigner()
+
+  const signature = await signer.signMessage(message)
+  return signature
+}
+```
+
+### Sign Typed Data (EIP-712)
+
+```typescript
+async function signTypedData() {
+  const provider = new ethers.BrowserProvider(window.ethereum)
+  const signer = await provider.getSigner()
+
+  const domain = {
+    name: 'My App',
+    version: '1',
+    chainId: 42431,
+    verifyingContract: '0x...'
+  }
+
+  const types = {
+    Transfer: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' }
+    ]
+  }
+
+  const value = {
+    to: '0xRecipient',
+    amount: ethers.parseEther('100')
+  }
+
+  const signature = await signer.signTypedData(domain, types, value)
+  return signature
+}
+```
+
+## Token Transfers
+
+```typescript
+import { ethers } from 'ethers'
+
+const ERC20_ABI = [
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function balanceOf(address owner) view returns (uint256)'
+]
+
+async function transferToken(
+  tokenAddress: string,
+  to: string,
+  amount: string
+) {
+  const provider = new ethers.BrowserProvider(window.ethereum)
+  const signer = await provider.getSigner()
+
+  const token = new ethers.Contract(tokenAddress, ERC20_ABI, signer)
+  const tx = await token.transfer(to, ethers.parseEther(amount))
+  
+  return await tx.wait()
+}
+```
+
+## Event Listeners
+
+```typescript
+// Account changes
+window.ethereum.on('accountsChanged', (accounts: string[]) => {
+  console.log('Account changed:', accounts[0])
+})
+
+// Network changes
+window.ethereum.on('chainChanged', (chainId: string) => {
+  console.log('Chain changed:', parseInt(chainId, 16))
+  window.location.reload()
+})
+
+// Disconnect
+window.ethereum.on('disconnect', () => {
+  console.log('Wallet disconnected')
+})
+```
+
+## Resources
+
+- [Phantom Wallet](https://phantom.app)
+- [Phantom Developer Docs](https://docs.phantom.app)
+- [Tempo Explorer](https://explore.tempo.xyz)

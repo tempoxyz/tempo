@@ -1,0 +1,435 @@
+---
+title: "Mesh Crypto Connectivity for Tempo"
+description: "Universal crypto account connectivity for Tempo with Mesh. Connect to 300+ exchanges and wallets for transfers and portfolio data."
+---
+
+# Mesh Crypto Connectivity for Tempo
+
+[Mesh](https://meshconnect.com) provides universal connectivity to 300+ crypto exchanges and wallets, enabling seamless transfers and portfolio aggregation.
+
+## Features
+
+- **Universal connectivity** — 300+ exchanges and wallets
+- **Direct transfers** — Move funds without manual steps
+- **Portfolio aggregation** — Unified view of holdings
+- **Authentication** — Secure OAuth flows
+
+## SDK Setup
+
+```bash
+npm install @meshconnect/web-link-sdk
+```
+
+```typescript
+import { createLink } from '@meshconnect/web-link-sdk'
+
+const MESH_CLIENT_ID = process.env.NEXT_PUBLIC_MESH_CLIENT_ID!
+const MESH_API_KEY = process.env.MESH_API_KEY!
+// Production: https://integration-api.meshconnect.com
+// Sandbox: https://sandbox-integration-api.meshconnect.com
+const MESH_BASE_URL = 'https://integration-api.meshconnect.com'
+
+async function meshRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const response = await fetch(`${MESH_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Client-Id': MESH_CLIENT_ID,
+      'X-Client-Secret': MESH_API_KEY
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Link SDK Integration
+
+### Create Link Token
+
+```typescript
+async function createLinkToken(userId: string) {
+  const data = await meshRequest('/linktoken', {
+    method: 'POST',
+    body: {
+      user_id: userId,
+      redirect_uri: 'https://your-app.com/callback',
+      transfer_options: {
+        enabled: true,
+        to_addresses: [
+          {
+            network: 'tempo',
+            address: 'your-vault-address'
+          }
+        ]
+      }
+    }
+  })
+
+  return data.link_token
+}
+```
+
+### Launch Link UI
+
+```typescript
+function ConnectExchangeButton({ userId }: { userId: string }) {
+  async function handleConnect() {
+    const linkToken = await createLinkToken(userId)
+
+    const link = createLink({
+      clientId: MESH_CLIENT_ID,
+      onSuccess: (authData) => {
+        console.log('Connected:', authData)
+        // Store authData.accessToken for future requests
+      },
+      onExit: (error) => {
+        if (error) console.error('Link error:', error)
+      }
+    })
+
+    link.open(linkToken)
+  }
+
+  return <button onClick={handleConnect}>Connect Exchange</button>
+}
+```
+
+## Get Connected Accounts
+
+```typescript
+interface ConnectedAccount {
+  accountId: string
+  provider: string
+  providerName: string
+  type: 'exchange' | 'wallet'
+  status: 'active' | 'disconnected'
+}
+
+async function getConnectedAccounts(accessToken: string): Promise<ConnectedAccount[]> {
+  const data = await meshRequest('/accounts', {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`
+    }
+  })
+
+  return data.accounts.map((account: any) => ({
+    accountId: account.account_id,
+    provider: account.provider,
+    providerName: account.provider_name,
+    type: account.type,
+    status: account.status
+  }))
+}
+```
+
+## Get Holdings
+
+```typescript
+interface Holding {
+  asset: string
+  symbol: string
+  amount: number
+  valueUsd: number
+  provider: string
+}
+
+async function getHoldings(accessToken: string): Promise<Holding[]> {
+  const data = await meshRequest('/holdings', {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`
+    }
+  })
+
+  return data.holdings.map((holding: any) => ({
+    asset: holding.asset,
+    symbol: holding.symbol,
+    amount: holding.amount,
+    valueUsd: holding.value_usd,
+    provider: holding.provider
+  }))
+}
+```
+
+## Get Aggregated Portfolio
+
+```typescript
+interface Portfolio {
+  totalValueUsd: number
+  holdings: Holding[]
+  byProvider: Record<string, { valueUsd: number; holdings: Holding[] }>
+  byAsset: Record<string, { amount: number; valueUsd: number }>
+}
+
+async function getPortfolio(accessToken: string): Promise<Portfolio> {
+  const holdings = await getHoldings(accessToken)
+
+  const byProvider: Record<string, { valueUsd: number; holdings: Holding[] }> = {}
+  const byAsset: Record<string, { amount: number; valueUsd: number }> = {}
+
+  for (const holding of holdings) {
+    // Group by provider
+    if (!byProvider[holding.provider]) {
+      byProvider[holding.provider] = { valueUsd: 0, holdings: [] }
+    }
+    byProvider[holding.provider].valueUsd += holding.valueUsd
+    byProvider[holding.provider].holdings.push(holding)
+
+    // Group by asset
+    if (!byAsset[holding.symbol]) {
+      byAsset[holding.symbol] = { amount: 0, valueUsd: 0 }
+    }
+    byAsset[holding.symbol].amount += holding.amount
+    byAsset[holding.symbol].valueUsd += holding.valueUsd
+  }
+
+  return {
+    totalValueUsd: holdings.reduce((sum, h) => sum + h.valueUsd, 0),
+    holdings,
+    byProvider,
+    byAsset
+  }
+}
+```
+
+## Initiate Transfer
+
+### Transfer to Tempo
+
+```typescript
+interface TransferRequest {
+  accessToken: string
+  fromAccountId: string
+  asset: string
+  amount: number
+  toAddress: string
+}
+
+async function initiateTransfer(request: TransferRequest) {
+  const data = await meshRequest('/transfers', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${request.accessToken}`
+    },
+    body: {
+      from_account_id: request.fromAccountId,
+      asset: request.asset,
+      amount: request.amount,
+      to_address: request.toAddress,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    transferId: data.transfer_id,
+    status: data.status,
+    amount: data.amount,
+    asset: data.asset,
+    txHash: data.tx_hash
+  }
+}
+```
+
+### Preview Transfer
+
+```typescript
+async function previewTransfer(
+  accessToken: string,
+  fromAccountId: string,
+  asset: string,
+  amount: number,
+  toAddress: string
+) {
+  const data = await meshRequest('/transfers/preview', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`
+    },
+    body: {
+      from_account_id: fromAccountId,
+      asset,
+      amount,
+      to_address: toAddress,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    fromAmount: data.from_amount,
+    toAmount: data.to_amount,
+    fee: data.fee,
+    exchangeRate: data.exchange_rate,
+    estimatedTime: data.estimated_time
+  }
+}
+```
+
+## Get Transfer Status
+
+```typescript
+interface TransferStatus {
+  transferId: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  amount: number
+  asset: string
+  txHash?: string
+  completedAt?: string
+}
+
+async function getTransferStatus(
+  accessToken: string,
+  transferId: string
+): Promise<TransferStatus> {
+  const data = await meshRequest(`/transfers/${transferId}`, {
+    headers: {
+      'Authorization': `Bearer ${accessToken}`
+    }
+  })
+
+  return {
+    transferId: data.transfer_id,
+    status: data.status,
+    amount: data.amount,
+    asset: data.asset,
+    txHash: data.tx_hash,
+    completedAt: data.completed_at
+  }
+}
+```
+
+## React Hooks
+
+```typescript
+import { useState, useEffect } from 'react'
+
+function useMeshPortfolio(accessToken: string | null) {
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    if (!accessToken) return
+
+    async function fetch() {
+      setLoading(true)
+      try {
+        const data = await getPortfolio(accessToken)
+        setPortfolio(data)
+      } catch (e) {
+        setError(e as Error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetch()
+  }, [accessToken])
+
+  return { portfolio, loading, error }
+}
+
+function useMeshTransfer(accessToken: string) {
+  const [loading, setLoading] = useState(false)
+  const [transfer, setTransfer] = useState<any>(null)
+
+  const initiate = async (
+    fromAccountId: string,
+    asset: string,
+    amount: number,
+    toAddress: string
+  ) => {
+    setLoading(true)
+    try {
+      const result = await initiateTransfer({
+        accessToken,
+        fromAccountId,
+        asset,
+        amount,
+        toAddress
+      })
+      setTransfer(result)
+      return result
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return { initiate, loading, transfer }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.MESH_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/mesh', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-mesh-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'transfer.initiated':
+      handleTransferInitiated(event.data)
+      break
+    case 'transfer.completed':
+      handleTransferCompleted(event.data)
+      break
+    case 'transfer.failed':
+      handleTransferFailed(event.data)
+      break
+    case 'account.disconnected':
+      handleAccountDisconnected(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Supported Integrations
+
+| Category | Examples |
+|----------|----------|
+| Exchanges | Coinbase, Kraken, Binance, Gemini |
+| Wallets | MetaMask, Phantom, Trust Wallet |
+| Custodians | Fireblocks, BitGo, Anchorage |
+
+## Environment Variables
+
+```bash
+# Client-side
+NEXT_PUBLIC_MESH_CLIENT_ID=your-client-id
+
+# Server-side
+MESH_API_KEY=your-api-key
+MESH_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Mesh Documentation](https://docs.meshconnect.com)
+- [Mesh SDK](https://github.com/meshconnect/web-link-sdk)
+- [Mesh Dashboard](https://dashboard.meshconnect.com)

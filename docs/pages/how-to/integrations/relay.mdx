@@ -1,0 +1,224 @@
+---
+title: "Relay Cross-Chain for Tempo"
+description: "Bridge and pay across chains with Relay on Tempo. Cross-chain swaps, payments, and intent-based transactions."
+---
+
+# Relay Cross-Chain for Tempo
+
+[Relay](https://relay.link) enables spending money anywhere onchain by bridging assets to Tempo instantly.
+
+## Features
+
+- **Instant bridging** — Move assets to Tempo in seconds
+- **Cross-chain payments** — Pay on Tempo with assets from any chain
+- **Intent-based** — Best execution via solver network
+- **Any token** — Swap and bridge in one transaction
+
+## Installation
+
+```bash
+pnpm install @reservoir0x/relay-sdk viem
+```
+
+## SDK Setup
+
+```typescript
+import { createClient, MAINNET_RELAY_API } from '@reservoir0x/relay-sdk'
+
+const relayClient = createClient({
+  baseApiUrl: MAINNET_RELAY_API,
+  source: 'myapp.com'
+})
+```
+
+## Get Bridge Quote
+
+```typescript
+async function getQuote(
+  userAddress: string,
+  originChainId: number,
+  amount: string
+) {
+  const quote = await relayClient.actions.getQuote({
+    user: userAddress,
+    originChainId,
+    destinationChainId: 42431, // Tempo Testnet
+    originCurrency: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC on origin
+    destinationCurrency: '0x20c0000000000000000000000000000000000001', // USDC on Tempo
+    amount,
+    tradeType: 'EXACT_INPUT'
+  })
+
+  console.log('Quote:', {
+    inputAmount: quote.details.currencyIn.amountFormatted,
+    outputAmount: quote.details.currencyOut.amountFormatted,
+    fee: quote.fees.relayer.amountFormatted
+  })
+
+  return quote
+}
+```
+
+## Execute Bridge
+
+```typescript
+import { createWalletClient, custom } from 'viem'
+
+async function executeBridge(quote: any) {
+  const walletClient = createWalletClient({
+    transport: custom(window.ethereum)
+  })
+
+  const result = await relayClient.actions.execute({
+    quote,
+    wallet: walletClient,
+    onProgress: (step) => {
+      console.log('Step:', step.currentStep, step.currentStepItem?.status)
+    }
+  })
+
+  return result
+}
+```
+
+## Cross-Chain Payment
+
+Pay on Tempo using assets from another chain:
+
+```typescript
+async function crossChainPayment(
+  recipientOnTempo: string,
+  amountInUsdc: string
+) {
+  const quote = await relayClient.actions.getQuote({
+    user: senderAddress,
+    originChainId: 1, // Ethereum
+    destinationChainId: 42431, // Tempo
+    originCurrency: USDC_ETHEREUM,
+    destinationCurrency: USDC_TEMPO,
+    amount: amountInUsdc,
+    recipient: recipientOnTempo, // Send directly to recipient
+    tradeType: 'EXACT_INPUT'
+  })
+
+  return await relayClient.actions.execute({ quote, wallet })
+}
+```
+
+## Swap and Bridge
+
+Convert token on origin chain and bridge:
+
+```typescript
+async function swapAndBridge() {
+  const quote = await relayClient.actions.getQuote({
+    user: senderAddress,
+    originChainId: 137, // Polygon
+    destinationChainId: 42431, // Tempo
+    originCurrency: '0x...MATIC_TOKEN', // Some token on Polygon
+    destinationCurrency: USDC_TEMPO,
+    amount: '1000000000000000000', // 1 token
+    tradeType: 'EXACT_INPUT'
+  })
+
+  // Swaps on Polygon, bridges to Tempo as USDC
+  return await relayClient.actions.execute({ quote, wallet })
+}
+```
+
+## React Hooks
+
+```typescript
+import { useRelayQuote, useRelayBridge } from '@reservoir0x/relay-kit-hooks'
+
+export function BridgeWidget() {
+  const [amount, setAmount] = useState('')
+  
+  const { data: quote, isLoading } = useRelayQuote({
+    originChainId: 1,
+    destinationChainId: 42431,
+    originCurrency: USDC_ETH,
+    destinationCurrency: USDC_TEMPO,
+    amount,
+    enabled: !!amount
+  })
+
+  const { bridge, isPending, txHash } = useRelayBridge()
+
+  const handleBridge = async () => {
+    if (!quote) return
+    await bridge({ quote })
+  }
+
+  return (
+    <div>
+      <input
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder="Amount"
+      />
+      
+      {quote && (
+        <div>
+          <p>You receive: {quote.details.currencyOut.amountFormatted} USDC</p>
+          <p>Fee: {quote.fees.relayer.amountFormatted}</p>
+        </div>
+      )}
+      
+      <button onClick={handleBridge} disabled={isPending || !quote}>
+        {isPending ? 'Bridging...' : 'Bridge to Tempo'}
+      </button>
+      
+      {txHash && <p>TX: {txHash}</p>}
+    </div>
+  )
+}
+```
+
+## Check Bridge Status
+
+```typescript
+async function checkStatus(requestId: string) {
+  const status = await relayClient.actions.getStatus({
+    requestId
+  })
+
+  console.log('Status:', status.status)
+  console.log('Origin TX:', status.originTxHash)
+  console.log('Destination TX:', status.destinationTxHash)
+
+  return status
+}
+```
+
+## Supported Routes
+
+| From | To | Assets |
+|------|----|--------|
+| Ethereum | Tempo | USDC, USDT, ETH |
+| Polygon | Tempo | USDC, MATIC |
+| Arbitrum | Tempo | USDC, ETH |
+| Base | Tempo | USDC, ETH |
+| Optimism | Tempo | USDC, ETH |
+
+## Error Handling
+
+```typescript
+try {
+  await relayClient.actions.execute({ quote, wallet })
+} catch (error) {
+  if (error.code === 'INSUFFICIENT_BALANCE') {
+    console.log('Not enough balance')
+  } else if (error.code === 'USER_REJECTED') {
+    console.log('User rejected transaction')
+  } else if (error.code === 'SOLVER_UNAVAILABLE') {
+    console.log('No solver available, try again')
+  }
+}
+```
+
+## Resources
+
+- [Relay Documentation](https://docs.relay.link)
+- [Relay SDK](https://github.com/reservoirprotocol/relay-sdk)
+- [Relay App](https://relay.link)

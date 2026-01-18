@@ -1,0 +1,355 @@
+---
+title: "ZeroDev Smart Accounts for Tempo"
+description: "Implement account abstraction on Tempo with ZeroDev. Smart accounts, gas sponsorship, session keys, and ERC-4337 support."
+---
+
+# ZeroDev Smart Accounts for Tempo
+
+[ZeroDev](https://zerodev.app) provides smart account infrastructure for Tempo with gas sponsorship, session keys, and batch transactions.
+
+## Why ZeroDev
+
+- **Gas sponsorship** — Pay gas for your users
+- **Session keys** — Scoped permissions without repeated signing
+- **Batch transactions** — Multiple operations in one transaction
+- **Social recovery** — Recover accounts without seed phrases
+
+## Installation
+
+```bash
+pnpm install @zerodev/sdk @zerodev/ecdsa-validator viem
+```
+
+## Quick Start
+
+### 1. Get a Project ID
+
+Create a project at [dashboard.zerodev.app](https://dashboard.zerodev.app) and add Tempo as a supported chain.
+
+### 2. Create a Smart Account
+
+```typescript
+import { createKernelAccount, createZeroDevPaymasterClient } from '@zerodev/sdk'
+import { KERNEL_V3_1 } from '@zerodev/sdk/constants'
+import { signerToEcdsaValidator } from '@zerodev/ecdsa-validator'
+import { createPublicClient, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { tempoTestnet } from 'viem/chains'
+
+const tempo = tempoTestnet({ feeToken: alphaUsd })
+
+// Create clients
+const publicClient = createPublicClient({
+  chain: tempo,
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+const paymasterClient = createZeroDevPaymasterClient({
+  chain: tempo,
+  transport: http(`https://rpc.zerodev.app/api/v2/paymaster/${PROJECT_ID}`)
+})
+
+// Create signer (can be from any source)
+const signer = privateKeyToAccount('0x...')
+
+// Create validator
+const ecdsaValidator = await signerToEcdsaValidator(publicClient, {
+  signer,
+  kernelVersion: KERNEL_V3_1
+})
+
+// Create smart account
+const account = await createKernelAccount(publicClient, {
+  plugins: { sudo: ecdsaValidator },
+  kernelVersion: KERNEL_V3_1
+})
+
+console.log('Smart account address:', account.address)
+```
+
+### 3. Send a Sponsored Transaction
+
+```typescript
+import { createKernelAccountClient } from '@zerodev/sdk'
+
+const kernelClient = createKernelAccountClient({
+  account,
+  chain: tempo,
+  bundlerTransport: http(`https://rpc.zerodev.app/api/v2/bundler/${PROJECT_ID}`),
+  paymaster: paymasterClient
+})
+
+// Send transaction - gas is sponsored
+const hash = await kernelClient.sendTransaction({
+  to: '0xRecipient',
+  value: parseEther('10'),
+  data: '0x'
+})
+
+console.log('Transaction hash:', hash)
+```
+
+## Gas Sponsorship
+
+### Configure Paymaster
+
+```typescript
+import { createZeroDevPaymasterClient } from '@zerodev/sdk'
+
+const paymasterClient = createZeroDevPaymasterClient({
+  chain: tempo,
+  transport: http(`https://rpc.zerodev.app/api/v2/paymaster/${PROJECT_ID}`)
+})
+
+// Add to kernel client
+const kernelClient = createKernelAccountClient({
+  account,
+  chain: tempo,
+  bundlerTransport: http(`https://rpc.zerodev.app/api/v2/bundler/${PROJECT_ID}`),
+  paymaster: paymasterClient
+})
+```
+
+### Sponsor Policies
+
+Configure sponsorship rules in the ZeroDev dashboard:
+
+- **Whitelist contracts** — Only sponsor specific contract interactions
+- **Rate limits** — Limit sponsored transactions per user
+- **Time limits** — Sponsor during specific time windows
+
+## Session Keys
+
+Create scoped permissions for dApps:
+
+```typescript
+import { createSessionKeyValidator, serializeSessionKey } from '@zerodev/sdk'
+import { toPermissionValidator } from '@zerodev/permissions'
+
+// Define permissions
+const sessionKeyValidator = await toPermissionValidator(publicClient, {
+  signer: sessionKeySigner,
+  policies: [
+    {
+      type: 'call',
+      target: USDC_ADDRESS,
+      functionName: 'transfer',
+      args: [undefined, { lessThanOrEqual: parseEther('100') }]
+    }
+  ],
+  kernelVersion: KERNEL_V3_1
+})
+
+// Create session account
+const sessionAccount = await createKernelAccount(publicClient, {
+  plugins: {
+    sudo: ecdsaValidator,
+    regular: sessionKeyValidator
+  },
+  kernelVersion: KERNEL_V3_1
+})
+
+// Serialize for storage
+const serialized = await serializeSessionKey(sessionKeyValidator)
+```
+
+### Use Session Key
+
+```typescript
+import { deserializeSessionKey } from '@zerodev/sdk'
+
+// Restore session
+const restoredValidator = await deserializeSessionKey(
+  publicClient,
+  serialized,
+  sessionKeySigner
+)
+
+const sessionClient = createKernelAccountClient({
+  account: sessionAccount,
+  chain: tempo,
+  bundlerTransport: http(`https://rpc.zerodev.app/api/v2/bundler/${PROJECT_ID}`),
+  paymaster: paymasterClient
+})
+
+// Use session key (within permissions)
+await sessionClient.sendTransaction({
+  to: USDC_ADDRESS,
+  data: encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'transfer',
+    args: [recipient, parseEther('50')]
+  })
+})
+```
+
+## Batch Transactions
+
+Execute multiple operations atomically:
+
+```typescript
+import { encodeFunctionData } from 'viem'
+
+// Approve and swap in one transaction
+const hash = await kernelClient.sendTransaction({
+  calls: [
+    {
+      to: USDC_ADDRESS,
+      data: encodeFunctionData({
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [ROUTER_ADDRESS, amount]
+      })
+    },
+    {
+      to: ROUTER_ADDRESS,
+      data: encodeFunctionData({
+        abi: routerAbi,
+        functionName: 'swap',
+        args: [USDC_ADDRESS, USDT_ADDRESS, amount]
+      })
+    }
+  ]
+})
+```
+
+## React Integration
+
+### Provider Setup
+
+```typescript
+'use client'
+
+import { ZeroDevProvider } from '@zerodev/wagmi'
+import { createConfig } from 'wagmi'
+import { tempoTestnet } from 'wagmi/chains'
+
+const tempo = tempoTestnet({ feeToken: alphaUsd })
+
+const config = createConfig({
+  chains: [tempo],
+  // ... transports
+})
+
+export function Providers({ children }) {
+  return (
+    <ZeroDevProvider
+      projectId={process.env.NEXT_PUBLIC_ZERODEV_PROJECT_ID!}
+    >
+      {children}
+    </ZeroDevProvider>
+  )
+}
+```
+
+### Use Smart Account
+
+```typescript
+'use client'
+
+import { useKernelClient, useCreateKernelAccount } from '@zerodev/wagmi'
+
+export function SmartAccountDemo() {
+  const { address, isLoading } = useCreateKernelAccount()
+  const { kernelClient } = useKernelClient()
+
+  const sendTx = async () => {
+    if (!kernelClient) return
+    
+    const hash = await kernelClient.sendTransaction({
+      to: '0xRecipient',
+      value: parseEther('10')
+    })
+    
+    console.log('Sent:', hash)
+  }
+
+  if (isLoading) return <div>Creating smart account...</div>
+
+  return (
+    <div>
+      <p>Smart Account: {address}</p>
+      <button onClick={sendTx}>Send (Gasless)</button>
+    </div>
+  )
+}
+```
+
+## Social Login Integration
+
+Combine with Privy for social login:
+
+```typescript
+import { usePrivy, useWallets } from '@privy-io/react-auth'
+import { createKernelAccount, createKernelAccountClient } from '@zerodev/sdk'
+import { signerToEcdsaValidator } from '@zerodev/ecdsa-validator'
+import { walletClientToSmartAccountSigner } from 'permissionless'
+
+export function useSmartAccount() {
+  const { wallets } = useWallets()
+  const [smartAccount, setSmartAccount] = useState(null)
+
+  useEffect(() => {
+    async function createSmartAccount() {
+      if (!wallets[0]) return
+
+      const provider = await wallets[0].getEthereumProvider()
+      const walletClient = createWalletClient({
+        chain: tempo,
+        transport: custom(provider)
+      })
+
+      const signer = walletClientToSmartAccountSigner(walletClient)
+      
+      const validator = await signerToEcdsaValidator(publicClient, {
+        signer,
+        kernelVersion: KERNEL_V3_1
+      })
+
+      const account = await createKernelAccount(publicClient, {
+        plugins: { sudo: validator },
+        kernelVersion: KERNEL_V3_1
+      })
+
+      setSmartAccount(account)
+    }
+
+    createSmartAccount()
+  }, [wallets])
+
+  return smartAccount
+}
+```
+
+## EIP-7702 Support
+
+ZeroDev supports EIP-7702 for EOA → smart account upgrades:
+
+```typescript
+import { createKernelAccount } from '@zerodev/sdk'
+import { KERNEL_V3_1, getKernelImplementationAddress } from '@zerodev/sdk/constants'
+
+// Upgrade EOA to smart account
+const account = await createKernelAccount(publicClient, {
+  plugins: { sudo: ecdsaValidator },
+  kernelVersion: KERNEL_V3_1,
+  useEip7702: true,
+  eoa: eoaSigner
+})
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_ZERODEV_PROJECT_ID=your-project-id
+ZERODEV_PRIVATE_KEY=your-private-key
+```
+
+## Resources
+
+- [ZeroDev Documentation](https://docs.zerodev.app)
+- [ZeroDev Dashboard](https://dashboard.zerodev.app)
+- [ZeroDev SDK GitHub](https://github.com/zerodevapp/sdk)
+- [ERC-4337 Specification](https://eips.ethereum.org/EIPS/eip-4337)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

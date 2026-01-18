@@ -1,0 +1,366 @@
+---
+title: "Foundry for Tempo Development"
+description: "Deploy and test smart contracts on Tempo with Foundry. Forge, Cast, and Anvil configuration with examples."
+---
+
+# Foundry for Tempo Development
+
+[Foundry](https://getfoundry.sh) is a fast, portable toolkit for Ethereum development. Use Forge, Cast, and Anvil to build on Tempo.
+
+## Installation
+
+```bash
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+## Configuration
+
+### foundry.toml
+
+```toml
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.24"
+
+# Tempo RPC endpoints
+[rpc_endpoints]
+tempo = "https://rpc.moderato.tempo.xyz"
+tempo_mainnet = "https://rpc.presto.tempo.xyz"
+
+# Etherscan-style verification (if available)
+[etherscan]
+tempo = { key = "${ETHERSCAN_API_KEY}", url = "https://api.tempo.xyz/api" }
+```
+
+### Environment Variables
+
+```bash
+# .env
+PRIVATE_KEY=0x...
+TEMPO_RPC_URL=https://rpc.moderato.tempo.xyz
+```
+
+## Deploying Contracts
+
+### Basic Deployment
+
+```bash
+forge create src/Counter.sol:Counter \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY
+```
+
+### With Constructor Arguments
+
+```bash
+forge create src/Token.sol:Token \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY \
+  --constructor-args "My Token" "MTK" 1000000000000000000000000
+```
+
+### Deploy Script
+
+```solidity
+// script/Deploy.s.sol
+pragma solidity ^0.8.24;
+
+import "forge-std/Script.sol";
+import "../src/Counter.sol";
+
+contract DeployScript is Script {
+    function run() external {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        
+        vm.startBroadcast(deployerPrivateKey);
+        
+        Counter counter = new Counter();
+        console.log("Counter deployed to:", address(counter));
+        
+        vm.stopBroadcast();
+    }
+}
+```
+
+Run the script:
+
+```bash
+forge script script/Deploy.s.sol:DeployScript \
+  --rpc-url tempo \
+  --broadcast
+```
+
+## Using Cast
+
+### Query Chain Data
+
+```bash
+# Get block number
+cast block-number --rpc-url tempo
+
+# Get balance (in wei)
+cast balance 0xYourAddress --rpc-url tempo
+
+# Get balance (formatted)
+cast balance 0xYourAddress --rpc-url tempo --ether
+
+# Get chain ID
+cast chain-id --rpc-url tempo
+```
+
+### Read Contracts
+
+```bash
+# Call a view function
+cast call 0xContractAddress "balanceOf(address)(uint256)" 0xUserAddress \
+  --rpc-url tempo
+
+# Decode return data
+cast call 0xContractAddress "name()(string)" --rpc-url tempo
+```
+
+### Send Transactions
+
+```bash
+# Send ETH (USD on Tempo)
+cast send 0xRecipient \
+  --value 10ether \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY
+
+# Call contract function
+cast send 0xContractAddress "transfer(address,uint256)" 0xRecipient 1000000000000000000 \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY
+```
+
+### Encode/Decode
+
+```bash
+# Encode function call
+cast calldata "transfer(address,uint256)" 0xRecipient 1000000000000000000
+
+# Decode transaction data
+cast 4byte-decode 0xa9059cbb...
+
+# Compute function selector
+cast sig "transfer(address,uint256)"
+```
+
+## Testing
+
+### Write Tests
+
+```solidity
+// test/Counter.t.sol
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+import "../src/Counter.sol";
+
+contract CounterTest is Test {
+    Counter public counter;
+
+    function setUp() public {
+        counter = new Counter();
+    }
+
+    function test_Increment() public {
+        counter.increment();
+        assertEq(counter.number(), 1);
+    }
+
+    function testFuzz_SetNumber(uint256 x) public {
+        counter.setNumber(x);
+        assertEq(counter.number(), x);
+    }
+}
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+forge test
+
+# Run with verbosity
+forge test -vvv
+
+# Run specific test
+forge test --match-test test_Increment
+
+# Run with gas report
+forge test --gas-report
+```
+
+### Fork Testing
+
+Test against Tempo state:
+
+```bash
+forge test --fork-url https://rpc.moderato.tempo.xyz
+```
+
+```solidity
+// test/Fork.t.sol
+contract ForkTest is Test {
+    function setUp() public {
+        // Fork at specific block
+        vm.createSelectFork("https://rpc.moderato.tempo.xyz", 1000000);
+    }
+
+    function test_InteractWithDeployedContract() public {
+        IERC20 usdc = IERC20(0x20c0000000000000000000000000000000000001);
+        uint256 balance = usdc.balanceOf(someAddress);
+        assertGt(balance, 0);
+    }
+}
+```
+
+## Local Development with Anvil
+
+### Start Local Node
+
+```bash
+# Basic local node
+anvil
+
+# Fork from Tempo
+anvil --fork-url https://rpc.moderato.tempo.xyz
+
+# Fork at specific block
+anvil --fork-url https://rpc.moderato.tempo.xyz --fork-block-number 1000000
+```
+
+### Use with Forge
+
+```bash
+# Deploy to local Anvil
+forge create src/Counter.sol:Counter \
+  --rpc-url http://localhost:8545 \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+## Gas Optimization
+
+### Snapshot
+
+```bash
+# Create gas snapshot
+forge snapshot
+
+# Compare with previous
+forge snapshot --diff
+```
+
+### Gas Report
+
+```bash
+forge test --gas-report
+```
+
+### Optimize Compilation
+
+```toml
+# foundry.toml
+[profile.default]
+optimizer = true
+optimizer_runs = 200
+
+[profile.production]
+optimizer = true
+optimizer_runs = 10000
+```
+
+## Verification
+
+### Verify on Block Explorer
+
+```bash
+forge verify-contract \
+  --rpc-url tempo \
+  --verifier blockscout \
+  --verifier-url https://explore.tempo.xyz/api \
+  0xContractAddress \
+  src/Counter.sol:Counter
+```
+
+### With Constructor Args
+
+```bash
+forge verify-contract \
+  --rpc-url tempo \
+  --verifier blockscout \
+  --verifier-url https://explore.tempo.xyz/api \
+  --constructor-args $(cast abi-encode "constructor(string,string)" "My Token" "MTK") \
+  0xContractAddress \
+  src/Token.sol:Token
+```
+
+## Tempo-Specific Features
+
+### Using tempo-std
+
+Install the Tempo Foundry library:
+
+```bash
+forge install tempoxyz/tempo-std
+```
+
+```solidity
+import "tempo-std/Tempo.sol";
+
+contract MyContract {
+    function sendWithMemo(address to, uint256 amount, bytes memory memo) external {
+        // Use Tempo's memo feature
+        Tempo.transferWithMemo(to, amount, memo);
+    }
+}
+```
+
+### Fee Token Configuration
+
+Tempo uses stablecoins for gas. When testing:
+
+```solidity
+// Fund account with fee token for tests
+function setUp() public {
+    // Deal USDC to test address
+    deal(USDC_ADDRESS, address(this), 1000 * 10**18);
+}
+```
+
+## Makefile Example
+
+```makefile
+-include .env
+
+build:
+	forge build
+
+test:
+	forge test
+
+deploy-tempo:
+	forge script script/Deploy.s.sol:DeployScript \
+		--rpc-url tempo \
+		--broadcast \
+		--verify
+
+deploy-local:
+	forge script script/Deploy.s.sol:DeployScript \
+		--rpc-url http://localhost:8545 \
+		--broadcast
+
+.PHONY: build test deploy-tempo deploy-local
+```
+
+## Resources
+
+- [Foundry Book](https://book.getfoundry.sh)
+- [tempo-std](https://github.com/tempoxyz/tempo-std)
+- [Tempo Block Explorer](https://explore.tempo.xyz)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

@@ -1,0 +1,342 @@
+---
+title: "Sardine Fraud Prevention for Tempo"
+description: "AI-powered fraud prevention, AML compliance, and credit underwriting for Tempo applications with Sardine."
+---
+
+# Sardine Fraud Prevention for Tempo
+
+[Sardine](https://sardine.ai) provides AI-powered fraud prevention, AML compliance, and risk scoring for Tempo applications.
+
+## Features
+
+- **Device intelligence** — Fingerprint devices and detect emulators
+- **Behavior analytics** — Analyze user behavior patterns
+- **Transaction monitoring** — Real-time fraud scoring
+- **AML screening** — Sanctions and watchlist checks
+
+## SDK Setup
+
+```bash
+npm install @sardine-ai/web-sdk
+```
+
+```typescript
+const SARDINE_CLIENT_ID = process.env.SARDINE_CLIENT_ID
+const SARDINE_SECRET = process.env.SARDINE_SECRET
+const SARDINE_BASE_URL = 'https://api.sardine.ai' // Use api.sandbox.sardine.ai for testing
+
+async function sardineRequest(endpoint: string, body: any) {
+  const response = await fetch(`${SARDINE_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${Buffer.from(`${SARDINE_CLIENT_ID}:${SARDINE_SECRET}`).toString('base64')}`
+    },
+    body: JSON.stringify(body)
+  })
+  return response.json()
+}
+```
+
+## Device Intelligence
+
+### Client-Side Setup
+
+```typescript
+// Initialize Sardine on frontend
+import { setupSardine, updateConfig } from '@sardine-ai/web-sdk'
+
+// Initialize with your client ID
+setupSardine({
+  clientId: 'your-client-id',
+  environment: 'production' // or 'sandbox'
+})
+
+// Update config with session and user info
+updateConfig({
+  sessionKey: 'unique-session-key',
+  userIdHash: 'hashed-user-id',
+  flow: 'login' // or 'checkout', 'payment'
+})
+```
+
+### Server-Side Verification
+
+```typescript
+async function verifyDevice(sessionKey: string, userId: string) {
+  const result = await sardineRequest('/v2/devices', {
+    sessionKey,
+    userId,
+    flow: 'login'
+  })
+
+  return {
+    deviceId: result.deviceId,
+    riskScore: result.riskScore,
+    signals: {
+      isEmulator: result.signals.isEmulator,
+      isRooted: result.signals.isRooted,
+      vpnDetected: result.signals.vpnDetected,
+      proxyDetected: result.signals.proxyDetected
+    }
+  }
+}
+```
+
+## Transaction Scoring
+
+```typescript
+interface TransactionRiskRequest {
+  sessionKey: string
+  userId: string
+  transaction: {
+    id: string
+    amount: string
+    currency: string
+    recipientAddress: string
+    senderAddress: string
+  }
+}
+
+async function scoreTransaction(request: TransactionRiskRequest) {
+  const result = await sardineRequest('/v1/transactions', {
+    sessionKey: request.sessionKey,
+    customer: { id: request.userId },
+    transaction: {
+      id: request.transaction.id,
+      amount: parseFloat(request.transaction.amount),
+      currencyCode: request.transaction.currency,
+      type: 'crypto_transfer',
+      recipientPaymentMethod: {
+        type: 'crypto_address',
+        address: request.transaction.recipientAddress,
+        chain: 'tempo'
+      },
+      senderPaymentMethod: {
+        type: 'crypto_address',
+        address: request.transaction.senderAddress,
+        chain: 'tempo'
+      }
+    }
+  })
+
+  return {
+    riskScore: result.riskScore,
+    riskLevel: result.riskLevel, // 'low', 'medium', 'high', 'very_high'
+    signals: result.signals,
+    recommendation: result.recommendation // 'accept', 'review', 'decline'
+  }
+}
+```
+
+## AML Screening
+
+```typescript
+async function screenCustomer(customer: {
+  id: string
+  firstName: string
+  lastName: string
+  dateOfBirth: string
+  address: string
+}) {
+  const result = await sardineRequest('/v1/customers/screen', {
+    customer: {
+      id: customer.id,
+      firstName: customer.firstName,
+      lastName: customer.lastName,
+      dateOfBirth: customer.dateOfBirth,
+      address: customer.address
+    },
+    checkTypes: ['sanctions', 'pep', 'adverse_media']
+  })
+
+  return {
+    customerId: customer.id,
+    matches: result.matches,
+    riskLevel: result.riskLevel,
+    requiresReview: result.matches.length > 0
+  }
+}
+```
+
+## Behavior Analytics
+
+```typescript
+async function analyzeUserBehavior(sessionKey: string, userId: string) {
+  const result = await sardineRequest('/v1/behavior', {
+    sessionKey,
+    userId
+  })
+
+  return {
+    behaviorScore: result.behaviorScore,
+    anomalies: result.anomalies,
+    patterns: {
+      typingSpeed: result.patterns.typingSpeed,
+      mouseMovement: result.patterns.mouseMovement,
+      sessionDuration: result.patterns.sessionDuration,
+      copyPasteDetected: result.patterns.copyPasteDetected
+    }
+  }
+}
+```
+
+## Integration Patterns
+
+### Onboarding Flow
+
+```typescript
+async function onboardUser(sessionKey: string, userData: any) {
+  // Device check
+  const device = await verifyDevice(sessionKey, userData.id)
+  if (device.riskScore > 80) {
+    return { status: 'rejected', reason: 'High-risk device' }
+  }
+
+  // AML screening
+  const screening = await screenCustomer(userData)
+  if (screening.requiresReview) {
+    return { status: 'pending_review', matches: screening.matches }
+  }
+
+  // Behavior analysis
+  const behavior = await analyzeUserBehavior(sessionKey, userData.id)
+  if (behavior.anomalies.length > 0) {
+    return { status: 'pending_review', anomalies: behavior.anomalies }
+  }
+
+  return { status: 'approved' }
+}
+```
+
+### Transaction Pre-Check
+
+```typescript
+async function validateTransaction(
+  sessionKey: string,
+  userId: string,
+  tx: { amount: string; recipient: string; sender: string }
+) {
+  const score = await scoreTransaction({
+    sessionKey,
+    userId,
+    transaction: {
+      id: crypto.randomUUID(),
+      amount: tx.amount,
+      currency: 'USD',
+      recipientAddress: tx.recipient,
+      senderAddress: tx.sender
+    }
+  })
+
+  switch (score.recommendation) {
+    case 'accept':
+      return { allowed: true }
+    case 'review':
+      return { allowed: false, reason: 'Manual review required' }
+    case 'decline':
+      return { allowed: false, reason: 'Transaction declined' }
+  }
+}
+```
+
+### Webhook Handler
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhookSignature(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.SARDINE_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+}
+
+app.post('/webhooks/sardine', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-sardine-signature'] as string
+  
+  if (!verifyWebhookSignature(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'transaction.flagged':
+      handleFlaggedTransaction(event.data)
+      break
+    case 'customer.risk_updated':
+      handleRiskUpdate(event.data)
+      break
+    case 'device.suspicious':
+      handleSuspiciousDevice(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Risk Thresholds
+
+```typescript
+const RISK_THRESHOLDS = {
+  device: {
+    block: 90,
+    review: 70,
+    accept: 0
+  },
+  transaction: {
+    block: 85,
+    review: 60,
+    accept: 0
+  },
+  behavior: {
+    block: 95,
+    review: 75,
+    accept: 0
+  }
+}
+
+function determineAction(scores: {
+  device: number
+  transaction: number
+  behavior: number
+}) {
+  if (
+    scores.device >= RISK_THRESHOLDS.device.block ||
+    scores.transaction >= RISK_THRESHOLDS.transaction.block ||
+    scores.behavior >= RISK_THRESHOLDS.behavior.block
+  ) {
+    return 'block'
+  }
+
+  if (
+    scores.device >= RISK_THRESHOLDS.device.review ||
+    scores.transaction >= RISK_THRESHOLDS.transaction.review ||
+    scores.behavior >= RISK_THRESHOLDS.behavior.review
+  ) {
+    return 'review'
+  }
+
+  return 'accept'
+}
+```
+
+## Environment Variables
+
+```bash
+SARDINE_CLIENT_ID=your-client-id
+SARDINE_SECRET=your-secret
+SARDINE_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Sardine Documentation](https://docs.sardine.ai)
+- [Sardine Dashboard](https://dashboard.sardine.ai)
+- [Risk Score Guide](https://docs.sardine.ai/risk-scores)

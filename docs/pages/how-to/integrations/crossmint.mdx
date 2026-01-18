@@ -1,0 +1,355 @@
+---
+title: "Crossmint Wallet Infrastructure for Tempo"
+description: "Embedded wallets and NFT infrastructure for Tempo with Crossmint. Email login, fiat onramps, and seamless Web3 UX."
+---
+
+# Crossmint Wallet Infrastructure for Tempo
+
+[Crossmint](https://crossmint.com) provides embedded wallets, NFT minting, and fiat payment solutions for Tempo applications.
+
+## Features
+
+- **Embedded wallets** — Email and social login wallets
+- **Fiat onramp** — Credit card payments for crypto
+- **NFT minting API** — Create and distribute NFTs
+- **Custodial & non-custodial** — Flexible wallet types
+
+## SDK Setup
+
+```bash
+npm install @crossmint/client-sdk-react-ui
+```
+
+```typescript
+import {
+  CrossmintProvider,
+  CrossmintAuthProvider,
+  CrossmintWalletProvider
+} from '@crossmint/client-sdk-react-ui'
+
+const CROSSMINT_API_KEY = process.env.NEXT_PUBLIC_CROSSMINT_API_KEY!
+```
+
+## Embedded Wallet
+
+### React Provider
+
+```typescript
+import {
+  CrossmintProvider,
+  CrossmintAuthProvider,
+  CrossmintWalletProvider
+} from '@crossmint/client-sdk-react-ui'
+
+function App({ children }) {
+  return (
+    <CrossmintProvider apiKey={CROSSMINT_API_KEY}>
+      <CrossmintAuthProvider>
+        <CrossmintWalletProvider
+          createOnLogin={{
+            chain: 'tempo',
+            signer: { type: 'email' }
+          }}
+        >
+          {children}
+        </CrossmintWalletProvider>
+      </CrossmintAuthProvider>
+    </CrossmintProvider>
+  )
+}
+```
+
+### Login with Email
+
+```typescript
+import { useAuth, useWallet } from '@crossmint/client-sdk-react-ui'
+
+function LoginButton() {
+  const { login, logout, user, status } = useAuth()
+  const { wallet } = useWallet()
+
+  if (status === 'initializing') return <div>Loading...</div>
+
+  if (status === 'logged-out') {
+    return <button onClick={login}>Sign In</button>
+  }
+
+  return (
+    <div>
+      <p>Logged in as {user?.email}</p>
+      <p>Wallet: {wallet?.address}</p>
+      <button onClick={logout}>Logout</button>
+    </div>
+  )
+}
+```
+
+### Get Wallet
+
+```typescript
+import { useWallet } from '@crossmint/client-sdk-react-ui'
+
+function WalletInfo() {
+  const { wallet, status } = useWallet()
+
+  if (status === 'loading-in-background') return <div>Loading wallet...</div>
+  if (status !== 'loaded' || !wallet) return <div>No wallet connected</div>
+
+  return (
+    <div>
+      <p>Address: {wallet.address}</p>
+    </div>
+  )
+}
+```
+
+## Server-Side API
+
+### Create Wallet
+
+```typescript
+const CROSSMINT_SERVER_KEY = process.env.CROSSMINT_SERVER_KEY!
+
+async function createWallet(email: string, chain = 'tempo') {
+  const response = await fetch('https://www.crossmint.com/api/v1-alpha2/wallets', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': CROSSMINT_SERVER_KEY
+    },
+    body: JSON.stringify({
+      type: 'evm-smart-wallet',
+      linkedUser: `email:${email}`,
+      chain
+    })
+  })
+
+  const wallet = await response.json()
+  return {
+    address: wallet.address,
+    type: wallet.type,
+    chain: wallet.chain
+  }
+}
+```
+
+### Get User Wallets
+
+```typescript
+async function getUserWallets(email: string) {
+  const response = await fetch(
+    `https://www.crossmint.com/api/v1-alpha2/wallets?linkedUser=email:${encodeURIComponent(email)}`,
+    {
+      headers: {
+        'X-API-KEY': CROSSMINT_SERVER_KEY
+      }
+    }
+  )
+
+  const data = await response.json()
+  return data.wallets
+}
+```
+
+## Sign Transactions
+
+```typescript
+import { useWallet } from '@crossmint/client-sdk-react-ui'
+
+function SendTransaction() {
+  const { wallet } = useWallet()
+
+  async function handleSend() {
+    if (!wallet) return
+
+    const tx = await wallet.send(
+      '0x...', // recipient address
+      'usdc',  // token symbol
+      '10.0'   // amount
+    )
+
+    console.log('Transaction:', tx.explorerLink)
+  }
+
+  return <button onClick={handleSend}>Send 10 USDC</button>
+}
+```
+
+## Fiat Onramp
+
+### Embed Payment
+
+```typescript
+import { CrossmintPayButton } from '@crossmint/client-sdk-react-ui'
+
+function BuyWithCard() {
+  return (
+    <CrossmintPayButton
+      projectId={CROSSMINT_PROJECT_ID}
+      collectionId="your-collection-id"
+      environment="production"
+      mintConfig={{
+        type: 'erc-721',
+        totalPrice: '0.01',
+        quantity: 1
+      }}
+      paymentMethod="fiat"
+      currency="USD"
+      onSuccess={(result) => {
+        console.log('Purchase complete:', result)
+      }}
+    />
+  )
+}
+```
+
+### Direct Fiat Purchase
+
+```typescript
+async function createCheckoutSession(
+  recipientAddress: string,
+  amount: string,
+  currency = 'USD'
+) {
+  const response = await fetch('https://www.crossmint.com/api/v1-alpha2/checkout/sessions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': CROSSMINT_SERVER_KEY
+    },
+    body: JSON.stringify({
+      payment: {
+        method: 'fiat',
+        currency
+      },
+      lineItems: [{
+        quantity: 1,
+        price: amount,
+        metadata: {
+          name: 'USDC Purchase',
+          description: `Purchase ${amount} USDC`
+        }
+      }],
+      recipient: {
+        walletAddress: recipientAddress
+      },
+      successUrl: 'https://your-app.com/success',
+      cancelUrl: 'https://your-app.com/cancel'
+    })
+  })
+
+  const session = await response.json()
+  return session.checkoutUrl
+}
+```
+
+## NFT Minting
+
+### Mint NFT
+
+```typescript
+async function mintNFT(
+  collectionId: string,
+  recipientAddress: string,
+  metadata: { name: string; description: string; image: string }
+) {
+  const response = await fetch(
+    `https://www.crossmint.com/api/2022-06-09/collections/${collectionId}/nfts`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': CROSSMINT_SERVER_KEY
+      },
+      body: JSON.stringify({
+        recipient: `tempo:${recipientAddress}`,
+        metadata
+      })
+    }
+  )
+
+  const nft = await response.json()
+  return {
+    id: nft.id,
+    tokenId: nft.onChain?.tokenId,
+    status: nft.onChain?.status
+  }
+}
+```
+
+### Create Collection
+
+```typescript
+async function createCollection(
+  name: string,
+  symbol: string,
+  chain = 'tempo'
+) {
+  const response = await fetch('https://www.crossmint.com/api/2022-06-09/collections', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': CROSSMINT_SERVER_KEY
+    },
+    body: JSON.stringify({
+      chain,
+      metadata: {
+        name,
+        symbol,
+        description: `${name} NFT Collection`
+      }
+    })
+  })
+
+  const collection = await response.json()
+  return {
+    id: collection.id,
+    contractAddress: collection.onChain?.contractAddress
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/crossmint', express.json(), (req, res) => {
+  const event = req.body
+
+  switch (event.type) {
+    case 'wallet.created':
+      handleWalletCreated(event.data)
+      break
+    case 'transaction.completed':
+      handleTransactionCompleted(event.data)
+      break
+    case 'nft.minted':
+      handleNFTMinted(event.data)
+      break
+    case 'checkout.completed':
+      handleCheckoutCompleted(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Environment Variables
+
+```bash
+# Client-side
+NEXT_PUBLIC_CROSSMINT_API_KEY=your-client-api-key
+
+# Server-side
+CROSSMINT_SERVER_KEY=your-server-api-key
+```
+
+## Resources
+
+- [Crossmint Documentation](https://docs.crossmint.com)
+- [Crossmint SDK](https://github.com/crossmint/crossmint-sdk)
+- [Crossmint Console](https://console.crossmint.com)

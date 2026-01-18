@@ -1,0 +1,411 @@
+---
+title: "Across Bridge for Tempo"
+description: "Cross-chain bridging to and from Tempo with Across Protocol. Fast, secure asset transfers powered by intents."
+---
+
+# Across Bridge for Tempo
+
+[Across](https://across.to) is an intent-based cross-chain bridge enabling fast, secure asset transfers between Tempo and other chains.
+
+## Features
+
+- **Intent-based bridging** — Fast fills with competitive pricing
+- **Capital efficiency** — Relayers provide instant liquidity
+- **Multi-chain** — Connect Tempo to Ethereum, Arbitrum, Optimism, and more
+- **Fee optimization** — Dynamic fees based on liquidity
+
+## SDK Setup
+
+```bash
+npm install @across-protocol/app-sdk viem
+```
+
+```typescript
+import { AcrossClient } from '@across-protocol/app-sdk'
+import { mainnet, arbitrum, optimism } from 'viem/chains'
+import { tempo } from 'viem/chains' // Tempo chain definition
+
+const acrossClient = AcrossClient.create({
+  integratorId: 'your-integrator-id',
+  chains: [mainnet, arbitrum, optimism, tempo]
+})
+```
+
+## Get Quote
+
+```typescript
+interface BridgeQuote {
+  inputAmount: bigint
+  outputAmount: bigint
+  fees: {
+    lpFee: bigint
+    relayerFee: bigint
+    totalFee: bigint
+  }
+  estimatedFillTime: number
+  route: {
+    fromChain: number
+    toChain: number
+    fromToken: string
+    toToken: string
+  }
+}
+
+async function getBridgeQuote(
+  fromChain: number,
+  toChain: number,
+  token: string,
+  amount: bigint
+): Promise<BridgeQuote> {
+  const quote = await acrossClient.getQuote({
+    route: {
+      originChainId: fromChain,
+      destinationChainId: toChain,
+      inputToken: token,
+      outputToken: token // Same token on destination
+    },
+    inputAmount: amount
+  })
+
+  return {
+    inputAmount: quote.inputAmount,
+    outputAmount: quote.outputAmount,
+    fees: {
+      lpFee: quote.lpFee.total,
+      relayerFee: quote.relayerFee.total,
+      totalFee: quote.lpFee.total + quote.relayerFee.total
+    },
+    estimatedFillTime: quote.estimatedFillTimeSec,
+    route: {
+      fromChain,
+      toChain,
+      fromToken: token,
+      toToken: token
+    }
+  }
+}
+
+// Example: Quote bridging USDC from Ethereum to Tempo
+const quote = await getBridgeQuote(
+  1,      // Ethereum
+  TEMPO_CHAIN_ID,
+  '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC on Ethereum
+  1000000000n // 1000 USDC
+)
+```
+
+## Execute Bridge
+
+### Deposit on Source Chain
+
+```typescript
+import { createWalletClient, http } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+
+async function bridgeToTempo(
+  fromChain: number,
+  token: string,
+  amount: bigint,
+  recipient: string
+) {
+  // Get quote first
+  const quote = await acrossClient.getQuote({
+    route: {
+      originChainId: fromChain,
+      destinationChainId: TEMPO_CHAIN_ID,
+      inputToken: token,
+      outputToken: token
+    },
+    inputAmount: amount
+  })
+
+  // Execute deposit
+  const deposit = await acrossClient.executeQuote({
+    walletClient,
+    deposit: quote,
+    onProgress: (progress) => {
+      console.log('Bridge progress:', progress.step, progress.status)
+    }
+  })
+
+  return {
+    depositId: deposit.depositId,
+    depositTxHash: deposit.depositTxHash,
+    outputAmount: quote.outputAmount
+  }
+}
+```
+
+### Bridge from Tempo
+
+```typescript
+async function bridgeFromTempo(
+  toChain: number,
+  token: string,
+  amount: bigint,
+  recipient: string
+) {
+  const quote = await acrossClient.getQuote({
+    route: {
+      originChainId: TEMPO_CHAIN_ID,
+      destinationChainId: toChain,
+      inputToken: token,
+      outputToken: token
+    },
+    inputAmount: amount
+  })
+
+  const deposit = await acrossClient.executeQuote({
+    walletClient: tempoWalletClient,
+    deposit: quote,
+    onProgress: (progress) => {
+      if (progress.step === 'fill' && progress.status === 'txSuccess') {
+        console.log('Bridge complete! Fill tx:', progress.txHash)
+      }
+    }
+  })
+
+  return deposit
+}
+```
+
+## Track Bridge Status
+
+```typescript
+interface BridgeStatus {
+  depositId: string
+  status: 'pending' | 'filled' | 'expired'
+  fillTxHash?: string
+  fillTimestamp?: number
+}
+
+async function getBridgeStatus(depositId: string): Promise<BridgeStatus> {
+  const status = await acrossClient.getDepositStatus({
+    depositId,
+    originChainId: TEMPO_CHAIN_ID
+  })
+
+  return {
+    depositId,
+    status: status.status,
+    fillTxHash: status.fillTxHash,
+    fillTimestamp: status.fillTimestamp
+  }
+}
+
+// Poll for completion
+async function waitForBridgeComplete(depositId: string, maxWaitMs = 300000) {
+  const startTime = Date.now()
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    const status = await getBridgeStatus(depositId)
+    
+    if (status.status === 'filled') {
+      return status
+    }
+    
+    if (status.status === 'expired') {
+      throw new Error('Bridge deposit expired')
+    }
+    
+    await new Promise(r => setTimeout(r, 5000))
+  }
+  
+  throw new Error('Bridge timeout')
+}
+```
+
+## Supported Routes
+
+```typescript
+async function getSupportedRoutes() {
+  const routes = await acrossClient.getSupportedRoutes()
+  
+  // Filter routes involving Tempo
+  const tempoRoutes = routes.filter(
+    route => 
+      route.originChainId === TEMPO_CHAIN_ID || 
+      route.destinationChainId === TEMPO_CHAIN_ID
+  )
+
+  return tempoRoutes.map(route => ({
+    fromChain: route.originChainId,
+    toChain: route.destinationChainId,
+    tokens: route.inputTokens.map(t => ({
+      symbol: t.symbol,
+      address: t.address,
+      decimals: t.decimals
+    }))
+  }))
+}
+```
+
+## Fee Estimation
+
+```typescript
+async function estimateBridgeFees(
+  fromChain: number,
+  toChain: number,
+  token: string,
+  amount: bigint
+) {
+  const quote = await acrossClient.getQuote({
+    route: {
+      originChainId: fromChain,
+      destinationChainId: toChain,
+      inputToken: token,
+      outputToken: token
+    },
+    inputAmount: amount
+  })
+
+  const totalFee = quote.lpFee.total + quote.relayerFee.total
+  const feePercent = Number(totalFee * 10000n / amount) / 100
+
+  return {
+    inputAmount: amount,
+    outputAmount: quote.outputAmount,
+    lpFee: quote.lpFee.total,
+    relayerFee: quote.relayerFee.total,
+    totalFee,
+    feePercent: `${feePercent.toFixed(2)}%`,
+    estimatedTime: `${quote.estimatedFillTimeSec}s`
+  }
+}
+```
+
+## React Integration
+
+```typescript
+import { useState, useCallback } from 'react'
+
+function useBridge() {
+  const [loading, setLoading] = useState(false)
+  const [quote, setQuote] = useState<BridgeQuote | null>(null)
+  const [status, setStatus] = useState<BridgeStatus | null>(null)
+
+  const getQuote = useCallback(async (
+    fromChain: number,
+    toChain: number,
+    token: string,
+    amount: bigint
+  ) => {
+    setLoading(true)
+    try {
+      const q = await getBridgeQuote(fromChain, toChain, token, amount)
+      setQuote(q)
+      return q
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const execute = useCallback(async (recipient: string) => {
+    if (!quote) throw new Error('No quote available')
+    
+    setLoading(true)
+    try {
+      const deposit = await bridgeToTempo(
+        quote.route.fromChain,
+        quote.route.fromToken,
+        quote.inputAmount,
+        recipient
+      )
+      
+      // Track status
+      const finalStatus = await waitForBridgeComplete(deposit.depositId)
+      setStatus(finalStatus)
+      return finalStatus
+    } finally {
+      setLoading(false)
+    }
+  }, [quote])
+
+  return { getQuote, execute, loading, quote, status }
+}
+```
+
+## Error Handling
+
+```typescript
+async function safeBridge(params: {
+  fromChain: number
+  toChain: number
+  token: string
+  amount: bigint
+  recipient: string
+}) {
+  try {
+    // Check route is supported
+    const routes = await getSupportedRoutes()
+    const routeExists = routes.some(
+      r => r.fromChain === params.fromChain && r.toChain === params.toChain
+    )
+    if (!routeExists) {
+      throw new Error('Route not supported')
+    }
+
+    // Get quote with slippage check
+    const quote = await getBridgeQuote(
+      params.fromChain,
+      params.toChain,
+      params.token,
+      params.amount
+    )
+
+    const slippage = Number(
+      (params.amount - quote.outputAmount) * 10000n / params.amount
+    ) / 100
+
+    if (slippage > 1) { // More than 1%
+      throw new Error(`Slippage too high: ${slippage}%`)
+    }
+
+    // Execute
+    return await bridgeToTempo(
+      params.fromChain,
+      params.token,
+      params.amount,
+      params.recipient
+    )
+  } catch (error) {
+    console.error('Bridge failed:', error)
+    throw error
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/across', express.json(), (req, res) => {
+  const { eventType, depositId, fillTxHash, status } = req.body
+
+  switch (eventType) {
+    case 'deposit.filled':
+      handleBridgeComplete(depositId, fillTxHash)
+      break
+    case 'deposit.expired':
+      handleBridgeExpired(depositId)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Environment Variables
+
+```bash
+ACROSS_INTEGRATOR_ID=your-integrator-id
+```
+
+## Resources
+
+- [Across Documentation](https://docs.across.to)
+- [Across SDK](https://github.com/across-protocol/sdk)
+- [Across API Reference](https://docs.across.to/reference)

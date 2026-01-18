@@ -1,0 +1,375 @@
+---
+title: "Elliptic Compliance for Tempo"
+description: "Crypto asset risk management and compliance for Tempo with Elliptic. Transaction screening, wallet analysis, and AML solutions."
+---
+
+# Elliptic Compliance for Tempo
+
+[Elliptic](https://elliptic.co) provides crypto asset risk management, transaction screening, and compliance solutions for Tempo applications.
+
+## Features
+
+- **Wallet screening** — Risk assessment for addresses
+- **Transaction screening** — Real-time monitoring
+- **Holistic screening** — Cross-chain analysis
+- **Sanctions compliance** — OFAC and global sanctions
+
+## API Setup
+
+```typescript
+const ELLIPTIC_API_KEY = process.env.ELLIPTIC_API_KEY
+const ELLIPTIC_SECRET = process.env.ELLIPTIC_SECRET
+const ELLIPTIC_BASE_URL = 'https://aml-api.elliptic.co'
+
+async function ellipticRequest(endpoint: string, body?: any) {
+  const timestamp = Date.now().toString()
+  const method = body ? 'POST' : 'GET'
+  const signature = createSignature(method, endpoint, timestamp, body)
+
+  const response = await fetch(`${ELLIPTIC_BASE_URL}${endpoint}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-key': ELLIPTIC_API_KEY!,
+      'x-access-sign': signature,
+      'x-access-timestamp': timestamp
+    },
+    body: body ? JSON.stringify(body) : undefined
+  })
+  return response.json()
+}
+
+function createSignature(
+  method: string,
+  endpoint: string,
+  timestamp: string,
+  body?: any
+) {
+  const crypto = require('crypto')
+  const message = timestamp + method.toUpperCase() + endpoint + (body ? JSON.stringify(body) : '')
+  const decodedSecret = Buffer.from(ELLIPTIC_SECRET!, 'base64')
+  return crypto
+    .createHmac('sha256', decodedSecret)
+    .update(message)
+    .digest('base64')
+}
+```
+
+## Wallet Screening
+
+### Screen Single Wallet
+
+```typescript
+interface WalletScreeningResult {
+  address: string
+  riskScore: number
+  riskLevel: 'low' | 'medium' | 'high' | 'severe'
+  sanctions: boolean
+  categories: Array<{
+    name: string
+    riskWeight: number
+    exposurePercent: number
+  }>
+}
+
+async function screenWallet(address: string): Promise<WalletScreeningResult> {
+  const result = await ellipticRequest('/v2/wallet/synchronous', {
+    subject: {
+      asset: 'holistic',
+      blockchain: 'ethereum',
+      type: 'address',
+      hash: address
+    },
+    type: 'wallet_exposure'
+  })
+
+  return {
+    address,
+    riskScore: result.risk_score,
+    riskLevel: mapRiskLevel(result.risk_score),
+    sanctions: result.cluster_entities?.some((e: any) => e.is_sanctioned) || false,
+    categories: result.cluster_exposures?.map((exp: any) => ({
+      name: exp.category,
+      riskWeight: exp.risk_weight,
+      exposurePercent: exp.exposure_percent
+    })) || []
+  }
+}
+
+function mapRiskLevel(score: number) {
+  if (score >= 8) return 'severe'
+  if (score >= 6) return 'high'
+  if (score >= 3) return 'medium'
+  return 'low'
+}
+```
+
+### Batch Screening
+
+```typescript
+async function batchScreenWallets(addresses: string[]) {
+  const results = await Promise.all(
+    addresses.map(addr => screenWallet(addr))
+  )
+
+  return {
+    total: results.length,
+    highRisk: results.filter(r => r.riskLevel === 'high' || r.riskLevel === 'severe'),
+    sanctioned: results.filter(r => r.sanctions),
+    results
+  }
+}
+```
+
+## Transaction Screening
+
+### Screen Transaction
+
+```typescript
+interface TransactionScreeningRequest {
+  txHash: string
+  fromAddress: string
+  toAddress: string
+  amount: string
+  asset: string
+}
+
+async function screenTransaction(tx: TransactionScreeningRequest) {
+  const result = await ellipticRequest('/v2/analyses/synchronous', {
+    subject: {
+      asset: tx.asset,
+      blockchain: 'ethereum',
+      type: 'transaction',
+      hash: tx.txHash,
+      output_type: 'address',
+      output_address: tx.toAddress
+    },
+    type: 'destination_of_funds',
+    customer_reference: tx.txHash
+  })
+
+  return {
+    txHash: tx.txHash,
+    riskScore: result.risk_score,
+    riskIndicators: result.risk_indicators,
+    triggered_rules: result.triggered_rules,
+    requiresReview: result.risk_score >= 6
+  }
+}
+```
+
+### Continuous Transaction Monitoring
+
+```typescript
+async function registerTransactionForMonitoring(
+  txHash: string,
+  userId: string
+) {
+  const result = await ellipticRequest('/v2/transactions', {
+    blockchain: 'ethereum',
+    hash: txHash,
+    customer_reference: userId,
+    callback_url: 'https://your-api.com/webhooks/elliptic'
+  })
+
+  return {
+    analysisId: result.id,
+    status: result.status
+  }
+}
+```
+
+## Sanctions Checking
+
+```typescript
+async function checkSanctions(address: string) {
+  const result = await ellipticRequest('/v2/wallet/synchronous', {
+    subject: {
+      asset: 'holistic',
+      blockchain: 'ethereum',
+      type: 'address',
+      hash: address
+    },
+    type: 'wallet_exposure'
+  })
+
+  const sanctionedEntities = result.cluster_entities?.filter(
+    (e: any) => e.is_sanctioned
+  ) || []
+
+  return {
+    address,
+    isSanctioned: sanctionedEntities.length > 0,
+    entities: sanctionedEntities.map((e: any) => ({
+      name: e.name,
+      program: e.sanction_program,
+      addedDate: e.sanction_date
+    }))
+  }
+}
+```
+
+## Integration Patterns
+
+### Pre-Transaction Validation
+
+```typescript
+async function validateBeforeTransfer(
+  from: string,
+  to: string,
+  amount: string
+): Promise<{ allowed: boolean; reason?: string }> {
+  // Check sanctions first
+  const sanctions = await checkSanctions(to)
+  if (sanctions.isSanctioned) {
+    return {
+      allowed: false,
+      reason: `Sanctioned entity: ${sanctions.entities[0]?.name}`
+    }
+  }
+
+  // Screen recipient wallet
+  const screening = await screenWallet(to)
+  
+  if (screening.riskLevel === 'severe') {
+    return {
+      allowed: false,
+      reason: 'Recipient is severe risk'
+    }
+  }
+
+  if (screening.riskLevel === 'high') {
+    // Allow small amounts, flag larger ones
+    const amountNum = parseFloat(amount)
+    if (amountNum > 10000) {
+      return {
+        allowed: false,
+        reason: 'High-risk recipient, amount exceeds threshold'
+      }
+    }
+  }
+
+  return { allowed: true }
+}
+```
+
+### Onboarding Screening
+
+```typescript
+async function screenNewUser(walletAddress: string) {
+  const screening = await screenWallet(walletAddress)
+  const sanctions = await checkSanctions(walletAddress)
+
+  if (sanctions.isSanctioned) {
+    return {
+      status: 'rejected',
+      reason: 'Wallet associated with sanctioned entity'
+    }
+  }
+
+  switch (screening.riskLevel) {
+    case 'severe':
+      return { status: 'rejected', reason: 'Severe risk wallet' }
+    case 'high':
+      return { status: 'pending_review', reason: 'High risk wallet' }
+    case 'medium':
+      return { status: 'approved', tier: 'enhanced_monitoring' }
+    default:
+      return { status: 'approved', tier: 'standard' }
+  }
+}
+```
+
+### Webhook Handler
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifySignature(body: string, signature: string, timestamp: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.ELLIPTIC_WEBHOOK_SECRET!)
+    .update(timestamp + body)
+    .digest('base64')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/elliptic', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-elliptic-signature'] as string
+  const timestamp = req.headers['x-elliptic-timestamp'] as string
+
+  if (!verifySignature(req.body.toString(), signature, timestamp)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'analysis_complete':
+      handleAnalysisComplete(event.data)
+      break
+    case 'risk_score_updated':
+      handleRiskUpdate(event.data)
+      break
+    case 'sanctions_match':
+      handleSanctionsMatch(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Risk Categories
+
+| Category | Risk Weight | Description |
+|----------|-------------|-------------|
+| Sanctions | 10 | OFAC, UN, EU sanctions |
+| Ransomware | 10 | Known ransomware addresses |
+| Terrorist Financing | 10 | Terrorism-linked entities |
+| Dark Web | 8 | Darknet marketplace activity |
+| Stolen Funds | 8 | Known theft or hack proceeds |
+| Fraud | 7 | Scam and fraud addresses |
+| Mixer | 5 | Mixing service usage |
+| Gambling | 3 | Gambling platform exposure |
+| Exchange | 1 | Centralized exchange activity |
+
+## Compliance Dashboard
+
+```typescript
+async function getComplianceMetrics(startDate: Date, endDate: Date) {
+  const screenings = await getScreeningsInRange(startDate, endDate)
+  
+  return {
+    period: { startDate, endDate },
+    totalScreenings: screenings.length,
+    byRiskLevel: {
+      severe: screenings.filter(s => s.riskLevel === 'severe').length,
+      high: screenings.filter(s => s.riskLevel === 'high').length,
+      medium: screenings.filter(s => s.riskLevel === 'medium').length,
+      low: screenings.filter(s => s.riskLevel === 'low').length
+    },
+    sanctionsMatches: screenings.filter(s => s.sanctions).length,
+    blockedTransactions: screenings.filter(s => s.blocked).length
+  }
+}
+```
+
+## Environment Variables
+
+```bash
+ELLIPTIC_API_KEY=your-api-key
+ELLIPTIC_SECRET=your-secret
+ELLIPTIC_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Elliptic Documentation](https://docs.elliptic.co)
+- [Elliptic API Reference](https://docs.elliptic.co/api)
+- [Navigator Platform](https://navigator.elliptic.co)

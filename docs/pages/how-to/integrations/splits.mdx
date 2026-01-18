@@ -1,0 +1,273 @@
+---
+title: "Splits for Tempo Treasury"
+description: "Manage onchain revenue distribution on Tempo with Splits. Automated payment splits, team payouts, and treasury management."
+---
+
+# Splits for Tempo Treasury
+
+[Splits](https://splits.org) provides onchain treasury management and automated revenue distribution for Tempo.
+
+## Features
+
+- **Split contracts** — Automatically divide incoming funds
+- **Waterfall splits** — Priority-based distribution
+- **Vesting** — Time-locked token releases
+- **Swapper** — Auto-convert tokens before distribution
+
+## Installation
+
+```bash
+pnpm install @0xsplits/splits-sdk viem
+```
+
+## SDK Setup
+
+```typescript
+import { SplitsClient } from '@0xsplits/splits-sdk'
+import { createPublicClient, createWalletClient, http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const tempo = tempoTestnet({ feeToken: alphaUsd })
+
+const publicClient = createPublicClient({
+  chain: tempo,
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+const walletClient = createWalletClient({
+  chain: tempo,
+  transport: http('https://rpc.moderato.tempo.xyz'),
+  account: privateKeyToAccount(PRIVATE_KEY)
+})
+
+const splitsClient = new SplitsClient({
+  chainId: 42431,
+  publicClient,
+  walletClient
+})
+```
+
+## Create a Split
+
+### Basic Split
+
+```typescript
+async function createSplit() {
+  const { splitAddress, event } = await splitsClient.createSplit({
+    recipients: [
+      { address: '0xFounder1', percentAllocation: 40 },
+      { address: '0xFounder2', percentAllocation: 30 },
+      { address: '0xTreasury', percentAllocation: 20 },
+      { address: '0xOperations', percentAllocation: 10 }
+    ],
+    distributorFeePercent: 0, // 0% for anyone to distribute
+    controller: '0x0000000000000000000000000000000000000000' // Immutable
+  })
+
+  console.log('Split created:', splitAddress)
+  return splitAddress
+}
+```
+
+### Mutable Split
+
+```typescript
+async function createMutableSplit(controllerAddress: string) {
+  const { splitAddress } = await splitsClient.createSplit({
+    recipients: [
+      { address: '0xTeamMember1', percentAllocation: 50 },
+      { address: '0xTeamMember2', percentAllocation: 50 }
+    ],
+    distributorFeePercent: 1, // 1% incentive
+    controller: controllerAddress // Can update recipients
+  })
+
+  return splitAddress
+}
+```
+
+## Distribute Funds
+
+### Check Balance
+
+```typescript
+async function getSplitBalance(splitAddress: string) {
+  const balance = await splitsClient.getSplitBalance({
+    splitAddress,
+    token: '0x0000000000000000000000000000000000000000' // Native token
+  })
+
+  console.log('Balance:', balance.toString())
+  return balance
+}
+```
+
+### Distribute ETH/Native
+
+```typescript
+async function distributeNative(splitAddress: string) {
+  const { event } = await splitsClient.distributeToken({
+    splitAddress,
+    token: '0x0000000000000000000000000000000000000000',
+    distributorAddress: walletClient.account.address
+  })
+
+  console.log('Distribution complete')
+  return event
+}
+```
+
+### Distribute ERC20
+
+```typescript
+async function distributeToken(splitAddress: string, tokenAddress: string) {
+  const { event } = await splitsClient.distributeToken({
+    splitAddress,
+    token: tokenAddress,
+    distributorAddress: walletClient.account.address
+  })
+
+  return event
+}
+```
+
+## Withdraw Funds
+
+```typescript
+async function withdrawFunds(address: string, tokens: string[]) {
+  const { event } = await splitsClient.withdrawFunds({
+    address,
+    tokens
+  })
+
+  console.log('Withdrawn')
+  return event
+}
+```
+
+## Waterfall Splits
+
+Priority-based distribution:
+
+```typescript
+async function createWaterfall() {
+  const { waterfallAddress } = await splitsClient.createWaterfallModule({
+    token: USDC_ADDRESS,
+    tranches: [
+      {
+        recipient: '0xInvestor',
+        size: 100000n * 10n ** 18n // First $100k to investor
+      },
+      {
+        recipient: '0xFounders',
+        size: 50000n * 10n ** 18n // Next $50k to founders
+      },
+      {
+        recipient: '0xTeam', // Remainder to team
+        size: 0n // No cap
+      }
+    ]
+  })
+
+  return waterfallAddress
+}
+
+// Distribute through waterfall
+async function distributeWaterfall(waterfallAddress: string) {
+  await splitsClient.waterfallFunds({
+    waterfallModuleAddress: waterfallAddress
+  })
+}
+```
+
+## Vesting
+
+```typescript
+async function createVesting() {
+  const { vestingAddress } = await splitsClient.createVestingModule({
+    beneficiary: '0xEmployee',
+    vestingPeriod: 365 * 24 * 60 * 60 // 1 year
+  })
+
+  return vestingAddress
+}
+
+async function releaseVested(vestingAddress: string, tokens: string[]) {
+  await splitsClient.releaseVestedFunds({
+    vestingModuleAddress: vestingAddress,
+    tokens
+  })
+}
+```
+
+## Read Split Data
+
+```typescript
+async function getSplitMetadata(splitAddress: string) {
+  const metadata = await splitsClient.getSplitMetadata({
+    splitAddress
+  })
+
+  console.log('Recipients:', metadata.recipients)
+  console.log('Controller:', metadata.controller)
+  console.log('Distributor Fee:', metadata.distributorFeePercent)
+  
+  return metadata
+}
+
+async function getEarnings(address: string) {
+  const earnings = await splitsClient.getFormattedUserEarnings({
+    userAddress: address
+  })
+
+  return earnings
+}
+```
+
+## Update Split
+
+```typescript
+async function updateSplit(splitAddress: string) {
+  await splitsClient.updateSplit({
+    splitAddress,
+    recipients: [
+      { address: '0xNewMember', percentAllocation: 25 },
+      { address: '0xOldMember', percentAllocation: 75 }
+    ],
+    distributorFeePercent: 0
+  })
+}
+```
+
+## React Integration
+
+```typescript
+import { useSplits } from '@0xsplits/splits-sdk-react'
+
+export function SplitDashboard({ splitAddress }) {
+  const { splitMetadata, isLoading } = useSplits({
+    splitAddress
+  })
+
+  if (isLoading) return <div>Loading...</div>
+
+  return (
+    <div>
+      <h2>Split: {splitAddress}</h2>
+      <ul>
+        {splitMetadata.recipients.map(r => (
+          <li key={r.address}>
+            {r.address}: {r.percentAllocation}%
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+```
+
+## Resources
+
+- [Splits Documentation](https://docs.splits.org)
+- [Splits SDK](https://github.com/0xSplits/splits-sdk)
+- [Splits App](https://app.splits.org)

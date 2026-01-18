@@ -1,0 +1,225 @@
+---
+title: "Add Tempo to MetaMask"
+description: "Configure MetaMask for Tempo blockchain. Add network manually or programmatically with wallet_addEthereumChain."
+---
+
+# Add Tempo to MetaMask
+
+[MetaMask](https://metamask.io) is the world's most popular crypto wallet. This guide covers adding Tempo to MetaMask manually and programmatically.
+
+## Quick Add
+
+Click to add Tempo to MetaMask instantly:
+
+- **Testnet**: [Add Tempo Testnet](https://chainlist.org/chain/42431)
+- **Mainnet**: [Add Tempo Mainnet](https://chainlist.org/chain/4217)
+
+## Manual Configuration
+
+### Tempo Testnet (Moderato)
+
+1. Open MetaMask → Settings → Networks → Add Network
+2. Enter the following details:
+
+| Field | Value |
+|-------|-------|
+| Network Name | Tempo Testnet |
+| RPC URL | `https://rpc.moderato.tempo.xyz` |
+| Chain ID | `42431` |
+| Currency Symbol | `USD` |
+| Block Explorer | `https://explore.tempo.xyz` |
+
+### Tempo Mainnet (Presto)
+
+| Field | Value |
+|-------|-------|
+| Network Name | Tempo Mainnet |
+| RPC URL | `https://rpc.presto.tempo.xyz` |
+| Chain ID | `4217` |
+| Currency Symbol | `USD` |
+| Block Explorer | `https://explore.tempo.xyz` |
+
+## Programmatic Addition
+
+Add Tempo to MetaMask from your dApp:
+
+```typescript
+async function addTempoToMetaMask() {
+  if (!window.ethereum) {
+    alert('Please install MetaMask')
+    return
+  }
+
+  try {
+    await window.ethereum.request({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: '0xA5CF', // 42431 in hex
+        chainName: 'Tempo Testnet',
+        nativeCurrency: {
+          name: 'USD',
+          symbol: 'USD',
+          decimals: 18
+        },
+        rpcUrls: ['https://rpc.moderato.tempo.xyz'],
+        blockExplorerUrls: ['https://explore.tempo.xyz']
+      }]
+    })
+  } catch (error) {
+    console.error('Failed to add network:', error)
+  }
+}
+```
+
+### React Component
+
+```typescript
+'use client'
+
+export function AddTempoButton() {
+  const addNetwork = async () => {
+    try {
+      await window.ethereum?.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: '0xA5CF',
+          chainName: 'Tempo Testnet',
+          nativeCurrency: {
+            name: 'USD',
+            symbol: 'USD',
+            decimals: 18
+          },
+          rpcUrls: ['https://rpc.moderato.tempo.xyz'],
+          blockExplorerUrls: ['https://explore.tempo.xyz']
+        }]
+      })
+    } catch (error) {
+      console.error(error)
+    }
+  }
+
+  return (
+    <button onClick={addNetwork}>
+      Add Tempo to MetaMask
+    </button>
+  )
+}
+```
+
+## Switch Network
+
+Switch to Tempo if already added:
+
+```typescript
+async function switchToTempo() {
+  try {
+    await window.ethereum?.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0xA5CF' }] // 42431
+    })
+  } catch (error: any) {
+    // Chain not added, add it
+    if (error.code === 4902) {
+      await addTempoToMetaMask()
+    }
+  }
+}
+```
+
+## With Viem
+
+```typescript
+import { createWalletClient, custom } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const client = createWalletClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: custom(window.ethereum!)
+})
+
+// Request account access
+const [address] = await client.requestAddresses()
+
+// Add/switch chain
+await client.addChain({ chain: tempoTestnet({ feeToken: alphaUsd }) })
+await client.switchChain({ id: 42431 })
+```
+
+## With Wagmi
+
+```typescript
+import { useAccount, useSwitchChain, useConnect } from 'wagmi'
+import { tempoTestnet } from 'wagmi/chains'
+import { injected } from 'wagmi/connectors'
+
+export function ConnectMetaMask() {
+  const { address, isConnected, chain } = useAccount()
+  const { connect } = useConnect()
+  const { switchChain } = useSwitchChain()
+
+  if (!isConnected) {
+    return (
+      <button onClick={() => connect({ connector: injected() })}>
+        Connect MetaMask
+      </button>
+    )
+  }
+
+  if (chain?.id !== 42431) {
+    return (
+      <button onClick={() => switchChain({ chainId: 42431 })}>
+        Switch to Tempo
+      </button>
+    )
+  }
+
+  return <p>Connected: {address}</p>
+}
+```
+
+## Add Tokens
+
+Add Tempo tokens to MetaMask:
+
+```typescript
+async function addUSDCToken() {
+  await window.ethereum?.request({
+    method: 'wallet_watchAsset',
+    params: {
+      type: 'ERC20',
+      options: {
+        address: '0x20c0000000000000000000000000000000000001',
+        symbol: 'USDC',
+        decimals: 18,
+        image: 'https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png'
+      }
+    }
+  })
+}
+```
+
+## Troubleshooting
+
+### "Chain ID already exists"
+
+MetaMask may have cached the network. Try:
+1. Settings → Networks → Find Tempo → Delete
+2. Re-add the network
+
+### "Invalid RPC URL"
+
+Ensure you're using the correct URL:
+- Testnet: `https://rpc.moderato.tempo.xyz`
+- Mainnet: `https://rpc.presto.tempo.xyz`
+
+### Transaction Stuck
+
+Tempo has fast finality (~0.5s). If a transaction appears stuck:
+1. Check the [block explorer](https://explore.tempo.xyz)
+2. The transaction may have already confirmed
+
+## Resources
+
+- [MetaMask Documentation](https://docs.metamask.io)
+- [Tempo Block Explorer](https://explore.tempo.xyz)
+- [Tempo Faucet](/quickstart/faucet)

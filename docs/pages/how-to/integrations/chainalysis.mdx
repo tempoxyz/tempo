@@ -1,0 +1,400 @@
+---
+title: "Chainalysis Compliance for Tempo"
+description: "Blockchain analytics and compliance solutions for Tempo with Chainalysis. Address screening, transaction monitoring, and KYT."
+---
+
+# Chainalysis Compliance for Tempo
+
+[Chainalysis](https://chainalysis.com) provides blockchain analytics, compliance tools, and investigation solutions for Tempo applications.
+
+## Features
+
+- **KYT (Know Your Transaction)** — Real-time transaction monitoring
+- **Address screening** — Sanctions and risk assessment
+- **Reactor** — Investigation and tracing tools
+- **Kryptos** — Market intelligence
+
+## API Setup
+
+Chainalysis offers multiple products with different APIs:
+- **Sanctions Screening API** (free tier available) - uses `public.chainalysis.com`
+- **KYT API** (enterprise) - uses `api.chainalysis.com`
+
+```typescript
+const CHAINALYSIS_API_KEY = process.env.CHAINALYSIS_API_KEY
+
+// Sanctions Screening API (free tier)
+const SANCTIONS_BASE_URL = 'https://public.chainalysis.com'
+
+async function sanctionsRequest(endpoint: string) {
+  const response = await fetch(`${SANCTIONS_BASE_URL}${endpoint}`, {
+    headers: {
+      'X-API-KEY': CHAINALYSIS_API_KEY!
+    }
+  })
+  return response.json()
+}
+
+// KYT API (enterprise)
+const KYT_BASE_URL = 'https://api.chainalysis.com'
+
+async function kytRequest(endpoint: string, options: {
+  method?: string
+  body?: any
+} = {}) {
+  const response = await fetch(`${KYT_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Token': CHAINALYSIS_API_KEY!
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Address Screening
+
+### Register Address
+
+```typescript
+async function registerAddress(address: string, userId: string) {
+  const result = await chainalysisRequest('/api/kyt/v2/users', {
+    method: 'POST',
+    body: {
+      userId
+    }
+  })
+
+  // Register the address for the user
+  await chainalysisRequest(`/api/kyt/v2/users/${userId}/addresses`, {
+    method: 'POST',
+    body: {
+      address,
+      network: 'ethereum' // Use 'ethereum' for EVM chains
+    }
+  })
+
+  return result
+}
+```
+
+### Screen Address
+
+```typescript
+interface ScreeningResult {
+  address: string
+  risk: 'Severe' | 'High' | 'Medium' | 'Low'
+  riskScore: number
+  cluster: {
+    name: string
+    category: string
+  }
+  exposures: Array<{
+    category: string
+    value: number
+    percentage: number
+  }>
+}
+
+async function screenAddress(address: string): Promise<ScreeningResult> {
+  const result = await chainalysisRequest(
+    `/api/risk/v2/entities/${address}?network=ethereum`
+  )
+
+  return {
+    address: result.address,
+    risk: result.risk,
+    riskScore: result.riskScore,
+    cluster: result.cluster,
+    exposures: result.exposures
+  }
+}
+
+// Usage
+const screening = await screenAddress('0x...')
+if (screening.risk === 'Severe' || screening.risk === 'High') {
+  console.log('High-risk address detected')
+}
+```
+
+### Sanctions Check
+
+```typescript
+async function checkSanctions(address: string) {
+  const result = await chainalysisRequest(
+    `/api/sanctions/v1/address/${address}?network=ethereum`
+  )
+
+  return {
+    address,
+    isSanctioned: result.isSanctioned,
+    identifications: result.identifications || [],
+    sanctionPrograms: result.sanctions || []
+  }
+}
+```
+
+## Transaction Monitoring (KYT)
+
+### Register Transfer
+
+```typescript
+interface TransferRegistration {
+  network: string
+  asset: string
+  transferReference: string
+  direction: 'sent' | 'received'
+  outputAddress?: string
+  inputAddress?: string
+  amount: number
+  timestamp: string
+}
+
+async function registerTransfer(userId: string, transfer: TransferRegistration) {
+  const result = await chainalysisRequest(
+    `/api/kyt/v2/users/${userId}/transfers`,
+    {
+      method: 'POST',
+      body: transfer
+    }
+  )
+
+  return {
+    transferId: result.externalId,
+    riskScore: result.riskScore,
+    alerts: result.alerts
+  }
+}
+
+// Usage
+const transfer = await registerTransfer('user-123', {
+  network: 'ethereum',
+  asset: 'ETH',
+  transferReference: 'tx-hash-here',
+  direction: 'received',
+  outputAddress: '0x...',
+  amount: 1000,
+  timestamp: new Date().toISOString()
+})
+```
+
+### Get Transfer Risk
+
+```typescript
+async function getTransferRisk(userId: string, transferId: string) {
+  const result = await chainalysisRequest(
+    `/api/kyt/v2/users/${userId}/transfers/${transferId}`
+  )
+
+  return {
+    riskScore: result.riskScore,
+    rating: result.rating, // 'lowRisk', 'mediumRisk', 'highRisk', 'severeRisk'
+    exposures: result.exposures,
+    alerts: result.alerts
+  }
+}
+```
+
+## Alert Management
+
+```typescript
+interface Alert {
+  alertId: string
+  alertType: string
+  severity: string
+  status: string
+  createdAt: string
+  details: any
+}
+
+async function getAlerts(userId: string): Promise<Alert[]> {
+  const result = await chainalysisRequest(
+    `/api/kyt/v2/users/${userId}/alerts`
+  )
+  return result.alerts
+}
+
+async function updateAlertStatus(
+  userId: string,
+  alertId: string,
+  status: 'acknowledged' | 'dismissed' | 'investigating'
+) {
+  await chainalysisRequest(
+    `/api/kyt/v2/users/${userId}/alerts/${alertId}`,
+    {
+      method: 'PATCH',
+      body: { status }
+    }
+  )
+}
+```
+
+## Integration Patterns
+
+### Pre-Transaction Screening
+
+```typescript
+async function validateTransfer(
+  fromAddress: string,
+  toAddress: string,
+  amount: number
+): Promise<{ allowed: boolean; reason?: string }> {
+  // Check sanctions
+  const sanctions = await checkSanctions(toAddress)
+  if (sanctions.isSanctioned) {
+    return {
+      allowed: false,
+      reason: `Address is sanctioned: ${sanctions.sanctionPrograms.join(', ')}`
+    }
+  }
+
+  // Screen address risk
+  const screening = await screenAddress(toAddress)
+  if (screening.risk === 'Severe') {
+    return {
+      allowed: false,
+      reason: 'Recipient address is severe risk'
+    }
+  }
+
+  if (screening.risk === 'High' && amount > 10000) {
+    return {
+      allowed: false,
+      reason: 'High-risk address with large amount requires review'
+    }
+  }
+
+  return { allowed: true }
+}
+```
+
+### Continuous Monitoring
+
+```typescript
+async function monitorUserActivity(userId: string) {
+  // Get all alerts for user
+  const alerts = await getAlerts(userId)
+  
+  const criticalAlerts = alerts.filter(
+    a => a.severity === 'high' || a.severity === 'severe'
+  )
+
+  if (criticalAlerts.length > 0) {
+    // Suspend user activity
+    await suspendUser(userId)
+    
+    // Notify compliance team
+    await notifyCompliance({
+      userId,
+      alerts: criticalAlerts
+    })
+  }
+
+  return {
+    alertCount: alerts.length,
+    criticalCount: criticalAlerts.length,
+    status: criticalAlerts.length > 0 ? 'suspended' : 'active'
+  }
+}
+```
+
+### Webhook Handler
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/chainalysis', express.json(), async (req, res) => {
+  const { eventType, data } = req.body
+
+  switch (eventType) {
+    case 'alert.created':
+      await handleNewAlert(data)
+      break
+    case 'risk.updated':
+      await handleRiskUpdate(data)
+      break
+    case 'sanctions.match':
+      await handleSanctionsMatch(data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+
+async function handleSanctionsMatch(data: any) {
+  const { address, userId, sanctions } = data
+  
+  // Immediately block address
+  await blockAddress(address)
+  
+  // Freeze user account
+  await freezeAccount(userId)
+  
+  // Alert compliance team
+  await notifyCompliance({
+    type: 'SANCTIONS_MATCH',
+    address,
+    userId,
+    sanctions,
+    priority: 'critical'
+  })
+}
+```
+
+## Risk Categories
+
+| Category | Description | Action |
+|----------|-------------|--------|
+| Severe | Sanctions, ransomware, terrorism | Block immediately |
+| High | Darknet, fraud, stolen funds | Review required |
+| Medium | Gambling, mixers | Enhanced monitoring |
+| Low | Known exchanges, retail | Normal processing |
+
+## Compliance Reporting
+
+```typescript
+async function generateComplianceReport(startDate: Date, endDate: Date) {
+  const users = await getAllUsers()
+  
+  const report = {
+    period: { startDate, endDate },
+    totalUsers: users.length,
+    screenings: 0,
+    alerts: {
+      total: 0,
+      severe: 0,
+      high: 0,
+      medium: 0,
+      low: 0
+    },
+    blockedAddresses: []
+  }
+
+  for (const user of users) {
+    const alerts = await getAlerts(user.id)
+    report.alerts.total += alerts.length
+    
+    for (const alert of alerts) {
+      report.alerts[alert.severity.toLowerCase()]++
+    }
+  }
+
+  return report
+}
+```
+
+## Environment Variables
+
+```bash
+CHAINALYSIS_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Chainalysis KYT Documentation](https://docs.chainalysis.com/kyt)
+- [Chainalysis API Reference](https://docs.chainalysis.com/api)
+- [Risk Assessment Guide](https://docs.chainalysis.com/risk)

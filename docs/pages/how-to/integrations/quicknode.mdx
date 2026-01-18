@@ -1,0 +1,243 @@
+---
+title: "QuickNode RPC for Tempo"
+description: "Set up QuickNode RPC endpoints for Tempo blockchain. Enterprise-grade infrastructure with high availability, WebSocket support, and advanced features."
+---
+
+# QuickNode RPC for Tempo
+
+[QuickNode](https://quicknode.com) provides enterprise-grade blockchain infrastructure for Tempo with high availability, dedicated endpoints, and advanced features.
+
+## Why QuickNode
+
+- **High performance** — Globally distributed nodes with low latency
+- **Reliability** — 99.99% uptime SLA for production applications
+- **Advanced features** — Enhanced APIs, WebSocket support, archive data
+- **No rate limits** — Dedicated capacity for your application
+
+## Getting Started
+
+### 1. Create a QuickNode Account
+
+Sign up at [quicknode.com](https://www.quicknode.com) and navigate to the dashboard.
+
+### 2. Create a Tempo Endpoint
+
+1. Click "Create Endpoint"
+2. Select "Tempo" from the chain list
+3. Choose your network (Testnet or Mainnet)
+4. Select your plan and configure settings
+5. Copy your endpoint URL
+
+Your endpoint will look like:
+
+```
+https://your-endpoint-name.quiknode.pro/your-api-key/
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# .env
+QUICKNODE_RPC_URL=https://your-endpoint.quiknode.pro/your-api-key/
+QUICKNODE_WS_URL=wss://your-endpoint.quiknode.pro/your-api-key/
+```
+
+### Viem
+
+```typescript
+import { createPublicClient, http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const client = createPublicClient({
+  chain: tempoTestnet({
+    feeToken: '0x20c0000000000000000000000000000000000001'
+  }),
+  transport: http(process.env.QUICKNODE_RPC_URL)
+})
+```
+
+### Wagmi
+
+```typescript
+import { createConfig, http } from 'wagmi'
+import { tempoTestnet } from 'wagmi/chains'
+
+export const config = createConfig({
+  chains: [tempoTestnet({ feeToken: alphaUsd })],
+  transports: {
+    [tempoTestnet.id]: http(process.env.QUICKNODE_RPC_URL)
+  }
+})
+```
+
+### Ethers.js
+
+```typescript
+import { JsonRpcProvider } from 'ethers'
+
+const provider = new JsonRpcProvider(
+  process.env.QUICKNODE_RPC_URL,
+  { chainId: 42431, name: 'tempo-testnet' }
+)
+```
+
+### Hardhat
+
+```typescript
+// hardhat.config.ts
+import { HardhatUserConfig } from 'hardhat/config'
+import * as dotenv from 'dotenv'
+
+dotenv.config()
+
+const config: HardhatUserConfig = {
+  networks: {
+    tempo: {
+      url: process.env.QUICKNODE_RPC_URL,
+      chainId: 42431,
+      accounts: [process.env.PRIVATE_KEY]
+    }
+  }
+}
+
+export default config
+```
+
+### Foundry
+
+```toml
+# foundry.toml
+[rpc_endpoints]
+tempo = "${QUICKNODE_RPC_URL}"
+```
+
+```bash
+# Load environment and deploy
+source .env
+forge create src/Contract.sol:Contract \
+  --rpc-url tempo \
+  --private-key $PRIVATE_KEY
+```
+
+## WebSocket Subscriptions
+
+QuickNode provides WebSocket endpoints for real-time data:
+
+```typescript
+import { createPublicClient, webSocket } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const client = createPublicClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: webSocket(process.env.QUICKNODE_WS_URL)
+})
+
+// Subscribe to new blocks
+client.watchBlocks({
+  onBlock: block => {
+    console.log('New block:', block.number)
+  }
+})
+
+// Subscribe to pending transactions
+client.watchPendingTransactions({
+  onTransactions: hashes => {
+    console.log('Pending txs:', hashes)
+  }
+})
+
+// Subscribe to contract events
+client.watchContractEvent({
+  address: '0x...',
+  abi: contractAbi,
+  eventName: 'Transfer',
+  onLogs: logs => {
+    console.log('Transfer events:', logs)
+  }
+})
+```
+
+## QuickNode Add-ons
+
+### Token and NFT API
+
+```typescript
+// Get token balances for an address
+const response = await fetch(process.env.QUICKNODE_RPC_URL, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'qn_getWalletTokenBalance',
+    params: [{ wallet: '0x...' }],
+    id: 1
+  })
+})
+```
+
+### Transaction Receipts API
+
+```typescript
+// Get transaction receipts by block
+const response = await fetch(process.env.QUICKNODE_RPC_URL, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    jsonrpc: '2.0',
+    method: 'qn_getReceipts',
+    params: [{ blockNumber: '0x100' }],
+    id: 1
+  })
+})
+```
+
+## Best Practices
+
+### Error Handling
+
+```typescript
+import { createPublicClient, http, FallbackTransport } from 'viem'
+
+// Use fallback for reliability
+const client = createPublicClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: FallbackTransport([
+    http(process.env.QUICKNODE_RPC_URL),
+    http('https://rpc.moderato.tempo.xyz') // Public fallback
+  ])
+})
+```
+
+### Connection Pooling
+
+```typescript
+// Reuse client instances
+const client = createPublicClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: http(process.env.QUICKNODE_RPC_URL, {
+    batch: true,
+    retryCount: 3
+  })
+})
+
+// Export for reuse across modules
+export { client }
+```
+
+## Monitoring
+
+QuickNode provides built-in analytics in the dashboard:
+
+- Request volume and latency
+- Error rates and types
+- Method breakdown
+- Geographic distribution
+
+## Resources
+
+- [QuickNode Tempo Documentation](https://www.quicknode.com/docs/tempo)
+- [QuickNode Dashboard](https://dashboard.quicknode.com)
+- [QuickNode API Reference](https://www.quicknode.com/docs)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

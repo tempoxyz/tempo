@@ -1,0 +1,489 @@
+---
+title: "thirdweb SDK for Tempo"
+description: "Build on Tempo with thirdweb SDK. Wallet connection, contract deployment, NFTs, and smart wallets with TypeScript examples."
+---
+
+# thirdweb SDK for Tempo
+
+[thirdweb](https://thirdweb.com) provides an all-in-one SDK for building on Tempo with wallet connection, contract deployment, and built-in infrastructure.
+
+## Why thirdweb
+
+- **Complete toolkit** — Wallet connection, contracts, storage, and indexing
+- **500+ wallet support** — MetaMask, Coinbase, WalletConnect, and more
+- **Smart wallets** — Account abstraction and gasless transactions
+- **Pre-built contracts** — Deploy tokens, NFTs, and marketplaces instantly
+
+## Installation
+
+```bash
+pnpm install thirdweb
+```
+
+## Quick Start
+
+### 1. Get Your Client ID
+
+Create an API key at [thirdweb.com/create-api-key](https://thirdweb.com/create-api-key).
+
+### 2. Create a Client
+
+```typescript
+import { createThirdwebClient } from 'thirdweb'
+
+const client = createThirdwebClient({
+  clientId: process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID!
+})
+```
+
+### 3. Define Tempo Chain
+
+```typescript
+import { defineChain } from 'thirdweb'
+
+export const tempoTestnet = defineChain({
+  id: 42431,
+  name: 'Tempo Testnet',
+  nativeCurrency: {
+    symbol: 'USD',
+    name: 'USD Stablecoin',
+    decimals: 18
+  },
+  rpc: 'https://rpc.moderato.tempo.xyz',
+  blockExplorers: [
+    {
+      name: 'Tempo Explorer',
+      url: 'https://explore.tempo.xyz'
+    }
+  ],
+  testnet: true
+})
+
+export const tempoMainnet = defineChain({
+  id: 4217,
+  name: 'Tempo Mainnet',
+  nativeCurrency: {
+    symbol: 'USD',
+    name: 'USD Stablecoin',
+    decimals: 18
+  },
+  rpc: 'https://rpc.presto.tempo.xyz',
+  blockExplorers: [
+    {
+      name: 'Tempo Explorer',
+      url: 'https://explore.tempo.xyz'
+    }
+  ]
+})
+```
+
+## Wallet Connection
+
+### Connect Button (React)
+
+```typescript
+'use client'
+
+import { createThirdwebClient } from 'thirdweb'
+import { ConnectButton, useActiveAccount } from 'thirdweb/react'
+import { tempoTestnet } from './chains'
+
+const client = createThirdwebClient({
+  clientId: process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID!
+})
+
+export function App() {
+  const account = useActiveAccount()
+
+  return (
+    <div>
+      <ConnectButton client={client} chain={tempoTestnet} />
+      {account && <p>Connected: {account.address}</p>}
+    </div>
+  )
+}
+```
+
+### Programmatic Connection
+
+```typescript
+import { createWallet } from 'thirdweb/wallets'
+
+// MetaMask
+const metamask = createWallet('io.metamask')
+const account = await metamask.connect({
+  client,
+  chain: tempoTestnet
+})
+
+// Coinbase Wallet
+const coinbase = createWallet('com.coinbase.wallet', {
+  appMetadata: {
+    name: 'My Tempo App',
+    url: 'https://myapp.com'
+  }
+})
+const account = await coinbase.connect({
+  client,
+  chain: tempoTestnet
+})
+```
+
+### In-App Wallet (Email/Social)
+
+```typescript
+import { inAppWallet } from 'thirdweb/wallets'
+
+const wallet = inAppWallet({
+  auth: {
+    options: ['email', 'google', 'apple', 'discord']
+  }
+})
+
+const account = await wallet.connect({
+  client,
+  chain: tempoTestnet,
+  strategy: 'email'
+})
+```
+
+### Smart Wallet
+
+```typescript
+import { createWallet } from 'thirdweb/wallets'
+
+const smartWallet = createWallet('smart', {
+  chain: tempoTestnet,
+  sponsorGas: true // Sponsor gas for users
+})
+
+// Connect with a personal wallet as signer
+const personalWallet = createWallet('io.metamask')
+const personalAccount = await personalWallet.connect({ client })
+
+const account = await smartWallet.connect({
+  client,
+  personalAccount
+})
+```
+
+## Contract Interaction
+
+### Get Contract Instance
+
+```typescript
+import { getContract } from 'thirdweb'
+
+const contract = getContract({
+  client,
+  chain: tempoTestnet,
+  address: '0xYourContractAddress'
+})
+```
+
+### Read Contract Data
+
+```typescript
+import { readContract } from 'thirdweb'
+
+// Raw read
+const balance = await readContract({
+  contract,
+  method: 'function balanceOf(address) returns (uint256)',
+  params: [userAddress]
+})
+
+// With ERC20 extension
+import { balanceOf } from 'thirdweb/extensions/erc20'
+
+const balance = await balanceOf({
+  contract,
+  address: userAddress
+})
+```
+
+### Write to Contract
+
+```typescript
+import { prepareTransaction, sendTransaction } from 'thirdweb'
+
+// Prepare transaction
+const tx = await prepareTransaction({
+  contract,
+  method: 'function transfer(address to, uint256 amount)',
+  params: [recipientAddress, amount]
+})
+
+// Send transaction
+const result = await sendTransaction({
+  account,
+  transaction: tx
+})
+
+// Or with extension
+import { transfer } from 'thirdweb/extensions/erc20'
+import { sendAndConfirmTransaction } from 'thirdweb'
+
+const transaction = transfer({
+  contract,
+  to: recipientAddress,
+  amount: '100'
+})
+
+const receipt = await sendAndConfirmTransaction({
+  account,
+  transaction
+})
+```
+
+## Contract Deployment
+
+### Deploy with ABI/Bytecode
+
+```typescript
+import { deployContract } from 'thirdweb/deploys'
+
+const address = await deployContract({
+  client,
+  chain: tempoTestnet,
+  account,
+  bytecode: '0x6080604052...',
+  abi: contractAbi,
+  constructorParams: {
+    name: 'My Token',
+    symbol: 'MTK'
+  }
+})
+
+console.log('Deployed to:', address)
+```
+
+### Deploy Pre-built Contracts
+
+```typescript
+import { deployPublishedContract } from 'thirdweb/extensions/prebuilts'
+
+// Deploy ERC20 token
+const tokenAddress = await deployPublishedContract({
+  client,
+  chain: tempoTestnet,
+  account,
+  contractId: 'thirdweb.eth/Token',
+  constructorParams: {
+    name: 'My Token',
+    symbol: 'MTK',
+    primarySaleRecipient: account.address
+  }
+})
+
+// Deploy NFT collection
+const nftAddress = await deployPublishedContract({
+  client,
+  chain: tempoTestnet,
+  account,
+  contractId: 'thirdweb.eth/NFTCollection',
+  constructorParams: {
+    name: 'My NFTs',
+    symbol: 'MNFT',
+    primarySaleRecipient: account.address,
+    royaltyRecipient: account.address,
+    royaltyBps: 500 // 5%
+  }
+})
+```
+
+## React Hooks
+
+### Provider Setup
+
+```typescript
+// providers.tsx
+'use client'
+
+import { ThirdwebProvider } from 'thirdweb/react'
+
+export function Providers({ children }) {
+  return (
+    <ThirdwebProvider>
+      {children}
+    </ThirdwebProvider>
+  )
+}
+```
+
+### Use Hooks
+
+```typescript
+import {
+  useReadContract,
+  useSendAndConfirmTransaction,
+  useActiveAccount,
+  useConnect,
+  useDisconnect
+} from 'thirdweb/react'
+import { balanceOf, transfer } from 'thirdweb/extensions/erc20'
+
+export function TokenBalance() {
+  const account = useActiveAccount()
+  
+  const { data: balance } = useReadContract(
+    balanceOf({
+      contract: usdcContract,
+      address: account?.address
+    })
+  )
+
+  return <p>Balance: {balance?.toString()} USDC</p>
+}
+
+export function TransferButton() {
+  const account = useActiveAccount()
+  const { mutate: sendTx, isPending } = useSendAndConfirmTransaction()
+
+  const handleTransfer = () => {
+    const tx = transfer({
+      contract: usdcContract,
+      to: '0xRecipient',
+      amount: '100'
+    })
+
+    sendTx({ transaction: tx, account })
+  }
+
+  return (
+    <button onClick={handleTransfer} disabled={isPending}>
+      {isPending ? 'Sending...' : 'Transfer 100 USDC'}
+    </button>
+  )
+}
+```
+
+### Wallet Connection Hook
+
+```typescript
+import { useConnect, useActiveAccount, useDisconnect } from 'thirdweb/react'
+import { createWallet } from 'thirdweb/wallets'
+
+export function WalletButton() {
+  const { connect } = useConnect()
+  const account = useActiveAccount()
+  const { disconnect } = useDisconnect()
+
+  if (account) {
+    return (
+      <div>
+        <p>{account.address}</p>
+        <button onClick={() => disconnect()}>Disconnect</button>
+      </div>
+    )
+  }
+
+  return (
+    <button onClick={() => connect({
+      client,
+      wallets: [
+        createWallet('io.metamask'),
+        createWallet('com.coinbase.wallet')
+      ]
+    })}>
+      Connect Wallet
+    </button>
+  )
+}
+```
+
+## Gasless Transactions
+
+### With thirdweb Engine
+
+```typescript
+import { sendAndConfirmTransaction } from 'thirdweb'
+
+const receipt = await sendAndConfirmTransaction({
+  account,
+  transaction: tx,
+  gasless: {
+    provider: 'engine',
+    relayerUrl: 'https://your-engine.thirdweb.com/relayer/...',
+    relayerForwarderAddress: '0x...'
+  }
+})
+```
+
+### With OpenZeppelin Defender
+
+```typescript
+const receipt = await sendAndConfirmTransaction({
+  account,
+  transaction: tx,
+  gasless: {
+    provider: 'openzeppelin',
+    relayerUrl: 'https://api.defender.openzeppelin.com/autotasks/...',
+    relayerForwarderAddress: '0x...'
+  }
+})
+```
+
+## Complete Example
+
+```typescript
+// app/page.tsx
+'use client'
+
+import { createThirdwebClient, getContract } from 'thirdweb'
+import { ConnectButton, useActiveAccount, useReadContract } from 'thirdweb/react'
+import { balanceOf } from 'thirdweb/extensions/erc20'
+import { tempoTestnet } from './chains'
+
+const client = createThirdwebClient({
+  clientId: process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID!
+})
+
+const usdcContract = getContract({
+  client,
+  chain: tempoTestnet,
+  address: '0x20c0000000000000000000000000000000000001'
+})
+
+export default function Home() {
+  const account = useActiveAccount()
+  
+  const { data: balance } = useReadContract(
+    account ? balanceOf({
+      contract: usdcContract,
+      address: account.address
+    }) : undefined
+  )
+
+  return (
+    <div>
+      <h1>Tempo dApp</h1>
+      <ConnectButton client={client} chain={tempoTestnet} />
+      
+      {account && (
+        <div>
+          <p>Address: {account.address}</p>
+          <p>Balance: {balance?.toString()} USDC</p>
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_THIRDWEB_CLIENT_ID=your-client-id
+
+# Server-side only
+THIRDWEB_SECRET_KEY=your-secret-key
+```
+
+## Resources
+
+- [thirdweb Documentation](https://portal.thirdweb.com)
+- [thirdweb Dashboard](https://thirdweb.com/dashboard)
+- [thirdweb SDK GitHub](https://github.com/thirdweb-dev/js)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

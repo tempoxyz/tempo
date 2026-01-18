@@ -1,0 +1,414 @@
+---
+title: "Thunes Cross-Border Payments for Tempo"
+description: "Global payment infrastructure for Tempo with Thunes. Send payments to 130+ countries via mobile wallets, bank accounts, and cash pickup."
+---
+
+# Thunes Cross-Border Payments for Tempo
+
+[Thunes](https://thunes.com) is a global payment network enabling real-time transfers to 130+ countries via mobile wallets, bank accounts, and cash pickup locations.
+
+## Features
+
+- **Global coverage** — 130+ countries, 80+ currencies
+- **Multiple payout methods** — Mobile money, bank, cash, cards
+- **Real-time transfers** — Instant delivery to many destinations
+- **Competitive rates** — Direct network connections
+
+## API Setup
+
+```typescript
+const THUNES_API_KEY = process.env.THUNES_API_KEY
+const THUNES_API_SECRET = process.env.THUNES_API_SECRET
+const THUNES_BASE_URL = 'https://api.thunes.com'
+
+async function thunesRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const credentials = Buffer.from(
+    `${THUNES_API_KEY}:${THUNES_API_SECRET}`
+  ).toString('base64')
+
+  const response = await fetch(`${THUNES_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${credentials}`
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Get Payers (Payout Options)
+
+```typescript
+interface Payer {
+  id: string
+  name: string
+  country: string
+  currency: string
+  type: 'mobile_wallet' | 'bank_account' | 'cash_pickup'
+  precision: number
+  minAmount: number
+  maxAmount: number
+}
+
+async function getPayers(countryCode: string): Promise<Payer[]> {
+  const data = await thunesRequest(`/v2/money-transfer/payers?country=${countryCode}`)
+  
+  return data.map((payer: any) => ({
+    id: payer.id,
+    name: payer.name,
+    country: payer.country_iso_code,
+    currency: payer.currency,
+    type: payer.service.id,
+    precision: payer.precision,
+    minAmount: payer.minimum_transaction_amount,
+    maxAmount: payer.maximum_transaction_amount
+  }))
+}
+```
+
+## Get Exchange Rate
+
+```typescript
+interface Quote {
+  quoteId: string
+  sourceAmount: number
+  sourceCurrency: string
+  destinationAmount: number
+  destinationCurrency: string
+  rate: number
+  fee: number
+  validUntil: string
+}
+
+async function getQuote(
+  payerId: string,
+  amount: number,
+  sourceCurrency: string = 'USD'
+): Promise<Quote> {
+  const data = await thunesRequest('/v2/money-transfer/quotations', {
+    method: 'POST',
+    body: {
+      payer_id: payerId,
+      source: {
+        amount,
+        currency: sourceCurrency
+      },
+      mode: 'SOURCE_AMOUNT'
+    }
+  })
+
+  return {
+    quoteId: data.id,
+    sourceAmount: data.source.amount,
+    sourceCurrency: data.source.currency,
+    destinationAmount: data.destination.amount,
+    destinationCurrency: data.destination.currency,
+    rate: data.wholesale_fx_rate,
+    fee: data.fee.amount,
+    validUntil: data.expiration_date
+  }
+}
+```
+
+## Create Transaction
+
+### Mobile Money Transfer
+
+```typescript
+interface MobileMoneyTransfer {
+  quoteId: string
+  externalId: string
+  sender: {
+    firstName: string
+    lastName: string
+    email?: string
+    phone?: string
+  }
+  recipient: {
+    firstName: string
+    lastName: string
+    mobileNumber: string
+    mobileOperator?: string
+  }
+}
+
+async function createMobileMoneyTransfer(request: MobileMoneyTransfer) {
+  const data = await thunesRequest('/v2/money-transfer/transactions', {
+    method: 'POST',
+    body: {
+      quotation_id: request.quoteId,
+      external_id: request.externalId,
+      sender: {
+        firstname: request.sender.firstName,
+        lastname: request.sender.lastName,
+        email: request.sender.email,
+        mobile_phone_number: request.sender.phone
+      },
+      beneficiary: {
+        firstname: request.recipient.firstName,
+        lastname: request.recipient.lastName,
+        mobile_phone_number: request.recipient.mobileNumber,
+        mobile_operator: request.recipient.mobileOperator
+      }
+    }
+  })
+
+  return {
+    transactionId: data.id,
+    externalId: data.external_id,
+    status: data.status,
+    sourceAmount: data.source.amount,
+    destinationAmount: data.destination.amount,
+    createdAt: data.creation_date
+  }
+}
+```
+
+### Bank Transfer
+
+```typescript
+interface BankTransfer {
+  quoteId: string
+  externalId: string
+  sender: {
+    firstName: string
+    lastName: string
+    email?: string
+  }
+  recipient: {
+    firstName: string
+    lastName: string
+    bankAccountNumber: string
+    bankCode: string
+    bankName?: string
+  }
+}
+
+async function createBankTransfer(request: BankTransfer) {
+  const data = await thunesRequest('/v2/money-transfer/transactions', {
+    method: 'POST',
+    body: {
+      quotation_id: request.quoteId,
+      external_id: request.externalId,
+      sender: {
+        firstname: request.sender.firstName,
+        lastname: request.sender.lastName,
+        email: request.sender.email
+      },
+      beneficiary: {
+        firstname: request.recipient.firstName,
+        lastname: request.recipient.lastName,
+        bank_account_number: request.recipient.bankAccountNumber,
+        bank_code: request.recipient.bankCode,
+        bank_name: request.recipient.bankName
+      }
+    }
+  })
+
+  return {
+    transactionId: data.id,
+    externalId: data.external_id,
+    status: data.status,
+    sourceAmount: data.source.amount,
+    destinationAmount: data.destination.amount
+  }
+}
+```
+
+## Confirm Transaction
+
+```typescript
+async function confirmTransaction(transactionId: string) {
+  const data = await thunesRequest(
+    `/v2/money-transfer/transactions/${transactionId}/confirm`,
+    { method: 'POST' }
+  )
+
+  return {
+    transactionId: data.id,
+    status: data.status,
+    confirmedAt: data.confirmation_date
+  }
+}
+```
+
+## Get Transaction Status
+
+```typescript
+interface TransactionStatus {
+  transactionId: string
+  externalId: string
+  status: 'CREATED' | 'CONFIRMED' | 'SUBMITTED' | 'COMPLETED' | 'REJECTED' | 'CANCELLED'
+  statusMessage?: string
+  sourceAmount: number
+  destinationAmount: number
+  createdAt: string
+  completedAt?: string
+}
+
+async function getTransactionStatus(transactionId: string): Promise<TransactionStatus> {
+  const data = await thunesRequest(
+    `/v2/money-transfer/transactions/${transactionId}`
+  )
+
+  return {
+    transactionId: data.id,
+    externalId: data.external_id,
+    status: data.status,
+    statusMessage: data.status_message,
+    sourceAmount: data.source.amount,
+    destinationAmount: data.destination.amount,
+    createdAt: data.creation_date,
+    completedAt: data.completion_date
+  }
+}
+```
+
+## Tempo Integration
+
+### Off-Ramp Flow
+
+```typescript
+import { createWalletClient, http, parseUnits } from 'viem'
+import { tempo } from 'viem/chains'
+
+async function offRampToMobileMoney(
+  usdcAmount: number,
+  recipientPhone: string,
+  countryCode: string,
+  senderInfo: { firstName: string; lastName: string; email: string }
+) {
+  // 1. Find mobile money payer for country
+  const payers = await getPayers(countryCode)
+  const mobilePayer = payers.find(p => p.type === 'mobile_wallet')
+  
+  if (!mobilePayer) {
+    throw new Error('Mobile money not available in this country')
+  }
+
+  // 2. Get quote
+  const quote = await getQuote(mobilePayer.id, usdcAmount)
+
+  // 3. Convert USDC to USD (your settlement process)
+  // This would involve your treasury/settlement system
+  await settleUSDC(usdcAmount)
+
+  // 4. Create and confirm transfer
+  const transfer = await createMobileMoneyTransfer({
+    quoteId: quote.quoteId,
+    externalId: `tempo-${Date.now()}`,
+    sender: senderInfo,
+    recipient: {
+      firstName: 'Recipient',
+      lastName: 'Name',
+      mobileNumber: recipientPhone
+    }
+  })
+
+  await confirmTransaction(transfer.transactionId)
+
+  return {
+    transactionId: transfer.transactionId,
+    destinationAmount: quote.destinationAmount,
+    destinationCurrency: quote.destinationCurrency
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.THUNES_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/thunes', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-thunes-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.status) {
+    case 'SUBMITTED':
+      handleTransactionSubmitted(event)
+      break
+    case 'COMPLETED':
+      handleTransactionCompleted(event)
+      break
+    case 'REJECTED':
+      handleTransactionRejected(event)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Balance Management
+
+```typescript
+async function getBalance() {
+  const data = await thunesRequest('/v2/money-transfer/balance')
+  
+  return data.map((balance: any) => ({
+    currency: balance.currency,
+    available: balance.available_balance,
+    reserved: balance.reserved_balance
+  }))
+}
+```
+
+## Transaction Statuses
+
+| Status | Description |
+|--------|-------------|
+| CREATED | Transaction created, pending confirmation |
+| CONFIRMED | Confirmed by sender, pending submission |
+| SUBMITTED | Submitted to payer network |
+| COMPLETED | Successfully delivered |
+| REJECTED | Rejected by payer |
+| CANCELLED | Cancelled before completion |
+
+## Supported Regions
+
+| Region | Countries | Payment Methods |
+|--------|-----------|-----------------|
+| Africa | 40+ | Mobile Money, Bank |
+| Asia | 25+ | Bank, E-Wallets |
+| Latin America | 15+ | Bank, Cash Pickup |
+| Europe | 30+ | Bank |
+| Middle East | 10+ | Bank |
+
+## Environment Variables
+
+```bash
+THUNES_API_KEY=your-api-key
+THUNES_API_SECRET=your-api-secret
+THUNES_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Thunes Documentation](https://docs.thunes.com)
+- [Thunes API Reference](https://docs.thunes.com/api)
+- [Thunes Dashboard](https://dashboard.thunes.com)

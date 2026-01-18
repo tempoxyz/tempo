@@ -1,0 +1,413 @@
+---
+title: "Blockaid Security for Tempo"
+description: "Real-time transaction security and threat detection for Tempo with Blockaid. Protect users from scams, phishing, and malicious contracts."
+---
+
+# Blockaid Security for Tempo
+
+[Blockaid](https://blockaid.io) provides real-time transaction security, simulating and analyzing transactions to detect threats before they execute.
+
+## Features
+
+- **Transaction simulation** — Preview transaction outcomes
+- **Threat detection** — Identify malicious contracts and addresses
+- **Phishing protection** — Block known scam sites and contracts
+- **DApp scanning** — Verify application safety
+
+## SDK Setup
+
+The recommended approach is to use the official Blockaid SDK:
+
+```bash
+npm install @blockaid/client
+```
+
+```typescript
+import Blockaid from '@blockaid/client'
+
+const client = new Blockaid({
+  apiKey: process.env.BLOCKAID_API_KEY
+})
+```
+
+Alternatively, you can use the REST API directly:
+
+```typescript
+const BLOCKAID_API_KEY = process.env.BLOCKAID_API_KEY
+const BLOCKAID_BASE_URL = 'https://api.blockaid.io'
+
+async function blockaidRequest(endpoint: string, body: any) {
+  const response = await fetch(`${BLOCKAID_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': BLOCKAID_API_KEY!
+    },
+    body: JSON.stringify(body)
+  })
+  return response.json()
+}
+```
+
+## Transaction Scanning
+
+### Scan Transaction
+
+```typescript
+interface TransactionScanRequest {
+  chainId: number
+  from: string
+  to: string
+  data: string
+  value: string
+}
+
+interface TransactionScanResult {
+  status: 'safe' | 'warning' | 'malicious'
+  riskScore: number
+  simulation: {
+    success: boolean
+    assetChanges: Array<{
+      asset: string
+      type: 'transfer_in' | 'transfer_out' | 'approval'
+      amount: string
+      from?: string
+      to?: string
+    }>
+  }
+  warnings: string[]
+  maliciousActivities: string[]
+}
+
+async function scanTransaction(tx: TransactionScanRequest): Promise<TransactionScanResult> {
+  const result = await blockaidRequest('/v0/ethereum/transaction/scan', {
+    chain: `eip155:${tx.chainId}`,
+    options: ['simulation', 'validation'],
+    data: {
+      from: tx.from,
+      to: tx.to,
+      data: tx.data,
+      value: tx.value
+    },
+    metadata: {
+      domain: 'your-app.com'
+    }
+  })
+
+  return {
+    status: mapValidationResult(result.validation),
+    riskScore: result.validation?.risk_score || 0,
+    simulation: {
+      success: result.simulation?.status === 'success',
+      assetChanges: result.simulation?.asset_diff?.map((diff: any) => ({
+        asset: diff.asset.symbol,
+        type: diff.type,
+        amount: diff.value,
+        from: diff.from,
+        to: diff.to
+      })) || []
+    },
+    warnings: result.validation?.features?.filter((f: any) => f.type === 'warning').map((f: any) => f.description) || [],
+    maliciousActivities: result.validation?.features?.filter((f: any) => f.type === 'malicious').map((f: any) => f.description) || []
+  }
+}
+
+function mapValidationResult(validation: any) {
+  if (!validation) return 'safe'
+  if (validation.result_type === 'Malicious') return 'malicious'
+  if (validation.result_type === 'Warning') return 'warning'
+  return 'safe'
+}
+```
+
+### Scan ERC-20 Transfer
+
+```typescript
+import { encodeFunctionData, parseUnits } from 'viem'
+import { erc20Abi } from 'viem'
+
+async function scanERC20Transfer(
+  tokenAddress: string,
+  from: string,
+  to: string,
+  amount: string,
+  decimals: number
+) {
+  const data = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'transfer',
+    args: [to as `0x${string}`, parseUnits(amount, decimals)]
+  })
+
+  return scanTransaction({
+    chainId: 1, // Tempo mainnet chain ID
+    from,
+    to: tokenAddress,
+    data,
+    value: '0'
+  })
+}
+```
+
+## Address Screening
+
+```typescript
+interface AddressScanResult {
+  address: string
+  status: 'safe' | 'warning' | 'malicious'
+  labels: string[]
+  riskIndicators: string[]
+}
+
+async function scanAddress(address: string): Promise<AddressScanResult> {
+  const result = await blockaidRequest('/v0/ethereum/address/scan', {
+    chain: 'eip155:1',
+    address
+  })
+
+  return {
+    address,
+    status: result.result_type?.toLowerCase() || 'safe',
+    labels: result.labels || [],
+    riskIndicators: result.features?.map((f: any) => f.description) || []
+  }
+}
+
+// Usage
+const addressCheck = await scanAddress('0x...')
+if (addressCheck.status === 'malicious') {
+  console.log('Malicious address detected:', addressCheck.riskIndicators)
+}
+```
+
+## DApp Scanning
+
+```typescript
+interface DAppScanResult {
+  url: string
+  status: 'safe' | 'warning' | 'malicious'
+  threats: string[]
+  isPhishing: boolean
+}
+
+async function scanDApp(url: string): Promise<DAppScanResult> {
+  const result = await blockaidRequest('/v0/site/scan', {
+    url
+  })
+
+  return {
+    url,
+    status: result.result_type?.toLowerCase() || 'safe',
+    threats: result.features?.map((f: any) => f.description) || [],
+    isPhishing: result.attack_types?.includes('phishing') || false
+  }
+}
+```
+
+## Integration Patterns
+
+### Wallet Transaction Guard
+
+```typescript
+async function guardTransaction(tx: TransactionScanRequest): Promise<{
+  proceed: boolean
+  warning?: string
+  details?: TransactionScanResult
+}> {
+  const scan = await scanTransaction(tx)
+
+  if (scan.status === 'malicious') {
+    return {
+      proceed: false,
+      warning: 'Transaction blocked: ' + scan.maliciousActivities.join(', '),
+      details: scan
+    }
+  }
+
+  if (scan.status === 'warning') {
+    return {
+      proceed: true, // Allow but warn
+      warning: 'Proceed with caution: ' + scan.warnings.join(', '),
+      details: scan
+    }
+  }
+
+  return { proceed: true, details: scan }
+}
+```
+
+### Pre-Approval Check
+
+```typescript
+import { encodeFunctionData, maxUint256 } from 'viem'
+import { erc20Abi } from 'viem'
+
+async function checkApproval(
+  tokenAddress: string,
+  owner: string,
+  spender: string,
+  amount: bigint
+) {
+  const data = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'approve',
+    args: [spender as `0x${string}`, amount]
+  })
+
+  const scan = await scanTransaction({
+    chainId: 1,
+    from: owner,
+    to: tokenAddress,
+    data,
+    value: '0'
+  })
+
+  // Warn on unlimited approvals to risky addresses
+  if (amount === maxUint256) {
+    const spenderCheck = await scanAddress(spender)
+    if (spenderCheck.status !== 'safe') {
+      return {
+        safe: false,
+        warning: 'Unlimited approval to risky address'
+      }
+    }
+  }
+
+  return {
+    safe: scan.status === 'safe',
+    simulation: scan.simulation,
+    warnings: scan.warnings
+  }
+}
+```
+
+### Connect-Time DApp Check
+
+```typescript
+async function validateDAppConnection(dappUrl: string): Promise<{
+  allowed: boolean
+  reason?: string
+}> {
+  const scan = await scanDApp(dappUrl)
+
+  if (scan.isPhishing) {
+    return {
+      allowed: false,
+      reason: 'Phishing site detected'
+    }
+  }
+
+  if (scan.status === 'malicious') {
+    return {
+      allowed: false,
+      reason: scan.threats.join(', ')
+    }
+  }
+
+  return { allowed: true }
+}
+```
+
+### Transaction Simulation Preview
+
+```typescript
+interface SimulationPreview {
+  willSucceed: boolean
+  tokensIn: Array<{ symbol: string; amount: string }>
+  tokensOut: Array<{ symbol: string; amount: string }>
+  approvals: Array<{ token: string; spender: string; amount: string }>
+  warnings: string[]
+}
+
+async function previewTransaction(tx: TransactionScanRequest): Promise<SimulationPreview> {
+  const scan = await scanTransaction(tx)
+
+  return {
+    willSucceed: scan.simulation.success,
+    tokensIn: scan.simulation.assetChanges
+      .filter(c => c.type === 'transfer_in')
+      .map(c => ({ symbol: c.asset, amount: c.amount })),
+    tokensOut: scan.simulation.assetChanges
+      .filter(c => c.type === 'transfer_out')
+      .map(c => ({ symbol: c.asset, amount: c.amount })),
+    approvals: scan.simulation.assetChanges
+      .filter(c => c.type === 'approval')
+      .map(c => ({ token: c.asset, spender: c.to!, amount: c.amount })),
+    warnings: scan.warnings
+  }
+}
+```
+
+## React Integration
+
+```typescript
+import { useState } from 'react'
+
+function useTransactionGuard() {
+  const [scanning, setScanning] = useState(false)
+  const [result, setResult] = useState<TransactionScanResult | null>(null)
+
+  async function scan(tx: TransactionScanRequest) {
+    setScanning(true)
+    try {
+      const scanResult = await scanTransaction(tx)
+      setResult(scanResult)
+      return scanResult
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  return { scan, scanning, result }
+}
+
+// Usage in component
+function TransactionButton({ tx, onConfirm }) {
+  const { scan, scanning, result } = useTransactionGuard()
+
+  async function handleClick() {
+    const scanResult = await scan(tx)
+    
+    if (scanResult.status === 'malicious') {
+      alert('Transaction blocked for your safety')
+      return
+    }
+
+    if (scanResult.status === 'warning') {
+      const proceed = confirm(`Warning: ${scanResult.warnings.join(', ')}. Continue?`)
+      if (!proceed) return
+    }
+
+    onConfirm(tx)
+  }
+
+  return (
+    <button onClick={handleClick} disabled={scanning}>
+      {scanning ? 'Scanning...' : 'Send Transaction'}
+    </button>
+  )
+}
+```
+
+## Threat Categories
+
+| Category | Description | Action |
+|----------|-------------|--------|
+| Phishing | Known scam sites | Block connection |
+| Drainer | Wallet draining contracts | Block transaction |
+| Approval Exploit | Malicious token approvals | Block and warn |
+| Rug Pull | Known rug pull tokens | Block transaction |
+| Honeypot | Tokens that can't be sold | Warn user |
+| Suspicious | Unverified or risky patterns | Display warning |
+
+## Environment Variables
+
+```bash
+BLOCKAID_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Blockaid Documentation](https://docs.blockaid.io)
+- [Blockaid API Reference](https://docs.blockaid.io/reference)
+- [Blockaid Dashboard](https://app.blockaid.io)

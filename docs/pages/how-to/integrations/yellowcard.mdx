@@ -1,0 +1,443 @@
+---
+title: "Yellow Card Africa Payments for Tempo"
+description: "Stablecoin on/off ramps for Africa with Yellow Card. Enable fiat-to-crypto payments across 20+ African countries."
+---
+
+# Yellow Card Africa Payments for Tempo
+
+[Yellow Card](https://yellowcard.io) is Africa's largest licensed stablecoin infrastructure provider, enabling fiat-to-crypto payments across 20+ African countries.
+
+## Features
+
+- **Multi-country coverage** — 20+ African countries
+- **Local payment methods** — Mobile money, bank transfers
+- **Stablecoin rails** — USDC, USDT support
+- **Regulatory compliance** — Licensed in operating countries
+
+## API Setup
+
+```typescript
+const YELLOWCARD_API_KEY = process.env.YELLOWCARD_API_KEY
+const YELLOWCARD_SECRET = process.env.YELLOWCARD_SECRET
+// Sandbox: https://sandbox.api.yellowcard.io/business
+// Production: Provided upon account creation
+const YELLOWCARD_BASE_URL = 'https://sandbox.api.yellowcard.io/business'
+
+async function yellowcardRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const timestamp = new Date().toISOString() // ISO8601 format required
+  const signature = createSignature(
+    options.method || 'GET',
+    endpoint,
+    timestamp,
+    options.body
+  )
+
+  const response = await fetch(`${YELLOWCARD_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `YcHmacV1 ${YELLOWCARD_API_KEY}:${signature}`,
+      'X-YC-Timestamp': timestamp
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+
+function createSignature(
+  method: string,
+  path: string,
+  timestamp: string,
+  body?: any
+) {
+  const crypto = require('crypto')
+  // Signature format: timestamp:path:METHOD:base64(sha256(body))
+  const bodyHash = body 
+    ? crypto.createHash('sha256').update(JSON.stringify(body)).digest('base64')
+    : ''
+  const message = `${timestamp}${path}${method.toUpperCase()}${bodyHash}`
+  return crypto
+    .createHmac('sha256', Buffer.from(YELLOWCARD_SECRET!, 'base64'))
+    .update(message)
+    .digest('hex')
+}
+```
+
+## Get Supported Countries
+
+```typescript
+interface Country {
+  code: string
+  name: string
+  currency: string
+  paymentMethods: string[]
+  minAmount: number
+  maxAmount: number
+}
+
+async function getSupportedCountries(): Promise<Country[]> {
+  const data = await yellowcardRequest('/countries')
+  
+  return data.countries.map((country: any) => ({
+    code: country.code,
+    name: country.name,
+    currency: country.currency,
+    paymentMethods: country.payment_methods,
+    minAmount: country.limits.min,
+    maxAmount: country.limits.max
+  }))
+}
+```
+
+## Get Exchange Rates
+
+```typescript
+interface ExchangeRate {
+  country: string
+  localCurrency: string
+  crypto: string
+  buyRate: number
+  sellRate: number
+  validUntil: number
+}
+
+async function getExchangeRate(
+  countryCode: string,
+  crypto: 'USDC' | 'USDT' = 'USDC'
+): Promise<ExchangeRate> {
+  const data = await yellowcardRequest(
+    `/rates?country=${countryCode}&crypto=${crypto}`
+  )
+  
+  return {
+    country: countryCode,
+    localCurrency: data.local_currency,
+    crypto,
+    buyRate: data.buy_rate,
+    sellRate: data.sell_rate,
+    validUntil: data.valid_until
+  }
+}
+```
+
+## On-Ramp (Buy Crypto)
+
+### Create Buy Order
+
+```typescript
+interface BuyOrderRequest {
+  countryCode: string
+  amount: number
+  currency: 'local' | 'crypto'
+  crypto: 'USDC' | 'USDT'
+  destinationAddress: string
+  paymentMethod: string
+  customerEmail: string
+  customerPhone?: string
+}
+
+async function createBuyOrder(request: BuyOrderRequest) {
+  const data = await yellowcardRequest('/orders/buy', {
+    method: 'POST',
+    body: {
+      country: request.countryCode,
+      amount: request.amount,
+      amount_currency: request.currency,
+      crypto: request.crypto,
+      network: 'tempo',
+      destination_address: request.destinationAddress,
+      payment_method: request.paymentMethod,
+      customer: {
+        email: request.customerEmail,
+        phone: request.customerPhone
+      }
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    localAmount: data.local_amount,
+    cryptoAmount: data.crypto_amount,
+    rate: data.rate,
+    fee: data.fee,
+    paymentDetails: data.payment_details,
+    expiresAt: data.expires_at
+  }
+}
+```
+
+### Get Buy Order Status
+
+```typescript
+async function getBuyOrderStatus(orderId: string) {
+  const data = await yellowcardRequest(`/orders/${orderId}`)
+  
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    localAmount: data.local_amount,
+    cryptoAmount: data.crypto_amount,
+    txHash: data.tx_hash,
+    createdAt: data.created_at,
+    completedAt: data.completed_at
+  }
+}
+```
+
+## Off-Ramp (Sell Crypto)
+
+### Create Sell Order
+
+```typescript
+interface SellOrderRequest {
+  countryCode: string
+  cryptoAmount: number
+  crypto: 'USDC' | 'USDT'
+  payoutMethod: string
+  payoutDetails: {
+    accountNumber?: string
+    bankCode?: string
+    mobileNumber?: string
+    mobileOperator?: string
+  }
+  customerEmail: string
+}
+
+async function createSellOrder(request: SellOrderRequest) {
+  const data = await yellowcardRequest('/orders/sell', {
+    method: 'POST',
+    body: {
+      country: request.countryCode,
+      crypto_amount: request.cryptoAmount,
+      crypto: request.crypto,
+      network: 'tempo',
+      payout_method: request.payoutMethod,
+      payout_details: request.payoutDetails,
+      customer: {
+        email: request.customerEmail
+      }
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    depositAddress: data.deposit_address,
+    depositAmount: data.deposit_amount,
+    localAmount: data.local_amount,
+    rate: data.rate,
+    fee: data.fee,
+    expiresAt: data.expires_at
+  }
+}
+```
+
+### Confirm Sell Order
+
+```typescript
+async function confirmSellOrder(orderId: string, txHash: string) {
+  const data = await yellowcardRequest(`/orders/${orderId}/confirm`, {
+    method: 'POST',
+    body: {
+      tx_hash: txHash
+    }
+  })
+
+  return {
+    orderId: data.order_id,
+    status: data.status,
+    estimatedPayout: data.estimated_payout_time
+  }
+}
+```
+
+## Payment Methods
+
+### Get Available Payment Methods
+
+```typescript
+async function getPaymentMethods(countryCode: string) {
+  const data = await yellowcardRequest(
+    `/payment-methods?country=${countryCode}`
+  )
+  
+  return {
+    buy: data.buy.map((method: any) => ({
+      id: method.id,
+      name: method.name,
+      type: method.type,
+      fee: method.fee,
+      processingTime: method.processing_time
+    })),
+    sell: data.sell.map((method: any) => ({
+      id: method.id,
+      name: method.name,
+      type: method.type,
+      fee: method.fee,
+      processingTime: method.processing_time
+    }))
+  }
+}
+```
+
+## Integration Patterns
+
+### Complete Buy Flow
+
+```typescript
+async function buyStablecoinFlow(
+  countryCode: string,
+  localAmount: number,
+  walletAddress: string,
+  email: string
+) {
+  // 1. Get rate
+  const rate = await getExchangeRate(countryCode, 'USDC')
+  
+  // 2. Get payment methods
+  const methods = await getPaymentMethods(countryCode)
+  const paymentMethod = methods.buy[0].id // Use first available
+  
+  // 3. Create order
+  const order = await createBuyOrder({
+    countryCode,
+    amount: localAmount,
+    currency: 'local',
+    crypto: 'USDC',
+    destinationAddress: walletAddress,
+    paymentMethod,
+    customerEmail: email
+  })
+  
+  return {
+    orderId: order.orderId,
+    paymentDetails: order.paymentDetails,
+    expectedCrypto: order.cryptoAmount,
+    expiresAt: order.expiresAt
+  }
+}
+```
+
+### Complete Sell Flow
+
+```typescript
+import { createWalletClient, http, parseUnits } from 'viem'
+import { tempo } from 'viem/chains'
+
+async function sellStablecoinFlow(
+  countryCode: string,
+  usdcAmount: number,
+  payoutDetails: any,
+  email: string,
+  privateKey: string
+) {
+  // 1. Create sell order
+  const order = await createSellOrder({
+    countryCode,
+    cryptoAmount: usdcAmount,
+    crypto: 'USDC',
+    payoutMethod: 'mobile_money',
+    payoutDetails,
+    customerEmail: email
+  })
+  
+  // 2. Send USDC to deposit address
+  const walletClient = createWalletClient({
+    chain: tempo,
+    transport: http()
+  })
+  
+  const txHash = await walletClient.writeContract({
+    address: USDC_ADDRESS,
+    abi: erc20Abi,
+    functionName: 'transfer',
+    args: [order.depositAddress, parseUnits(usdcAmount.toString(), 6)]
+  })
+  
+  // 3. Confirm the deposit
+  await confirmSellOrder(order.orderId, txHash)
+  
+  return {
+    orderId: order.orderId,
+    txHash,
+    expectedPayout: order.localAmount
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.YELLOWCARD_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/yellowcard', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-yc-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'order.payment_received':
+      handlePaymentReceived(event.data)
+      break
+    case 'order.crypto_sent':
+      handleCryptoSent(event.data)
+      break
+    case 'order.completed':
+      handleOrderCompleted(event.data)
+      break
+    case 'order.failed':
+      handleOrderFailed(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Supported Countries
+
+| Country | Currency | Mobile Money | Bank Transfer |
+|---------|----------|--------------|---------------|
+| Nigeria | NGN | ✓ | ✓ |
+| Kenya | KES | ✓ | ✓ |
+| Ghana | GHS | ✓ | ✓ |
+| South Africa | ZAR | - | ✓ |
+| Uganda | UGX | ✓ | ✓ |
+| Tanzania | TZS | ✓ | ✓ |
+| Rwanda | RWF | ✓ | - |
+
+## Environment Variables
+
+```bash
+YELLOWCARD_API_KEY=your-api-key
+YELLOWCARD_SECRET=your-secret
+YELLOWCARD_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Yellow Card Documentation](https://docs.yellowcard.io)
+- [Yellow Card API Reference](https://docs.yellowcard.io/api)
+- [Yellow Card Dashboard](https://dashboard.yellowcard.io)

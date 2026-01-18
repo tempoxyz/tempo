@@ -1,0 +1,359 @@
+---
+title: "Nillion Privacy Computing for Tempo"
+description: "Secure computation and privacy infrastructure for Tempo with Nillion. Private data storage, blind computation, and MPC."
+---
+
+# Nillion Privacy Computing for Tempo
+
+[Nillion](https://nillion.com) provides decentralized privacy infrastructure enabling secure computation on private data without revealing the underlying information.
+
+## Features
+
+- **Blind computation** — Compute on encrypted data
+- **Secret storage** — Decentralized private data storage
+- **MPC network** — Multi-party computation
+- **Privacy SDKs** — Easy integration tools
+
+## SDK Setup
+
+Nillion provides different SDKs for different use cases:
+- **SecretVaults** (`@nillion/secretvaults`) - Private data storage
+- **Client VMs** (`@nillion/client-vms`) - Blind computation
+- **React Hooks** (`@nillion/client-react-hooks`) - React integration
+
+```bash
+npm install @nillion/secretvaults
+```
+
+```typescript
+import { SecretVaultWrapper, OrgConfig } from '@nillion/secretvaults'
+
+// Configuration from Nillion dashboard
+const orgConfig: OrgConfig = {
+  orgCredentials: {
+    secretKey: process.env.NILLION_ORG_SECRET_KEY!,
+    orgDid: process.env.NILLION_ORG_DID!
+  },
+  nodes: [
+    { url: 'https://nildb-node-1.nillion.network', did: 'did:nil:node1...' },
+    { url: 'https://nildb-node-2.nillion.network', did: 'did:nil:node2...' },
+    { url: 'https://nildb-node-3.nillion.network', did: 'did:nil:node3...' }
+  ]
+}
+
+const vault = new SecretVaultWrapper(orgConfig.nodes, orgConfig.orgCredentials)
+await vault.init()
+```
+
+## Secret Storage
+
+SecretVaults uses a collection-based model where fields marked with `%allot` are encrypted.
+
+### Define Schema
+
+```typescript
+// Define a schema with encrypted fields
+const userDataSchema = {
+  $schema: 'http://json-schema.org/draft-07/schema#',
+  type: 'object',
+  properties: {
+    wallet_address: { type: 'string' },
+    balance: { type: 'string', '%allot': true }, // Encrypted
+    api_key: { type: 'string', '%allot': true }  // Encrypted
+  }
+}
+
+// Create collection
+const collection = await vault.createCollection('user_data', userDataSchema)
+```
+
+### Store Secret
+
+```typescript
+async function storeUserData(walletAddress: string, balance: string, apiKey: string) {
+  const record = await vault.create('user_data', {
+    wallet_address: walletAddress,
+    balance: balance,   // Will be encrypted
+    api_key: apiKey     // Will be encrypted
+  })
+
+  return record._id
+}
+
+// Usage
+const recordId = await storeUserData(
+  '0x1234...',
+  '1000.00',
+  'secret-api-key-123'
+)
+```
+
+### Retrieve Secret
+
+```typescript
+async function getUserData(recordId: string) {
+  const record = await vault.read('user_data', recordId
+  })
+
+  const value = secret.get(secretName)
+  
+  if (value.type === 'integer') {
+    return value.value
+  } else {
+    return new TextDecoder().decode(value.value)
+  }
+}
+```
+
+### Update Secret
+
+```typescript
+async function updateSecret(storeId: string, name: string, newValue: string | number) {
+  const secretsMap = new Map()
+  
+  if (typeof newValue === 'number') {
+    secretsMap.set(name, { type: 'integer', value: newValue })
+  } else {
+    secretsMap.set(name, { type: 'blob', value: new TextEncoder().encode(newValue) })
+  }
+
+  await client.updateSecrets({
+    storeId,
+    secrets: secretsMap
+  })
+}
+```
+
+## Blind Computation
+
+### Define Program
+
+```python
+# balance_check.py - Nillion program
+from nillion_python import SecretInteger, PublicInteger
+
+def check_balance(balance: SecretInteger, threshold: PublicInteger) -> PublicInteger:
+    """Check if balance exceeds threshold without revealing balance"""
+    if balance > threshold:
+        return PublicInteger(1)  # Sufficient
+    else:
+        return PublicInteger(0)  # Insufficient
+```
+
+### Upload Program
+
+```typescript
+async function uploadProgram(programCode: string, programName: string) {
+  const programId = await client.uploadProgram({
+    name: programName,
+    code: programCode
+  })
+
+  return programId
+}
+```
+
+### Run Computation
+
+```typescript
+async function runBlindComputation(
+  programId: string,
+  secretInputs: Map<string, any>,
+  publicInputs: Map<string, any>
+) {
+  // Store secrets for computation
+  const storeId = await client.storeSecrets({
+    secrets: secretInputs,
+    permissions: { compute: [programId] }
+  })
+
+  // Execute computation
+  const result = await client.compute({
+    programId,
+    secretStoreIds: [storeId],
+    publicInputs
+  })
+
+  return result
+}
+
+// Usage: Check if user balance > threshold without revealing balance
+const result = await runBlindComputation(
+  balanceCheckProgramId,
+  new Map([['balance', { type: 'integer', value: userBalance }]]),
+  new Map([['threshold', 1000]])
+)
+
+console.log('Sufficient balance:', result.get('output') === 1)
+```
+
+## Privacy-Preserving Comparisons
+
+```typescript
+async function privateComparison(
+  value1StoreId: string,
+  value2StoreId: string,
+  programId: string
+) {
+  const result = await client.compute({
+    programId,
+    secretStoreIds: [value1StoreId, value2StoreId],
+    publicInputs: new Map()
+  })
+
+  return {
+    isGreater: result.get('is_greater') === 1,
+    isEqual: result.get('is_equal') === 1
+  }
+}
+```
+
+## Tempo Integration
+
+### Private Balance Check for Compliance
+
+```typescript
+async function checkCompliancePrivately(
+  userBalanceStoreId: string,
+  minimumThreshold: number
+) {
+  // User's balance never leaves Nillion, only the comparison result
+  const result = await runBlindComputation(
+    BALANCE_CHECK_PROGRAM_ID,
+    new Map(), // Secrets already stored
+    new Map([['threshold', minimumThreshold]])
+  )
+
+  return result.get('meets_threshold') === 1
+}
+```
+
+### Private Transaction Screening
+
+```typescript
+async function screenTransactionPrivately(
+  txAmountStoreId: string,
+  screeningRulesId: string
+) {
+  // Screen transaction against rules without revealing amount
+  const result = await client.compute({
+    programId: TX_SCREENING_PROGRAM_ID,
+    secretStoreIds: [txAmountStoreId, screeningRulesId],
+    publicInputs: new Map()
+  })
+
+  return {
+    approved: result.get('approved') === 1,
+    riskLevel: result.get('risk_level')
+  }
+}
+```
+
+### Multi-Party Aggregation
+
+```typescript
+async function computeAggregatePrivately(
+  participantStoreIds: string[],
+  aggregationType: 'sum' | 'average' | 'max'
+) {
+  const programId = {
+    sum: SUM_PROGRAM_ID,
+    average: AVERAGE_PROGRAM_ID,
+    max: MAX_PROGRAM_ID
+  }[aggregationType]
+
+  const result = await client.compute({
+    programId,
+    secretStoreIds: participantStoreIds,
+    publicInputs: new Map([['participant_count', participantStoreIds.length]])
+  })
+
+  return result.get('aggregate_result')
+}
+```
+
+## Access Control
+
+### Grant Permissions
+
+```typescript
+async function grantSecretAccess(
+  storeId: string,
+  userId: string,
+  permissions: ('retrieve' | 'compute' | 'update')[]
+) {
+  await client.updatePermissions({
+    storeId,
+    add: {
+      retrieve: permissions.includes('retrieve') ? [userId] : [],
+      compute: permissions.includes('compute') ? [userId] : [],
+      update: permissions.includes('update') ? [userId] : []
+    }
+  })
+}
+```
+
+### Revoke Permissions
+
+```typescript
+async function revokeSecretAccess(storeId: string, userId: string) {
+  await client.updatePermissions({
+    storeId,
+    remove: {
+      retrieve: [userId],
+      compute: [userId],
+      update: [userId]
+    }
+  })
+}
+```
+
+## React Integration
+
+```typescript
+import { useState } from 'react'
+
+function useNillionSecret(storeId: string, secretName: string) {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  const retrieve = async () => {
+    setLoading(true)
+    try {
+      return await retrieveSecret(storeId, secretName)
+    } catch (e) {
+      setError(e as Error)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const update = async (newValue: string | number) => {
+    setLoading(true)
+    try {
+      await updateSecret(storeId, secretName, newValue)
+    } catch (e) {
+      setError(e as Error)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return { retrieve, update, loading, error }
+}
+```
+
+## Environment Variables
+
+```bash
+NILLION_CLUSTER_ID=your-cluster-id
+NILLION_PRIVATE_KEY=your-private-key
+```
+
+## Resources
+
+- [Nillion Documentation](https://docs.nillion.com)
+- [Nillion SDK](https://github.com/NillionNetwork/nillion-python)
+- [Nillion Developer Portal](https://developer.nillion.com)

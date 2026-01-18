@@ -1,0 +1,500 @@
+---
+title: "Cybrid Crypto Banking for Tempo"
+description: "Crypto banking infrastructure for Tempo with Cybrid. Embedded crypto services, fiat integration, and compliance-first infrastructure."
+---
+
+# Cybrid Crypto Banking for Tempo
+
+[Cybrid](https://cybrid.xyz) provides crypto banking infrastructure enabling financial institutions to offer embedded crypto services with regulatory compliance.
+
+> **Note:** Cybrid's API documentation requires partner access. The examples in this guide are based on publicly available information and may require verification with Cybrid's official documentation after onboarding.
+
+## Features
+
+- **Embedded crypto** — White-label crypto services
+- **Fiat integration** — Bank account connectivity
+- **Compliance-first** — Built-in KYC/AML
+- **Multi-asset** — Support for multiple cryptocurrencies
+
+## API Setup
+
+```typescript
+const CYBRID_CLIENT_ID = process.env.CYBRID_CLIENT_ID
+const CYBRID_CLIENT_SECRET = process.env.CYBRID_CLIENT_SECRET
+const CYBRID_BASE_URL = 'https://api.cybrid.xyz'
+
+let accessToken: string | null = null
+
+async function getAccessToken() {
+  if (accessToken) return accessToken
+
+  const response = await fetch(`${CYBRID_BASE_URL}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      grant_type: 'client_credentials',
+      client_id: CYBRID_CLIENT_ID,
+      client_secret: CYBRID_CLIENT_SECRET,
+      scope: 'banks:read banks:write customers:read customers:write'
+    })
+  })
+
+  const data = await response.json()
+  accessToken = data.access_token
+  return accessToken
+}
+
+async function cybridRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const token = await getAccessToken()
+
+  const response = await fetch(`${CYBRID_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Customer Management
+
+### Create Customer
+
+```typescript
+interface CustomerRequest {
+  type: 'individual' | 'business'
+  name?: { first: string; last: string }
+  businessName?: string
+  email: string
+  phone?: string
+  address?: {
+    street: string
+    city: string
+    state: string
+    postalCode: string
+    country: string
+  }
+}
+
+async function createCustomer(request: CustomerRequest) {
+  const data = await cybridRequest('/api/customers', {
+    method: 'POST',
+    body: {
+      type: request.type,
+      name: request.name,
+      business_name: request.businessName,
+      email: request.email,
+      phone: request.phone,
+      address: request.address ? {
+        street: request.address.street,
+        city: request.address.city,
+        subdivision: request.address.state,
+        postal_code: request.address.postalCode,
+        country_code: request.address.country
+      } : undefined
+    }
+  })
+
+  return {
+    customerId: data.guid,
+    status: data.state,
+    type: data.type,
+    createdAt: data.created_at
+  }
+}
+```
+
+### Get Customer
+
+```typescript
+async function getCustomer(customerId: string) {
+  const data = await cybridRequest(`/api/customers/${customerId}`)
+
+  return {
+    customerId: data.guid,
+    type: data.type,
+    status: data.state,
+    name: data.name,
+    email: data.email,
+    kycStatus: data.kyc_state,
+    createdAt: data.created_at
+  }
+}
+```
+
+## Account Management
+
+### Create Account
+
+```typescript
+async function createAccount(
+  customerId: string,
+  type: 'trading' | 'fiat' | 'crypto',
+  asset: string
+) {
+  const data = await cybridRequest('/api/accounts', {
+    method: 'POST',
+    body: {
+      customer_guid: customerId,
+      type,
+      asset
+    }
+  })
+
+  return {
+    accountId: data.guid,
+    customerId: data.customer_guid,
+    type: data.type,
+    asset: data.asset,
+    state: data.state
+  }
+}
+```
+
+### Get Account Balance
+
+```typescript
+async function getAccountBalance(accountId: string) {
+  const data = await cybridRequest(`/api/accounts/${accountId}`)
+
+  return {
+    accountId: data.guid,
+    asset: data.asset,
+    platformBalance: data.platform_balance,
+    availableBalance: data.platform_available,
+    pendingBalance: data.platform_pending
+  }
+}
+```
+
+## Trading
+
+### Get Quote
+
+```typescript
+async function getQuote(
+  customerId: string,
+  side: 'buy' | 'sell',
+  deliverAmount: number,
+  asset: string
+) {
+  const data = await cybridRequest('/api/quotes', {
+    method: 'POST',
+    body: {
+      customer_guid: customerId,
+      side,
+      deliver_amount: deliverAmount,
+      symbol: `${asset}-USD`
+    }
+  })
+
+  return {
+    quoteId: data.guid,
+    side: data.side,
+    symbol: data.symbol,
+    deliverAmount: data.deliver_amount,
+    receiveAmount: data.receive_amount,
+    fee: data.fee,
+    expiresAt: data.expires_at
+  }
+}
+```
+
+### Execute Trade
+
+```typescript
+async function executeTrade(quoteId: string) {
+  const data = await cybridRequest('/api/trades', {
+    method: 'POST',
+    body: {
+      quote_guid: quoteId
+    }
+  })
+
+  return {
+    tradeId: data.guid,
+    quoteId: data.quote_guid,
+    side: data.side,
+    symbol: data.symbol,
+    deliverAmount: data.deliver_amount,
+    receiveAmount: data.receive_amount,
+    fee: data.fee,
+    state: data.state
+  }
+}
+```
+
+### Get Trade Status
+
+```typescript
+async function getTradeStatus(tradeId: string) {
+  const data = await cybridRequest(`/api/trades/${tradeId}`)
+
+  return {
+    tradeId: data.guid,
+    state: data.state,
+    side: data.side,
+    symbol: data.symbol,
+    deliverAmount: data.deliver_amount,
+    receiveAmount: data.receive_amount,
+    settledAt: data.settled_at
+  }
+}
+```
+
+## Transfers
+
+### Crypto Withdrawal to Tempo
+
+```typescript
+async function withdrawToTempo(
+  accountId: string,
+  amount: number,
+  destinationAddress: string
+) {
+  const data = await cybridRequest('/api/transfers', {
+    method: 'POST',
+    body: {
+      account_guid: accountId,
+      transfer_type: 'crypto',
+      amount,
+      destination_address: destinationAddress,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    transferId: data.guid,
+    state: data.state,
+    amount: data.amount,
+    asset: data.asset,
+    txHash: data.network_transaction_hash
+  }
+}
+```
+
+### Deposit from Tempo
+
+```typescript
+async function getDepositAddress(accountId: string) {
+  const data = await cybridRequest(`/api/deposit_addresses`, {
+    method: 'POST',
+    body: {
+      account_guid: accountId,
+      network: 'tempo'
+    }
+  })
+
+  return {
+    address: data.address,
+    network: data.network,
+    asset: data.asset,
+    accountId: data.account_guid
+  }
+}
+```
+
+## KYC/Identity Verification
+
+### Create Identity Verification
+
+```typescript
+async function createIdentityVerification(
+  customerId: string,
+  type: 'kyc' | 'bank_account'
+) {
+  const data = await cybridRequest('/api/identity_verifications', {
+    method: 'POST',
+    body: {
+      customer_guid: customerId,
+      type,
+      method: 'business_registration' // or 'id_and_selfie' for individuals
+    }
+  })
+
+  return {
+    verificationId: data.guid,
+    state: data.state,
+    type: data.type,
+    personaInquiryId: data.persona_inquiry_id
+  }
+}
+```
+
+### Get Verification Status
+
+```typescript
+async function getVerificationStatus(verificationId: string) {
+  const data = await cybridRequest(
+    `/api/identity_verifications/${verificationId}`
+  )
+
+  return {
+    verificationId: data.guid,
+    state: data.state,
+    outcome: data.outcome,
+    failureCodes: data.failure_codes
+  }
+}
+```
+
+## Bank Accounts
+
+### Link Bank Account
+
+```typescript
+async function linkBankAccount(customerId: string) {
+  const data = await cybridRequest('/api/external_bank_accounts', {
+    method: 'POST',
+    body: {
+      customer_guid: customerId,
+      plaid_processor_token: 'processor-token-from-plaid',
+      name: 'Main Checking'
+    }
+  })
+
+  return {
+    bankAccountId: data.guid,
+    state: data.state,
+    name: data.name,
+    asset: data.asset
+  }
+}
+```
+
+### ACH Transfer
+
+```typescript
+async function createACHTransfer(
+  externalBankAccountId: string,
+  accountId: string,
+  amount: number,
+  direction: 'deposit' | 'withdrawal'
+) {
+  const data = await cybridRequest('/api/transfers', {
+    method: 'POST',
+    body: {
+      transfer_type: 'ach',
+      external_bank_account_guid: externalBankAccountId,
+      account_guid: accountId,
+      amount,
+      side: direction === 'deposit' ? 'deposit' : 'withdrawal'
+    }
+  })
+
+  return {
+    transferId: data.guid,
+    state: data.state,
+    amount: data.amount,
+    estimatedCompletionTime: data.estimated_completion_time
+  }
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.CYBRID_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/cybrid', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-cybrid-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'customer.created':
+      handleCustomerCreated(event.data)
+      break
+    case 'trade.settled':
+      handleTradeSettled(event.data)
+      break
+    case 'transfer.completed':
+      handleTransferCompleted(event.data)
+      break
+    case 'identity_verification.completed':
+      handleVerificationCompleted(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## React Integration
+
+```typescript
+import { useState } from 'react'
+
+function useCybridTrading() {
+  const [loading, setLoading] = useState(false)
+  const [quote, setQuote] = useState<any>(null)
+  const [trade, setTrade] = useState<any>(null)
+
+  const getQuoteForBuy = async (
+    customerId: string,
+    amount: number,
+    asset: string
+  ) => {
+    setLoading(true)
+    try {
+      const q = await getQuote(customerId, 'buy', amount, asset)
+      setQuote(q)
+      return q
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const execute = async () => {
+    if (!quote) throw new Error('No quote')
+    setLoading(true)
+    try {
+      const t = await executeTrade(quote.quoteId)
+      setTrade(t)
+      return t
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return { getQuoteForBuy, execute, loading, quote, trade }
+}
+```
+
+## Environment Variables
+
+```bash
+CYBRID_CLIENT_ID=your-client-id
+CYBRID_CLIENT_SECRET=your-client-secret
+CYBRID_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Cybrid Documentation](https://docs.cybrid.xyz)
+- [Cybrid API Reference](https://docs.cybrid.xyz/api)
+- [Cybrid Dashboard](https://app.cybrid.xyz)

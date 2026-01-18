@@ -1,0 +1,403 @@
+---
+title: "DFNS Wallet Infrastructure for Tempo"
+description: "Enterprise wallet infrastructure for Tempo with DFNS. MPC key management, policy engine, and institutional-grade security."
+---
+
+# DFNS Wallet Infrastructure for Tempo
+
+[DFNS](https://dfns.co) provides enterprise-grade wallet infrastructure with MPC key management and policy controls for Tempo applications.
+
+## Features
+
+- **MPC key management** — Distributed key generation and signing
+- **Policy engine** — Programmable transaction approvals
+- **User wallets** — Delegated signing for end users
+- **API-first** — Complete wallet operations via API
+
+## SDK Setup
+
+```bash
+npm install @dfns/sdk @dfns/sdk-keysigner viem
+```
+
+```typescript
+import { DfnsApiClient } from '@dfns/sdk'
+import { AsymmetricKeySigner } from '@dfns/sdk-keysigner'
+
+const signer = new AsymmetricKeySigner({
+  privateKey: process.env.DFNS_PRIVATE_KEY!,
+  credId: process.env.DFNS_CRED_ID!,
+  appOrigin: process.env.DFNS_APP_ORIGIN!
+})
+
+const dfns = new DfnsApiClient({
+  appId: process.env.DFNS_APP_ID!,
+  authToken: process.env.DFNS_AUTH_TOKEN!,
+  baseUrl: 'https://api.dfns.io',
+  signer
+})
+```
+
+## Create Wallets
+
+### Create User Wallet
+
+```typescript
+async function createWallet(userId: string) {
+  const wallet = await dfns.wallets.createWallet({
+    body: {
+      network: 'EthereumSepolia', // Use appropriate Tempo network
+      name: `user-${userId}`,
+      externalId: userId
+    }
+  })
+
+  return {
+    walletId: wallet.id,
+    address: wallet.address,
+    network: wallet.network
+  }
+}
+```
+
+### Get Wallet
+
+```typescript
+async function getWallet(walletId: string) {
+  const wallet = await dfns.wallets.getWallet({ walletId })
+  
+  return {
+    id: wallet.id,
+    address: wallet.address,
+    network: wallet.network,
+    status: wallet.status,
+    balance: wallet.balance
+  }
+}
+
+async function getWalletByExternalId(userId: string) {
+  const wallets = await dfns.wallets.listWallets({
+    externalId: userId
+  })
+  
+  return wallets.items[0]
+}
+```
+
+## Sign Transactions
+
+### Broadcast Transaction
+
+```typescript
+import { encodeFunctionData, parseEther } from 'viem'
+
+async function sendTransaction(
+  walletId: string,
+  to: string,
+  value: bigint,
+  data?: `0x${string}`
+) {
+  const tx = await dfns.wallets.broadcastTransaction({
+    walletId,
+    body: {
+      kind: 'Evm',
+      to,
+      value: value.toString(),
+      data: data || '0x'
+    }
+  })
+
+  return {
+    txId: tx.id,
+    txHash: tx.txHash,
+    status: tx.status
+  }
+}
+
+// Send native token
+await sendTransaction(walletId, recipient, parseEther('1'))
+
+// Send ERC-20
+const transferData = encodeFunctionData({
+  abi: erc20Abi,
+  functionName: 'transfer',
+  args: [recipient, amount]
+})
+await sendTransaction(walletId, tokenAddress, 0n, transferData)
+```
+
+### Sign Message
+
+```typescript
+async function signMessage(walletId: string, message: string) {
+  const signature = await dfns.wallets.generateSignature({
+    walletId,
+    body: {
+      kind: 'Message',
+      message
+    }
+  })
+
+  return signature.signature
+}
+```
+
+### Sign Typed Data
+
+```typescript
+async function signTypedData(
+  walletId: string,
+  domain: any,
+  types: any,
+  message: any
+) {
+  const signature = await dfns.wallets.generateSignature({
+    walletId,
+    body: {
+      kind: 'Eip712',
+      types,
+      domain,
+      message
+    }
+  })
+
+  return signature.signature
+}
+```
+
+## Policy Engine
+
+### Create Spending Policy
+
+```typescript
+async function createSpendingPolicy(
+  walletId: string,
+  dailyLimitUsd: number
+) {
+  const policy = await dfns.policies.createPolicy({
+    body: {
+      name: `Spending limit - ${walletId}`,
+      effect: 'Allow',
+      activityKind: 'Wallets:BroadcastTransaction',
+      rule: {
+        kind: 'TransactionAmountLimit',
+        limit: dailyLimitUsd.toString(),
+        currency: 'USD'
+      },
+      filters: [{
+        field: 'walletId',
+        operator: 'eq',
+        value: walletId
+      }]
+    }
+  })
+
+  return policy
+}
+```
+
+### Create Approval Policy
+
+```typescript
+async function createApprovalPolicy(
+  walletId: string,
+  approvers: string[],
+  threshold: number
+) {
+  const policy = await dfns.policies.createPolicy({
+    body: {
+      name: `Multi-sig - ${walletId}`,
+      effect: 'RequestApproval',
+      activityKind: 'Wallets:BroadcastTransaction',
+      approvers: {
+        userIds: approvers,
+        quorum: threshold
+      },
+      filters: [{
+        field: 'walletId',
+        operator: 'eq',
+        value: walletId
+      }]
+    }
+  })
+
+  return policy
+}
+```
+
+### Approve Pending Activity
+
+```typescript
+async function approvePendingActivity(activityId: string) {
+  const approval = await dfns.policies.createPolicyApproval({
+    body: {
+      activityId,
+      value: 'Approved'
+    }
+  })
+
+  return approval
+}
+
+async function getPendingApprovals() {
+  const activities = await dfns.policies.listPolicyApprovals({
+    status: 'Pending'
+  })
+
+  return activities.items.map(activity => ({
+    id: activity.id,
+    kind: activity.kind,
+    status: activity.status,
+    requestedBy: activity.initiator,
+    createdAt: activity.dateCreated
+  }))
+}
+```
+
+## Delegated Signing
+
+### End-User Registration
+
+```typescript
+async function registerEndUser(userId: string, email: string) {
+  // Create end user
+  const user = await dfns.auth.createDelegatedRegistration({
+    body: {
+      email,
+      externalId: userId
+    }
+  })
+
+  // Return registration challenge for client
+  return {
+    temporaryAuthToken: user.temporaryAuthenticationToken,
+    challenge: user.challenge
+  }
+}
+```
+
+### End-User Signing
+
+```typescript
+// Client-side: Complete registration with passkey
+import { WebAuthnSigner } from '@dfns/sdk-browser'
+
+async function completeUserRegistration(challenge: any) {
+  const webAuthnSigner = new WebAuthnSigner()
+  const credential = await webAuthnSigner.create(challenge)
+  
+  await dfns.auth.completeDelegatedRegistration({
+    body: { credential }
+  })
+}
+
+// User can now sign with their passkey
+async function userSignTransaction(userWalletId: string, tx: any) {
+  const webAuthnSigner = new WebAuthnSigner()
+  
+  // Initiate transaction - returns challenge
+  const { challenge } = await dfns.wallets.broadcastTransaction({
+    walletId: userWalletId,
+    body: tx
+  })
+
+  // User signs with passkey
+  const signature = await webAuthnSigner.sign(challenge)
+  
+  // Complete transaction
+  return dfns.wallets.completeTransaction({
+    body: { signature }
+  })
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.DFNS_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/dfns', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-dfns-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.kind) {
+    case 'transaction.broadcasted':
+      handleTransactionBroadcasted(event.data)
+      break
+    case 'transaction.confirmed':
+      handleTransactionConfirmed(event.data)
+      break
+    case 'policy.triggered':
+      handlePolicyTriggered(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## React Integration
+
+```typescript
+import { DfnsWallet } from '@dfns/lib-viem'
+import { createWalletClient, http } from 'viem'
+import { tempo } from 'viem/chains'
+
+async function createDfnsWalletClient(walletId: string) {
+  const dfnsWallet = await DfnsWallet.init({
+    walletId,
+    dfnsClient: dfns
+  })
+
+  const walletClient = createWalletClient({
+    account: dfnsWallet,
+    chain: tempo,
+    transport: http()
+  })
+
+  return walletClient
+}
+
+// Use with viem
+const walletClient = await createDfnsWalletClient(walletId)
+const hash = await walletClient.sendTransaction({
+  to: recipient,
+  value: parseEther('1')
+})
+```
+
+## Environment Variables
+
+```bash
+DFNS_APP_ID=your-app-id
+DFNS_AUTH_TOKEN=your-auth-token
+DFNS_PRIVATE_KEY=your-private-key
+DFNS_CRED_ID=your-credential-id
+DFNS_APP_ORIGIN=https://your-app.com
+DFNS_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [DFNS Documentation](https://docs.dfns.co)
+- [DFNS SDK](https://github.com/dfns/dfns-sdk-ts)
+- [DFNS Dashboard](https://app.dfns.io)

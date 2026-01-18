@@ -1,0 +1,242 @@
+---
+title: "Bridge Stablecoins to Tempo"
+description: "Bridge USDC, USDT, and other stablecoins to Tempo. Use Bridge, Relay, and other interoperability partners for cross-chain transfers."
+---
+
+# Bridge Stablecoins to Tempo
+
+Move stablecoins from other chains to Tempo using our interoperability partners.
+
+## Quick Options
+
+| Partner | Best For | Supported Assets |
+|---------|----------|-----------------|
+| [Bridge](https://bridge.xyz) | Enterprise orchestration | USDC, USDT, fiat rails |
+| [Relay](https://relay.link) | Consumer payments | Any token, any chain |
+| [Thunes](https://thunes.com) | Global remittances | 80+ currencies |
+| [OpenFX](https://openfx.com) | FX liquidity | Multi-currency |
+
+## Using Bridge
+
+[Bridge](https://bridge.xyz) provides stablecoin orchestration infrastructure.
+
+### API Integration
+
+```typescript
+import { Bridge } from '@bridge-xyz/sdk'
+
+const bridge = new Bridge({
+  apiKey: process.env.BRIDGE_API_KEY!
+})
+
+// Create a transfer to Tempo
+const transfer = await bridge.transfers.create({
+  amount: '1000.00',
+  currency: 'USDC',
+  source: {
+    chain: 'ethereum',
+    address: sourceAddress
+  },
+  destination: {
+    chain: 'tempo',
+    address: recipientAddress
+  }
+})
+
+console.log('Transfer ID:', transfer.id)
+console.log('Status:', transfer.status)
+```
+
+### Webhook Handler
+
+```typescript
+app.post('/webhooks/bridge', async (req, res) => {
+  const event = bridge.webhooks.verify(req.body, req.headers)
+
+  switch (event.type) {
+    case 'transfer.completed':
+      console.log('Transfer completed:', event.data.id)
+      // Credit user's account
+      break
+    case 'transfer.failed':
+      console.log('Transfer failed:', event.data.error)
+      // Handle failure
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Using Relay
+
+[Relay](https://relay.link) enables spending money anywhere onchain.
+
+### SDK Integration
+
+```typescript
+import { RelayClient, MAINNET_RELAY_API } from '@reservoir0x/relay-sdk'
+
+const relayClient = new RelayClient({
+  source: 'myapp.com',
+  baseApiUrl: MAINNET_RELAY_API
+})
+
+// Bridge from Ethereum to Tempo
+const quote = await relayClient.actions.getQuote({
+  user: userAddress,
+  originChainId: 1, // Ethereum
+  destinationChainId: 42431, // Tempo Testnet
+  originCurrency: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC on ETH
+  destinationCurrency: '0x20c0000000000000000000000000000000000001', // USDC on Tempo
+  amount: '1000000000' // 1000 USDC (6 decimals on ETH)
+})
+
+// Execute the bridge
+const result = await relayClient.actions.execute({
+  quote,
+  wallet: walletClient
+})
+```
+
+### React Hook
+
+```typescript
+import { useRelayBridge } from '@reservoir0x/relay-kit-hooks'
+
+export function BridgeToTempo() {
+  const { bridge, status, txHash } = useRelayBridge({
+    originChainId: 1,
+    destinationChainId: 42431,
+    currency: 'USDC',
+    amount: '1000'
+  })
+
+  return (
+    <div>
+      <button onClick={bridge} disabled={status === 'pending'}>
+        Bridge to Tempo
+      </button>
+      {txHash && <p>Transaction: {txHash}</p>}
+    </div>
+  )
+}
+```
+
+## Manual Bridging
+
+### From Ethereum
+
+1. Go to a supported bridge UI
+2. Connect your wallet
+3. Select source: Ethereum, USDC
+4. Select destination: Tempo
+5. Enter amount and confirm
+
+### Supported Routes
+
+| Source Chain | Assets | Bridge Provider |
+|--------------|--------|-----------------|
+| Ethereum | USDC, USDT, DAI | Bridge, Relay |
+| Polygon | USDC, USDT | Relay |
+| Arbitrum | USDC, USDT | Relay |
+| Base | USDC | Relay |
+| Optimism | USDC | Relay |
+
+## Fiat On-Ramps
+
+### Direct to Tempo
+
+Partners that support direct fiat-to-Tempo:
+
+- **Yellow Card** — Africa focus, 20+ countries
+- **PDAX** — Philippines, regulated exchange
+- **BitGo** — Enterprise custody and trading
+
+### Via Stablecoin Bridge
+
+1. Purchase USDC on any supported exchange
+2. Withdraw to Ethereum wallet
+3. Bridge to Tempo using Relay or Bridge
+
+## Enterprise Integration
+
+For high-volume transfers:
+
+### Bridge Enterprise API
+
+```typescript
+// Create recurring transfers
+const schedule = await bridge.schedules.create({
+  name: 'weekly-settlement',
+  frequency: 'weekly',
+  amount: '100000.00',
+  currency: 'USDC',
+  source: {
+    type: 'bank_account',
+    id: bankAccountId
+  },
+  destination: {
+    chain: 'tempo',
+    address: treasuryAddress
+  }
+})
+```
+
+### Thunes Integration
+
+```typescript
+// Global remittance network
+const transfer = await thunes.transfers.create({
+  source: {
+    country: 'US',
+    currency: 'USD',
+    amount: '1000.00'
+  },
+  destination: {
+    chain: 'tempo',
+    currency: 'USDC',
+    address: recipientAddress
+  },
+  purpose: 'remittance'
+})
+```
+
+## Monitoring Transfers
+
+### Check Status
+
+```typescript
+// Bridge
+const status = await bridge.transfers.get(transferId)
+console.log('Status:', status.state)
+
+// Relay
+const status = await relayClient.actions.getSolverCapacity({
+  originChainId: 1,
+  destinationChainId: 42431
+})
+```
+
+### Transaction Tracking
+
+All bridge transactions appear on the [Tempo Explorer](https://explore.tempo.xyz):
+
+```
+https://explore.tempo.xyz/tx/{transactionHash}
+```
+
+## Best Practices
+
+1. **Verify addresses** — Double-check recipient addresses before bridging
+2. **Start small** — Test with small amounts first
+3. **Monitor gas** — Check gas prices on source chain
+4. **Use webhooks** — Implement webhook handlers for status updates
+5. **Error handling** — Handle bridge failures gracefully
+
+## Resources
+
+- [Bridge Documentation](https://docs.bridge.xyz)
+- [Relay Documentation](https://docs.relay.link)
+- [Tempo Block Explorer](https://explore.tempo.xyz)
+- [Tempo Faucet](/quickstart/faucet) (for testnet)

@@ -1,0 +1,241 @@
+---
+title: "Blockscout Explorer for Tempo"
+description: "Use Blockscout APIs to explore Tempo blockchain data. Contract verification, transaction lookup, and analytics."
+---
+
+# Blockscout Explorer for Tempo
+
+[Blockscout](https://blockscout.com) powers the Tempo block explorer at [explore.tempo.xyz](https://explore.tempo.xyz).
+
+## Explorer URLs
+
+| Environment | URL |
+|-------------|-----|
+| Explorer | `https://explore.tempo.xyz` |
+| API | `https://explore.tempo.xyz/api` |
+
+## API Endpoints
+
+### Account Balance
+
+```bash
+curl "https://explore.tempo.xyz/api?module=account&action=balance&address=0x..."
+```
+
+Response:
+```json
+{
+  "status": "1",
+  "message": "OK",
+  "result": "1000000000000000000"
+}
+```
+
+### Token Balance
+
+```bash
+curl "https://explore.tempo.xyz/api?module=account&action=tokenbalance&contractaddress=0x...&address=0x..."
+```
+
+### Transaction List
+
+```bash
+curl "https://explore.tempo.xyz/api?module=account&action=txlist&address=0x...&startblock=0&endblock=99999999&sort=desc"
+```
+
+### Token Transfers
+
+```bash
+curl "https://explore.tempo.xyz/api?module=account&action=tokentx&address=0x...&startblock=0&endblock=99999999"
+```
+
+## Contract Verification
+
+### Via API
+
+```bash
+curl -X POST "https://explore.tempo.xyz/api?module=contract&action=verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addressHash": "0xContractAddress",
+    "name": "MyContract",
+    "compilerVersion": "v0.8.24+commit.e11b9ed9",
+    "optimization": true,
+    "optimizationRuns": 200,
+    "contractSourceCode": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n..."
+  }'
+```
+
+### Via Hardhat
+
+```typescript
+// hardhat.config.ts
+const config: HardhatUserConfig = {
+  etherscan: {
+    apiKey: {
+      tempo: 'placeholder'
+    },
+    customChains: [
+      {
+        network: 'tempo',
+        chainId: 42431,
+        urls: {
+          apiURL: 'https://explore.tempo.xyz/api',
+          browserURL: 'https://explore.tempo.xyz'
+        }
+      }
+    ]
+  }
+}
+```
+
+```bash
+npx hardhat verify --network tempo 0xContractAddress "Constructor" "Args"
+```
+
+### Via Foundry
+
+```bash
+forge verify-contract \
+  --chain-id 42431 \
+  --verifier blockscout \
+  --verifier-url https://explore.tempo.xyz/api \
+  0xContractAddress \
+  src/MyContract.sol:MyContract
+```
+
+## Smart Contract Interaction
+
+### Read Contract
+
+```bash
+curl "https://explore.tempo.xyz/api?module=contract&action=getabi&address=0x..."
+```
+
+### Write Contract
+
+Use the ABI with ethers.js:
+
+```typescript
+import { ethers } from 'ethers'
+
+async function getContractABI(address: string) {
+  const response = await fetch(
+    `https://explore.tempo.xyz/api?module=contract&action=getabi&address=${address}`
+  )
+  const data = await response.json()
+  return JSON.parse(data.result)
+}
+
+async function interactWithContract(address: string) {
+  const abi = await getContractABI(address)
+  const provider = new ethers.JsonRpcProvider('https://rpc.moderato.tempo.xyz')
+  const contract = new ethers.Contract(address, abi, provider)
+  
+  // Call view functions
+  const result = await contract.someViewFunction()
+  return result
+}
+```
+
+## GraphQL API
+
+Blockscout provides a GraphQL endpoint:
+
+```bash
+curl -X POST "https://explore.tempo.xyz/graphiql" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "{ transaction(hash: \"0x...\") { hash status gasUsed value } }"
+  }'
+```
+
+### Example Queries
+
+```graphql
+# Get address info
+{
+  address(hash: "0x...") {
+    hash
+    fetchedCoinBalance
+    transactionsCount
+    tokenTransfersCount
+  }
+}
+
+# Get block
+{
+  block(number: 1000) {
+    hash
+    timestamp
+    gasUsed
+    transactionsCount
+  }
+}
+
+# Get token
+{
+  token(contractAddress: "0x...") {
+    name
+    symbol
+    decimals
+    totalSupply
+    holdersCount
+  }
+}
+```
+
+## SDK Integration
+
+```typescript
+class BlockscoutClient {
+  private baseUrl = 'https://explore.tempo.xyz/api'
+
+  async getBalance(address: string): Promise<bigint> {
+    const response = await fetch(
+      `${this.baseUrl}?module=account&action=balance&address=${address}`
+    )
+    const data = await response.json()
+    return BigInt(data.result)
+  }
+
+  async getTransactions(address: string, page = 1): Promise<any[]> {
+    const response = await fetch(
+      `${this.baseUrl}?module=account&action=txlist&address=${address}&page=${page}&offset=10`
+    )
+    const data = await response.json()
+    return data.result
+  }
+
+  async getTokenTransfers(address: string): Promise<any[]> {
+    const response = await fetch(
+      `${this.baseUrl}?module=account&action=tokentx&address=${address}`
+    )
+    const data = await response.json()
+    return data.result
+  }
+
+  async getContractABI(address: string): Promise<any> {
+    const response = await fetch(
+      `${this.baseUrl}?module=contract&action=getabi&address=${address}`
+    )
+    const data = await response.json()
+    return JSON.parse(data.result)
+  }
+}
+
+// Usage
+const client = new BlockscoutClient()
+const balance = await client.getBalance('0x...')
+```
+
+## Rate Limits
+
+- 50 requests per second for free tier
+- Contact for enterprise limits
+
+## Resources
+
+- [Tempo Explorer](https://explore.tempo.xyz)
+- [Blockscout API Docs](https://docs.blockscout.com/api/api-docs)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

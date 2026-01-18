@@ -1,0 +1,427 @@
+---
+title: "Allium Blockchain Data for Tempo"
+description: "Enterprise blockchain data and analytics for Tempo with Allium. Real-time data, SQL queries, and stablecoin analytics."
+---
+
+# Allium Blockchain Data for Tempo
+
+[Allium](https://allium.so) provides enterprise-grade blockchain data infrastructure with real-time indexing, SQL access, and comprehensive analytics.
+
+## Features
+
+- **Real-time data** — Sub-second data freshness
+- **SQL interface** — Query blockchain data with SQL
+- **Stablecoin analytics** — Specialized stablecoin data
+- **API access** — Programmatic data retrieval
+
+## API Setup
+
+```typescript
+const ALLIUM_API_KEY = process.env.ALLIUM_API_KEY
+const ALLIUM_BASE_URL = 'https://api.allium.so/api/v1'
+
+async function alliumRequest(endpoint: string, params?: Record<string, string>) {
+  const url = new URL(`${ALLIUM_BASE_URL}${endpoint}`)
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      url.searchParams.set(key, value)
+    })
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      'X-API-Key': ALLIUM_API_KEY!
+    }
+  })
+  return response.json()
+}
+```
+
+## SQL Queries
+
+Allium Explorer requires queries to be saved in the Allium App first, then executed via API using the query ID. Direct SQL execution is not supported via API.
+
+### Run Saved Query
+
+```typescript
+// Queries must be created in the Allium App first
+// Then execute using the query_id
+async function runSavedQuery(queryId: string, parameters?: Record<string, any>) {
+  const response = await fetch(`${ALLIUM_BASE_URL}/explorer/queries/${queryId}/run-async`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': ALLIUM_API_KEY!
+    },
+    body: JSON.stringify({ 
+      parameters: parameters || {},
+      run_config: {}
+    })
+  })
+
+  const data = await response.json()
+  return data.run_id // Returns a run_id to poll for results
+}
+
+// Poll for query results
+async function getQueryResults(runId: string) {
+  const response = await fetch(`${ALLIUM_BASE_URL}/explorer/query-runs/${runId}`, {
+    headers: {
+      'X-API-Key': ALLIUM_API_KEY!
+    }
+  })
+  return response.json()
+}
+
+// Example saved query in Allium App:
+// SELECT from_address, to_address, amount, block_timestamp
+// FROM ethereum.token_transfers  -- Use chain-specific schema
+// WHERE block_timestamp > now() - interval '24 hours'
+// ORDER BY amount DESC
+// LIMIT 100
+`)
+```
+
+### Query Token Holders
+
+```typescript
+async function getTokenHolders(tokenAddress: string, limit = 100) {
+  const sql = `
+    SELECT 
+      address,
+      balance,
+      balance / NULLIF(total_supply, 0) * 100 as percentage
+    FROM tempo.token_balances
+    WHERE token_address = '${tokenAddress}'
+    ORDER BY balance DESC
+    LIMIT ${limit}
+  `
+  
+  return runQuery(sql)
+}
+```
+
+### Query Transaction History
+
+```typescript
+async function getAddressTransactions(address: string, days = 30) {
+  const sql = `
+    SELECT 
+      hash,
+      block_number,
+      block_timestamp,
+      from_address,
+      to_address,
+      value,
+      gas_used,
+      gas_price,
+      status
+    FROM tempo.transactions
+    WHERE (from_address = '${address}' OR to_address = '${address}')
+      AND block_timestamp > now() - interval '${days} days'
+    ORDER BY block_timestamp DESC
+    LIMIT 1000
+  `
+  
+  return runQuery(sql)
+}
+```
+
+## Stablecoin Analytics
+
+### Get Stablecoin Transfers
+
+```typescript
+async function getStablecoinTransfers(
+  stablecoin: string,
+  startDate: string,
+  endDate: string
+) {
+  const sql = `
+    SELECT 
+      from_address,
+      to_address,
+      amount,
+      block_timestamp,
+      transaction_hash
+    FROM tempo.stablecoin_transfers
+    WHERE symbol = '${stablecoin}'
+      AND block_timestamp BETWEEN '${startDate}' AND '${endDate}'
+    ORDER BY block_timestamp DESC
+  `
+  
+  return runQuery(sql)
+}
+```
+
+### Get Stablecoin Volume
+
+```typescript
+async function getStablecoinVolume(period: '1d' | '7d' | '30d') {
+  const intervalMap = {
+    '1d': '1 day',
+    '7d': '7 days',
+    '30d': '30 days'
+  }
+
+  const sql = `
+    SELECT 
+      symbol,
+      SUM(amount) as total_volume,
+      COUNT(*) as transfer_count,
+      COUNT(DISTINCT from_address) as unique_senders,
+      COUNT(DISTINCT to_address) as unique_receivers
+    FROM tempo.stablecoin_transfers
+    WHERE block_timestamp > now() - interval '${intervalMap[period]}'
+    GROUP BY symbol
+    ORDER BY total_volume DESC
+  `
+  
+  return runQuery(sql)
+}
+```
+
+### Get Top Stablecoin Contracts
+
+```typescript
+async function getTopStablecoinContracts(symbol: string, limit = 50) {
+  const sql = `
+    SELECT 
+      contract_address,
+      contract_name,
+      SUM(amount) as total_volume,
+      COUNT(*) as transaction_count
+    FROM tempo.stablecoin_transfers
+    WHERE symbol = '${symbol}'
+      AND block_timestamp > now() - interval '30 days'
+      AND contract_address IS NOT NULL
+    GROUP BY contract_address, contract_name
+    ORDER BY total_volume DESC
+    LIMIT ${limit}
+  `
+  
+  return runQuery(sql)
+}
+```
+
+## Token Analytics
+
+### Get Token Metrics
+
+```typescript
+async function getTokenMetrics(tokenAddress: string) {
+  const sql = `
+    SELECT 
+      token_address,
+      symbol,
+      name,
+      total_supply,
+      holder_count,
+      transfer_count_24h,
+      volume_24h
+    FROM tempo.token_metrics
+    WHERE token_address = '${tokenAddress}'
+  `
+  
+  const results = await runQuery(sql)
+  return results[0]
+}
+```
+
+### Get Token Transfer Volume
+
+```typescript
+async function getTokenVolumeHistory(
+  tokenAddress: string,
+  days = 30
+) {
+  const sql = `
+    SELECT 
+      DATE(block_timestamp) as date,
+      SUM(amount) as volume,
+      COUNT(*) as transfer_count
+    FROM tempo.token_transfers
+    WHERE token_address = '${tokenAddress}'
+      AND block_timestamp > now() - interval '${days} days'
+    GROUP BY DATE(block_timestamp)
+    ORDER BY date
+  `
+  
+  return runQuery(sql)
+}
+```
+
+## DeFi Analytics
+
+### Get DEX Trades
+
+```typescript
+async function getDEXTrades(poolAddress: string, limit = 100) {
+  const sql = `
+    SELECT 
+      transaction_hash,
+      block_timestamp,
+      trader_address,
+      token_in,
+      token_out,
+      amount_in,
+      amount_out,
+      price
+    FROM tempo.dex_trades
+    WHERE pool_address = '${poolAddress}'
+    ORDER BY block_timestamp DESC
+    LIMIT ${limit}
+  `
+  
+  return runQuery(sql)
+}
+```
+
+### Get Liquidity Positions
+
+```typescript
+async function getLiquidityPositions(address: string) {
+  const sql = `
+    SELECT 
+      pool_address,
+      pool_name,
+      token0_address,
+      token1_address,
+      liquidity,
+      value_usd
+    FROM tempo.liquidity_positions
+    WHERE owner_address = '${address}'
+      AND liquidity > 0
+    ORDER BY value_usd DESC
+  `
+  
+  return runQuery(sql)
+}
+```
+
+## Real-Time Streaming
+
+```typescript
+import WebSocket from 'ws'
+
+function streamTransfers(tokenAddress: string, callback: (transfer: any) => void) {
+  const ws = new WebSocket(
+    `wss://stream.allium.so/v1/tempo/token_transfers?token=${tokenAddress}`,
+    {
+      headers: { 'X-API-Key': ALLIUM_API_KEY }
+    }
+  )
+
+  ws.on('message', (data) => {
+    const transfer = JSON.parse(data.toString())
+    callback(transfer)
+  })
+
+  ws.on('error', (error) => {
+    console.error('Stream error:', error)
+  })
+
+  return () => ws.close()
+}
+
+// Usage
+const unsubscribe = streamTransfers(USDC_ADDRESS, (transfer) => {
+  console.log('New transfer:', transfer)
+})
+```
+
+## Batch Data Export
+
+```typescript
+async function exportData(
+  table: string,
+  startDate: string,
+  endDate: string
+) {
+  const response = await fetch(`${ALLIUM_BASE_URL}/exports`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': ALLIUM_API_KEY!
+    },
+    body: JSON.stringify({
+      table: `tempo.${table}`,
+      start_date: startDate,
+      end_date: endDate,
+      format: 'parquet'
+    })
+  })
+
+  const { export_id } = await response.json()
+  return export_id
+}
+
+async function getExportStatus(exportId: string) {
+  const data = await alliumRequest(`/exports/${exportId}`)
+  return {
+    status: data.status,
+    downloadUrl: data.download_url
+  }
+}
+```
+
+## React Hook
+
+```typescript
+import { useState, useEffect } from 'react'
+
+function useAlliumQuery<T>(sql: string, deps: any[] = []) {
+  const [data, setData] = useState<T | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<Error | null>(null)
+
+  useEffect(() => {
+    async function fetch() {
+      setLoading(true)
+      try {
+        const results = await runQuery(sql)
+        setData(results as T)
+      } catch (e) {
+        setError(e as Error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetch()
+  }, deps)
+
+  return { data, loading, error }
+}
+
+// Usage
+function TokenHolders({ tokenAddress }: { tokenAddress: string }) {
+  const { data, loading, error } = useAlliumQuery<any[]>(
+    `SELECT * FROM tempo.token_balances WHERE token_address = '${tokenAddress}' LIMIT 100`,
+    [tokenAddress]
+  )
+
+  if (loading) return <div>Loading...</div>
+  if (error) return <div>Error: {error.message}</div>
+
+  return (
+    <ul>
+      {data?.map(holder => (
+        <li key={holder.address}>{holder.address}: {holder.balance}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+## Environment Variables
+
+```bash
+ALLIUM_API_KEY=your-api-key
+```
+
+## Resources
+
+- [Allium Documentation](https://docs.allium.so)
+- [Allium Explorer](https://explorer.allium.so)
+- [SQL Reference](https://docs.allium.so/sql)

@@ -1,0 +1,339 @@
+---
+title: "Tenderly for Tempo Development"
+description: "Debug, simulate, and monitor Tempo smart contracts with Tenderly. Set up DevNets, transaction simulation, and real-time alerting."
+---
+
+# Tenderly for Tempo Development
+
+[Tenderly](https://tenderly.co) provides debugging, simulation, and monitoring tools for Tempo smart contract development.
+
+## Why Tenderly
+
+- **Transaction debugging** — Full execution traces and state changes
+- **Simulation** — Test transactions before sending on-chain
+- **DevNets** — Private test networks with state forking
+- **Monitoring** — Real-time alerts and analytics
+
+## Getting Started
+
+### 1. Create a Tenderly Account
+
+Sign up at [dashboard.tenderly.co](https://dashboard.tenderly.co) and create a project.
+
+### 2. Install the CLI
+
+```bash
+# macOS
+brew tap tenderly/tenderly
+brew install tenderly
+
+# Linux
+curl https://raw.githubusercontent.com/Tenderly/tenderly-cli/master/scripts/install-linux.sh | sh
+
+# Login
+tenderly login --authentication-method access-key --access-key YOUR_ACCESS_KEY
+```
+
+### 3. Configure Your Project
+
+Create a `tenderly.yaml` in your project root:
+
+```yaml
+project_slug: "your-project"
+account_name: "your-account"
+```
+
+## DevNets for Tempo
+
+DevNets are private test networks that can fork from Tempo's state.
+
+### Create a DevNet
+
+```bash
+tenderly devnet spawn-rpc \
+  --template tempo-devnet \
+  --project your-project \
+  --account your-account-id \
+  --access_key YOUR_ACCESS_KEY
+```
+
+### Configure in Your App
+
+```typescript
+// .env
+DEVNET_RPC_URL=https://rpc.vnet.tenderly.co/devnet/your-devnet-id
+
+// viem configuration
+import { createPublicClient, http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const devnetClient = createPublicClient({
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: http(process.env.DEVNET_RPC_URL)
+})
+```
+
+### Hardhat Integration
+
+```typescript
+// hardhat.config.ts
+import { HardhatUserConfig } from 'hardhat/config'
+import * as tdly from '@tenderly/hardhat-tenderly'
+import * as dotenv from 'dotenv'
+
+dotenv.config()
+tdly.setup({ automaticVerifications: true })
+
+const config: HardhatUserConfig = {
+  networks: {
+    tempo: {
+      url: 'https://rpc.moderato.tempo.xyz',
+      chainId: 42431
+    },
+    tenderly: {
+      url: process.env.DEVNET_RPC_URL,
+      chainId: 42431
+    }
+  },
+  tenderly: {
+    project: process.env.TENDERLY_PROJECT_SLUG,
+    username: process.env.TENDERLY_ACCOUNT_NAME,
+    accessKey: process.env.TENDERLY_ACCESS_KEY
+  }
+}
+
+export default config
+```
+
+## Transaction Simulation
+
+Simulate transactions before sending to predict outcomes:
+
+### Using the SDK
+
+```typescript
+import { Tenderly, Network } from '@tenderly/sdk'
+
+const tenderly = new Tenderly({
+  accessKey: process.env.TENDERLY_ACCESS_KEY,
+  accountName: process.env.TENDERLY_ACCOUNT_NAME,
+  projectName: process.env.TENDERLY_PROJECT_NAME,
+  network: Network.CUSTOM // Use custom for Tempo
+})
+
+// Simulate a token transfer
+const simulation = await tenderly.simulator.simulateTransaction({
+  transaction: {
+    from: '0xYourAddress',
+    to: '0xTokenContract',
+    gas: 100000,
+    gas_price: '1000000000',
+    value: '0',
+    input: encodedTransferData
+  },
+  blockNumber: latestBlock
+})
+
+console.log('Simulation result:', {
+  status: simulation.status,
+  gasUsed: simulation.gasUsed,
+  logs: simulation.logs
+})
+```
+
+### Bundle Simulation
+
+Simulate multiple dependent transactions:
+
+```typescript
+const bundle = await tenderly.simulator.simulateBundle({
+  blockNumber: latestBlock,
+  transactions: [
+    {
+      from: userAddress,
+      to: tokenAddress,
+      input: approveData
+    },
+    {
+      from: userAddress,
+      to: routerAddress,
+      input: swapData
+    }
+  ]
+})
+
+bundle.forEach((result, idx) => {
+  console.log(`Transaction ${idx}:`, result.status ? 'success' : 'failed')
+})
+```
+
+### State Overrides
+
+Test with modified contract state:
+
+```typescript
+const simulation = await tenderly.simulator.simulateTransaction({
+  transaction: { /* ... */ },
+  blockNumber: latestBlock,
+  overrides: {
+    [tokenAddress]: {
+      state: {
+        // Override balance for testing
+        [`balances[${testAddress}]`]: '1000000000000000000000'
+      }
+    }
+  }
+})
+```
+
+## Contract Verification
+
+### Automatic Verification (Hardhat)
+
+```typescript
+import * as tdly from '@tenderly/hardhat-tenderly'
+import { ethers } from 'hardhat'
+
+tdly.setup({ automaticVerifications: true })
+
+async function deploy() {
+  const Contract = await ethers.getContractFactory('MyContract')
+  const contract = await Contract.deploy()
+  
+  // Automatic verification on waitForDeployment
+  await contract.waitForDeployment()
+  
+  console.log('Deployed and verified:', await contract.getAddress())
+}
+```
+
+### Manual Verification
+
+```typescript
+import { tenderly } from 'hardhat'
+
+await tenderly.verify({
+  name: 'MyContract',
+  address: '0xDeployedAddress',
+  libraries: {
+    LibraryName: '0xLibraryAddress'
+  }
+})
+```
+
+## Debugging Transactions
+
+### View Transaction Traces
+
+1. Deploy or interact with contracts on Tempo
+2. Navigate to Tenderly Dashboard → Transactions
+3. Click on a transaction to see:
+   - Full execution trace
+   - State changes per step
+   - Gas consumption breakdown
+   - Event logs
+
+### Using the Debugger
+
+```typescript
+// After a failed transaction
+const receipt = await provider.getTransactionReceipt(txHash)
+
+if (!receipt.status) {
+  // View in Tenderly
+  console.log(
+    'Debug at:',
+    `https://dashboard.tenderly.co/${account}/${project}/tx/${txHash}`
+  )
+}
+```
+
+## Monitoring & Alerts
+
+### Set Up Alerts
+
+1. Go to Dashboard → Alerts
+2. Create alert rules for:
+   - Failed transactions
+   - Large value transfers
+   - Specific function calls
+   - Gas price thresholds
+
+### Web3 Actions (Automated Responses)
+
+```typescript
+// actions/on-large-transfer.ts
+export async function onLargeTransfer(context, event) {
+  const { from, to, value } = event.params
+  
+  if (BigInt(value) > BigInt('1000000000000000000000')) {
+    // Notify via webhook, Slack, etc.
+    await context.notify('Large transfer detected', { from, to, value })
+  }
+}
+```
+
+## Foundry Integration
+
+```toml
+# foundry.toml
+[rpc_endpoints]
+tenderly = "${DEVNET_RPC_URL}"
+tempo = "https://rpc.moderato.tempo.xyz"
+
+[etherscan]
+tenderly = { key = "${TENDERLY_ACCESS_KEY}" }
+```
+
+```bash
+# Deploy to DevNet
+forge create src/Contract.sol:Contract \
+  --rpc-url tenderly \
+  --private-key $PRIVATE_KEY
+```
+
+## Best Practices
+
+### Simulate Before Mainnet
+
+```typescript
+async function safeExecute(tx) {
+  // Simulate first
+  const simulation = await tenderly.simulator.simulateTransaction({
+    transaction: tx
+  })
+  
+  if (!simulation.status) {
+    throw new Error(`Simulation failed: ${simulation.error}`)
+  }
+  
+  // Execute on-chain
+  return await wallet.sendTransaction(tx)
+}
+```
+
+### CI/CD Integration
+
+```yaml
+# .github/workflows/test.yml
+- name: Spawn DevNet
+  run: |
+    tenderly devnet spawn-rpc \
+      --template ${{ secrets.TENDERLY_DEVNET_TEMPLATE }} \
+      --project ${{ secrets.TENDERLY_PROJECT }} \
+      --account ${{ secrets.TENDERLY_ACCOUNT }} \
+      --access_key ${{ secrets.TENDERLY_ACCESS_KEY }} > devnet_url.txt
+
+- name: Run Tests
+  env:
+    DEVNET_RPC_URL: $(cat devnet_url.txt)
+  run: pnpm test
+```
+
+## Resources
+
+- [Tenderly Documentation](https://docs.tenderly.co)
+- [Tenderly Dashboard](https://dashboard.tenderly.co)
+- [Hardhat-Tenderly Plugin](https://github.com/Tenderly/hardhat-tenderly)
+- [Tenderly SDK](https://github.com/Tenderly/tenderly-sdk)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

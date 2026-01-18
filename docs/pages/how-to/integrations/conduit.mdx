@@ -1,0 +1,365 @@
+---
+title: "Conduit RPC Infrastructure for Tempo"
+description: "High-performance RPC infrastructure for Tempo with Conduit. Enterprise-grade node hosting and rollup deployment."
+---
+
+# Conduit RPC Infrastructure for Tempo
+
+[Conduit](https://conduit.xyz) provides high-performance RPC infrastructure and rollup deployment services for blockchain applications.
+
+## Features
+
+- **Managed RPC** — High-availability node infrastructure
+- **Custom rollups** — Deploy and manage L2 chains
+- **Indexing** — Real-time blockchain data
+- **Enterprise SLAs** — Guaranteed uptime and support
+
+## RPC Setup
+
+```typescript
+import { createPublicClient, http, createWalletClient } from 'viem'
+import { tempo } from 'viem/chains'
+
+const CONDUIT_RPC_URL = process.env.CONDUIT_RPC_URL!
+
+const publicClient = createPublicClient({
+  chain: tempo,
+  transport: http(CONDUIT_RPC_URL)
+})
+
+const walletClient = createWalletClient({
+  chain: tempo,
+  transport: http(CONDUIT_RPC_URL)
+})
+```
+
+## WebSocket Connection
+
+```typescript
+import { createPublicClient, webSocket } from 'viem'
+import { tempo } from 'viem/chains'
+
+const CONDUIT_WS_URL = process.env.CONDUIT_WS_URL!
+
+const wsClient = createPublicClient({
+  chain: tempo,
+  transport: webSocket(CONDUIT_WS_URL)
+})
+
+// Subscribe to new blocks
+wsClient.watchBlockNumber({
+  onBlockNumber: (blockNumber) => {
+    console.log('New block:', blockNumber)
+  }
+})
+
+// Subscribe to pending transactions
+wsClient.watchPendingTransactions({
+  onTransactions: (hashes) => {
+    console.log('Pending txs:', hashes)
+  }
+})
+```
+
+## Batch Requests
+
+```typescript
+async function batchRpcCalls() {
+  const results = await publicClient.multicall({
+    contracts: [
+      {
+        address: TOKEN_ADDRESS,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [userAddress]
+      },
+      {
+        address: TOKEN_ADDRESS,
+        abi: erc20Abi,
+        functionName: 'totalSupply'
+      },
+      {
+        address: TOKEN_ADDRESS,
+        abi: erc20Abi,
+        functionName: 'decimals'
+      }
+    ]
+  })
+
+  return {
+    balance: results[0].result,
+    totalSupply: results[1].result,
+    decimals: results[2].result
+  }
+}
+```
+
+## Trace API
+
+```typescript
+async function traceTransaction(txHash: string) {
+  const trace = await publicClient.request({
+    method: 'debug_traceTransaction',
+    params: [txHash, { tracer: 'callTracer' }]
+  })
+
+  return trace
+}
+
+async function traceCall(tx: {
+  from: string
+  to: string
+  data: string
+  value?: string
+}) {
+  const trace = await publicClient.request({
+    method: 'debug_traceCall',
+    params: [tx, 'latest', { tracer: 'callTracer' }]
+  })
+
+  return trace
+}
+```
+
+## Archive Node Access
+
+```typescript
+async function getHistoricalBalance(
+  address: string,
+  blockNumber: bigint
+) {
+  const balance = await publicClient.getBalance({
+    address: address as `0x${string}`,
+    blockNumber
+  })
+
+  return balance
+}
+
+async function getHistoricalStorage(
+  contractAddress: string,
+  slot: string,
+  blockNumber: bigint
+) {
+  const value = await publicClient.getStorageAt({
+    address: contractAddress as `0x${string}`,
+    slot: slot as `0x${string}`,
+    blockNumber
+  })
+
+  return value
+}
+```
+
+## Event Indexing
+
+```typescript
+async function getLogs(
+  contractAddress: string,
+  eventSignature: string,
+  fromBlock: bigint,
+  toBlock: bigint
+) {
+  const logs = await publicClient.getLogs({
+    address: contractAddress as `0x${string}`,
+    event: {
+      type: 'event',
+      name: 'Transfer',
+      inputs: [
+        { type: 'address', indexed: true, name: 'from' },
+        { type: 'address', indexed: true, name: 'to' },
+        { type: 'uint256', indexed: false, name: 'value' }
+      ]
+    },
+    fromBlock,
+    toBlock
+  })
+
+  return logs
+}
+
+// Paginated log fetching
+async function getAllLogs(
+  contractAddress: string,
+  fromBlock: bigint,
+  toBlock: bigint,
+  batchSize = 2000n
+) {
+  const allLogs = []
+  let currentBlock = fromBlock
+
+  while (currentBlock <= toBlock) {
+    const endBlock = currentBlock + batchSize > toBlock
+      ? toBlock
+      : currentBlock + batchSize
+
+    const logs = await publicClient.getLogs({
+      address: contractAddress as `0x${string}`,
+      fromBlock: currentBlock,
+      toBlock: endBlock
+    })
+
+    allLogs.push(...logs)
+    currentBlock = endBlock + 1n
+  }
+
+  return allLogs
+}
+```
+
+## Gas Estimation
+
+```typescript
+async function estimateGas(tx: {
+  to: string
+  data: string
+  value?: bigint
+}) {
+  const gasEstimate = await publicClient.estimateGas({
+    to: tx.to as `0x${string}`,
+    data: tx.data as `0x${string}`,
+    value: tx.value
+  })
+
+  const gasPrice = await publicClient.getGasPrice()
+  const maxFeePerGas = await publicClient.estimateMaxPriorityFeePerGas()
+
+  return {
+    gasLimit: gasEstimate,
+    gasPrice,
+    maxFeePerGas,
+    estimatedCost: gasEstimate * gasPrice
+  }
+}
+```
+
+## Health Monitoring
+
+```typescript
+async function checkRpcHealth() {
+  const start = Date.now()
+  
+  try {
+    const blockNumber = await publicClient.getBlockNumber()
+    const latency = Date.now() - start
+
+    const block = await publicClient.getBlock({ blockNumber })
+    const blockAge = Date.now() / 1000 - Number(block.timestamp)
+
+    return {
+      healthy: true,
+      blockNumber,
+      latency,
+      blockAge,
+      synced: blockAge < 60 // Less than 60 seconds behind
+    }
+  } catch (error) {
+    return {
+      healthy: false,
+      error: error.message
+    }
+  }
+}
+```
+
+## React Hook
+
+```typescript
+import { useState, useEffect } from 'react'
+
+function useConduitRpc() {
+  const [health, setHealth] = useState<{
+    healthy: boolean
+    latency?: number
+    blockNumber?: bigint
+  }>({ healthy: false })
+
+  useEffect(() => {
+    async function check() {
+      const result = await checkRpcHealth()
+      setHealth(result)
+    }
+
+    check()
+    const interval = setInterval(check, 30000) // Check every 30s
+    return () => clearInterval(interval)
+  }, [])
+
+  return {
+    publicClient,
+    walletClient,
+    health
+  }
+}
+```
+
+## Failover Configuration
+
+```typescript
+import { fallback, http } from 'viem'
+
+const primaryRpc = process.env.CONDUIT_RPC_URL!
+const backupRpc = process.env.BACKUP_RPC_URL!
+
+const client = createPublicClient({
+  chain: tempo,
+  transport: fallback([
+    http(primaryRpc),
+    http(backupRpc)
+  ], {
+    rank: true,
+    retryCount: 3
+  })
+})
+```
+
+## Rate Limiting
+
+```typescript
+class RateLimitedClient {
+  private requestCount = 0
+  private resetTime = Date.now()
+  private readonly maxRequests = 100
+  private readonly windowMs = 1000
+
+  async request<T>(fn: () => Promise<T>): Promise<T> {
+    const now = Date.now()
+    
+    if (now > this.resetTime + this.windowMs) {
+      this.requestCount = 0
+      this.resetTime = now
+    }
+
+    if (this.requestCount >= this.maxRequests) {
+      const waitTime = this.resetTime + this.windowMs - now
+      await new Promise(r => setTimeout(r, waitTime))
+      return this.request(fn)
+    }
+
+    this.requestCount++
+    return fn()
+  }
+}
+
+const rateLimiter = new RateLimitedClient()
+
+async function getBalanceSafe(address: string) {
+  return rateLimiter.request(() =>
+    publicClient.getBalance({ address: address as `0x${string}` })
+  )
+}
+```
+
+## Environment Variables
+
+```bash
+CONDUIT_RPC_URL=https://your-conduit-rpc.xyz
+CONDUIT_WS_URL=wss://your-conduit-ws.xyz
+BACKUP_RPC_URL=https://backup-rpc.xyz
+```
+
+## Resources
+
+- [Conduit Documentation](https://docs.conduit.xyz)
+- [Conduit Dashboard](https://app.conduit.xyz)
+- [Conduit Status](https://status.conduit.xyz)

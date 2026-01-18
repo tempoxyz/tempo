@@ -1,0 +1,252 @@
+---
+title: "TRM Labs Compliance for Tempo"
+description: "Blockchain intelligence and compliance for Tempo with TRM Labs. Transaction screening, risk assessment, and AML monitoring."
+---
+
+# TRM Labs Compliance for Tempo
+
+[TRM Labs](https://trmlabs.com) provides blockchain intelligence for compliance, risk management, and fraud detection on Tempo.
+
+## Features
+
+- **Address screening** — Check addresses against sanctions and risk lists
+- **Transaction monitoring** — Real-time risk scoring
+- **Investigation tools** — Trace funds and identify patterns
+- **Compliance reporting** — Generate audit-ready reports
+
+## API Setup
+
+```typescript
+const TRM_API_KEY = process.env.TRM_API_KEY
+const TRM_BASE_URL = 'https://api.trmlabs.com'
+
+async function trmRequest(endpoint: string, body: any) {
+  const response = await fetch(`${TRM_BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Basic ${Buffer.from(TRM_API_KEY + ':').toString('base64')}`
+    },
+    body: JSON.stringify(body)
+  })
+  return response.json()
+}
+```
+
+## Screen Addresses
+
+### Single Address
+
+```typescript
+async function screenAddress(address: string) {
+  const result = await trmRequest('/public/v2/screening/addresses', {
+    address,
+    chain: 'ethereum' // Use 'ethereum' for EVM chains
+  })
+
+  return {
+    address: result.address,
+    riskScore: result.riskScore,
+    riskIndicators: result.riskIndicators,
+    entities: result.entities
+  }
+}
+
+// Usage
+const screening = await screenAddress('0x...')
+if (screening.riskScore > 70) {
+  console.log('High risk address detected')
+}
+```
+
+### Batch Screening
+
+```typescript
+async function batchScreen(addresses: string[]) {
+  const result = await trmRequest('/public/v2/screening/addresses/bulk', {
+    addresses: addresses.map(addr => ({
+      address: addr,
+      chain: 'ethereum'
+    }))
+  })
+
+  return result.map((r: any) => ({
+    address: r.address,
+    riskScore: r.riskScore,
+    isSanctioned: r.entities?.some((e: any) => e.isSanctioned)
+  }))
+}
+```
+
+## Risk Categories
+
+```typescript
+interface RiskIndicator {
+  category: string
+  categoryRiskScore: number
+  incomingVolumeUsd: string
+  outgoingVolumeUsd: string
+}
+
+// Risk categories returned by TRM:
+// - sanctions: OFAC, EU sanctions
+// - darknet: Darknet marketplace activity
+// - ransomware: Known ransomware addresses
+// - mixer: Mixing service usage
+// - scam: Known scam addresses
+// - gambling: Gambling platforms
+// - exchange: Centralized exchanges
+```
+
+## Transaction Monitoring
+
+```typescript
+async function monitorTransaction(txHash: string) {
+  const result = await trmRequest('/public/v2/screening/transactions', {
+    txHash,
+    chain: 'tempo'
+  })
+
+  return {
+    riskScore: result.riskScore,
+    riskIndicators: result.riskIndicators,
+    alerts: result.alerts
+  }
+}
+```
+
+## Integration Patterns
+
+### Pre-Transaction Check
+
+```typescript
+async function validateTransfer(
+  fromAddress: string,
+  toAddress: string,
+  amount: string
+): Promise<{ allowed: boolean; reason?: string }> {
+  // Screen recipient
+  const recipientRisk = await screenAddress(toAddress)
+  
+  if (recipientRisk.riskScore > 80) {
+    return {
+      allowed: false,
+      reason: 'Recipient address is high risk'
+    }
+  }
+
+  // Check for sanctioned entities
+  const isSanctioned = recipientRisk.entities?.some(
+    (e: any) => e.isSanctioned
+  )
+  
+  if (isSanctioned) {
+    return {
+      allowed: false,
+      reason: 'Recipient is on sanctions list'
+    }
+  }
+
+  return { allowed: true }
+}
+```
+
+### Onboarding Flow
+
+```typescript
+async function onboardUser(userAddress: string) {
+  const screening = await screenAddress(userAddress)
+
+  // Risk-based onboarding
+  if (screening.riskScore < 30) {
+    return { status: 'approved', tier: 'standard' }
+  } else if (screening.riskScore < 60) {
+    return { status: 'review', tier: 'enhanced-due-diligence' }
+  } else {
+    return { status: 'rejected', reason: 'High risk score' }
+  }
+}
+```
+
+### Webhook Handler
+
+```typescript
+import express from 'express'
+
+const app = express()
+
+app.post('/webhooks/trm', express.json(), (req, res) => {
+  const { alertType, address, riskScore, details } = req.body
+
+  switch (alertType) {
+    case 'SANCTIONS_MATCH':
+      // Block address immediately
+      blockAddress(address)
+      notifyCompliance(address, details)
+      break
+    case 'RISK_SCORE_CHANGE':
+      // Re-evaluate user
+      if (riskScore > 70) {
+        flagForReview(address)
+      }
+      break
+    case 'SUSPICIOUS_ACTIVITY':
+      // Log for investigation
+      logSuspiciousActivity(address, details)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Compliance Dashboard
+
+```typescript
+async function getComplianceMetrics() {
+  // Track screening activity
+  const metrics = {
+    totalScreened: await getScreeningCount(),
+    highRiskBlocked: await getBlockedCount(),
+    averageRiskScore: await getAverageRiskScore(),
+    sanctionsMatches: await getSanctionsMatchCount()
+  }
+
+  return metrics
+}
+
+async function generateComplianceReport(startDate: Date, endDate: Date) {
+  const transactions = await getTransactionsInRange(startDate, endDate)
+  
+  const report = {
+    period: { startDate, endDate },
+    totalTransactions: transactions.length,
+    screenedAddresses: await getScreenedAddresses(transactions),
+    blockedTransactions: await getBlockedTransactions(transactions),
+    riskDistribution: await getRiskDistribution(transactions)
+  }
+
+  return report
+}
+```
+
+## Best Practices
+
+1. **Screen before transactions** — Check recipients before sending
+2. **Batch when possible** — Use bulk endpoints for efficiency
+3. **Cache results** — Cache low-risk results for performance
+4. **Log everything** — Maintain audit trail for compliance
+5. **Set thresholds** — Define clear risk thresholds for actions
+
+## Environment Variables
+
+```bash
+TRM_API_KEY=your-api-key
+TRM_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [TRM Labs Documentation](https://docs.trmlabs.com)
+- [TRM API Reference](https://docs.trmlabs.com/api)
+- [TRM Dashboard](https://app.trmlabs.com)

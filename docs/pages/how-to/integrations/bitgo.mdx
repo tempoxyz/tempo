@@ -1,0 +1,294 @@
+---
+title: "BitGo Custody for Tempo"
+description: "Enterprise custody and wallet infrastructure for Tempo with BitGo. Secure key management, multi-sig, and policy controls."
+---
+
+# BitGo Custody for Tempo
+
+[BitGo](https://bitgo.com) provides enterprise-grade digital asset custody and wallet infrastructure for Tempo.
+
+## Features
+
+- **Multi-signature security** — 2-of-3 key configuration
+- **Policy controls** — Spending limits, whitelists, approvals
+- **Cold storage** — Regulated custody solutions
+- **API access** — Full wallet management via SDK
+
+## Installation
+
+```bash
+npm install bitgo
+```
+
+## SDK Setup
+
+```typescript
+import { BitGoAPI } from '@bitgo/sdk-api'
+import { Tempo } from '@bitgo/sdk-coin-tempo' // If available
+
+const bitgo = new BitGoAPI({
+  accessToken: process.env.BITGO_ACCESS_TOKEN,
+  env: 'prod' // or 'test'
+})
+
+// Register Tempo coin if custom
+bitgo.register('tempo', Tempo.createInstance)
+```
+
+## Wallet Operations
+
+### Create Wallet
+
+```typescript
+async function createWallet() {
+  const wallet = await bitgo.coin('tempo').wallets().generateWallet({
+    label: 'Treasury Wallet',
+    passphrase: process.env.WALLET_PASSPHRASE,
+    enterprise: process.env.ENTERPRISE_ID
+  })
+
+  console.log('Wallet ID:', wallet.wallet.id())
+  console.log('Address:', wallet.wallet.receiveAddress())
+  
+  // Store backup key securely
+  console.log('Backup Key:', wallet.backupKeychain)
+  
+  return wallet
+}
+```
+
+### Get Wallet
+
+```typescript
+async function getWallet(walletId: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+  
+  console.log('Balance:', wallet.balance())
+  console.log('Confirmed:', wallet.confirmedBalance())
+  console.log('Spendable:', wallet.spendableBalance())
+  
+  return wallet
+}
+```
+
+### List Addresses
+
+```typescript
+async function listAddresses(walletId: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+  const addresses = await wallet.addresses()
+  
+  return addresses.addresses
+}
+```
+
+### Create Address
+
+```typescript
+async function createAddress(walletId: string, label: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+  const address = await wallet.createAddress({ label })
+  
+  return address.address
+}
+```
+
+## Transactions
+
+### Send Transaction
+
+```typescript
+async function sendTransaction(
+  walletId: string,
+  recipient: string,
+  amount: string
+) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  const prebuild = await wallet.prebuildTransaction({
+    recipients: [{
+      address: recipient,
+      amount: amount // In base units
+    }]
+  })
+
+  const signedTx = await wallet.signTransaction({
+    txPrebuild: prebuild,
+    walletPassphrase: process.env.WALLET_PASSPHRASE
+  })
+
+  const result = await wallet.submitTransaction({
+    txHex: signedTx.txHex
+  })
+
+  return result.txid
+}
+```
+
+### Batch Transfer
+
+```typescript
+async function batchTransfer(walletId: string, transfers: Array<{
+  address: string,
+  amount: string
+}>) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  const prebuild = await wallet.prebuildTransaction({
+    recipients: transfers
+  })
+
+  const signedTx = await wallet.signTransaction({
+    txPrebuild: prebuild,
+    walletPassphrase: process.env.WALLET_PASSPHRASE
+  })
+
+  return await wallet.submitTransaction({ txHex: signedTx.txHex })
+}
+```
+
+## Policy Controls
+
+### Set Spending Limit
+
+```typescript
+async function setSpendingLimit(walletId: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  await wallet.updatePolicies({
+    policies: [{
+      id: 'daily-limit',
+      type: 'dailyLimit',
+      action: { type: 'deny' },
+      condition: {
+        amountString: '10000000000000000000000', // 10,000 USD
+        excludeTags: ['whitelisted']
+      }
+    }]
+  })
+}
+```
+
+### Whitelist Addresses
+
+```typescript
+async function whitelistAddress(walletId: string, address: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  await wallet.updatePolicies({
+    policies: [{
+      id: 'whitelist',
+      type: 'allocationApproval',
+      action: { type: 'getApproval' },
+      condition: {
+        add: address
+      }
+    }]
+  })
+}
+```
+
+### Require Approval
+
+```typescript
+async function requireApproval(walletId: string, threshold: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  await wallet.updatePolicies({
+    policies: [{
+      id: 'large-transfer-approval',
+      type: 'advancedWhitelist',
+      action: { type: 'getApproval', approvalsRequired: 2 },
+      condition: {
+        amountString: threshold // Requires approval above this
+      }
+    }]
+  })
+}
+```
+
+## Webhooks
+
+### Register Webhook
+
+```typescript
+async function registerWebhook(walletId: string, url: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+
+  await wallet.addWebhook({
+    url,
+    type: 'transfer',
+    numConfirmations: 1
+  })
+}
+```
+
+### Webhook Handler
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+app.use(express.json())
+
+app.post('/webhooks/bitgo', (req, res) => {
+  // Verify signature
+  const signature = req.headers['x-webhook-signature']
+  const expectedSig = crypto
+    .createHmac('sha256', process.env.WEBHOOK_SECRET!)
+    .update(JSON.stringify(req.body))
+    .digest('hex')
+
+  if (signature !== expectedSig) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const { type, transfer } = req.body
+
+  if (type === 'transfer') {
+    console.log('Transfer received:', {
+      txid: transfer.txid,
+      value: transfer.value,
+      confirmations: transfer.confirmations
+    })
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## Key Management
+
+### Export User Key
+
+```typescript
+async function exportUserKey(walletId: string) {
+  const wallet = await bitgo.coin('tempo').wallets().get({ id: walletId })
+  
+  const keychain = await wallet.getKeychain()
+  
+  // Decrypt with passphrase for backup
+  const decrypted = bitgo.decrypt({
+    password: process.env.WALLET_PASSPHRASE,
+    input: keychain.encryptedPrv
+  })
+  
+  return decrypted
+}
+```
+
+## Environment Variables
+
+```bash
+BITGO_ACCESS_TOKEN=your-access-token
+BITGO_ENTERPRISE_ID=your-enterprise-id
+WALLET_PASSPHRASE=secure-passphrase
+WEBHOOK_SECRET=webhook-secret
+```
+
+## Resources
+
+- [BitGo Documentation](https://developers.bitgo.com)
+- [BitGo SDK](https://github.com/BitGo/BitGoJS)
+- [BitGo Dashboard](https://app.bitgo.com)

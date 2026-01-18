@@ -1,0 +1,437 @@
+---
+title: "Alchemy SDK for Tempo"
+description: "Build on Tempo with Alchemy SDK. Enhanced APIs, token tracking, transaction simulation, and real-time WebSocket subscriptions."
+---
+
+# Alchemy SDK for Tempo
+
+[Alchemy](https://www.alchemy.com) provides enhanced APIs and developer tools for building on Tempo with better reliability, debugging, and analytics.
+
+## Why Alchemy
+
+- **Enhanced APIs** — Token balances, NFT metadata, and transaction history
+- **Transaction simulation** — Test transactions before sending
+- **WebSocket subscriptions** — Real-time event streaming
+- **Debugging tools** — Transaction tracing and error analysis
+
+## Installation
+
+```bash
+pnpm install alchemy-sdk viem
+```
+
+## Quick Start
+
+### 1. Get Your API Key
+
+Create an app at [dashboard.alchemy.com](https://dashboard.alchemy.com) and copy your API key.
+
+### 2. Initialize the SDK
+
+```typescript
+import { Alchemy, Network } from 'alchemy-sdk'
+
+// Tempo Testnet
+const alchemyTestnet = new Alchemy({
+  apiKey: process.env.ALCHEMY_API_KEY,
+  url: 'https://rpc.moderato.tempo.xyz'
+})
+
+// Tempo Mainnet
+const alchemyMainnet = new Alchemy({
+  apiKey: process.env.ALCHEMY_API_KEY,
+  url: 'https://rpc.presto.tempo.xyz'
+})
+```
+
+### 3. Configure Custom Network
+
+For full SDK features with Tempo's custom RPC:
+
+```typescript
+import { Alchemy } from 'alchemy-sdk'
+
+const settings = {
+  apiKey: process.env.ALCHEMY_API_KEY,
+  url: 'https://rpc.moderato.tempo.xyz', // Testnet
+  // url: 'https://rpc.presto.tempo.xyz', // Mainnet
+}
+
+const alchemy = new Alchemy(settings)
+```
+
+## Network Configuration
+
+| Network | RPC URL | Chain ID |
+|---------|---------|----------|
+| Testnet | `https://rpc.moderato.tempo.xyz` | 42431 |
+| Mainnet | `https://rpc.presto.tempo.xyz` | 4217 |
+
+## Token Balances
+
+### Get All Token Balances
+
+```typescript
+const balances = await alchemy.core.getTokenBalances(
+  '0xYourAddress'
+)
+
+for (const token of balances.tokenBalances) {
+  console.log(`Token: ${token.contractAddress}`)
+  console.log(`Balance: ${token.tokenBalance}`)
+}
+```
+
+### Get Specific Token Balance
+
+```typescript
+const USDC_ADDRESS = '0x20c0000000000000000000000000000000000001'
+
+const balance = await alchemy.core.getTokenBalances(
+  '0xYourAddress',
+  [USDC_ADDRESS]
+)
+
+console.log('USDC Balance:', balance.tokenBalances[0].tokenBalance)
+```
+
+## Token Metadata
+
+### Get Token Information
+
+```typescript
+const metadata = await alchemy.core.getTokenMetadata(
+  '0x20c0000000000000000000000000000000000001'
+)
+
+console.log('Name:', metadata.name)
+console.log('Symbol:', metadata.symbol)
+console.log('Decimals:', metadata.decimals)
+```
+
+### Batch Token Metadata
+
+```typescript
+const tokens = [
+  '0x20c0000000000000000000000000000000000001', // USDC
+  '0x20c0000000000000000000000000000000000002', // USDT
+]
+
+const metadataPromises = tokens.map(token => 
+  alchemy.core.getTokenMetadata(token)
+)
+
+const allMetadata = await Promise.all(metadataPromises)
+```
+
+## Asset Transfers
+
+### Get Transfer History
+
+```typescript
+import { AssetTransfersCategory } from 'alchemy-sdk'
+
+// Get incoming transfers
+const incomingTransfers = await alchemy.core.getAssetTransfers({
+  toAddress: '0xYourAddress',
+  category: [
+    AssetTransfersCategory.ERC20,
+    AssetTransfersCategory.EXTERNAL
+  ],
+  withMetadata: true,
+  maxCount: 100
+})
+
+for (const transfer of incomingTransfers.transfers) {
+  console.log(`From: ${transfer.from}`)
+  console.log(`Asset: ${transfer.asset}`)
+  console.log(`Value: ${transfer.value}`)
+  console.log(`Block: ${transfer.blockNum}`)
+}
+```
+
+### Get Outgoing Transfers
+
+```typescript
+const outgoingTransfers = await alchemy.core.getAssetTransfers({
+  fromAddress: '0xYourAddress',
+  category: [
+    AssetTransfersCategory.ERC20,
+    AssetTransfersCategory.EXTERNAL
+  ],
+  withMetadata: true
+})
+```
+
+### Filter by Block Range
+
+```typescript
+const recentTransfers = await alchemy.core.getAssetTransfers({
+  toAddress: '0xYourAddress',
+  category: [AssetTransfersCategory.ERC20],
+  fromBlock: '0x0',
+  toBlock: 'latest'
+})
+```
+
+## Transaction Simulation
+
+### Simulate Before Sending
+
+```typescript
+import { createWalletClient, http, encodeFunctionData, erc20Abi } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const USDC_ADDRESS = '0x20c0000000000000000000000000000000000001'
+
+// Prepare transaction data
+const transferData = encodeFunctionData({
+  abi: erc20Abi,
+  functionName: 'transfer',
+  args: ['0xRecipient', 1000000n] // 1 USDC (6 decimals)
+})
+
+// Simulate the transaction
+const simulation = await alchemy.transact.simulateExecution({
+  from: '0xYourAddress',
+  to: USDC_ADDRESS,
+  data: transferData
+})
+
+if (simulation.calls[0].status === 'REVERTED') {
+  console.error('Transaction would revert:', simulation.calls[0].error)
+} else {
+  console.log('Simulation successful!')
+  console.log('Gas used:', simulation.calls[0].gasUsed)
+}
+```
+
+### Simulate Asset Changes
+
+```typescript
+const simulation = await alchemy.transact.simulateAssetChanges({
+  from: '0xYourAddress',
+  to: USDC_ADDRESS,
+  data: transferData
+})
+
+for (const change of simulation.changes) {
+  console.log(`Asset: ${change.symbol}`)
+  console.log(`Change: ${change.changeType}`)
+  console.log(`Amount: ${change.amount}`)
+}
+```
+
+## WebSocket Subscriptions
+
+### Subscribe to New Blocks
+
+```typescript
+alchemy.ws.on('block', (blockNumber) => {
+  console.log('New block:', blockNumber)
+})
+```
+
+### Subscribe to Pending Transactions
+
+```typescript
+alchemy.ws.on('pending', (txHash) => {
+  console.log('Pending transaction:', txHash)
+})
+```
+
+### Subscribe to Address Activity
+
+```typescript
+// Watch for incoming transactions to an address
+alchemy.ws.on(
+  {
+    method: 'alchemy_pendingTransactions',
+    toAddress: '0xYourAddress'
+  },
+  (tx) => {
+    console.log('Incoming transaction:', tx.hash)
+  }
+)
+```
+
+### Subscribe to Contract Events
+
+```typescript
+import { erc20Abi } from 'viem'
+
+const USDC_ADDRESS = '0x20c0000000000000000000000000000000000001'
+
+// Watch for Transfer events
+alchemy.ws.on(
+  {
+    address: USDC_ADDRESS,
+    topics: [
+      '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' // Transfer event signature
+    ]
+  },
+  (log) => {
+    console.log('Transfer event:', log)
+  }
+)
+```
+
+### Unsubscribe
+
+```typescript
+// Remove specific listener
+alchemy.ws.off('block', blockHandler)
+
+// Remove all listeners
+alchemy.ws.removeAllListeners()
+```
+
+## Debugging
+
+### Get Transaction Receipt
+
+```typescript
+const receipt = await alchemy.core.getTransactionReceipt(txHash)
+
+console.log('Status:', receipt.status === 1 ? 'Success' : 'Failed')
+console.log('Gas Used:', receipt.gasUsed.toString())
+console.log('Block:', receipt.blockNumber)
+```
+
+### Trace Transaction
+
+```typescript
+const trace = await alchemy.debug.traceTransaction(txHash, {
+  type: 'callTracer'
+})
+
+console.log('Trace:', JSON.stringify(trace, null, 2))
+```
+
+### Get Transaction Errors
+
+```typescript
+try {
+  const result = await alchemy.transact.simulateExecution({
+    from: '0xYourAddress',
+    to: contractAddress,
+    data: callData
+  })
+  
+  if (result.calls[0].error) {
+    console.error('Error:', result.calls[0].error.message)
+  }
+} catch (error) {
+  console.error('Simulation failed:', error)
+}
+```
+
+## Viem Integration
+
+Use Alchemy as a transport with viem:
+
+```typescript
+import { createPublicClient, createWalletClient, http } from 'viem'
+import { tempoTestnet, tempoMainnet } from 'viem/chains'
+import { privateKeyToAccount } from 'viem/accounts'
+
+// Testnet client
+const publicClient = createPublicClient({
+  chain: tempoTestnet({
+    feeToken: '0x20c0000000000000000000000000000000000001'
+  }),
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+// Mainnet client
+const mainnetClient = createPublicClient({
+  chain: tempoMainnet({
+    feeToken: '0x20c0000000000000000000000000000000000001'
+  }),
+  transport: http('https://rpc.presto.tempo.xyz')
+})
+
+// Wallet client for signing
+const account = privateKeyToAccount('0x...')
+const walletClient = createWalletClient({
+  account,
+  chain: tempoTestnet({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+```
+
+## Batch Requests
+
+```typescript
+// Batch multiple calls efficiently
+const [blockNumber, gasPrice, balance] = await Promise.all([
+  alchemy.core.getBlockNumber(),
+  alchemy.core.getGasPrice(),
+  alchemy.core.getBalance('0xYourAddress')
+])
+
+console.log('Block:', blockNumber)
+console.log('Gas Price:', gasPrice.toString())
+console.log('Balance:', balance.toString())
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+ALCHEMY_API_KEY=your-api-key
+```
+
+## Full Example
+
+```typescript
+import { Alchemy } from 'alchemy-sdk'
+import { createPublicClient, createWalletClient, http, parseEther } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+import { privateKeyToAccount } from 'viem/accounts'
+
+// Initialize Alchemy
+const alchemy = new Alchemy({
+  apiKey: process.env.ALCHEMY_API_KEY,
+  url: 'https://rpc.moderato.tempo.xyz'
+})
+
+// Initialize viem client
+const tempo = tempoTestnet({
+  feeToken: '0x20c0000000000000000000000000000000000001'
+})
+
+const publicClient = createPublicClient({
+  chain: tempo,
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+async function main() {
+  // Get token balances
+  const balances = await alchemy.core.getTokenBalances('0xYourAddress')
+  console.log('Token balances:', balances)
+
+  // Subscribe to new blocks
+  alchemy.ws.on('block', async (blockNumber) => {
+    const block = await publicClient.getBlock({ blockNumber: BigInt(blockNumber) })
+    console.log('New block:', block.number, 'Transactions:', block.transactions.length)
+  })
+
+  // Get recent transfers
+  const transfers = await alchemy.core.getAssetTransfers({
+    toAddress: '0xYourAddress',
+    category: ['erc20', 'external'],
+    maxCount: 10
+  })
+  console.log('Recent transfers:', transfers.transfers.length)
+}
+
+main()
+```
+
+## Resources
+
+- [Alchemy Documentation](https://docs.alchemy.com)
+- [Alchemy Dashboard](https://dashboard.alchemy.com)
+- [Alchemy SDK Reference](https://docs.alchemy.com/reference/alchemy-sdk-quickstart)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

@@ -1,0 +1,639 @@
+---
+title: "LayerZero Cross-Chain Messaging for Tempo"
+description: "Enable cross-chain interoperability on Tempo with LayerZero. OApp development, token bridging, and message passing."
+---
+
+# LayerZero Cross-Chain Messaging for Tempo
+
+[LayerZero](https://layerzero.network) enables secure cross-chain messaging between Tempo and other blockchains, allowing you to build omnichain applications, bridge tokens, and execute cross-chain operations.
+
+## Why LayerZero
+
+- **Omnichain messaging** — Send arbitrary messages between chains
+- **OFT tokens** — Fungible tokens that work across chains
+- **Security** — Configurable security stack with DVNs
+- **Extensible** — Build custom cross-chain logic
+
+## Architecture Overview
+
+LayerZero uses Omnichain Application (OApp) contracts as the foundation for cross-chain messaging:
+
+```
+┌─────────────────┐                    ┌─────────────────┐
+│  Source Chain   │                    │   Dest Chain    │
+│                 │                    │                 │
+│  ┌───────────┐  │   LayerZero V2     │  ┌───────────┐  │
+│  │   OApp    │──┼────────────────────┼──│   OApp    │  │
+│  └───────────┘  │                    │  └───────────┘  │
+│       │         │                    │       │         │
+│  ┌───────────┐  │                    │  ┌───────────┐  │
+│  │ Endpoint  │  │                    │  │ Endpoint  │  │
+│  └───────────┘  │                    │  └───────────┘  │
+└─────────────────┘                    └─────────────────┘
+```
+
+## Installation
+
+```bash
+pnpm install @layerzerolabs/lz-evm-oapp-v2 @layerzerolabs/lz-evm-protocol-v2
+```
+
+For development tools:
+
+```bash
+pnpm install -D @layerzerolabs/toolbox-hardhat
+```
+
+## Network Configuration
+
+| Network | Chain ID | LayerZero Endpoint ID |
+|---------|----------|----------------------|
+| Tempo Testnet | 42431 | TBD |
+| Tempo Mainnet | 4217 | TBD |
+
+## OApp Development
+
+### Basic OApp Contract
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import { OApp, MessagingFee, Origin } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+contract TempoOApp is OApp {
+    
+    event MessageSent(bytes32 guid, uint32 dstEid, bytes message);
+    event MessageReceived(bytes32 guid, uint32 srcEid, bytes message);
+    
+    constructor(
+        address _endpoint,
+        address _delegate
+    ) OApp(_endpoint, _delegate) Ownable(_delegate) {}
+    
+    /**
+     * @notice Sends a message to another chain
+     * @param _dstEid Destination endpoint ID
+     * @param _message The message to send
+     * @param _options LayerZero messaging options
+     */
+    function send(
+        uint32 _dstEid,
+        bytes calldata _message,
+        bytes calldata _options
+    ) external payable returns (MessagingReceipt memory receipt) {
+        receipt = _lzSend(
+            _dstEid,
+            _message,
+            _options,
+            MessagingFee(msg.value, 0),
+            payable(msg.sender)
+        );
+        
+        emit MessageSent(receipt.guid, _dstEid, _message);
+    }
+    
+    /**
+     * @notice Quotes the fee for sending a message
+     */
+    function quote(
+        uint32 _dstEid,
+        bytes calldata _message,
+        bytes calldata _options,
+        bool _payInLzToken
+    ) external view returns (MessagingFee memory fee) {
+        return _quote(_dstEid, _message, _options, _payInLzToken);
+    }
+    
+    /**
+     * @notice Called when a message is received from another chain
+     */
+    function _lzReceive(
+        Origin calldata _origin,
+        bytes32 _guid,
+        bytes calldata _message,
+        address /*_executor*/,
+        bytes calldata /*_extraData*/
+    ) internal override {
+        emit MessageReceived(_guid, _origin.srcEid, _message);
+        
+        // Process the message
+        _processMessage(_origin.srcEid, _message);
+    }
+    
+    function _processMessage(uint32 srcEid, bytes calldata message) internal {
+        // Custom message processing logic
+    }
+}
+```
+
+### Sending Messages
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import { OApp, MessagingFee } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/OApp.sol";
+import { OptionsBuilder } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/libs/OptionsBuilder.sol";
+
+contract CrossChainMessenger is OApp {
+    using OptionsBuilder for bytes;
+    
+    // Message types
+    uint16 constant MSG_TYPE_TRANSFER = 1;
+    uint16 constant MSG_TYPE_COMMAND = 2;
+    
+    struct TransferMessage {
+        address recipient;
+        uint256 amount;
+        bytes data;
+    }
+    
+    constructor(
+        address _endpoint,
+        address _delegate
+    ) OApp(_endpoint, _delegate) Ownable(_delegate) {}
+    
+    /**
+     * @notice Send a cross-chain transfer message
+     */
+    function sendTransfer(
+        uint32 _dstEid,
+        address _recipient,
+        uint256 _amount,
+        bytes calldata _data
+    ) external payable {
+        // Encode the message
+        bytes memory message = abi.encode(
+            MSG_TYPE_TRANSFER,
+            TransferMessage({
+                recipient: _recipient,
+                amount: _amount,
+                data: _data
+            })
+        );
+        
+        // Build options with gas for execution
+        bytes memory options = OptionsBuilder.newOptions()
+            .addExecutorLzReceiveOption(200000, 0); // 200k gas
+        
+        // Get the fee
+        MessagingFee memory fee = _quote(_dstEid, message, options, false);
+        require(msg.value >= fee.nativeFee, "Insufficient fee");
+        
+        // Send the message
+        _lzSend(_dstEid, message, options, fee, payable(msg.sender));
+    }
+    
+    /**
+     * @notice Get quote for transfer
+     */
+    function quoteTransfer(
+        uint32 _dstEid,
+        address _recipient,
+        uint256 _amount,
+        bytes calldata _data
+    ) external view returns (uint256 nativeFee) {
+        bytes memory message = abi.encode(
+            MSG_TYPE_TRANSFER,
+            TransferMessage({
+                recipient: _recipient,
+                amount: _amount,
+                data: _data
+            })
+        );
+        
+        bytes memory options = OptionsBuilder.newOptions()
+            .addExecutorLzReceiveOption(200000, 0);
+        
+        MessagingFee memory fee = _quote(_dstEid, message, options, false);
+        return fee.nativeFee;
+    }
+}
+```
+
+### Receiving Messages
+
+```solidity
+function _lzReceive(
+    Origin calldata _origin,
+    bytes32 _guid,
+    bytes calldata _message,
+    address _executor,
+    bytes calldata _extraData
+) internal override {
+    // Decode message type
+    (uint16 msgType, bytes memory payload) = abi.decode(_message, (uint16, bytes));
+    
+    if (msgType == MSG_TYPE_TRANSFER) {
+        TransferMessage memory transfer = abi.decode(payload, (TransferMessage));
+        _handleTransfer(_origin.srcEid, transfer);
+    } else if (msgType == MSG_TYPE_COMMAND) {
+        _handleCommand(_origin.srcEid, payload);
+    } else {
+        revert("Unknown message type");
+    }
+}
+
+function _handleTransfer(uint32 srcEid, TransferMessage memory transfer) internal {
+    // Execute the transfer logic
+    // e.g., mint tokens, update state, etc.
+}
+```
+
+## OFT Token Bridging
+
+### Deploy OFT on Tempo
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import { OFT } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/OFT.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+contract TempoOFT is OFT {
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        address _lzEndpoint,
+        address _delegate
+    ) OFT(_name, _symbol, _lzEndpoint, _delegate) Ownable(_delegate) {
+        // Mint initial supply if needed
+        _mint(_delegate, 1000000 * 10**decimals());
+    }
+}
+```
+
+### OFT Adapter for Existing Tokens
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.22;
+
+import { OFTAdapter } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/OFTAdapter.sol";
+import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
+
+/**
+ * @notice Wraps an existing ERC20 token for cross-chain transfers
+ */
+contract TempoOFTAdapter is OFTAdapter {
+    constructor(
+        address _token,
+        address _lzEndpoint,
+        address _delegate
+    ) OFTAdapter(_token, _lzEndpoint, _delegate) Ownable(_delegate) {}
+}
+```
+
+### Bridge Tokens
+
+```solidity
+// Client-side bridging with OFT
+import { OFT } from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/OFT.sol";
+
+contract BridgeExample {
+    OFT public oft;
+    
+    function bridgeTokens(
+        uint32 _dstEid,
+        address _to,
+        uint256 _amount,
+        bytes calldata _options
+    ) external payable {
+        // Build send parameters
+        SendParam memory sendParam = SendParam({
+            dstEid: _dstEid,
+            to: bytes32(uint256(uint160(_to))),
+            amountLD: _amount,
+            minAmountLD: _amount * 99 / 100, // 1% slippage
+            extraOptions: _options,
+            composeMsg: "",
+            oftCmd: ""
+        });
+        
+        // Quote the fee
+        MessagingFee memory fee = oft.quoteSend(sendParam, false);
+        require(msg.value >= fee.nativeFee, "Insufficient fee");
+        
+        // Execute the bridge
+        oft.send{ value: msg.value }(
+            sendParam,
+            fee,
+            payable(msg.sender)
+        );
+    }
+}
+```
+
+## Deployment and Wiring
+
+### Hardhat Configuration
+
+```typescript
+// hardhat.config.ts
+import { HardhatUserConfig } from 'hardhat/config'
+import '@layerzerolabs/toolbox-hardhat'
+
+const config: HardhatUserConfig = {
+  solidity: {
+    version: '0.8.22',
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
+  networks: {
+    'tempo-testnet': {
+      url: 'https://rpc.moderato.tempo.xyz',
+      chainId: 42431,
+      accounts: [process.env.PRIVATE_KEY!]
+    },
+    'tempo-mainnet': {
+      url: 'https://rpc.presto.tempo.xyz',
+      chainId: 4217,
+      accounts: [process.env.PRIVATE_KEY!]
+    }
+  },
+  layerZero: {
+    // LayerZero configuration
+  }
+}
+
+export default config
+```
+
+### Deploy Script
+
+```typescript
+// scripts/deploy.ts
+import { ethers } from 'hardhat'
+
+async function main() {
+  const [deployer] = await ethers.getSigners()
+  console.log('Deploying with:', deployer.address)
+  
+  // Deploy OApp
+  const OApp = await ethers.getContractFactory('TempoOApp')
+  const oapp = await OApp.deploy(
+    LZ_ENDPOINT_ADDRESS, // LayerZero endpoint on Tempo
+    deployer.address     // Delegate
+  )
+  await oapp.waitForDeployment()
+  
+  console.log('OApp deployed to:', await oapp.getAddress())
+}
+
+main().catch(console.error)
+```
+
+### Wire OApps (Set Peers)
+
+```typescript
+// scripts/wire.ts
+import { ethers } from 'hardhat'
+
+async function main() {
+  const tempoOApp = await ethers.getContractAt('TempoOApp', TEMPO_OAPP_ADDRESS)
+  const ethOApp = await ethers.getContractAt('TempoOApp', ETH_OAPP_ADDRESS)
+  
+  // Set peers on both chains
+  // On Tempo: set Ethereum OApp as peer
+  await tempoOApp.setPeer(
+    ETH_ENDPOINT_ID,
+    ethers.zeroPadValue(ETH_OAPP_ADDRESS, 32)
+  )
+  
+  // On Ethereum: set Tempo OApp as peer
+  await ethOApp.setPeer(
+    TEMPO_ENDPOINT_ID,
+    ethers.zeroPadValue(await tempoOApp.getAddress(), 32)
+  )
+  
+  console.log('OApps wired successfully')
+}
+
+main().catch(console.error)
+```
+
+## Frontend Integration
+
+### Send Cross-Chain Message
+
+```typescript
+import { createWalletClient, http, parseEther, encodeFunctionData } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+import { privateKeyToAccount } from 'viem/accounts'
+
+const OAPP_ABI = [
+  {
+    name: 'send',
+    type: 'function',
+    inputs: [
+      { name: '_dstEid', type: 'uint32' },
+      { name: '_message', type: 'bytes' },
+      { name: '_options', type: 'bytes' }
+    ],
+    outputs: []
+  },
+  {
+    name: 'quote',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: '_dstEid', type: 'uint32' },
+      { name: '_message', type: 'bytes' },
+      { name: '_options', type: 'bytes' },
+      { name: '_payInLzToken', type: 'bool' }
+    ],
+    outputs: [
+      { name: 'fee', type: 'tuple', components: [
+        { name: 'nativeFee', type: 'uint256' },
+        { name: 'lzTokenFee', type: 'uint256' }
+      ]}
+    ]
+  }
+]
+
+async function sendCrossChainMessage() {
+  const client = createWalletClient({
+    chain: tempoTestnet({ feeToken: '0x20c0000000000000000000000000000000000001' }),
+    transport: http('https://rpc.moderato.tempo.xyz'),
+    account: privateKeyToAccount('0x...')
+  })
+  
+  const dstEid = 30101 // Ethereum endpoint ID
+  const message = '0x...' // Encoded message
+  const options = '0x...' // LayerZero options
+  
+  // Quote the fee
+  const fee = await client.readContract({
+    address: OAPP_ADDRESS,
+    abi: OAPP_ABI,
+    functionName: 'quote',
+    args: [dstEid, message, options, false]
+  })
+  
+  // Send with fee
+  const hash = await client.writeContract({
+    address: OAPP_ADDRESS,
+    abi: OAPP_ABI,
+    functionName: 'send',
+    args: [dstEid, message, options],
+    value: fee.nativeFee
+  })
+  
+  console.log('Transaction hash:', hash)
+}
+```
+
+### Bridge OFT Tokens
+
+```typescript
+const OFT_ABI = [
+  {
+    name: 'send',
+    type: 'function',
+    inputs: [
+      { name: '_sendParam', type: 'tuple', components: [
+        { name: 'dstEid', type: 'uint32' },
+        { name: 'to', type: 'bytes32' },
+        { name: 'amountLD', type: 'uint256' },
+        { name: 'minAmountLD', type: 'uint256' },
+        { name: 'extraOptions', type: 'bytes' },
+        { name: 'composeMsg', type: 'bytes' },
+        { name: 'oftCmd', type: 'bytes' }
+      ]},
+      { name: '_fee', type: 'tuple', components: [
+        { name: 'nativeFee', type: 'uint256' },
+        { name: 'lzTokenFee', type: 'uint256' }
+      ]},
+      { name: '_refundAddress', type: 'address' }
+    ],
+    outputs: []
+  },
+  {
+    name: 'quoteSend',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: '_sendParam', type: 'tuple', components: [
+        { name: 'dstEid', type: 'uint32' },
+        { name: 'to', type: 'bytes32' },
+        { name: 'amountLD', type: 'uint256' },
+        { name: 'minAmountLD', type: 'uint256' },
+        { name: 'extraOptions', type: 'bytes' },
+        { name: 'composeMsg', type: 'bytes' },
+        { name: 'oftCmd', type: 'bytes' }
+      ]},
+      { name: '_payInLzToken', type: 'bool' }
+    ],
+    outputs: [
+      { name: 'fee', type: 'tuple', components: [
+        { name: 'nativeFee', type: 'uint256' },
+        { name: 'lzTokenFee', type: 'uint256' }
+      ]}
+    ]
+  }
+]
+
+async function bridgeTokens(to: string, amount: bigint) {
+  const sendParam = {
+    dstEid: 30101, // Ethereum
+    to: `0x${to.slice(2).padStart(64, '0')}`, // bytes32
+    amountLD: amount,
+    minAmountLD: amount * 99n / 100n, // 1% slippage
+    extraOptions: '0x',
+    composeMsg: '0x',
+    oftCmd: '0x'
+  }
+  
+  // Quote fee
+  const fee = await client.readContract({
+    address: OFT_ADDRESS,
+    abi: OFT_ABI,
+    functionName: 'quoteSend',
+    args: [sendParam, false]
+  })
+  
+  // Execute bridge
+  const hash = await client.writeContract({
+    address: OFT_ADDRESS,
+    abi: OFT_ABI,
+    functionName: 'send',
+    args: [sendParam, fee, account.address],
+    value: fee.nativeFee
+  })
+  
+  console.log('Bridge transaction:', hash)
+}
+```
+
+## Security Configuration
+
+### Set DVN Configuration
+
+```solidity
+// Configure the security stack
+function setDVNConfig(uint32 _dstEid, address[] memory _dvns) external onlyOwner {
+    SetConfigParam[] memory params = new SetConfigParam[](1);
+    
+    // Configure required DVNs
+    UlnConfig memory ulnConfig = UlnConfig({
+        confirmations: 15,
+        requiredDVNCount: 2,
+        optionalDVNCount: 0,
+        optionalDVNThreshold: 0,
+        requiredDVNs: _dvns,
+        optionalDVNs: new address[](0)
+    });
+    
+    params[0] = SetConfigParam({
+        eid: _dstEid,
+        configType: CONFIG_TYPE_ULN,
+        config: abi.encode(ulnConfig)
+    });
+    
+    endpoint.setConfig(address(this), sendLib, params);
+}
+```
+
+## Error Handling
+
+```solidity
+// Custom errors for better debugging
+error InsufficientFee(uint256 required, uint256 provided);
+error InvalidSourceChain(uint32 srcEid);
+error UnauthorizedPeer(bytes32 peer);
+
+function _lzReceive(
+    Origin calldata _origin,
+    bytes32 _guid,
+    bytes calldata _message,
+    address _executor,
+    bytes calldata _extraData
+) internal override {
+    // Verify the peer is authorized
+    if (peers[_origin.srcEid] != _origin.sender) {
+        revert UnauthorizedPeer(_origin.sender);
+    }
+    
+    // Process message with error handling
+    try this.processMessage(_origin.srcEid, _message) {
+        // Success
+    } catch Error(string memory reason) {
+        emit MessageFailed(_guid, _origin.srcEid, reason);
+    }
+}
+```
+
+## Resources
+
+- [LayerZero Documentation](https://docs.layerzero.network)
+- [LayerZero V2 SDK](https://github.com/LayerZero-Labs/LayerZero-v2)
+- [OFT Standard](https://docs.layerzero.network/contracts/oft)
+- [LayerZero Scan](https://layerzeroscan.com)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

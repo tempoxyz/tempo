@@ -1,0 +1,453 @@
+---
+title: "Due Payment Orchestration for Tempo"
+description: "Payment orchestration and stablecoin infrastructure for Tempo with Due. Unified APIs for payouts, collections, and treasury."
+---
+
+# Due Payment Orchestration for Tempo
+
+[Due](https://opendue.com) (OpenDue) provides payment orchestration infrastructure for managing payouts, collections, and treasury operations with stablecoin integration.
+
+## Features
+
+- **Payment orchestration** — Unified payment APIs
+- **Multi-rail support** — Bank, card, crypto, and stablecoins
+- **Treasury management** — Centralized fund management
+- **Global payouts** — Send payments worldwide
+
+## API Setup
+
+```typescript
+const DUE_API_KEY = process.env.DUE_API_KEY
+const DUE_SECRET = process.env.DUE_SECRET
+const DUE_BASE_URL = 'https://api.opendue.com/v1'
+
+async function dueRequest(
+  endpoint: string,
+  options: { method?: string; body?: any } = {}
+) {
+  const response = await fetch(`${DUE_BASE_URL}${endpoint}`, {
+    method: options.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${DUE_API_KEY}`,
+      'X-Api-Secret': DUE_SECRET!
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined
+  })
+  return response.json()
+}
+```
+
+## Payouts
+
+### Create Payout
+
+```typescript
+interface PayoutRequest {
+  amount: number
+  currency: string
+  method: 'bank' | 'stablecoin' | 'card'
+  recipient: {
+    email: string
+    name: string
+    bankDetails?: {
+      accountNumber: string
+      routingNumber: string
+      bankName: string
+    }
+    walletAddress?: string
+  }
+  reference?: string
+}
+
+async function createPayout(request: PayoutRequest) {
+  const data = await dueRequest('/payouts', {
+    method: 'POST',
+    body: {
+      amount: request.amount,
+      currency: request.currency,
+      method: request.method,
+      recipient: {
+        email: request.recipient.email,
+        name: request.recipient.name,
+        bank_details: request.recipient.bankDetails ? {
+          account_number: request.recipient.bankDetails.accountNumber,
+          routing_number: request.recipient.bankDetails.routingNumber,
+          bank_name: request.recipient.bankDetails.bankName
+        } : undefined,
+        wallet_address: request.recipient.walletAddress,
+        network: request.method === 'stablecoin' ? 'tempo' : undefined
+      },
+      reference: request.reference
+    }
+  })
+
+  return {
+    payoutId: data.payout_id,
+    status: data.status,
+    amount: data.amount,
+    currency: data.currency,
+    estimatedArrival: data.estimated_arrival
+  }
+}
+```
+
+### Batch Payouts
+
+```typescript
+interface BatchPayoutRequest {
+  payouts: Array<{
+    amount: number
+    currency: string
+    method: 'bank' | 'stablecoin'
+    recipientEmail: string
+    recipientName: string
+    destination: string // Account number or wallet address
+  }>
+}
+
+async function createBatchPayout(request: BatchPayoutRequest) {
+  const data = await dueRequest('/payouts/batch', {
+    method: 'POST',
+    body: {
+      payouts: request.payouts.map(p => ({
+        amount: p.amount,
+        currency: p.currency,
+        method: p.method,
+        recipient: {
+          email: p.recipientEmail,
+          name: p.recipientName,
+          destination: p.destination,
+          network: p.method === 'stablecoin' ? 'tempo' : undefined
+        }
+      }))
+    }
+  })
+
+  return {
+    batchId: data.batch_id,
+    status: data.status,
+    totalAmount: data.total_amount,
+    payoutCount: data.payout_count,
+    payouts: data.payouts.map((p: any) => ({
+      payoutId: p.payout_id,
+      status: p.status,
+      amount: p.amount
+    }))
+  }
+}
+```
+
+### Get Payout Status
+
+```typescript
+async function getPayoutStatus(payoutId: string) {
+  const data = await dueRequest(`/payouts/${payoutId}`)
+
+  return {
+    payoutId: data.payout_id,
+    status: data.status,
+    amount: data.amount,
+    currency: data.currency,
+    method: data.method,
+    txHash: data.tx_hash,
+    createdAt: data.created_at,
+    completedAt: data.completed_at
+  }
+}
+```
+
+## Collections
+
+### Create Invoice
+
+```typescript
+interface InvoiceRequest {
+  amount: number
+  currency: string
+  customerEmail: string
+  description: string
+  dueDate?: string
+  acceptedMethods: ('bank' | 'card' | 'stablecoin')[]
+}
+
+async function createInvoice(request: InvoiceRequest) {
+  const data = await dueRequest('/invoices', {
+    method: 'POST',
+    body: {
+      amount: request.amount,
+      currency: request.currency,
+      customer_email: request.customerEmail,
+      description: request.description,
+      due_date: request.dueDate,
+      accepted_methods: request.acceptedMethods,
+      stablecoin_options: {
+        network: 'tempo',
+        tokens: ['USDC', 'USDT']
+      }
+    }
+  })
+
+  return {
+    invoiceId: data.invoice_id,
+    status: data.status,
+    paymentLink: data.payment_link,
+    qrCode: data.qr_code,
+    depositAddress: data.deposit_address
+  }
+}
+```
+
+### Create Payment Link
+
+```typescript
+async function createPaymentLink(
+  amount: number,
+  currency: string,
+  description: string
+) {
+  const data = await dueRequest('/payment-links', {
+    method: 'POST',
+    body: {
+      amount,
+      currency,
+      description,
+      accepted_methods: ['stablecoin', 'card'],
+      stablecoin_options: {
+        network: 'tempo',
+        tokens: ['USDC']
+      }
+    }
+  })
+
+  return {
+    linkId: data.link_id,
+    url: data.url,
+    qrCode: data.qr_code
+  }
+}
+```
+
+## Treasury
+
+### Get Balances
+
+```typescript
+async function getTreasuryBalances() {
+  const data = await dueRequest('/treasury/balances')
+
+  return data.balances.map((balance: any) => ({
+    currency: balance.currency,
+    available: balance.available,
+    pending: balance.pending,
+    reserved: balance.reserved
+  }))
+}
+```
+
+### Internal Transfer
+
+```typescript
+async function internalTransfer(
+  fromCurrency: string,
+  toCurrency: string,
+  amount: number
+) {
+  const data = await dueRequest('/treasury/transfers', {
+    method: 'POST',
+    body: {
+      from_currency: fromCurrency,
+      to_currency: toCurrency,
+      amount
+    }
+  })
+
+  return {
+    transferId: data.transfer_id,
+    rate: data.rate,
+    fromAmount: data.from_amount,
+    toAmount: data.to_amount,
+    status: data.status
+  }
+}
+```
+
+### Withdraw to Tempo
+
+```typescript
+async function withdrawToTempo(
+  amount: number,
+  token: 'USDC' | 'USDT',
+  walletAddress: string
+) {
+  const data = await dueRequest('/treasury/withdrawals', {
+    method: 'POST',
+    body: {
+      amount,
+      currency: token,
+      method: 'stablecoin',
+      network: 'tempo',
+      destination: walletAddress
+    }
+  })
+
+  return {
+    withdrawalId: data.withdrawal_id,
+    status: data.status,
+    txHash: data.tx_hash,
+    estimatedArrival: data.estimated_arrival
+  }
+}
+```
+
+## Stablecoin Settlement
+
+### Enable Stablecoin Settlement
+
+```typescript
+async function configureStablecoinSettlement(
+  walletAddress: string,
+  autoConvert: boolean = false
+) {
+  const data = await dueRequest('/settings/settlement', {
+    method: 'PATCH',
+    body: {
+      stablecoin_enabled: true,
+      network: 'tempo',
+      wallet_address: walletAddress,
+      auto_convert: autoConvert,
+      settlement_token: 'USDC'
+    }
+  })
+
+  return {
+    enabled: data.stablecoin_enabled,
+    walletAddress: data.wallet_address,
+    autoConvert: data.auto_convert
+  }
+}
+```
+
+### Get Settlement History
+
+```typescript
+async function getSettlementHistory(
+  startDate: string,
+  endDate: string
+) {
+  const data = await dueRequest(
+    `/settlements?start_date=${startDate}&end_date=${endDate}`
+  )
+
+  return data.settlements.map((settlement: any) => ({
+    settlementId: settlement.settlement_id,
+    amount: settlement.amount,
+    currency: settlement.currency,
+    method: settlement.method,
+    txHash: settlement.tx_hash,
+    settledAt: settlement.settled_at
+  }))
+}
+```
+
+## Webhooks
+
+```typescript
+import express from 'express'
+import crypto from 'crypto'
+
+const app = express()
+
+function verifyWebhook(payload: string, signature: string) {
+  const expected = crypto
+    .createHmac('sha256', process.env.DUE_WEBHOOK_SECRET!)
+    .update(payload)
+    .digest('hex')
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expected)
+  )
+}
+
+app.post('/webhooks/due', express.raw({ type: 'application/json' }), (req, res) => {
+  const signature = req.headers['x-due-signature'] as string
+  
+  if (!verifyWebhook(req.body.toString(), signature)) {
+    return res.status(401).send('Invalid signature')
+  }
+
+  const event = JSON.parse(req.body.toString())
+
+  switch (event.type) {
+    case 'payout.completed':
+      handlePayoutCompleted(event.data)
+      break
+    case 'payout.failed':
+      handlePayoutFailed(event.data)
+      break
+    case 'invoice.paid':
+      handleInvoicePaid(event.data)
+      break
+    case 'settlement.completed':
+      handleSettlementCompleted(event.data)
+      break
+  }
+
+  res.status(200).send('OK')
+})
+```
+
+## React Integration
+
+```typescript
+import { useState } from 'react'
+
+function usePayouts() {
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  const sendPayout = async (request: PayoutRequest) => {
+    setLoading(true)
+    setError(null)
+    
+    try {
+      return await createPayout(request)
+    } catch (e) {
+      setError(e as Error)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const sendBatchPayout = async (request: BatchPayoutRequest) => {
+    setLoading(true)
+    setError(null)
+    
+    try {
+      return await createBatchPayout(request)
+    } catch (e) {
+      setError(e as Error)
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return { sendPayout, sendBatchPayout, loading, error }
+}
+```
+
+## Environment Variables
+
+```bash
+DUE_API_KEY=your-api-key
+DUE_SECRET=your-secret
+DUE_WEBHOOK_SECRET=your-webhook-secret
+```
+
+## Resources
+
+- [Due Documentation](https://docs.opendue.com)
+- [Due API Reference](https://docs.opendue.com/api)
+- [Due Dashboard](https://app.opendue.com)

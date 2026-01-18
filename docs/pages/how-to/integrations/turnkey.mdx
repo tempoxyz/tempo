@@ -1,0 +1,376 @@
+---
+title: "Turnkey Wallet Infrastructure for Tempo"
+description: "Secure private key infrastructure for Tempo apps. Hardware-backed signing, policy controls, and API-driven wallet management."
+---
+
+# Turnkey Wallet Infrastructure for Tempo
+
+[Turnkey](https://turnkey.com) provides secure private key infrastructure for building wallet and signing experiences on Tempo.
+
+## Why Turnkey
+
+- **Hardware security** — Keys protected by secure enclaves
+- **API-first** — Programmatic wallet creation and signing
+- **Policy controls** — Fine-grained access controls and spending limits
+- **Non-custodial** — Users retain control of their keys
+
+## Installation
+
+```bash
+pnpm install @turnkey/sdk-browser @turnkey/sdk-server @turnkey/viem viem
+```
+
+## Quick Start
+
+### 1. Create a Turnkey Account
+
+Sign up at [app.turnkey.com](https://app.turnkey.com) and create an organization.
+
+### 2. Server-Side Setup
+
+```typescript
+// server/turnkey.ts
+import { Turnkey } from '@turnkey/sdk-server'
+
+const turnkey = new Turnkey({
+  apiBaseUrl: 'https://api.turnkey.com',
+  apiPublicKey: process.env.TURNKEY_API_PUBLIC_KEY!,
+  apiPrivateKey: process.env.TURNKEY_API_PRIVATE_KEY!,
+  defaultOrganizationId: process.env.TURNKEY_ORGANIZATION_ID!
+})
+
+// Create a wallet for a user
+export async function createUserWallet(userId: string) {
+  const wallet = await turnkey.apiClient().createWallet({
+    walletName: `user-${userId}`,
+    accounts: [{
+      curve: 'CURVE_SECP256K1',
+      pathFormat: 'PATH_FORMAT_BIP32',
+      path: "m/44'/60'/0'/0/0"
+    }]
+  })
+
+  return wallet.addresses[0]
+}
+```
+
+### 3. Client-Side Signing
+
+```typescript
+// client/turnkey.ts
+import { Turnkey } from '@turnkey/sdk-browser'
+import { createAccount } from '@turnkey/viem'
+import { createWalletClient, http } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const turnkey = new Turnkey({
+  apiBaseUrl: 'https://api.turnkey.com',
+  defaultOrganizationId: process.env.NEXT_PUBLIC_TURNKEY_ORGANIZATION_ID!
+})
+
+export async function createTurnkeyClient(walletId: string, address: string) {
+  const account = await createAccount({
+    client: turnkey.apiClient(),
+    organizationId: process.env.NEXT_PUBLIC_TURNKEY_ORGANIZATION_ID!,
+    signWith: address
+  })
+
+  const client = createWalletClient({
+    account,
+    chain: tempoTestnet({ feeToken: alphaUsd }),
+    transport: http('https://rpc.moderato.tempo.xyz')
+  })
+
+  return client
+}
+```
+
+## Wallet Operations
+
+### Create Wallet
+
+```typescript
+const wallet = await turnkey.apiClient().createWallet({
+  walletName: 'treasury',
+  accounts: [{
+    curve: 'CURVE_SECP256K1',
+    pathFormat: 'PATH_FORMAT_BIP32',
+    path: "m/44'/60'/0'/0/0",
+    addressFormat: 'ADDRESS_FORMAT_ETHEREUM'
+  }]
+})
+
+console.log('Wallet ID:', wallet.walletId)
+console.log('Address:', wallet.addresses[0])
+```
+
+### Sign and Send Transaction
+
+```typescript
+import { createAccount } from '@turnkey/viem'
+import { createWalletClient, http, parseEther } from 'viem'
+import { tempoTestnet } from 'viem/chains'
+
+const account = await createAccount({
+  client: turnkey.apiClient(),
+  organizationId: ORG_ID,
+  signWith: address
+})
+
+const client = createWalletClient({
+  account,
+  chain: tempoTestnet({ feeToken: alphaUsd }),
+  transport: http('https://rpc.moderato.tempo.xyz')
+})
+
+const hash = await client.sendTransaction({
+  to: '0xRecipient',
+  value: parseEther('100')
+})
+```
+
+### Sign Message
+
+```typescript
+const signature = await client.signMessage({
+  message: 'Hello from Tempo!'
+})
+```
+
+### Sign Typed Data (EIP-712)
+
+```typescript
+const signature = await client.signTypedData({
+  domain: {
+    name: 'My App',
+    version: '1',
+    chainId: 42431,
+    verifyingContract: '0x...'
+  },
+  types: {
+    Transfer: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' }
+    ]
+  },
+  primaryType: 'Transfer',
+  message: {
+    to: '0xRecipient',
+    amount: parseEther('100')
+  }
+})
+```
+
+## Policy Controls
+
+### Create Policy
+
+```typescript
+const policy = await turnkey.apiClient().createPolicy({
+  policyName: 'spending-limit',
+  effect: 'EFFECT_ALLOW',
+  consensus: 'CONSENSUS_TYPE_APPROVAL',
+  condition: `
+    transaction.value <= 1000000000000000000000 && 
+    transaction.to in ['0xAllowedAddress1', '0xAllowedAddress2']
+  `
+})
+```
+
+### Apply Policy to Wallet
+
+```typescript
+await turnkey.apiClient().updateWallet({
+  walletId: wallet.walletId,
+  policyIds: [policy.policyId]
+})
+```
+
+## Passkey Authentication
+
+Enable passkey (WebAuthn) authentication:
+
+```typescript
+import { Turnkey, getWebAuthnAttestation } from '@turnkey/sdk-browser'
+
+const turnkey = new Turnkey({
+  apiBaseUrl: 'https://api.turnkey.com',
+  defaultOrganizationId: ORG_ID
+})
+
+// Register passkey
+export async function registerPasskey(email: string) {
+  const attestation = await getWebAuthnAttestation({
+    publicKey: {
+      rp: { name: 'My App', id: 'myapp.com' },
+      user: { name: email, displayName: email, id: crypto.randomUUID() },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+      challenge: new Uint8Array(32)
+    }
+  })
+
+  // Create sub-organization with passkey
+  const result = await turnkey.serverSign('createSubOrganization', [
+    {
+      subOrganizationName: email,
+      rootUsers: [{
+        userName: email,
+        userEmail: email,
+        authenticators: [{
+          authenticatorName: 'Passkey',
+          challenge: attestation.challenge,
+          attestation: attestation
+        }]
+      }],
+      rootQuorumThreshold: 1,
+      wallet: {
+        walletName: 'Default',
+        accounts: [{
+          curve: 'CURVE_SECP256K1',
+          pathFormat: 'PATH_FORMAT_BIP32',
+          path: "m/44'/60'/0'/0/0"
+        }]
+      }
+    }
+  ])
+
+  return result
+}
+```
+
+### Sign with Passkey
+
+```typescript
+import { getWebAuthnAssertion } from '@turnkey/sdk-browser'
+
+export async function signWithPasskey(transaction: any) {
+  const assertion = await getWebAuthnAssertion({
+    publicKey: {
+      challenge: new Uint8Array(32),
+      rpId: 'myapp.com',
+      userVerification: 'required'
+    }
+  })
+
+  return await turnkey.signTransaction({
+    signWith: walletAddress,
+    unsignedTransaction: transaction,
+    assertion
+  })
+}
+```
+
+## React Integration
+
+```typescript
+'use client'
+
+import { useTurnkey, TurnkeyProvider } from '@turnkey/sdk-react'
+
+// Provider setup
+export function Providers({ children }) {
+  return (
+    <TurnkeyProvider
+      config={{
+        apiBaseUrl: 'https://api.turnkey.com',
+        defaultOrganizationId: process.env.NEXT_PUBLIC_TURNKEY_ORG_ID!
+      }}
+    >
+      {children}
+    </TurnkeyProvider>
+  )
+}
+
+// Component
+export function WalletComponent() {
+  const { turnkey, session } = useTurnkey()
+  const [address, setAddress] = useState<string>()
+
+  const createWallet = async () => {
+    const result = await turnkey.createWallet({
+      walletName: 'my-wallet',
+      accounts: [{
+        curve: 'CURVE_SECP256K1',
+        pathFormat: 'PATH_FORMAT_BIP32',
+        path: "m/44'/60'/0'/0/0"
+      }]
+    })
+    setAddress(result.addresses[0])
+  }
+
+  return (
+    <div>
+      {address ? (
+        <p>Wallet: {address}</p>
+      ) : (
+        <button onClick={createWallet}>Create Wallet</button>
+      )}
+    </div>
+  )
+}
+```
+
+## Environment Variables
+
+```bash
+# .env.local
+NEXT_PUBLIC_TURNKEY_ORGANIZATION_ID=your-org-id
+
+# Server-side only
+TURNKEY_API_PUBLIC_KEY=your-public-key
+TURNKEY_API_PRIVATE_KEY=your-private-key
+```
+
+## Use Cases
+
+### Treasury Management
+
+```typescript
+// Create a treasury wallet with multi-sig
+const treasury = await turnkey.apiClient().createWallet({
+  walletName: 'company-treasury',
+  accounts: [{
+    curve: 'CURVE_SECP256K1',
+    pathFormat: 'PATH_FORMAT_BIP32',
+    path: "m/44'/60'/0'/0/0"
+  }]
+})
+
+// Apply spending policy
+await turnkey.apiClient().createPolicy({
+  policyName: 'large-transfer-approval',
+  effect: 'EFFECT_ALLOW',
+  consensus: 'CONSENSUS_TYPE_APPROVAL',
+  condition: 'transaction.value > 10000000000000000000000',
+  approvers: ['user-1', 'user-2'],
+  approvalsRequired: 2
+})
+```
+
+### Automated Payments
+
+```typescript
+// Create a service account wallet
+const serviceWallet = await turnkey.apiClient().createWallet({
+  walletName: 'payment-service',
+  accounts: [{ /* ... */ }]
+})
+
+// Allow only transfers to verified recipients
+await turnkey.apiClient().createPolicy({
+  policyName: 'verified-recipients-only',
+  effect: 'EFFECT_ALLOW',
+  condition: `
+    transaction.to in verified_recipients &&
+    transaction.value <= daily_limit
+  `
+})
+```
+
+## Resources
+
+- [Turnkey Documentation](https://docs.turnkey.com)
+- [Turnkey Dashboard](https://app.turnkey.com)
+- [Turnkey SDK](https://github.com/tkhq/sdk)
+- [Viem Integration](https://github.com/tkhq/sdk/tree/main/packages/viem)
+- [Tempo Developer Docs](https://docs.tempo.xyz)

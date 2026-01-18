@@ -1,0 +1,374 @@
+---
+title: "Hardhat for Tempo Development"
+description: "Deploy and test smart contracts on Tempo with Hardhat. Configuration, deployment scripts, and verification."
+---
+
+# Hardhat for Tempo Development
+
+[Hardhat](https://hardhat.org) is a popular Ethereum development environment. This guide covers setting up Hardhat for Tempo.
+
+## Installation
+
+```bash
+pnpm init
+pnpm add -D hardhat @nomicfoundation/hardhat-toolbox dotenv
+npx hardhat init
+```
+
+## Configuration
+
+### hardhat.config.ts
+
+```typescript
+import { HardhatUserConfig } from 'hardhat/config'
+import '@nomicfoundation/hardhat-toolbox'
+import * as dotenv from 'dotenv'
+
+dotenv.config()
+
+const config: HardhatUserConfig = {
+  solidity: {
+    version: '0.8.24',
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
+  networks: {
+    tempo: {
+      url: 'https://rpc.moderato.tempo.xyz',
+      chainId: 42431,
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
+    },
+    tempoMainnet: {
+      url: 'https://rpc.presto.tempo.xyz',
+      chainId: 4217,
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : []
+    }
+  },
+  etherscan: {
+    apiKey: {
+      tempo: 'placeholder' // Required even if not used
+    },
+    customChains: [
+      {
+        network: 'tempo',
+        chainId: 42431,
+        urls: {
+          apiURL: 'https://explore.tempo.xyz/api',
+          browserURL: 'https://explore.tempo.xyz'
+        }
+      }
+    ]
+  }
+}
+
+export default config
+```
+
+### Environment Variables
+
+```bash
+# .env
+PRIVATE_KEY=0x...
+```
+
+## Deploying Contracts
+
+### Deployment Script
+
+```typescript
+// scripts/deploy.ts
+import { ethers } from 'hardhat'
+
+async function main() {
+  const [deployer] = await ethers.getSigners()
+  console.log('Deploying with:', deployer.address)
+
+  const Counter = await ethers.getContractFactory('Counter')
+  const counter = await Counter.deploy()
+  await counter.waitForDeployment()
+
+  console.log('Counter deployed to:', await counter.getAddress())
+}
+
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})
+```
+
+### Deploy
+
+```bash
+npx hardhat run scripts/deploy.ts --network tempo
+```
+
+### With Constructor Arguments
+
+```typescript
+// scripts/deploy-token.ts
+import { ethers } from 'hardhat'
+
+async function main() {
+  const Token = await ethers.getContractFactory('Token')
+  const token = await Token.deploy(
+    'My Token',
+    'MTK',
+    ethers.parseEther('1000000')
+  )
+  await token.waitForDeployment()
+
+  console.log('Token deployed to:', await token.getAddress())
+}
+
+main()
+```
+
+## Testing
+
+### Write Tests
+
+```typescript
+// test/Counter.test.ts
+import { expect } from 'chai'
+import { ethers } from 'hardhat'
+
+describe('Counter', function () {
+  it('Should increment the counter', async function () {
+    const Counter = await ethers.getContractFactory('Counter')
+    const counter = await Counter.deploy()
+
+    await counter.increment()
+    expect(await counter.number()).to.equal(1)
+  })
+
+  it('Should set the number', async function () {
+    const Counter = await ethers.getContractFactory('Counter')
+    const counter = await Counter.deploy()
+
+    await counter.setNumber(42)
+    expect(await counter.number()).to.equal(42)
+  })
+})
+```
+
+### Run Tests
+
+```bash
+# Run all tests
+npx hardhat test
+
+# Run specific test
+npx hardhat test test/Counter.test.ts
+
+# Run with gas report
+REPORT_GAS=true npx hardhat test
+```
+
+### Fork Testing
+
+```typescript
+// hardhat.config.ts
+hardhat: {
+  forking: {
+    url: 'https://rpc.moderato.tempo.xyz',
+    blockNumber: 1000000 // Optional: pin to specific block
+  }
+}
+```
+
+```typescript
+// test/Fork.test.ts
+import { expect } from 'chai'
+import { ethers } from 'hardhat'
+
+describe('Fork Tests', function () {
+  it('Should interact with deployed contracts', async function () {
+    const usdc = await ethers.getContractAt(
+      'IERC20',
+      '0x20c0000000000000000000000000000000000001'
+    )
+    
+    const balance = await usdc.balanceOf('0x...')
+    expect(balance).to.be.gt(0)
+  })
+})
+```
+
+## Verification
+
+### Verify Contract
+
+```bash
+npx hardhat verify --network tempo 0xContractAddress
+```
+
+### With Constructor Args
+
+```bash
+npx hardhat verify --network tempo 0xContractAddress \
+  "My Token" "MTK" "1000000000000000000000000"
+```
+
+### Programmatic Verification
+
+```typescript
+// scripts/deploy-and-verify.ts
+import { ethers, run } from 'hardhat'
+
+async function main() {
+  const Token = await ethers.getContractFactory('Token')
+  const token = await Token.deploy('My Token', 'MTK', ethers.parseEther('1000000'))
+  await token.waitForDeployment()
+
+  const address = await token.getAddress()
+  console.log('Token deployed to:', address)
+
+  // Wait for block confirmations
+  await token.deploymentTransaction()?.wait(5)
+
+  // Verify
+  await run('verify:verify', {
+    address,
+    constructorArguments: ['My Token', 'MTK', ethers.parseEther('1000000')]
+  })
+}
+
+main()
+```
+
+## Tasks
+
+### Custom Task
+
+```typescript
+// hardhat.config.ts
+import { task } from 'hardhat/config'
+
+task('balance', 'Prints account balance')
+  .addParam('account', 'Account address')
+  .setAction(async (taskArgs, hre) => {
+    const balance = await hre.ethers.provider.getBalance(taskArgs.account)
+    console.log(hre.ethers.formatEther(balance), 'ETH')
+  })
+```
+
+```bash
+npx hardhat balance --account 0x... --network tempo
+```
+
+## Ignition (Declarative Deployments)
+
+### Define Module
+
+```typescript
+// ignition/modules/Counter.ts
+import { buildModule } from '@nomicfoundation/hardhat-ignition/modules'
+
+export default buildModule('Counter', (m) => {
+  const counter = m.contract('Counter')
+  return { counter }
+})
+```
+
+### Deploy with Ignition
+
+```bash
+npx hardhat ignition deploy ignition/modules/Counter.ts --network tempo
+```
+
+### Complex Module
+
+```typescript
+// ignition/modules/Token.ts
+import { buildModule } from '@nomicfoundation/hardhat-ignition/modules'
+
+export default buildModule('Token', (m) => {
+  const name = m.getParameter('name', 'My Token')
+  const symbol = m.getParameter('symbol', 'MTK')
+  const supply = m.getParameter('supply', 1000000n * 10n ** 18n)
+
+  const token = m.contract('Token', [name, symbol, supply])
+
+  return { token }
+})
+```
+
+## Gas Reporting
+
+### Install Plugin
+
+```bash
+pnpm add -D hardhat-gas-reporter
+```
+
+### Configure
+
+```typescript
+// hardhat.config.ts
+import 'hardhat-gas-reporter'
+
+const config: HardhatUserConfig = {
+  gasReporter: {
+    enabled: true,
+    currency: 'USD',
+    gasPrice: 1 // Tempo has low, predictable fees
+  }
+}
+```
+
+## Complete Example
+
+### Project Structure
+
+```
+├── contracts/
+│   └── Counter.sol
+├── scripts/
+│   └── deploy.ts
+├── test/
+│   └── Counter.test.ts
+├── hardhat.config.ts
+├── package.json
+└── .env
+```
+
+### Contract
+
+```solidity
+// contracts/Counter.sol
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+contract Counter {
+    uint256 public number;
+
+    function setNumber(uint256 newNumber) public {
+        number = newNumber;
+    }
+
+    function increment() public {
+        number++;
+    }
+}
+```
+
+### Deploy & Verify
+
+```bash
+# Deploy
+npx hardhat run scripts/deploy.ts --network tempo
+
+# Verify
+npx hardhat verify --network tempo 0xDeployedAddress
+```
+
+## Resources
+
+- [Hardhat Documentation](https://hardhat.org/docs)
+- [Hardhat Ignition](https://hardhat.org/ignition/docs/getting-started)
+- [Tempo Block Explorer](https://explore.tempo.xyz)
+- [Tempo Developer Docs](https://docs.tempo.xyz)
