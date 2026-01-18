@@ -30,6 +30,22 @@ pub(super) struct FeedState {
     pub(super) latest_finalized: Option<CertifiedBlock>,
 }
 
+/// Cached identity transition chain.
+///
+/// Stores transitions from a starting epoch back towards genesis.
+/// Can be extended for newer epochs or subsectioned for older queries.
+#[derive(Clone, Default)]
+struct IdentityTransitionCache {
+    /// The epoch from which the chain was built (inclusive).
+    from_epoch: u64,
+    /// The earliest epoch we walked to (0 if we reached genesis).
+    to_epoch: u64,
+    /// Identity at `from_epoch`.
+    identity: String,
+    /// Cached transitions, ordered newest to oldest.
+    transitions: Vec<IdentityTransition>,
+}
+
 /// Handle to shared feed state.
 ///
 /// This handle can be cloned and used by both:
@@ -41,6 +57,8 @@ pub struct FeedStateHandle {
     marshal: Arc<OnceLock<marshal::Mailbox>>,
     epocher: Arc<OnceLock<FixedEpocher>>,
     events_tx: broadcast::Sender<Event>,
+    /// Cache for identity transition proofs to avoid re-walking the chain.
+    identity_cache: Arc<RwLock<Option<IdentityTransitionCache>>>,
 }
 
 impl FeedStateHandle {
@@ -58,6 +76,7 @@ impl FeedStateHandle {
             marshal: Arc::new(OnceLock::new()),
             epocher: Arc::new(OnceLock::new()),
             events_tx,
+            identity_cache: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -108,6 +127,46 @@ impl FeedStateHandle {
                 .get_block(&Digest(block.digest))
                 .await
                 .map(|b| b.height().get());
+        }
+    }
+
+    /// Serve identity transition proof from cache, returning a subsection if needed.
+    fn serve_from_cache(
+        &self,
+        cache: &IdentityTransitionCache,
+        start_epoch: u64,
+        full: bool,
+    ) -> IdentityTransitionResponse {
+        // Filter transitions to only include those at or before start_epoch
+        let transitions: Vec<_> = cache
+            .transitions
+            .iter()
+            .filter(|t| t.transition_epoch <= start_epoch)
+            .cloned()
+            .collect();
+
+        // Determine identity at start_epoch by looking at the first transition
+        // that's at or after start_epoch, or use the cached identity
+        let identity = if start_epoch == cache.from_epoch {
+            cache.identity.clone()
+        } else {
+            // Find the newest transition at or before start_epoch
+            transitions
+                .first()
+                .map(|t| t.new_identity.clone())
+                .unwrap_or_else(|| cache.identity.clone())
+        };
+
+        // If not full, only return the most recent transition
+        let transitions = if full {
+            transitions
+        } else {
+            transitions.into_iter().take(1).collect()
+        };
+
+        IdentityTransitionResponse {
+            identity,
+            transitions,
         }
     }
 }
@@ -198,6 +257,16 @@ impl ConsensusFeed for FeedStateHandle {
                 .get()
         };
 
+        // Check if we can serve from cache
+        let cached = self.identity_cache.read().clone();
+        if let Some(ref cache) = cached {
+            // Case 1: Requested epoch is within cached range - return subsection
+            if start_epoch <= cache.from_epoch && start_epoch >= cache.to_epoch {
+                return Ok(self.serve_from_cache(cache, start_epoch, full));
+            }
+            // Case 2: Requested epoch is newer than cache - we'll extend below
+        }
+
         // Identity active at epoch N is set by the last block of epoch N-1
         // (epoch 0 uses its own last block - genesis identity)
         let identity_outcome =
@@ -212,7 +281,22 @@ impl ConsensusFeed for FeedStateHandle {
         let mut search_epoch = start_epoch.saturating_sub(1);
         let mut reached_genesis = start_epoch == 0;
 
+        // If we have a cache, try to connect to it instead of walking all the way
+        let cache_connect_epoch = cached.as_ref().map(|c| c.from_epoch);
+
         while search_epoch > 0 {
+            // Check if we can connect to cached data
+            if let Some(connect_epoch) = cache_connect_epoch
+                && search_epoch <= connect_epoch
+                && let Some(ref cache) = cached
+            {
+                // Append cached transitions and stop walking
+                transitions.extend(cache.transitions.clone());
+                search_epoch = cache.to_epoch;
+                reached_genesis = cache.to_epoch == 0;
+                break;
+            }
+
             let prev_outcome = match get_outcome(&mut marshal, &epocher, search_epoch - 1).await {
                 Ok(o) => o,
                 Err(err) => {
@@ -284,23 +368,47 @@ impl ConsensusFeed for FeedStateHandle {
         // Include genesis identity as explicit terminal marker when we reached it.
         // There is never a finalization certificate for genesis, so proof is None.
         if full && reached_genesis {
-            match get_outcome(&mut marshal, &epocher, 0).await {
-                Ok(genesis_outcome) => {
-                    let genesis_pubkey = *genesis_outcome.sharing().public();
-                    let genesis_identity = hex::encode(genesis_pubkey.encode());
-                    transitions.push(IdentityTransition {
-                        transition_epoch: 0,
-                        old_identity: genesis_identity.clone(),
-                        new_identity: genesis_identity,
-                        proof: None,
-                    });
+            // Only add genesis marker if not already present from cache
+            let has_genesis = transitions
+                .last()
+                .is_some_and(|t| t.transition_epoch == 0 && t.proof.is_none());
+            if !has_genesis {
+                match get_outcome(&mut marshal, &epocher, 0).await {
+                    Ok(genesis_outcome) => {
+                        let genesis_pubkey = *genesis_outcome.sharing().public();
+                        let genesis_identity = hex::encode(genesis_pubkey.encode());
+                        transitions.push(IdentityTransition {
+                            transition_epoch: 0,
+                            old_identity: genesis_identity.clone(),
+                            new_identity: genesis_identity,
+                            proof: None,
+                        });
+                    }
+                    Err(err) => {
+                        tracing::debug!(
+                            ?err,
+                            "failed to fetch genesis outcome; omitting genesis marker"
+                        );
+                    }
                 }
-                Err(err) => {
-                    tracing::debug!(
-                        ?err,
-                        "failed to fetch genesis outcome; omitting genesis marker"
-                    );
-                }
+            }
+        }
+
+        // Update cache if this is a full query and we made progress
+        if full {
+            let new_cache = IdentityTransitionCache {
+                from_epoch: start_epoch,
+                to_epoch: search_epoch,
+                identity: identity.clone(),
+                transitions: transitions.clone(),
+            };
+            // Only update if this extends or improves the cache
+            let should_update = cached
+                .as_ref()
+                .map(|c| start_epoch > c.from_epoch || search_epoch < c.to_epoch)
+                .unwrap_or(true);
+            if should_update {
+                *self.identity_cache.write() = Some(new_cache);
             }
         }
 
