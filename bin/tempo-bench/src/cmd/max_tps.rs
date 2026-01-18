@@ -15,7 +15,7 @@ use tempo_alloy::{
 use alloy::{
     consensus::BlockHeader,
     eips::Encodable2718,
-    network::{ReceiptResponse, TransactionBuilder, TxSignerSync},
+    network::{EthereumWallet, ReceiptResponse, TransactionBuilder, TxSignerSync},
     primitives::{Address, B256, BlockNumber, U256},
     providers::{
         DynProvider, PendingTransactionBuilder, PendingTransactionError, Provider, ProviderBuilder,
@@ -23,7 +23,7 @@ use alloy::{
     },
     rpc::client::NoParams,
     signers::local::{
-        PrivateKeySigner,
+        Secp256k1Signer,
         coins_bip39::{English, Mnemonic, MnemonicError},
     },
     transports::http::reqwest::Url,
@@ -157,6 +157,10 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     faucet: bool,
 
+    /// URL for the faucet service. If not provided, uses the first target URL.
+    #[arg(long)]
+    faucet_url: Option<Url>,
+
     /// Clear the transaction pool before running the benchmark.
     ///
     /// Calls admin_clearTxpool.
@@ -186,7 +190,7 @@ impl MaxTpsArgs {
                 .fetch_chain_id()
                 .with_gas_estimation()
                 .with_nonce_management(cached_nonce_manager)
-                .wallet(signer)
+                .wallet(EthereumWallet::from(signer))
                 .connect_http(target_url)
                 .erased()
         });
@@ -256,8 +260,17 @@ impl MaxTpsArgs {
 
         // Fund accounts from faucet if requested
         if self.faucet {
+            let faucet_provider: DynProvider<TempoNetwork> =
+                if let Some(ref faucet_url) = self.faucet_url {
+                    info!(%faucet_url, "Using custom faucet URL");
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .connect_http(faucet_url.clone())
+                        .erased()
+                } else {
+                    provider.clone()
+                };
             fund_accounts(
-                &provider,
+                &faucet_provider,
                 &signer_providers
                     .iter()
                     .map(|(signer, _)| signer.address())

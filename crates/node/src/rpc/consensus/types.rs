@@ -14,6 +14,7 @@ pub struct CertifiedBlock {
     /// Block height, if known. May be `None` if the block hasn't been stored yet.
     pub height: Option<u64>,
     pub digest: B256,
+    /// Hex-encoded full notarization or finalization.
     pub certificate: String,
 }
 

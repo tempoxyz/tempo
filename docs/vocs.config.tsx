@@ -1,3 +1,5 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { Instance } from 'prool'
 import { ModuleResolutionKind } from 'typescript'
 import autoImport from 'unplugin-auto-import/vite'
@@ -6,7 +8,56 @@ import icons from 'unplugin-icons/vite'
 import { loadEnv } from 'vite'
 import { defineConfig } from 'vocs'
 
+function getTipsData() {
+  const tipsDir = path.join(process.cwd(), 'pages/protocol/tips')
+  if (!fs.existsSync(tipsDir)) return []
+
+  const files = fs
+    .readdirSync(tipsDir)
+    .filter((file) => file.match(/^tip-\d+\.mdx$/))
+    .sort((a, b) => {
+      const numA = Number.parseInt(a.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      const numB = Number.parseInt(b.match(/tip-(\d+)/)?.[1] ?? '0', 10)
+      return numA - numB
+    })
+
+  return files
+    .map((file) => {
+      const content = fs.readFileSync(path.join(tipsDir, file), 'utf-8')
+      const lines = content.split('\n')
+
+      let title = ''
+      let tipId = ''
+      let status = 'Draft'
+
+      for (const line of lines) {
+        const headingMatch = line.match(/^#\s+(?:TIP-\d+:\s*)?(.+)$/)
+        if (headingMatch?.[1] && !title) title = headingMatch[1].trim()
+
+        const tipIdMatch = line.match(/\*\*TIP ID\*\*:\s*(TIP-\d+)/)
+        if (tipIdMatch?.[1]) tipId = tipIdMatch[1]
+
+        const statusMatch = line.match(/\*\*Status\*\*:\s*(\w+)/)
+        if (statusMatch?.[1]) status = statusMatch[1]
+      }
+
+      if (!tipId) {
+        const m = file.match(/tip-(\d+)/)
+        if (m) tipId = `TIP-${m[1]}`
+      }
+
+      return {
+        id: tipId,
+        title,
+        status,
+        fileName: file,
+      }
+    })
+    .filter((t) => t.id && t.title)
+}
+
 export default defineConfig({
+  baseUrl: 'https://docs.tempo.xyz',
   head: () => (
     <>
       <meta
@@ -14,17 +65,10 @@ export default defineConfig({
         name="viewport"
       />
       {process.env['VERCEL_ENV'] === 'production' ? (
-        <meta name="robot" content="index, follow" />
+        <meta name="robots" content="index, follow" />
       ) : (
-        <meta name="robot" content="noindex, nofollow" />
+        <meta name="robots" content="noindex, nofollow" />
       )}
-      <meta content="/og-docs.png" property="og:image" />
-      <meta content="image/png" property="og:image:type" />
-      <meta content="1200" property="og:image:width" />
-      <meta content="630" property="og:image:height" />
-      <meta name="twitter:card" content="summary_large_image" />
-      <meta name="twitter:title" content="Documentation ⋅ Tempo" />
-      <meta name="twitter:image" content="/og-docs.png" />
       <link rel="icon" href="/favicon.ico" sizes="32x32" />
       <link
         rel="icon"
@@ -79,11 +123,25 @@ export default defineConfig({
         media="(prefers-color-scheme: dark)"
       />
       {process.env['VERCEL_ENV'] === 'production' && (
-        <script src="/ph.js" type="text/javascript"></script>
+        <script src="/ph.js" type="text/javascript" />
       )}
     </>
   ),
-  title: 'Documentation ⋅ Tempo',
+  ogImageUrl: {
+    '/': 'https://docs.tempo.xyz/og-docs.png',
+    '/learn':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/quickstart':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/guide':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/protocol':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+    '/sdk':
+      'https://docs.tempo.xyz/api/og?title=%title&description=%description',
+  },
+  title: 'Tempo',
+  titleTemplate: '%s | Tempo Docs',
   description: 'Documentation for Tempo testnet and protocol specifications',
   logoUrl: {
     light: '/lockup-light.svg',
@@ -96,11 +154,15 @@ export default defineConfig({
   rootDir: '.',
   banner: {
     content: (
-        <div>
-          <strong>Testnet migration:</strong> We've launched a new testnet. You'll need to update your RPC configuration and redeploy any contracts. The old testnet will be deprecated on March 8th.{' '}
-          <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>Learn more →</a>
-        </div>
-      ),
+      <div>
+        <strong>Testnet migration:</strong> We've launched a new testnet. You'll
+        need to update your RPC configuration and redeploy any contracts. The
+        old testnet will be deprecated on March 8th.{' '}
+        <a href="/network-upgrades" style={{ textDecoration: 'underline' }}>
+          Learn more →
+        </a>
+      </div>
+    ),
     dismissable: true,
   },
   socials: [
@@ -200,6 +262,10 @@ export default defineConfig({
               {
                 text: 'Accept a payment',
                 link: '/guide/payments/accept-a-payment',
+              },
+              {
+                text: 'Attach a transfer memo',
+                link: '/guide/payments/transfer-memos',
               },
               {
                 text: 'Pay fees in any stablecoin',
@@ -419,8 +485,8 @@ export default defineConfig({
                 link: '/protocol/blockspace/payment-lane-specification',
               },
               {
-                text: 'Sub-block Specification',
-                link: '/protocol/blockspace/sub-block-specification',
+                text: 'Subblock Specification',
+                link: '/protocol/blockspace/subblock-specification',
               },
             ],
           },
@@ -461,6 +527,10 @@ export default defineConfig({
                 link: 'https://github.com/tempoxyz/tempo/tree/main/crates/precompiles/src/stablecoin_exchange',
               },
             ],
+          },
+          {
+            text: 'TIPs',
+            link: '/protocol/tips',
           },
         ],
       },
@@ -689,6 +759,20 @@ export default defineConfig({
         },
   vite: {
     plugins: [
+      {
+        name: 'virtual-tips',
+        resolveId(id) {
+          if (id === 'virtual:tips-data') return '\0virtual:tips-data'
+          return undefined
+        },
+        load(id) {
+          if (id === '\0virtual:tips-data') {
+            const tips = getTipsData()
+            return `export const tips = ${JSON.stringify(tips)}`
+          }
+          return undefined
+        },
+      },
       {
         name: 'tempo-node',
         async configureServer(_server) {

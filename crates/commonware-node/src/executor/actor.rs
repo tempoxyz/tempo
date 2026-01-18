@@ -3,20 +3,19 @@
 //! This agent forwards finalized blocks from the consensus layer to the
 //! execution layer and tracks the digest of the latest finalized block.
 //! It also advances the canonical chain by sending forkchoice-updates.
-//!
-//! If the agent detects that the execution layer is missing blocks it attempts
-//! to backfill them from the consensus layer.
 
-use std::{pin::pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_rpc_types_engine::ForkchoiceState;
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 
-use commonware_runtime::{ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell};
+use commonware_runtime::{
+    Clock, ContextCell, FutureExt, Handle, Metrics, Pacer, Spawner, spawn_cell,
+};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{OptionExt as _, Report, WrapErr as _, ensure, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, ensure};
 use futures::{
-    StreamExt as _,
+    FutureExt as _, StreamExt as _,
     channel::{
         mpsc::{self, UnboundedReceiver},
         oneshot,
@@ -110,11 +109,18 @@ pub(crate) struct Actor<TContext> {
     marshal: crate::alias::marshal::Mailbox,
 
     last_canonicalized: LastCanonicalized,
+
+    /// The interval at which to send a forkchoice update heartbeat to the
+    /// execution layer.
+    fcu_heartbeat_interval: Duration,
+
+    /// The timer for the next FCU heartbeat. Reset whenever an FCU is sent.
+    fcu_heartbeat_timer: Pin<Box<dyn std::future::Future<Output = ()> + Send>>,
 }
 
 impl<TContext> Actor<TContext>
 where
-    TContext: Metrics + Pacer + Spawner,
+    TContext: Clock + Metrics + Pacer + Spawner,
 {
     pub(super) fn init(
         context: TContext,
@@ -125,6 +131,7 @@ where
             execution_node,
             last_finalized_height,
             marshal,
+            fcu_heartbeat_interval,
         } = config;
         let last_execution_finalized_height = execution_node
             .provider
@@ -134,10 +141,11 @@ where
             .provider
             .block_hash(last_execution_finalized_height)
             .map_or_else(
-                |e| Err(eyre::Report::new(e)),
+                |e| Err(Report::new(e)),
                 |hash| hash.ok_or_eyre("execution layer does not have the block hash"),
             )
             .wrap_err("failed to read the last finalized block hash")?;
+        let fcu_heartbeat_timer = Box::pin(context.sleep(fcu_heartbeat_interval));
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
@@ -154,6 +162,8 @@ where
                 head_height: Height::zero(),
                 finalized_height: Height::zero(),
             },
+            fcu_heartbeat_interval,
+            fcu_heartbeat_timer,
         })
     }
 
@@ -173,7 +183,7 @@ where
             }
 
             let marshal = self.marshal.clone();
-            pin!(
+            std::pin::pin!(
                 futures::stream::iter(
                     self.last_execution_finalized_height.get() + 1
                         ..=self.last_consensus_finalized_height.get(),
@@ -185,6 +195,7 @@ where
                 .fuse()
             )
         };
+
         loop {
             select_biased! {
                 backfill = backfill_on_start.next() => {
@@ -232,6 +243,59 @@ where
                         break;
                     }
                 },
+
+                _ = (&mut self.fcu_heartbeat_timer).fuse() => {
+                    self.send_forkchoice_update_heartbeat().await;
+                    self.reset_fcu_heartbeat_timer();
+                },
+            }
+        }
+    }
+
+    fn reset_fcu_heartbeat_timer(&mut self) {
+        self.fcu_heartbeat_timer = Box::pin(self.context.sleep(self.fcu_heartbeat_interval));
+    }
+
+    #[instrument(skip_all)]
+    async fn send_forkchoice_update_heartbeat(&mut self) {
+        info!(
+            head_block_hash = %self.last_canonicalized.forkchoice.head_block_hash,
+            head_block_height = %self.last_canonicalized.head_height,
+            finalized_block_hash = %self.last_canonicalized.forkchoice.finalized_block_hash,
+            finalized_block_height = %self.last_canonicalized.finalized_height,
+            "sending FCU",
+        );
+
+        let fcu_response = self
+            .execution_node
+            .add_ons_handle
+            .beacon_engine_handle
+            .fork_choice_updated(
+                self.last_canonicalized.forkchoice,
+                None,
+                reth_node_builder::EngineApiMessageVersion::V3,
+            )
+            .pace(&self.context, Duration::from_millis(20))
+            .await;
+
+        match fcu_response {
+            Ok(response) if response.is_invalid() => {
+                warn!(
+                    payload_status = %response.payload_status,
+                    "execution layer reported FCU status",
+                );
+            }
+            Ok(response) => {
+                info!(
+                    payload_status = %response.payload_status,
+                    "execution layer reported FCU status",
+                );
+            }
+            Err(error) => {
+                warn!(
+                    error = %Report::new(error),
+                    "failed sending FCU to execution layer",
+                );
             }
         }
     }
@@ -321,6 +385,7 @@ where
 
         let _ = ack.send(());
         self.last_canonicalized = new_canonicalized;
+        self.reset_fcu_heartbeat_timer();
 
         Ok(())
     }
@@ -394,32 +459,6 @@ where
         .await
         .wrap_err("failed canonicalizing finalized block")?;
 
-        if let Ok(execution_height) = self
-            .execution_node
-            .provider
-            .best_block_number()
-            .map(Height::new)
-            .map_err(Report::new)
-            .inspect_err(|error| {
-                warn!(
-                    %error,
-                    "failed getting last finalized block from execution layer, will \
-                    finalize forward block to execution layer without extra checks, \
-                    but it might fail"
-                )
-            })
-            && execution_height.next() < block.height()
-        {
-            info!(
-                execution.finalized_height = %execution_height,
-                "hole detected; consensus attempts to finalize block with gaps \
-                on the execution layer; filling them in first",
-            );
-            let _ = self
-                .fill_holes(execution_height.next(), block.height())
-                .await;
-        }
-
         let block = block.into_inner();
         let payload_status = self
             .execution_node
@@ -445,52 +484,6 @@ where
 
         acknowledgment.acknowledge();
 
-        Ok(())
-    }
-
-    /// Reads all blocks heights `from..to` and forwards them to the execution layer.
-    #[instrument(
-        skip_all,
-        fields(%from, %to),
-        err(level = Level::WARN),
-    )]
-    async fn fill_holes(&mut self, from: Height, to: Height) -> eyre::Result<()> {
-        ensure!(from <= to, "backfill range is negative");
-
-        for height in Height::range(from, to) {
-            let block = self.marshal.get_block(height).await.ok_or_else(|| {
-                eyre!(
-                    "marshal actor does not know about block `{height}`, but \
-                    this function expects that it has all blocks in the provided \
-                    range",
-                )
-            })?;
-
-            let digest = block.digest();
-
-            let payload_status = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .new_payload(TempoExecutionData {
-                    block: Arc::new(block.into_inner()),
-                    // can be omitted for finalized blocks
-                    validator_set: None,
-                })
-                .pace(&self.context, Duration::from_millis(20))
-                .await
-                .wrap_err(
-                    "failed sending new-payload request to execution engine to \
-                    query payload status of finalized block",
-                )?;
-
-            ensure!(
-                payload_status.is_valid() || payload_status.is_syncing(),
-                "this is a problem: payload status of block `{digest}` we are \
-                trying to backfill is neither valid nor syncing: \
-                `{payload_status}`"
-            );
-        }
         Ok(())
     }
 }

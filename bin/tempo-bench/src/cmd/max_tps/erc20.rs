@@ -12,7 +12,7 @@ sol! {
 /// - Deploy N ERC-20 tokens
 /// - Mint equal amounts to all signers
 pub(super) async fn setup(
-    signer_providers: &[(PrivateKeySigner, DynProvider<TempoNetwork>)],
+    signer_providers: &[(Secp256k1Signer, DynProvider<TempoNetwork>)],
     num_tokens: usize,
     max_concurrent_requests: usize,
     max_concurrent_transactions: usize,
