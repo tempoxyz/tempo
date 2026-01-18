@@ -708,12 +708,11 @@ where
             let has_key_auth = tempo_tx_env.key_authorization.is_some();
 
             if uses_root_key || has_key_auth {
-                let is_disabled =
-                    StorageCtx::enter_evm(journal, block, cfg, || {
-                        let keychain = AccountKeychain::new();
-                        keychain.check_root_key_disabled(tx.caller())
-                    })
-                    .map_err(|e| EVMError::Custom(e.to_string()))?;
+                let is_disabled = StorageCtx::enter_evm(journal, block, cfg, || {
+                    let keychain = AccountKeychain::new();
+                    keychain.check_root_key_disabled(tx.caller())
+                })
+                .map_err(|e| EVMError::Custom(e.to_string()))?;
 
                 if is_disabled {
                     return Err(TempoInvalidTransaction::RootKeyDisabled.into());

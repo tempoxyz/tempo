@@ -33,7 +33,9 @@ impl Precompile for AccountKeychain {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
                 }
                 IAccountKeychainCalls::disableRootKey(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.disable_root_key(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.disable_root_key(sender, c)
+                    })
                 }
                 IAccountKeychainCalls::isRootKeyDisabled(call) => {
                     view(call, |c| self.is_root_key_disabled(c))

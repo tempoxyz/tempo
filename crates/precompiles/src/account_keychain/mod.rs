@@ -341,7 +341,11 @@ impl AccountKeychain {
     /// - Multisig security: Remove root key as single point of failure
     /// - Post-quantum migration: Disable ECDSA root key after authorizing PQ key
     /// - Ephemeral key pattern: Cryptographically ensure ephemeral key cannot be reused
-    pub fn disable_root_key(&mut self, msg_sender: Address, call: disableRootKeyCall) -> Result<()> {
+    pub fn disable_root_key(
+        &mut self,
+        msg_sender: Address,
+        call: disableRootKeyCall,
+    ) -> Result<()> {
         // Check that the transaction key for this transaction is zero (main key)
         let transaction_key = self.transaction_key.t_read()?;
         if transaction_key != Address::ZERO {
@@ -1157,19 +1161,29 @@ mod tests {
             assert!(!is_disabled, "Root key should not be disabled initially");
 
             // Test 2: Disable root key with active access key
-            let disable_call = disableRootKeyCall { activeKeyId: access_key };
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
             keychain.disable_root_key(account, disable_call)?;
 
             // Test 3: Verify root key is now disabled
             let is_disabled = keychain.is_root_key_disabled(isRootKeyDisabledCall { account })?;
-            assert!(is_disabled, "Root key should be disabled after calling disableRootKey");
+            assert!(
+                is_disabled,
+                "Root key should be disabled after calling disableRootKey"
+            );
 
             // Test 4: Check via internal method
             let is_disabled_internal = keychain.check_root_key_disabled(account)?;
-            assert!(is_disabled_internal, "check_root_key_disabled should return true");
+            assert!(
+                is_disabled_internal,
+                "check_root_key_disabled should return true"
+            );
 
             // Test 5: Trying to disable again should fail
-            let disable_call = disableRootKeyCall { activeKeyId: access_key };
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
             let result = keychain.disable_root_key(account, disable_call);
             assert!(
                 matches!(
@@ -1201,7 +1215,9 @@ mod tests {
             keychain.set_tx_origin(account)?;
 
             // Try to disable root key with non-existent access key
-            let disable_call = disableRootKeyCall { activeKeyId: nonexistent_key };
+            let disable_call = disableRootKeyCall {
+                activeKeyId: nonexistent_key,
+            };
             let result = keychain.disable_root_key(account, disable_call);
 
             assert!(
@@ -1246,7 +1262,9 @@ mod tests {
             keychain.set_transaction_key(access_key)?;
 
             // Try to disable root key using access key - should fail
-            let disable_call = disableRootKeyCall { activeKeyId: access_key };
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
             let result = keychain.disable_root_key(account, disable_call);
 
             assert_unauthorized_error(result.unwrap_err());
