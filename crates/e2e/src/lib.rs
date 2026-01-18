@@ -255,6 +255,7 @@ pub async fn setup_validators(
             new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
+            fcu_heartbeat_interval: Duration::from_secs(300),
             feed_state,
         };
 
