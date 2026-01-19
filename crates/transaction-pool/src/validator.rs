@@ -202,10 +202,7 @@ where
         let current_time = self.inner.fork_tracker().tip_timestamp();
 
         // Check if T1 is active for expiring nonce specific validations
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(current_time);
+        let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
         let is_expiring_nonce = tx.is_expiring_nonce_tx() && spec.is_t1();
 
         // Expiring nonce transactions MUST have valid_before set

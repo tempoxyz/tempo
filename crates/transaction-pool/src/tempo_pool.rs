@@ -89,7 +89,9 @@ where
         &self,
         tx_hashes: impl Iterator<Item = &'a TxHash>,
     ) {
-        self.aa_2d_pool.write().remove_included_expiring_nonce_txs(tx_hashes);
+        self.aa_2d_pool
+            .write()
+            .remove_included_expiring_nonce_txs(tx_hashes);
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -270,13 +272,16 @@ where
                         .inner
                         .fork_tracker()
                         .tip_timestamp();
-                    let is_t1_active =
-                        self.client().chain_spec().is_t1_active_at_timestamp(tip_timestamp);
+                    let is_t1_active = self
+                        .client()
+                        .chain_spec()
+                        .is_t1_active_at_timestamp(tip_timestamp);
 
-                    let added = self
-                        .aa_2d_pool
-                        .write()
-                        .add_transaction(Arc::new(tx), state_nonce, is_t1_active)?;
+                    let added = self.aa_2d_pool.write().add_transaction(
+                        Arc::new(tx),
+                        state_nonce,
+                        is_t1_active,
+                    )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool
