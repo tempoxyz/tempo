@@ -103,10 +103,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        let result =
-            self.internals
-                .load_account_mut(address)?
-                .sstore(key, value, false)?;
+        let result = self
+            .internals
+            .load_account_mut(address)?
+            .sstore(key, value, false)?;
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
         self.deduct_gas(self.gas_params.sstore_static_gas())?;
