@@ -1,4 +1,8 @@
-[submodule "docs/specs/lib/tempo-std"]
-        path = docs/specs/lib/tempo-std
-        url = https://github.com/tempoxyz/tempo-std
-        branch = master
+[submodule "specs/lib/tempo-std"]
+	path = specs/lib/tempo-std
+	url = https://github.com/tempoxyz/tempo-std
+	branch = master
+[submodule "specs/lib/forge-std"]
+	path = specs/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+	branch = master
