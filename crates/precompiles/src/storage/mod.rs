@@ -35,6 +35,9 @@ pub trait PrecompileStorageProvider {
     /// Returns the current block timestamp.
     fn timestamp(&self) -> U256;
 
+    /// Returns the current block number.
+    fn block_number(&self) -> u64;
+
     /// Returns the current block beneficiary (coinbase).
     fn beneficiary(&self) -> Address;
 

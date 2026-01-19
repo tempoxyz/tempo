@@ -5,22 +5,26 @@
 //! - Updates shared state (accessible by RPC handlers)
 //! - Broadcasts events to subscribers
 
+use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     Heightable as _,
     simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
+    types::Epoch,
 };
-use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
+use commonware_cryptography::{
+    bls12381::primitives::variant::MinSig, certificate::Provider, ed25519::PublicKey,
+};
 use commonware_macros::select;
 use commonware_runtime::{ContextCell, Handle, Spawner, spawn_cell};
 use futures::StreamExt;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tempo_node::rpc::consensus::{CertifiedBlock, Event};
+use tempo_node::rpc::consensus::{BlockHeaderData, CertifiedBlock, Event};
 use tracing::{info, info_span, instrument};
 
 use super::state::FeedStateHandle;
-use crate::{alias::marshal, consensus::Digest};
+use crate::{alias::marshal, consensus::Digest, epoch::SchemeProvider};
 
 /// Type alias for the activity type used by the feed actor.
 pub(super) type FeedActivity = Activity<Scheme<PublicKey, MinSig>, Digest>;
@@ -37,6 +41,8 @@ pub(crate) struct Actor<TContext> {
     state: FeedStateHandle,
     /// Marshal mailbox for block lookups.
     marshal: marshal::Mailbox,
+    /// Scheme provider for looking up threshold public keys.
+    scheme_provider: SchemeProvider,
 }
 
 impl<TContext: Spawner> Actor<TContext> {
@@ -48,14 +54,17 @@ impl<TContext: Spawner> Actor<TContext> {
         marshal: marshal::Mailbox,
         receiver: Receiver,
         state: FeedStateHandle,
+        scheme_provider: SchemeProvider,
     ) -> Self {
         state.set_marshal(marshal.clone());
+        state.set_scheme_provider(scheme_provider.clone());
 
         Self {
             context: ContextCell::new(context),
             receiver,
             state,
             marshal,
+            scheme_provider,
         }
     }
 
@@ -87,12 +96,26 @@ impl<TContext: Spawner> Actor<TContext> {
         digest: Digest,
         certificate: &impl Encode,
     ) -> CertifiedBlock {
-        let certificate = hex::encode(certificate.encode());
-        let height = self
-            .marshal
-            .get_block(&digest)
-            .await
-            .map(|b| b.height().get());
+        let certificate_bytes = certificate.encode();
+        let certificate = hex::encode(&certificate_bytes);
+
+        let block = self.marshal.get_block(&digest).await;
+        let height = block.as_ref().map(|b| b.height().get());
+
+        let header = block.as_ref().map(|b| BlockHeaderData {
+            parent_hash: b.parent_hash(),
+            state_root: b.state_root(),
+            receipts_root: b.receipts_root(),
+            timestamp: b.timestamp(),
+        });
+
+        let threshold_public_key = self
+            .scheme_provider
+            .scoped(Epoch::new(epoch))
+            .map(|scheme| {
+                let identity = scheme.identity();
+                hex::encode(identity.encode())
+            });
 
         CertifiedBlock {
             epoch,
@@ -100,6 +123,8 @@ impl<TContext: Spawner> Actor<TContext> {
             height,
             digest: digest.0,
             certificate,
+            header,
+            threshold_public_key,
         }
     }
 

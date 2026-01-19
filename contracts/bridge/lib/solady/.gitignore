@@ -1,0 +1,44 @@
+# NodeJS files
+node_modules/
+coverage
+coverage.json
+typechain
+
+# Hardhat files
+cache
+artifacts
+
+cache/
+out/
+
+# Ignore Environment Variables!
+.env
+.env.prod
+
+# Ignore all vscode settings
+.vscode/
+
+# Ignore all jetbrain settings
+.idea/
+
+# Ignore all notes 
+notes/
+
+# Ignore flattened files
+flattened.txt
+
+broadcast
+
+# Coverage
+lcov.info
+
+# Woke testing
+.wake
+pytypes
+__pycache__/
+*.py[cod]
+.hypothesis/
+wake-coverage.cov
+
+# We will use the CI to check for the gas difference
+.gas-snapshot

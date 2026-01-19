@@ -14,7 +14,7 @@ mod state;
 use commonware_runtime::Spawner;
 use futures::channel::mpsc;
 
-use crate::alias::marshal;
+use crate::{alias::marshal, epoch::SchemeProvider};
 pub(crate) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 pub use state::FeedStateHandle;
@@ -24,9 +24,10 @@ pub(crate) fn init<TContext: Spawner>(
     context: TContext,
     marshal: marshal::Mailbox,
     state: FeedStateHandle,
+    scheme_provider: SchemeProvider,
 ) -> (Actor<TContext>, Mailbox) {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox::new(tx);
-    let actor = Actor::new(context, marshal, rx, state);
+    let actor = Actor::new(context, marshal, rx, state, scheme_provider);
     (actor, mailbox)
 }

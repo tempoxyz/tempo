@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
+///
+/// Contains all data needed for clients to verify the certificate independently:
+/// - Block header fields for commitment reconstruction
+/// - The threshold BLS public key for signature verification
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CertifiedBlock {
@@ -13,9 +17,34 @@ pub struct CertifiedBlock {
     pub view: u64,
     /// Block height, if known. May be `None` if the block hasn't been stored yet.
     pub height: Option<u64>,
+    /// Block hash (digest).
     pub digest: B256,
-    /// Hex-encoded full notarization or finalization.
+    /// Hex-encoded full notarization or finalization certificate.
     pub certificate: String,
+
+    /// Block header data for verification (populated when block is available).
+    #[serde(flatten)]
+    pub header: Option<BlockHeaderData>,
+
+    /// Hex-encoded threshold BLS public key (G1 point, 48 bytes compressed)
+    /// for verifying the certificate signature. `None` if the scheme for
+    /// this epoch is not available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threshold_public_key: Option<String>,
+}
+
+/// Block header data needed for certificate verification.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockHeaderData {
+    /// Parent block hash.
+    pub parent_hash: B256,
+    /// State root after executing this block.
+    pub state_root: B256,
+    /// Receipts root (trie root of transaction receipts).
+    pub receipts_root: B256,
+    /// Block timestamp.
+    pub timestamp: u64,
 }
 
 /// Consensus event emitted.

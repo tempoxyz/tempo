@@ -4,6 +4,7 @@ use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as
 use crate::{ExecutionRuntime, execution_runtime::chainspec};
 
 mod backfill;
+mod bridge;
 mod consensus_rpc;
 mod dkg;
 mod linkage;

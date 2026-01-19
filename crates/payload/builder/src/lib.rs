@@ -700,6 +700,7 @@ mod tests {
                     parent_hash: B256::random(),
                     fee_recipient: Address::random(),
                     transactions: vec![tx],
+                    deposit_attestations: vec![],
                 },
                 signature: Bytes::new(),
             };

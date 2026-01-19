@@ -17,6 +17,7 @@ pub use header::TempoHeader;
 
 pub mod subblock;
 pub use subblock::{
+    DepositAttestationSig, MAX_ATTESTATION_BYTES_PER_SUBBLOCK, MAX_ATTESTATIONS_PER_SUBBLOCK,
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockMetadata, SubBlockVersion,
 };
 

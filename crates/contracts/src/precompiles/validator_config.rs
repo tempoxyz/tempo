@@ -83,6 +83,7 @@ crate::sol! {
         error ValidatorAlreadyExists();
         error ValidatorNotFound();
         error InvalidPublicKey();
+        error BelowMinimumValidators(uint64 activeCount, uint64 minimum);
 
         error NotHostPort(string field, string input, string backtrace);
         error NotIpPort(string field, string input, string backtrace);
@@ -123,6 +124,14 @@ impl ValidatorConfigError {
             field,
             input,
             backtrace,
+        })
+    }
+
+    /// Creates an error when operation would reduce active validators below minimum.
+    pub const fn below_minimum_validators(active_count: u64, minimum: u64) -> Self {
+        Self::BelowMinimumValidators(IValidatorConfig::BelowMinimumValidators {
+            activeCount: active_count,
+            minimum,
         })
     }
 }

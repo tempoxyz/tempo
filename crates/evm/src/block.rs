@@ -219,6 +219,7 @@ where
                 fee_recipient: metadata.fee_recipient,
                 parent_hash: self.inner.ctx.parent_hash,
                 transactions: transactions.clone(),
+                deposit_attestations: Vec::new(),
             }
             .signature_hash();
 
@@ -599,6 +600,7 @@ mod tests {
             parent_hash,
             fee_recipient: Address::ZERO,
             transactions: vec![],
+            deposit_attestations: vec![],
         };
         let signature_hash = subblock.signature_hash();
         let signature = signer.sign(&[], signature_hash.as_slice());
@@ -780,6 +782,7 @@ mod tests {
             parent_hash: B256::ZERO,
             fee_recipient: Address::ZERO,
             transactions: vec![],
+            deposit_attestations: vec![],
         };
         let signature_hash = subblock.signature_hash();
         let wrong_signature = wrong_signer.sign(&[], signature_hash.as_slice());
@@ -814,6 +817,7 @@ mod tests {
             parent_hash: B256::ZERO,
             fee_recipient: Address::ZERO,
             transactions: vec![tx.clone()],
+            deposit_attestations: Vec::new(),
         };
 
         let executor = TestExecutorBuilder::default()

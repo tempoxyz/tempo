@@ -1,0 +1,39 @@
+# Bridge ExEx Configuration
+
+tempo_chain_id = 62049
+tempo_rpc_url = "http://localhost:8551"
+# validator_key_path = "/path/to/validator.key"
+
+# Anvil local testnet
+[chains.anvil]
+chain_id = 31337
+rpc_url = "http://localhost:8545"
+ws_url = "ws://localhost:8546"
+confirmations = 1
+escrow_address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+# light_client_address = "0x..."  # Tempo light client for burn verification
+poll_interval_secs = 1
+start_block = 0
+
+[chains.anvil.tokens."0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"]
+name = "USD Coin"
+symbol = "USDC"
+decimals = 6
+tempo_tip20 = "0x20C0000000000000000000000000000001000000"
+min_deposit = 1000000
+max_deposit = 1000000000000
+
+# Ethereum Mainnet (example)
+[chains.ethereum]
+chain_id = 1
+rpc_url = "https://eth.llamarpc.com"
+confirmations = 12
+escrow_address = "0x0000000000000000000000000000000000000000"
+poll_interval_secs = 12
+start_block = 0
+
+[chains.ethereum.tokens."0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"]
+name = "USD Coin"
+symbol = "USDC"
+decimals = 6
+tempo_tip20 = "0x20C0000000000000000000000000000001000000"

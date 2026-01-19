@@ -39,7 +39,8 @@ use std::{
 };
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
 use tempo_primitives::{
-    RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
+    MAX_ATTESTATION_BYTES_PER_SUBBLOCK, MAX_ATTESTATIONS_PER_SUBBLOCK, RecoveredSubBlock,
+    SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;
 use tracing::{Instrument, Level, Span, debug, error, instrument, warn};
@@ -768,6 +769,7 @@ async fn build_subblock(
         fee_recipient,
         parent_hash,
         transactions,
+        deposit_attestations: Vec::new(),
     };
 
     // TODO: Use a namespace for these signatures?
@@ -847,6 +849,24 @@ async fn validate_subblock(
         warn!(
             size = subblock.total_tx_size(),
             max_size, "subblock is too large, skipping"
+        );
+        return Ok(());
+    }
+
+    // Validate deposit attestation limits to prevent DoS.
+    if subblock.deposit_attestations.len() > MAX_ATTESTATIONS_PER_SUBBLOCK {
+        warn!(
+            count = subblock.deposit_attestations.len(),
+            max = MAX_ATTESTATIONS_PER_SUBBLOCK,
+            "subblock exceeds max attestation count, skipping"
+        );
+        return Ok(());
+    }
+    if subblock.total_attestation_size() > MAX_ATTESTATION_BYTES_PER_SUBBLOCK {
+        warn!(
+            size = subblock.total_attestation_size(),
+            max = MAX_ATTESTATION_BYTES_PER_SUBBLOCK,
+            "subblock exceeds max attestation bytes, skipping"
         );
         return Ok(());
     }

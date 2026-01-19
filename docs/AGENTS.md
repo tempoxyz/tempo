@@ -98,11 +98,6 @@ Use `~icons/lucide/<name>` imports (via unplugin-icons):
 import LucideCheck from '~icons/lucide/check'
 ```
 
-## Analytics & Tracking
-- **PostHog**: Client-side tracking via `posthog-js` (configured in `layout.tsx`)
-- **Vercel Analytics**: Server-side analytics via `@vercel/analytics`
-- **AI Crawler Tracking**: `middleware.ts` tracks AI crawlers (GPTBot, ClaudeBot, etc.) server-side since they don't execute JavaScript. Sends `crawler_pageview` events to PostHog.
-
 ## Key Patterns
 - Find a page: search route in `vocs.config.tsx` → open corresponding `pages/` file
 - Add demo step: create component in `components/guides/steps/`, export from `index.ts`

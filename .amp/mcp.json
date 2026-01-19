@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "local-grafana-tempo": {
+      "url": "http://localhost:3200/api/mcp"
+    }
+  }
+}

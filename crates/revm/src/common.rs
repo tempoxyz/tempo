@@ -374,6 +374,10 @@ where
         unreachable!("'timestamp' not implemented in read-only context yet")
     }
 
+    fn block_number(&self) -> u64 {
+        unreachable!("'block_number' not implemented in read-only context yet")
+    }
+
     fn beneficiary(&self) -> Address {
         unreachable!("'beneficiary' not implemented in read-only context yet")
     }

@@ -1,0 +1,48 @@
+[package]
+name = "bridge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "CLI for Tempo stablecoin bridge operations"
+
+[[bin]]
+name = "bridge"
+path = "src/main.rs"
+
+[dependencies]
+# Tempo
+tempo-bridge-exex = { path = "../../crates/bridge-exex" }
+tempo-primitives = { path = "../../crates/primitives" }
+tempo-contracts = { path = "../../crates/contracts" }
+
+# Alloy
+alloy = { workspace = true, default-features = false, features = [
+    "network",
+    "rpc",
+    "rpc-types",
+    "transports",
+    "providers",
+    "reqwest-rustls-tls",
+    "signers",
+    "signer-local",
+] }
+alloy-primitives = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# Error handling
+eyre = { workspace = true }

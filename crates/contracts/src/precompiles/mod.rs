@@ -1,4 +1,5 @@
 pub mod account_keychain;
+pub mod bridge;
 pub mod common_errors;
 pub mod nonce;
 pub mod stablecoin_dex;
@@ -10,6 +11,7 @@ pub mod validator_config;
 
 pub use account_keychain::*;
 use alloy_primitives::{Address, address};
+pub use bridge::*;
 pub use common_errors::*;
 pub use nonce::*;
 pub use stablecoin_dex::*;
@@ -31,3 +33,4 @@ pub const VALIDATOR_CONFIG_ADDRESS: Address =
     address!("0xCCCCCCCC00000000000000000000000000000000");
 pub const ACCOUNT_KEYCHAIN_ADDRESS: Address =
     address!("0xAAAAAAAA00000000000000000000000000000000");
+pub const BRIDGE_ADDRESS: Address = address!("0xBBBB000000000000000000000000000000000000");

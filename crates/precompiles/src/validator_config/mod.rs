@@ -4,11 +4,15 @@ use tempo_contracts::precompiles::VALIDATOR_CONFIG_ADDRESS;
 pub use tempo_contracts::precompiles::{IValidatorConfig, ValidatorConfigError};
 use tempo_precompiles_macros::{Storable, contract};
 
+/// Minimum number of active validators required to maintain network security.
+/// This prevents collapsing the validator set to a 1-of-1 configuration.
+pub const MIN_VALIDATORS: u64 = 3;
+
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, keccak256};
 use tracing::trace;
 
 /// Validator information
@@ -101,6 +105,20 @@ impl ValidatorConfig {
     fn validator_exists(&self, validator: Address) -> Result<bool> {
         let validator = self.validators[validator].read()?;
         Ok(!validator.public_key.is_zero())
+    }
+
+    /// Count the number of active validators
+    fn active_validator_count(&self) -> Result<u64> {
+        let count = self.validators_array.len()?;
+        let mut active_count = 0u64;
+        for i in 0..count {
+            let validator_address = self.validators_array[i].read()?;
+            let validator = self.validators[validator_address].read()?;
+            if validator.active {
+                active_count += 1;
+            }
+        }
+        Ok(active_count)
     }
 
     /// Get all validators (view function)
@@ -259,6 +277,19 @@ impl ValidatorConfig {
         }
 
         let mut validator = self.validators[call.validator].read()?;
+
+        // If deactivating a currently active validator, check minimum validator count
+        if validator.active && !call.active {
+            let active_count = self.active_validator_count()?;
+            // After deactivation, we'd have active_count - 1 active validators
+            if active_count <= MIN_VALIDATORS {
+                return Err(ValidatorConfigError::below_minimum_validators(
+                    active_count - 1,
+                    MIN_VALIDATORS,
+                ))?;
+            }
+        }
+
         validator.active = call.active;
         self.validators[call.validator].write(validator)
     }
@@ -286,6 +317,36 @@ impl ValidatorConfig {
         self.check_owner(sender)?;
         self.next_dkg_ceremony.write(call.epoch)
     }
+
+    /// Compute a hash of the current active validator set.
+    ///
+    /// This is used in deposit attestation digests to bind signatures to a specific
+    /// validator set, preventing threshold manipulation during validator set transitions.
+    ///
+    /// The hash is computed as:
+    /// `keccak256(sorted_active_validator_addresses)`
+    ///
+    /// Addresses are sorted to ensure deterministic ordering regardless of the order
+    /// validators were added.
+    pub fn compute_validator_set_hash(&self) -> Result<B256> {
+        let validators = self.get_validators()?;
+        let mut active_addresses: Vec<Address> = validators
+            .iter()
+            .filter(|v| v.active)
+            .map(|v| v.validatorAddress)
+            .collect();
+
+        // Sort for deterministic ordering
+        active_addresses.sort();
+
+        // Compute hash of concatenated addresses
+        let mut buf = Vec::with_capacity(active_addresses.len() * 20);
+        for addr in &active_addresses {
+            buf.extend_from_slice(addr.as_slice());
+        }
+
+        Ok(keccak256(&buf))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -305,7 +366,7 @@ pub fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpWith
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::Address;
+    use alloy::primitives::{Address, address};
     use alloy_primitives::FixedBytes;
 
     #[test]
@@ -353,7 +414,7 @@ mod tests {
             // Initialize with owner1
             validator_config.initialize(owner1)?;
 
-            // Owner1 adds a validator - should succeed
+            // Owner1 adds validators - need MIN_VALIDATORS+1 to test deactivation
             let public_key = FixedBytes::<32>::from([0x44; 32]);
             validator_config.add_validator(
                 owner1,
@@ -366,14 +427,34 @@ mod tests {
                 },
             )?;
 
-            // Verify validator was added
+            // Add more validators to meet MIN_VALIDATORS requirement
+            for i in 0..MIN_VALIDATORS {
+                validator_config.add_validator(
+                    owner1,
+                    IValidatorConfig::addValidatorCall {
+                        newValidatorAddress: Address::from_word(FixedBytes::<32>::from(
+                            [i as u8 + 0x10; 32],
+                        )),
+                        publicKey: FixedBytes::<32>::from([i as u8 + 0x50; 32]),
+                        inboundAddress: format!("192.168.1.{}:8000", i + 10),
+                        active: true,
+                        outboundAddress: format!("192.168.1.{}:9000", i + 10),
+                    },
+                )?;
+            }
+
+            // Verify validators were added
             let validators = validator_config.get_validators()?;
-            assert_eq!(validators.len(), 1, "Should have 1 validator");
+            assert_eq!(
+                validators.len(),
+                MIN_VALIDATORS as usize + 1,
+                "Should have MIN_VALIDATORS+1 validators"
+            );
             assert_eq!(validators[0].validatorAddress, validator1);
             assert_eq!(validators[0].publicKey, public_key);
             assert!(validators[0].active, "New validator should be active");
 
-            // Owner1 changes validator status - should succeed
+            // Owner1 changes validator status - should succeed (still above MIN_VALIDATORS)
             validator_config.change_validator_status(
                 owner1,
                 IValidatorConfig::changeValidatorStatusCall {
@@ -876,6 +957,228 @@ mod tests {
             assert_eq!(
                 validators[0].publicKey, original_public_key,
                 "Original public key should be preserved"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_cannot_deactivate_below_minimum_validators() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add exactly MIN_VALIDATORS active validators
+            let mut validators = Vec::new();
+            for i in 0..super::MIN_VALIDATORS {
+                let validator = Address::random();
+                validators.push(validator);
+                validator_config.add_validator(
+                    owner,
+                    IValidatorConfig::addValidatorCall {
+                        newValidatorAddress: validator,
+                        publicKey: FixedBytes::<32>::from([i as u8 + 1; 32]),
+                        inboundAddress: format!("192.168.1.{}:8000", i + 1),
+                        active: true,
+                        outboundAddress: format!("192.168.1.{}:9000", i + 1),
+                    },
+                )?;
+            }
+
+            // Verify we have MIN_VALIDATORS active
+            let all_validators = validator_config.get_validators()?;
+            assert_eq!(all_validators.len() as u64, super::MIN_VALIDATORS);
+
+            // Try to deactivate one validator - should fail
+            let result = validator_config.change_validator_status(
+                owner,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validators[0],
+                    active: false,
+                },
+            );
+
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::below_minimum_validators(
+                    super::MIN_VALIDATORS - 1,
+                    super::MIN_VALIDATORS
+                )
+                .into()),
+                "Should reject deactivating below minimum validators"
+            );
+
+            // Verify validator is still active
+            let validator_info = validator_config.validators(validators[0])?;
+            assert!(validator_info.active, "Validator should still be active");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_can_deactivate_with_more_than_minimum_validators() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add MIN_VALIDATORS + 1 active validators
+            let mut validators = Vec::new();
+            for i in 0..=super::MIN_VALIDATORS {
+                let validator = Address::random();
+                validators.push(validator);
+                validator_config.add_validator(
+                    owner,
+                    IValidatorConfig::addValidatorCall {
+                        newValidatorAddress: validator,
+                        publicKey: FixedBytes::<32>::from([i as u8 + 1; 32]),
+                        inboundAddress: format!("192.168.1.{}:8000", i + 1),
+                        active: true,
+                        outboundAddress: format!("192.168.1.{}:9000", i + 1),
+                    },
+                )?;
+            }
+
+            // Verify we have MIN_VALIDATORS + 1 active
+            let all_validators = validator_config.get_validators()?;
+            assert_eq!(all_validators.len() as u64, super::MIN_VALIDATORS + 1);
+
+            // Deactivate one validator - should succeed
+            validator_config.change_validator_status(
+                owner,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validators[0],
+                    active: false,
+                },
+            )?;
+
+            // Verify validator is now inactive
+            let validator_info = validator_config.validators(validators[0])?;
+            assert!(!validator_info.active, "Validator should be inactive");
+
+            // Now try to deactivate another - should fail (at minimum)
+            let result = validator_config.change_validator_status(
+                owner,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validators[1],
+                    active: false,
+                },
+            );
+
+            assert_eq!(
+                result,
+                Err(ValidatorConfigError::below_minimum_validators(
+                    super::MIN_VALIDATORS - 1,
+                    super::MIN_VALIDATORS
+                )
+                .into()),
+                "Should reject deactivating below minimum validators"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_compute_validator_set_hash() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let owner = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
+            // Add validators in non-sorted order (need 4 to be able to deactivate one and stay above MIN_VALIDATORS=3)
+            let validator_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            let validator_c = address!("cccccccccccccccccccccccccccccccccccccccc");
+            let validator_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            let validator_d = address!("dddddddddddddddddddddddddddddddddddddddd");
+
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator_c,
+                    publicKey: FixedBytes::<32>::from([0x03; 32]),
+                    inboundAddress: "192.168.1.3:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.3:9000".to_string(),
+                },
+            )?;
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator_a,
+                    publicKey: FixedBytes::<32>::from([0x01; 32]),
+                    inboundAddress: "192.168.1.1:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.1:9000".to_string(),
+                },
+            )?;
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator_b,
+                    publicKey: FixedBytes::<32>::from([0x02; 32]),
+                    inboundAddress: "192.168.1.2:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.2:9000".to_string(),
+                },
+            )?;
+            validator_config.add_validator(
+                owner,
+                IValidatorConfig::addValidatorCall {
+                    newValidatorAddress: validator_d,
+                    publicKey: FixedBytes::<32>::from([0x04; 32]),
+                    inboundAddress: "192.168.1.4:8000".to_string(),
+                    active: true,
+                    outboundAddress: "192.168.1.4:9000".to_string(),
+                },
+            )?;
+
+            // Compute hash
+            let hash = validator_config.compute_validator_set_hash()?;
+
+            // Compute expected hash manually (sorted: a, b, c, d)
+            let mut buf = Vec::with_capacity(80);
+            buf.extend_from_slice(validator_a.as_slice());
+            buf.extend_from_slice(validator_b.as_slice());
+            buf.extend_from_slice(validator_c.as_slice());
+            buf.extend_from_slice(validator_d.as_slice());
+            let expected = keccak256(&buf);
+
+            assert_eq!(
+                hash, expected,
+                "Validator set hash should match sorted order"
+            );
+
+            // Deactivate one validator and verify hash changes
+            validator_config.change_validator_status(
+                owner,
+                IValidatorConfig::changeValidatorStatusCall {
+                    validator: validator_b,
+                    active: false,
+                },
+            )?;
+
+            let hash_after = validator_config.compute_validator_set_hash()?;
+            assert_ne!(
+                hash, hash_after,
+                "Hash should change when validator is deactivated"
+            );
+
+            // Verify the new hash only includes active validators (a, c, d)
+            let mut buf = Vec::with_capacity(60);
+            buf.extend_from_slice(validator_a.as_slice());
+            buf.extend_from_slice(validator_c.as_slice());
+            buf.extend_from_slice(validator_d.as_slice());
+            let expected_after = keccak256(&buf);
+            assert_eq!(
+                hash_after, expected_after,
+                "Hash should only include active validators"
             );
 
             Ok(())

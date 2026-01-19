@@ -12,6 +12,7 @@ pub struct HashMapStorageProvider {
     pub events: HashMap<Address, Vec<LogData>>,
     chain_id: u64,
     timestamp: U256,
+    block_number: u64,
     beneficiary: Address,
     spec: TempoHardfork,
     is_static: bool,
@@ -36,6 +37,7 @@ impl HashMapStorageProvider {
                     .unwrap()
                     .as_secs(),
             ),
+            block_number: 1,
             beneficiary: Address::ZERO,
             spec,
             is_static: false,
@@ -55,6 +57,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
 
     fn timestamp(&self) -> U256 {
         self.timestamp
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_number
     }
 
     fn beneficiary(&self) -> Address {
@@ -162,6 +168,10 @@ impl HashMapStorageProvider {
 
     pub fn set_timestamp(&mut self, timestamp: U256) {
         self.timestamp = timestamp;
+    }
+
+    pub fn set_block_number(&mut self, block_number: u64) {
+        self.block_number = block_number;
     }
 
     pub fn set_beneficiary(&mut self, beneficiary: Address) {

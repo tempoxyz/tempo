@@ -6,6 +6,22 @@ use alloy_rlp::{BufMut, Decodable, Encodable, RlpDecodable, RlpEncodable};
 /// Magic byte for the subblock signature hash.
 const SUBBLOCK_SIGNATURE_HASH_MAGIC_BYTE: u8 = 0x78;
 
+/// Maximum number of deposit attestations per subblock.
+pub const MAX_ATTESTATIONS_PER_SUBBLOCK: usize = 64;
+
+/// Maximum total bytes for attestation attachments per subblock (32KB).
+pub const MAX_ATTESTATION_BYTES_PER_SUBBLOCK: usize = 32 * 1024;
+
+/// A deposit attestation signature attached to a subblock.
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
+pub struct DepositAttestationSig {
+    /// The deposit request ID being attested.
+    pub request_id: B256,
+    /// ECDSA signature (65 bytes).
+    pub signature: Bytes,
+}
+
 /// Nonce key prefix marking a subblock transaction.
 pub const TEMPO_SUBBLOCK_NONCE_KEY_PREFIX: u8 = 0x5b;
 
@@ -81,6 +97,8 @@ pub struct SubBlock {
     pub fee_recipient: Address,
     /// Transactions included in the subblock.
     pub transactions: Vec<TempoTxEnvelope>,
+    /// Deposit attestation signatures attached to this subblock.
+    pub deposit_attestations: Vec<DepositAttestationSig>,
 }
 
 impl SubBlock {
@@ -97,6 +115,7 @@ impl SubBlock {
         self.parent_hash.encode(out);
         self.fee_recipient.encode(out);
         self.transactions.encode(out);
+        self.deposit_attestations.encode(out);
     }
 
     fn rlp_encoded_fields_length(&self) -> usize {
@@ -104,6 +123,7 @@ impl SubBlock {
             + self.parent_hash.length()
             + self.fee_recipient.length()
             + self.transactions.length()
+            + self.deposit_attestations.length()
     }
 
     fn rlp_header(&self) -> alloy_rlp::Header {
@@ -119,12 +139,18 @@ impl SubBlock {
             parent_hash: Decodable::decode(buf)?,
             fee_recipient: Decodable::decode(buf)?,
             transactions: Decodable::decode(buf)?,
+            deposit_attestations: Decodable::decode(buf)?,
         })
     }
 
     /// Returns the total length of the transactions in the subblock.
     pub fn total_tx_size(&self) -> usize {
         self.transactions.iter().map(|tx| tx.length()).sum()
+    }
+
+    /// Returns the total RLP-encoded size of the deposit attestations.
+    pub fn total_attestation_size(&self) -> usize {
+        self.deposit_attestations.iter().map(|a| a.length()).sum()
     }
 }
 
@@ -370,6 +396,7 @@ mod tests {
             parent_hash: B256::random(),
             fee_recipient: Address::random(),
             transactions: vec![],
+            deposit_attestations: vec![],
         };
 
         // Hash should be deterministic
@@ -384,6 +411,7 @@ mod tests {
             parent_hash: B256::random(),
             fee_recipient: Address::random(),
             transactions: vec![],
+            deposit_attestations: vec![],
         };
         assert_ne!(subblock.signature_hash(), subblock2.signature_hash());
 

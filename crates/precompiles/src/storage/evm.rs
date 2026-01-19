@@ -61,6 +61,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.block_timestamp()
     }
 
+    fn block_number(&self) -> u64 {
+        self.internals.block_env().number().to()
+    }
+
     fn beneficiary(&self) -> Address {
         self.internals.block_env().beneficiary()
     }

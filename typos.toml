@@ -12,6 +12,7 @@ extend-exclude = [
     "**/*_test.*",
     "**/*_tests.*",
     "docs/specs/lib/**",
+    "contracts/bridge/lib/**",
 ]
 
 [default.extend-words]

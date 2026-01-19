@@ -13,7 +13,7 @@ use jsonrpsee::{
     types::{ErrorObject, error::INTERNAL_ERROR_CODE},
 };
 
-pub use types::{CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
+pub use types::{BlockHeaderData, CertifiedBlock, ConsensusFeed, ConsensusState, Event, Query};
 
 /// Consensus namespace RPC trait.
 #[rpc(server, client, namespace = "consensus")]

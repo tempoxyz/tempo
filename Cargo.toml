@@ -1,5 +1,5 @@
 [workspace.package]
-version = "1.0.0"
+version = "1.0.0-rc.7"
 edition = "2024"
 rust-version = "1.91.0"
 license = "MIT OR Apache-2.0"
@@ -7,6 +7,7 @@ publish = false
 
 [workspace]
 members = [
+  "bin/bridge-cli",
   "bin/tempo",
   "bin/tempo-bench",
   "bin/tempo-sidecar",
@@ -30,6 +31,7 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
+  "crates/bridge-exex",
   "xtask",
 ]
 
@@ -115,6 +117,7 @@ tempo-primitives = { path = "crates/primitives", default-features = false, featu
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
+tempo-bridge-exex = { path = "crates/bridge-exex" }
 
 # reth v1.10.0 (b25f32a)
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "b25f32a977b489f9b84254c7811a2a5a25a81369" }

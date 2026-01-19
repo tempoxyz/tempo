@@ -1,0 +1,74 @@
+[package]
+name = "tempo-bridge-exex"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "ExEx sidecar for Tempo stablecoin bridge"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Tempo
+tempo-primitives = { path = "../primitives" }
+tempo-contracts = { path = "../contracts" }
+
+# Alloy
+alloy = { workspace = true, features = ["full", "signer-local"] }
+alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
+alloy-trie = "0.9"
+
+# Reth ExEx
+reth-exex = { git = "https://github.com/paradigmxyz/reth", rev = "b25f32a977b489f9b84254c7811a2a5a25a81369" }
+reth-node-api = { workspace = true }
+reth-primitives-traits = { workspace = true }
+reth-provider = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+rand = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+toml = "0.8"
+
+# Logging
+tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true }
+reth-metrics = { workspace = true }
+
+# Error handling
+eyre = { workspace = true }
+thiserror = { workspace = true }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Encoding
+hex = "0.4"
+
+# Crypto
+k256 = "0.13"
+blst = "0.3"
+
+# AWS KMS
+aws-config = { version = "1.5", optional = true }
+aws-sdk-kms = { version = "1.61", optional = true }
+
+# Async trait
+async-trait = { workspace = true }
+
+# HTTP server for health endpoints
+axum = { workspace = true }
+
+[features]
+default = []
+kms = ["aws-config", "aws-sdk-kms"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

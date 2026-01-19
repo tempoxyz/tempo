@@ -119,6 +119,10 @@ impl StorageCtx {
         Self::with_storage(|s| s.timestamp())
     }
 
+    pub fn block_number(&self) -> u64 {
+        Self::with_storage(|s| s.block_number())
+    }
+
     pub fn beneficiary(&self) -> Address {
         Self::with_storage(|s| s.beneficiary())
     }

@@ -1,0 +1,13 @@
+{
+  "name": "solady",
+  "version": "0.0.55",
+  "lockfileVersion": 2,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "solady",
+      "version": "0.0.55",
+      "license": "MIT"
+    }
+  }
+}

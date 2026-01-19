@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+import {ERC4337} from "../../../src/accounts/ERC4337.sol";
+import {Brutalizer} from "../Brutalizer.sol";
+
+/// @dev WARNING! This mock is strictly intended for testing purposes only.
+/// Do NOT copy anything here into production code unless you really know what you are doing.
+contract MockERC4337 is ERC4337, Brutalizer {
+    function withdrawDepositTo(address to, uint256 amount) public payable virtual override {
+        super.withdrawDepositTo(_brutalized(to), amount);
+    }
+
+    function executeBatch(uint256 filler, Call[] calldata calls)
+        public
+        payable
+        virtual
+        onlyEntryPointOrOwner
+        returns (bytes[] memory results)
+    {
+        /// @solidity memory-safe-assembly
+        assembly {
+            mstore(0x40, add(mload(0x40), mod(filler, 0x40)))
+        }
+        return super.executeBatch(calls);
+    }
+
+    function _domainNameAndVersion() internal pure override returns (string memory, string memory) {
+        return ("Milady", "1");
+    }
+
+    function hashTypedData(bytes32 structHash) external view returns (bytes32) {
+        return _hashTypedData(structHash);
+    }
+
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparator();
+    }
+}
