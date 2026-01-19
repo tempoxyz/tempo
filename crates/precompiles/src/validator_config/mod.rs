@@ -12,7 +12,7 @@ use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
-use alloy::primitives::{keccak256, Address, B256};
+use alloy::primitives::{Address, B256, keccak256};
 use tracing::trace;
 
 /// Validator information
@@ -366,7 +366,7 @@ pub fn ensure_address_is_ip_port(input: &str) -> core::result::Result<(), IpWith
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::primitives::{address, Address};
+    use alloy::primitives::{Address, address};
     use alloy_primitives::FixedBytes;
 
     #[test]
@@ -432,7 +432,9 @@ mod tests {
                 validator_config.add_validator(
                     owner1,
                     IValidatorConfig::addValidatorCall {
-                        newValidatorAddress: Address::from_word(FixedBytes::<32>::from([i as u8 + 0x10; 32])),
+                        newValidatorAddress: Address::from_word(FixedBytes::<32>::from(
+                            [i as u8 + 0x10; 32],
+                        )),
                         publicKey: FixedBytes::<32>::from([i as u8 + 0x50; 32]),
                         inboundAddress: format!("192.168.1.{}:8000", i + 10),
                         active: true,
@@ -443,7 +445,11 @@ mod tests {
 
             // Verify validators were added
             let validators = validator_config.get_validators()?;
-            assert_eq!(validators.len(), MIN_VALIDATORS as usize + 1, "Should have MIN_VALIDATORS+1 validators");
+            assert_eq!(
+                validators.len(),
+                MIN_VALIDATORS as usize + 1,
+                "Should have MIN_VALIDATORS+1 validators"
+            );
             assert_eq!(validators[0].validatorAddress, validator1);
             assert_eq!(validators[0].publicKey, public_key);
             assert!(validators[0].active, "New validator should be active");
@@ -1144,7 +1150,10 @@ mod tests {
             buf.extend_from_slice(validator_d.as_slice());
             let expected = keccak256(&buf);
 
-            assert_eq!(hash, expected, "Validator set hash should match sorted order");
+            assert_eq!(
+                hash, expected,
+                "Validator set hash should match sorted order"
+            );
 
             // Deactivate one validator and verify hash changes
             validator_config.change_validator_status(
@@ -1156,7 +1165,10 @@ mod tests {
             )?;
 
             let hash_after = validator_config.compute_validator_set_hash()?;
-            assert_ne!(hash, hash_after, "Hash should change when validator is deactivated");
+            assert_ne!(
+                hash, hash_after,
+                "Hash should change when validator is deactivated"
+            );
 
             // Verify the new hash only includes active validators (a, c, d)
             let mut buf = Vec::with_capacity(60);
@@ -1164,7 +1176,10 @@ mod tests {
             buf.extend_from_slice(validator_c.as_slice());
             buf.extend_from_slice(validator_d.as_slice());
             let expected_after = keccak256(&buf);
-            assert_eq!(hash_after, expected_after, "Hash should only include active validators");
+            assert_eq!(
+                hash_after, expected_after,
+                "Hash should only include active validators"
+            );
 
             Ok(())
         })

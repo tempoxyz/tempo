@@ -40,7 +40,10 @@ fn main() {
     let use_commonware_scheme = args.iter().any(|a| a == "--commonware");
 
     // Use provided message hash or default
-    let message_hash: [u8; 32] = if let Some(pos) = args.iter().position(|a| !a.starts_with('-') && a != &args[0]) {
+    let message_hash: [u8; 32] = if let Some(pos) = args
+        .iter()
+        .position(|a| !a.starts_with('-') && a != &args[0])
+    {
         let hex_str = args[pos].trim_start_matches("0x");
         let bytes = hex::decode(hex_str).expect("Invalid hex message");
         bytes.try_into().expect("Message must be 32 bytes")
@@ -91,18 +94,18 @@ fn main() {
     };
 
     println!("// BLS12-381 Test Vectors (EIP-2537 format)");
-    println!("// Scheme: {}", scheme);
+    println!("// Scheme: {scheme}");
     println!("// Verify: e(sig, G2_gen) == e(H(m), pk)");
     println!("// Message: 0x{}", hex::encode(message_hash));
     println!();
     println!(
         "bytes constant TEST_BLS_PUBLIC_KEY = hex\"{}\";",
-        hex::encode(&pk_bytes)
+        hex::encode(pk_bytes)
     );
     println!();
     println!(
         "bytes constant TEST_BLS_SIGNATURE = hex\"{}\";",
-        hex::encode(&sig_bytes)
+        hex::encode(sig_bytes)
     );
     println!();
     println!(
@@ -119,14 +122,20 @@ fn main() {
     println!("// G2 Generator (256 bytes, EIP-2537 format):");
     println!(
         "bytes constant G2_GENERATOR = hex\"{}\";",
-        hex::encode(&g2_gen_bytes)
+        hex::encode(g2_gen_bytes)
     );
 
     // Print compressed formats for bridge operator reference
     println!();
     println!("// Compressed formats (for consensus/bridge operator reference):");
-    println!("// Public key (G2, 96 bytes compressed): 0x{}", hex::encode(&pk_compressed));
-    println!("// Signature (G1, 48 bytes compressed): 0x{}", hex::encode(&sig_compressed));
+    println!(
+        "// Public key (G2, 96 bytes compressed): 0x{}",
+        hex::encode(pk_compressed)
+    );
+    println!(
+        "// Signature (G1, 48 bytes compressed): 0x{}",
+        hex::encode(sig_compressed)
+    );
 }
 
 fn scalar_from_bytes(bytes: &[u8; 32]) -> blst_scalar {

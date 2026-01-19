@@ -729,7 +729,7 @@ impl Bridge {
                 voting_power_signed: voting_power,
                 status: DEPOSIT_STATUS_FINALIZED,
             };
-            self.deposits[request_id].write(deposit.clone())?;
+            self.deposits[request_id].write(deposit)?;
 
             self.emit_event(IBridge::DepositRegistered {
                 requestId: request_id,

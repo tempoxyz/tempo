@@ -39,7 +39,7 @@ use std::{
 };
 use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
 use tempo_primitives::{
-    MAX_ATTESTATIONS_PER_SUBBLOCK, MAX_ATTESTATION_BYTES_PER_SUBBLOCK, RecoveredSubBlock,
+    MAX_ATTESTATION_BYTES_PER_SUBBLOCK, MAX_ATTESTATIONS_PER_SUBBLOCK, RecoveredSubBlock,
     SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
 use tokio::sync::broadcast;

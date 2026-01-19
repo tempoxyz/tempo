@@ -79,8 +79,8 @@ impl ConsensusClient {
         match result {
             Some(serde_json::Value::Null) | None => Ok(None),
             Some(value) => {
-                let block: CertifiedBlock =
-                    serde_json::from_value(value.clone()).wrap_err("Failed to parse CertifiedBlock")?;
+                let block: CertifiedBlock = serde_json::from_value(value.clone())
+                    .wrap_err("Failed to parse CertifiedBlock")?;
                 Ok(Some(block))
             }
         }
@@ -118,8 +118,8 @@ impl ConsensusClient {
         match result {
             Some(serde_json::Value::Null) | None => Ok(None),
             Some(value) => {
-                let block: CertifiedBlock =
-                    serde_json::from_value(value.clone()).wrap_err("Failed to parse CertifiedBlock")?;
+                let block: CertifiedBlock = serde_json::from_value(value.clone())
+                    .wrap_err("Failed to parse CertifiedBlock")?;
                 Ok(Some(block))
             }
         }
@@ -153,7 +153,7 @@ pub fn extract_bls_signature_from_certificate(certificate_hex: &str) -> Result<B
 
     // The finalization certificate layout (approximate, depends on varint encoding):
     // - Epoch: 1-10 bytes (varint)
-    // - View: 1-10 bytes (varint)  
+    // - View: 1-10 bytes (varint)
     // - Digest: 32 bytes
     // - Signature: 48 bytes (compressed G1)
     // - Seed signature: 48 bytes (compressed G1)
@@ -204,9 +204,8 @@ pub fn extract_bls_signature_from_certificate(certificate_hex: &str) -> Result<B
 /// The uncompressed format is: x-coordinate (64 bytes, big-endian) || y-coordinate (64 bytes, big-endian)
 /// This matches the EIP-2537 BLS precompile G1 point format.
 fn decompress_g1_signature(compressed: &[u8]) -> Result<Bytes> {
-    use blst::blst_p1_affine;
-    use blst::blst_p1_uncompress;
-    
+    use blst::{blst_p1_affine, blst_p1_uncompress};
+
     if compressed.len() != 48 {
         return Err(eyre::eyre!(
             "Invalid compressed G1 length: expected 48 bytes, got {}",
@@ -216,34 +215,32 @@ fn decompress_g1_signature(compressed: &[u8]) -> Result<Bytes> {
 
     // Use low-level blst API for decompression
     let mut affine = blst_p1_affine::default();
-    
+
     // Uncompress the point (validates it's on the curve)
-    let err = unsafe {
-        blst_p1_uncompress(&mut affine, compressed.as_ptr())
-    };
-    
+    let err = unsafe { blst_p1_uncompress(&mut affine, compressed.as_ptr()) };
+
     if err != blst::BLST_ERROR::BLST_SUCCESS {
         return Err(eyre::eyre!("Failed to decompress G1 point: {:?}", err));
     }
-    
+
     // The affine point contains x and y coordinates
     // Each coordinate is a 384-bit (48-byte) field element in blst's internal format
     // We need to serialize them in big-endian and pad to 64 bytes each
-    
+
     // The affine point contains x and y coordinates as blst_fp (384-bit field elements)
     // We need to serialize them in big-endian and pad to 64 bytes each for EIP-2537 format
     use blst::blst_bendian_from_fp;
-    
+
     let mut result = vec![0u8; 128];
-    
+
     let mut x_be = [0u8; 48];
     let mut y_be = [0u8; 48];
-    
+
     unsafe {
         blst_bendian_from_fp(x_be.as_mut_ptr(), &affine.x);
         blst_bendian_from_fp(y_be.as_mut_ptr(), &affine.y);
     }
-    
+
     // x-coordinate: 16 zero bytes + 48-byte x (big-endian)
     result[16..64].copy_from_slice(&x_be);
     // y-coordinate: 16 zero bytes + 48-byte y (big-endian)
@@ -307,7 +304,7 @@ mod tests {
 
     fn create_valid_bls_signature() -> [u8; 48] {
         use blst::min_sig::SecretKey;
-        
+
         let ikm = [1u8; 32];
         let sk = SecretKey::key_gen(&ikm, &[]).unwrap();
         let msg = b"test message";
@@ -321,11 +318,11 @@ mod tests {
         // Create a mock certificate with a valid BLS signature
         // Structure: epoch (1) + view (1) + digest (32) + signature (48) + seed_sig (48) = 130 bytes
         let valid_sig = create_valid_bls_signature();
-        
+
         let mut cert = vec![0u8; 130];
         cert[0] = 0x01; // epoch = 1
         cert[1] = 0x05; // view = 5
-        // digest: bytes 2-33
+                        // digest: bytes 2-33
         for i in 2..34 {
             cert[i] = (i - 2) as u8;
         }
@@ -348,7 +345,7 @@ mod tests {
     #[test]
     fn test_extract_bls_signature_with_0x_prefix() {
         let valid_sig = create_valid_bls_signature();
-        
+
         let mut cert = vec![0u8; 130];
         cert[34..82].copy_from_slice(&valid_sig);
         cert[82..130].copy_from_slice(&valid_sig);
@@ -361,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_extract_bls_signature_too_short() {
-        let short_cert = hex::encode(&[0u8; 100]); // Too short
+        let short_cert = hex::encode([0u8; 100]); // Too short
         let result = extract_bls_signature_from_certificate(&short_cert);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too short"));
@@ -372,7 +369,7 @@ mod tests {
         // Certificate with larger epoch/view values (more bytes for varint)
         // Total: 5 + 5 + 32 + 48 + 48 = 138 bytes
         let valid_sig = create_valid_bls_signature();
-        
+
         let mut cert = vec![0u8; 138];
         // Place signature at correct position (len - 96 to len - 48)
         cert[(138 - 96)..(138 - 48)].copy_from_slice(&valid_sig);
@@ -389,22 +386,25 @@ mod tests {
     fn test_decompress_g1_signature_invalid_length() {
         let result = decompress_g1_signature(&[0u8; 47]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid compressed G1 length"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid compressed G1 length"));
     }
 
     #[test]
     fn test_decompress_g1_signature_roundtrip() {
         use blst::min_sig::SecretKey;
-        
+
         let ikm = [42u8; 32];
         let sk = SecretKey::key_gen(&ikm, &[]).unwrap();
         let msg = b"roundtrip test";
         let dst = b"BLS_SIG_BLS12381G1_XMD:SHA-256_SSWU_RO_NUL_";
         let sig = sk.sign(msg, dst, &[]);
         let compressed = sig.to_bytes();
-        
+
         let uncompressed = decompress_g1_signature(&compressed).unwrap();
-        
+
         // Verify the format: 128 bytes total
         assert_eq!(uncompressed.len(), 128);
         // x-coordinate is at bytes 16..64 (48 bytes with 16-byte zero prefix)

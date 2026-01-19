@@ -9,7 +9,9 @@ use alloy::{
     sol_types::{SolCall, SolEvent, SolType},
 };
 use eyre::Result;
-use tempo_contracts::precompiles::{IBridge, IValidatorConfig, BRIDGE_ADDRESS, VALIDATOR_CONFIG_ADDRESS};
+use tempo_contracts::precompiles::{
+    IBridge, IValidatorConfig, BRIDGE_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+};
 use tracing::{debug, info, warn};
 
 use crate::retry::with_retry;

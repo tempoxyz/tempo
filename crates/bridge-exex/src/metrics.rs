@@ -1,8 +1,8 @@
 //! Prometheus metrics for the Bridge ExEx.
 
 use reth_metrics::{
-    Metrics,
     metrics::{Counter, Histogram},
+    Metrics,
 };
 
 /// Bridge ExEx metrics

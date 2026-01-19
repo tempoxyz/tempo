@@ -1284,7 +1284,13 @@ fn test_threshold_with_min_validators() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Register deposit
         let request_id = bridge.register_deposit(
@@ -1305,31 +1311,43 @@ fn test_threshold_with_min_validators() -> eyre::Result<()> {
         // 1 vote should NOT be enough
         bridge.submit_deposit_vote(
             validators[0],
-            IBridge::submitDepositVoteCall { requestId: request_id },
+            IBridge::submitDepositVoteCall {
+                requestId: request_id,
+            },
         )?;
 
         let result = bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::threshold_not_reached()
+            ))
         );
 
         // 2 votes should be enough (threshold = 2)
         bridge.submit_deposit_vote(
             validators[1],
-            IBridge::submitDepositVoteCall { requestId: request_id },
+            IBridge::submitDepositVoteCall {
+                requestId: request_id,
+            },
         )?;
 
         bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         )?;
 
         // Verify deposit was finalized
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
 
         Ok(())
@@ -1357,7 +1375,13 @@ fn test_cannot_finalize_with_zero_active_validators() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Register deposit
         let request_id = bridge.register_deposit(
@@ -1377,11 +1401,15 @@ fn test_cannot_finalize_with_zero_active_validators() -> eyre::Result<()> {
         // Cannot finalize with zero active validators (no votes possible)
         let result = bridge.finalize_deposit(
             Address::random(),
-            IBridge::finalizeDepositCall { requestId: request_id },
+            IBridge::finalizeDepositCall {
+                requestId: request_id,
+            },
         );
         assert_eq!(
             result,
-            Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached()))
+            Err(TempoPrecompileError::BridgeError(
+                BridgeError::threshold_not_reached()
+            ))
         );
 
         Ok(())
@@ -1398,10 +1426,10 @@ fn test_threshold_increases_with_validator_count() -> eyre::Result<()> {
     // 100 validators -> ceil(200/3) = 67
 
     let test_cases: Vec<(u64, u64)> = vec![
-        (3, 2),   // ceil(6/3) = 2
-        (4, 3),   // ceil(8/3) = 3
-        (5, 4),   // ceil(10/3) = 4
-        (10, 7),  // ceil(20/3) = 7
+        (3, 2),    // ceil(6/3) = 2
+        (4, 3),    // ceil(8/3) = 3
+        (5, 4),    // ceil(10/3) = 4
+        (10, 7),   // ceil(20/3) = 7
         (100, 67), // ceil(200/3) = 67
     ];
 
@@ -1432,7 +1460,13 @@ fn test_threshold_increases_with_validator_count() -> eyre::Result<()> {
 
             // Setup bridge
             let mut bridge = setup_bridge(admin)?;
-            register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+            register_mapping(
+                &mut bridge,
+                admin,
+                origin_chain_id,
+                origin_token,
+                tempo_tip20,
+            )?;
 
             // Register deposit
             let request_id = bridge.register_deposit(
@@ -1453,17 +1487,23 @@ fn test_threshold_increases_with_validator_count() -> eyre::Result<()> {
             for i in 0..(expected_threshold - 1) {
                 bridge.submit_deposit_vote(
                     validators[i as usize],
-                    IBridge::submitDepositVoteCall { requestId: request_id },
+                    IBridge::submitDepositVoteCall {
+                        requestId: request_id,
+                    },
                 )?;
             }
 
             let result = bridge.finalize_deposit(
                 Address::random(),
-                IBridge::finalizeDepositCall { requestId: request_id },
+                IBridge::finalizeDepositCall {
+                    requestId: request_id,
+                },
             );
             assert_eq!(
                 result,
-                Err(TempoPrecompileError::BridgeError(BridgeError::threshold_not_reached())),
+                Err(TempoPrecompileError::BridgeError(
+                    BridgeError::threshold_not_reached()
+                )),
                 "With {} validators and {} votes, finalization should fail",
                 validator_count,
                 expected_threshold - 1
@@ -1472,22 +1512,26 @@ fn test_threshold_increases_with_validator_count() -> eyre::Result<()> {
             // Submit one more vote to reach threshold
             bridge.submit_deposit_vote(
                 validators[(expected_threshold - 1) as usize],
-                IBridge::submitDepositVoteCall { requestId: request_id },
+                IBridge::submitDepositVoteCall {
+                    requestId: request_id,
+                },
             )?;
 
             // Now finalization should succeed
             bridge.finalize_deposit(
                 Address::random(),
-                IBridge::finalizeDepositCall { requestId: request_id },
+                IBridge::finalizeDepositCall {
+                    requestId: request_id,
+                },
             )?;
 
-            let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+            let deposit = bridge.get_deposit(IBridge::getDepositCall {
+                requestId: request_id,
+            })?;
             assert_eq!(
                 deposit.status,
                 IBridge::DepositStatus::Finalized,
-                "With {} validators and {} votes, deposit should be finalized",
-                validator_count,
-                expected_threshold
+                "With {validator_count} validators and {expected_threshold} votes, deposit should be finalized"
             );
 
             Ok::<(), eyre::Report>(())
@@ -1532,7 +1576,13 @@ fn test_register_and_finalize_with_signatures() -> eyre::Result<()> {
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Compute request ID (must match what precompile computes)
         let request_id = Bridge::compute_request_id(
@@ -1592,12 +1642,11 @@ fn test_register_and_finalize_with_signatures() -> eyre::Result<()> {
         assert_eq!(deposit.votingPowerSigned, 1);
 
         // Verify validator signature was recorded
-        let has_signed = bridge.has_validator_signed_deposit(
-            IBridge::hasValidatorSignedDepositCall {
+        let has_signed =
+            bridge.has_validator_signed_deposit(IBridge::hasValidatorSignedDepositCall {
                 requestId: request_id,
                 validator: validator1_addr,
-            },
-        )?;
+            })?;
         assert!(has_signed);
 
         // Verify tokens were minted
@@ -1640,7 +1689,13 @@ fn test_register_and_finalize_with_signatures_idempotent() -> eyre::Result<()> {
         add_validator(&mut validator_config, admin, validator1_addr, true)?;
 
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         let request_id = Bridge::compute_request_id(
             origin_chain_id,
@@ -1679,7 +1734,7 @@ fn test_register_and_finalize_with_signatures_idempotent() -> eyre::Result<()> {
             tempoRecipient: tempo_recipient,
             amount,
             originBlockNumber: origin_block_number,
-            signatures: vec![sig_bytes.clone()],
+            signatures: vec![sig_bytes],
         };
 
         // First call - should succeed and finalize
@@ -1687,7 +1742,9 @@ fn test_register_and_finalize_with_signatures_idempotent() -> eyre::Result<()> {
         let result1 = bridge.register_and_finalize_with_signatures(relayer, call.clone())?;
         assert_eq!(result1, request_id);
 
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
 
         // Second call with same data - should return success (idempotent), not revert
@@ -1695,7 +1752,9 @@ fn test_register_and_finalize_with_signatures_idempotent() -> eyre::Result<()> {
         assert_eq!(result2, request_id);
 
         // Deposit should still be finalized
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
 
         Ok(())
@@ -1740,7 +1799,13 @@ fn test_register_and_finalize_with_signatures_threshold_not_reached() -> eyre::R
 
         // Setup bridge
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         // Compute request ID
         let request_id = Bridge::compute_request_id(
@@ -1806,51 +1871,50 @@ fn test_register_and_finalize_with_signatures_threshold_not_reached() -> eyre::R
 /// These MUST match the values in `tempo-bridge-exex::digest_parity_test::test_vectors`.
 /// If you change these values, update both files.
 mod digest_parity_vectors {
-    use alloy::primitives::{address, b256, keccak256, Address, B256};
+    use alloy::primitives::{Address, B256, address, b256, keccak256};
     use tempo_contracts::precompiles::BRIDGE_ADDRESS;
 
-    pub const TEMPO_CHAIN_ID: u64 = 42069;
-    pub const ORIGIN_CHAIN_ID: u64 = 1;
-    pub const ORIGIN_LOG_INDEX: u32 = 7;
-    pub const AMOUNT: u64 = 1_000_000_000_000_000_000; // 1e18
-    pub const ORIGIN_BLOCK_NUMBER: u64 = 19_500_000;
+    pub(super) const TEMPO_CHAIN_ID: u64 = 42069;
+    pub(super) const ORIGIN_CHAIN_ID: u64 = 1;
+    pub(super) const ORIGIN_LOG_INDEX: u32 = 7;
+    pub(super) const AMOUNT: u64 = 1_000_000_000_000_000_000; // 1e18
+    pub(super) const ORIGIN_BLOCK_NUMBER: u64 = 19_500_000;
 
-    pub fn bridge_address() -> Address {
+    pub(super) fn bridge_address() -> Address {
         BRIDGE_ADDRESS
     }
 
-    pub fn request_id() -> B256 {
+    pub(super) fn request_id() -> B256 {
         b256!("deadbeef00000000000000000000000000000000000000000000000000000001")
     }
 
-    pub fn origin_escrow() -> Address {
+    pub(super) fn origin_escrow() -> Address {
         address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
     }
 
-    pub fn origin_token() -> Address {
+    pub(super) fn origin_token() -> Address {
         address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") // USDC on mainnet
     }
 
-    pub fn origin_tx_hash() -> B256 {
+    pub(super) fn origin_tx_hash() -> B256 {
         b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
     }
 
-    pub fn tempo_recipient() -> Address {
+    pub(super) fn tempo_recipient() -> Address {
         address!("1111111111111111111111111111111111111111")
     }
 
     /// A fixed validator set hash for testing.
     /// In production, this is computed from active validator addresses.
-    pub fn validator_set_hash() -> B256 {
+    pub(super) fn validator_set_hash() -> B256 {
         b256!("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
     }
 
     /// Expected digest computed manually - must match bridge-exex computation.
-    pub fn expected_digest() -> B256 {
+    pub(super) fn expected_digest() -> B256 {
         let domain = b"TEMPO_BRIDGE_DEPOSIT_V2";
-        let mut buf = Vec::with_capacity(
-            domain.len() + 8 + 20 + 32 + 8 + 20 + 20 + 32 + 4 + 20 + 8 + 8 + 32,
-        );
+        let mut buf =
+            Vec::with_capacity(domain.len() + 8 + 20 + 32 + 8 + 20 + 20 + 32 + 4 + 20 + 8 + 8 + 32);
         buf.extend_from_slice(domain);
         buf.extend_from_slice(&TEMPO_CHAIN_ID.to_be_bytes());
         buf.extend_from_slice(bridge_address().as_slice());
@@ -2140,10 +2204,7 @@ fn test_deposit_attestation_digest_all_fields_affect_output() {
     ];
 
     for (field_name, digest) in fields_and_digests {
-        assert_ne!(
-            base_digest, digest,
-            "{field_name} must affect the digest"
-        );
+        assert_ne!(base_digest, digest, "{field_name} must affect the digest");
     }
 }
 
@@ -2178,7 +2239,13 @@ fn test_low_s_signature_accepted() -> eyre::Result<()> {
         add_validator(&mut validator_config, admin, validator_addr, true)?;
 
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         let request_id = Bridge::compute_request_id(
             origin_chain_id,
@@ -2216,7 +2283,10 @@ fn test_low_s_signature_accepted() -> eyre::Result<()> {
             0xFF, 0xFF, 0x5D, 0x57, 0x6E, 0x73, 0x57, 0xA4, 0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46,
             0x68, 0x1B, 0x20, 0xA0,
         ]);
-        assert!(s <= secp256k1_n_div_2, "alloy signer should produce low-s signatures");
+        assert!(
+            s <= secp256k1_n_div_2,
+            "alloy signer should produce low-s signatures"
+        );
 
         let relayer = Address::random();
         let result = bridge.register_and_finalize_with_signatures(
@@ -2236,10 +2306,14 @@ fn test_low_s_signature_accepted() -> eyre::Result<()> {
 
         assert_eq!(result, request_id);
 
-        let deposit = bridge.get_deposit(IBridge::getDepositCall { requestId: request_id })?;
+        let deposit = bridge.get_deposit(IBridge::getDepositCall {
+            requestId: request_id,
+        })?;
         assert_eq!(deposit.status, IBridge::DepositStatus::Finalized);
 
-        let balance = token.balance_of(ITIP20::balanceOfCall { account: tempo_recipient })?;
+        let balance = token.balance_of(ITIP20::balanceOfCall {
+            account: tempo_recipient,
+        })?;
         assert_eq!(balance, U256::from(amount));
 
         Ok(())
@@ -2276,7 +2350,13 @@ fn test_high_s_signature_rejected() -> eyre::Result<()> {
         add_validator(&mut validator_config, admin, validator_addr, true)?;
 
         let mut bridge = setup_bridge(admin)?;
-        register_mapping(&mut bridge, admin, origin_chain_id, origin_token, tempo_tip20)?;
+        register_mapping(
+            &mut bridge,
+            admin,
+            origin_chain_id,
+            origin_token,
+            tempo_tip20,
+        )?;
 
         let request_id = Bridge::compute_request_id(
             origin_chain_id,

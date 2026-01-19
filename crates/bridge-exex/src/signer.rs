@@ -104,7 +104,11 @@ impl AttestationSigner for LocalSigner {
 #[cfg(feature = "kms")]
 mod kms_impl {
     use super::*;
-    use aws_sdk_kms::{primitives::Blob, types::MessageType, types::SigningAlgorithmSpec, Client};
+    use aws_sdk_kms::{
+        primitives::Blob,
+        types::{MessageType, SigningAlgorithmSpec},
+        Client,
+    };
     use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 
     pub struct KmsSigner {
@@ -115,8 +119,7 @@ mod kms_impl {
 
     impl KmsSigner {
         pub async fn new(key_id: String, address: Address, region: Option<String>) -> Result<Self> {
-            let mut config_loader =
-                aws_config::defaults(aws_config::BehaviorVersion::latest());
+            let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
             if let Some(region) = region {
                 config_loader =
                     config_loader.region(aws_sdk_kms::config::Region::new(region.clone()));
@@ -166,7 +169,8 @@ mod kms_impl {
                 if let Ok(recovered_key) =
                     VerifyingKey::recover_from_prehash(digest.as_slice(), sig, recovery_id)
                 {
-                    let recovered_addr = alloy::signers::utils::public_key_to_address(&recovered_key);
+                    let recovered_addr =
+                        alloy::signers::utils::public_key_to_address(&recovered_key);
                     if recovered_addr == self.address {
                         return Ok(recovery_id);
                     }
@@ -357,13 +361,10 @@ mod tests {
     #[tokio::test]
     #[cfg(not(feature = "kms"))]
     async fn test_bridge_signer_from_kms() {
-        let signer = BridgeSigner::from_kms(
-            "test-key".to_string(),
-            Address::repeat_byte(0x01),
-            None,
-        )
-        .await
-        .unwrap();
+        let signer =
+            BridgeSigner::from_kms("test-key".to_string(), Address::repeat_byte(0x01), None)
+                .await
+                .unwrap();
 
         assert_eq!(signer.address(), Address::repeat_byte(0x01));
 

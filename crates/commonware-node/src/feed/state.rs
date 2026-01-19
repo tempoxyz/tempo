@@ -95,18 +95,17 @@ impl FeedStateHandle {
 
     /// Fill in missing block data by querying the marshal.
     async fn maybe_fill_block_data(&self, block: &mut CertifiedBlock) {
-        if block.height.is_none() || block.header.is_none() {
-            if let Some(mut marshal) = self.marshal() {
-                if let Some(b) = marshal.get_block(&Digest(block.digest)).await {
-                    block.height = Some(b.height().get());
-                    block.header = Some(BlockHeaderData {
-                        parent_hash: b.parent_hash(),
-                        state_root: b.state_root(),
-                        receipts_root: b.receipts_root(),
-                        timestamp: b.timestamp(),
-                    });
-                }
-            }
+        if (block.height.is_none() || block.header.is_none())
+            && let Some(mut marshal) = self.marshal()
+            && let Some(b) = marshal.get_block(&Digest(block.digest)).await
+        {
+            block.height = Some(b.height().get());
+            block.header = Some(BlockHeaderData {
+                parent_hash: b.parent_hash(),
+                state_root: b.state_root(),
+                receipts_root: b.receipts_root(),
+                timestamp: b.timestamp(),
+            });
         }
         if block.threshold_public_key.is_none() {
             block.threshold_public_key = self.threshold_public_key(block.epoch);

@@ -1,6 +1,8 @@
-use alloy::primitives::B256;
-use alloy::providers::{Provider, ProviderBuilder};
-use alloy::signers::local::PrivateKeySigner;
+use alloy::{
+    primitives::B256,
+    providers::{Provider, ProviderBuilder},
+    signers::local::PrivateKeySigner,
+};
 use clap::Parser;
 use eyre::{Context, Result};
 use std::path::PathBuf;

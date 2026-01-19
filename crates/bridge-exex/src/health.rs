@@ -1,11 +1,6 @@
 //! HTTP health endpoints for Kubernetes liveness and readiness probes.
 
-use axum::{
-    Extension, Router,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-};
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Extension, Router};
 use serde::Serialize;
 use std::{net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;

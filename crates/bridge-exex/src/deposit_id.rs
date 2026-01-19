@@ -9,7 +9,7 @@
 //! This uses tx_hash + log_index for global uniqueness, as these are immutable
 //! properties of the deposit event on the origin chain.
 
-use alloy::primitives::{Address, B256, keccak256};
+use alloy::primitives::{keccak256, Address, B256};
 
 /// Compute the canonical deposit ID from origin chain event data.
 ///

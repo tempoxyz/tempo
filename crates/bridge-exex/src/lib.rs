@@ -6,11 +6,9 @@
 pub mod config;
 pub mod deposit_id;
 
+pub mod consensus_client;
 #[cfg(test)]
 mod digest_parity_test;
-#[cfg(test)]
-mod tests;
-pub mod consensus_client;
 pub mod exex;
 pub mod health;
 pub mod metrics;
@@ -22,6 +20,8 @@ pub mod retry;
 pub mod signer;
 pub mod tempo_client;
 pub mod tempo_watcher;
+#[cfg(test)]
+mod tests;
 
 pub use config::BridgeConfig;
 pub use consensus_client::ConsensusClient;

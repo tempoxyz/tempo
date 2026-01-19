@@ -4,16 +4,16 @@
 //! Tests requiring Anvil are marked with `#[ignore]` for CI compatibility.
 
 use super::fixtures::*;
+#[allow(deprecated)]
+use crate::proof::BurnProof;
 use crate::{
     persistence::{ProcessedBurn, SignedDeposit, StateManager},
     proof::{AttestationGenerator, BurnAttestation, TempoBlockHeader},
     signer::BridgeSigner,
 };
-#[allow(deprecated)]
-use crate::proof::BurnProof;
 use alloy::{
     consensus::{Receipt, ReceiptEnvelope, ReceiptWithBloom},
-    primitives::{keccak256, Address, Bytes, LogData, B256},
+    primitives::{Address, Bytes, LogData, B256},
     rpc::types::{Log as RpcLog, TransactionReceipt},
 };
 
@@ -71,7 +71,11 @@ mod deposit_flow {
             .collect();
 
         let ids: std::collections::HashSet<_> = deposits.iter().map(|d| d.deposit_id).collect();
-        assert_eq!(ids.len(), deposits.len(), "All deposit IDs should be unique");
+        assert_eq!(
+            ids.len(),
+            deposits.len(),
+            "All deposit IDs should be unique"
+        );
     }
 
     #[tokio::test]
@@ -81,7 +85,10 @@ mod deposit_flow {
         let bridge_signer = BridgeSigner::from_bytes(&signer.to_bytes()).unwrap();
 
         let deposit = TestDeposit::usdc_deposit(1_000_000, Address::repeat_byte(0x42));
-        let signature = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
+        let signature = bridge_signer
+            .sign_deposit(&deposit.deposit_id)
+            .await
+            .unwrap();
 
         assert_eq!(signature.len(), 65);
         assert!(!signature.is_empty());
@@ -95,7 +102,10 @@ mod deposit_flow {
         let mut signatures = Vec::new();
         for (_, signer) in &validator_set.validators {
             let bridge_signer = BridgeSigner::from_bytes(&signer.to_bytes()).unwrap();
-            let sig = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
+            let sig = bridge_signer
+                .sign_deposit(&deposit.deposit_id)
+                .await
+                .unwrap();
             signatures.push(sig);
         }
 
@@ -127,14 +137,22 @@ mod deposit_flow {
             .unwrap();
 
         assert!(state_manager.has_signed_deposit(&deposit.deposit_id).await);
-        assert!(!state_manager.is_deposit_finalized(&deposit.deposit_id).await);
+        assert!(
+            !state_manager
+                .is_deposit_finalized(&deposit.deposit_id)
+                .await
+        );
 
         state_manager
             .mark_deposit_finalized(deposit.deposit_id)
             .await
             .unwrap();
 
-        assert!(state_manager.is_deposit_finalized(&deposit.deposit_id).await);
+        assert!(
+            state_manager
+                .is_deposit_finalized(&deposit.deposit_id)
+                .await
+        );
     }
 
     #[tokio::test]
@@ -145,7 +163,10 @@ mod deposit_flow {
         let mut signatures_count = 0u64;
         for (_, signer) in validator_set.validators.iter().take(3) {
             let bridge_signer = BridgeSigner::from_bytes(&signer.to_bytes()).unwrap();
-            let _sig = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
+            let _sig = bridge_signer
+                .sign_deposit(&deposit.deposit_id)
+                .await
+                .unwrap();
             signatures_count += 1;
         }
 
@@ -153,7 +174,10 @@ mod deposit_flow {
 
         for (_, signer) in validator_set.validators.iter().skip(3).take(1) {
             let bridge_signer = BridgeSigner::from_bytes(&signer.to_bytes()).unwrap();
-            let _sig = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
+            let _sig = bridge_signer
+                .sign_deposit(&deposit.deposit_id)
+                .await
+                .unwrap();
             signatures_count += 1;
         }
 
@@ -264,7 +288,7 @@ mod burn_flow {
 
     #[tokio::test]
     async fn test_burn_proof_generation() {
-        let receipts = vec![
+        let _receipts = [
             create_mock_receipt(true, 1),
             create_mock_receipt(true, 2),
             create_mock_receipt(true, 3),
@@ -272,12 +296,12 @@ mod burn_flow {
 
         // Generate attestation instead of binary Merkle proof (F-03 fix)
         let attestation = AttestationGenerator::<()>::create_unsigned_attestation(
-            B256::repeat_byte(0x11), // burn_id
-            100,                      // tempo_height
-            1,                        // origin_chain_id
+            B256::repeat_byte(0x11),    // burn_id
+            100,                        // tempo_height
+            1,                          // origin_chain_id
             Address::repeat_byte(0x22), // origin_token
             Address::repeat_byte(0x33), // recipient
-            1_000_000,                // amount
+            1_000_000,                  // amount
         );
 
         assert_eq!(attestation.tempo_height, 100);
@@ -299,10 +323,10 @@ mod burn_flow {
 
         let digest1 = attestation.compute_digest(42);
         let digest2 = attestation.compute_digest(42);
-        
+
         // Digest should be deterministic
         assert_eq!(digest1, digest2);
-        
+
         // Digest should not be zero
         assert!(!digest1.is_zero());
     }
@@ -396,13 +420,22 @@ mod reorg_handling {
 
         assert!(state_manager.get_origin_chain_block(1).await.is_none());
 
-        state_manager.update_origin_chain_block(1, 100).await.unwrap();
+        state_manager
+            .update_origin_chain_block(1, 100)
+            .await
+            .unwrap();
         assert_eq!(state_manager.get_origin_chain_block(1).await, Some(100));
 
-        state_manager.update_origin_chain_block(1, 200).await.unwrap();
+        state_manager
+            .update_origin_chain_block(1, 200)
+            .await
+            .unwrap();
         assert_eq!(state_manager.get_origin_chain_block(1).await, Some(200));
 
-        state_manager.update_origin_chain_block(42161, 500).await.unwrap();
+        state_manager
+            .update_origin_chain_block(42161, 500)
+            .await
+            .unwrap();
         assert_eq!(state_manager.get_origin_chain_block(42161).await, Some(500));
         assert_eq!(state_manager.get_origin_chain_block(1).await, Some(200));
     }
@@ -476,8 +509,14 @@ mod multi_validator {
 
         let deposit = TestDeposit::usdc_deposit(1_000_000, Address::repeat_byte(0x42));
 
-        let sig1 = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
-        let sig2 = bridge_signer.sign_deposit(&deposit.deposit_id).await.unwrap();
+        let sig1 = bridge_signer
+            .sign_deposit(&deposit.deposit_id)
+            .await
+            .unwrap();
+        let sig2 = bridge_signer
+            .sign_deposit(&deposit.deposit_id)
+            .await
+            .unwrap();
 
         assert_eq!(sig1, sig2, "Same signer should produce same signature");
     }
@@ -549,7 +588,10 @@ mod attestation_generation {
         assert_eq!(digest1, digest2, "Same inputs should produce same digest");
 
         let digest3 = attestation.compute_digest(43);
-        assert_ne!(digest1, digest3, "Different chain ID should produce different digest");
+        assert_ne!(
+            digest1, digest3,
+            "Different chain ID should produce different digest"
+        );
     }
 
     #[tokio::test]

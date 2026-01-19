@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use crate::{
     config::{BridgeConfig, ChainConfig},
     consensus_client::ConsensusClient,
-    health::{HealthState, start_health_server},
+    health::{start_health_server, HealthState},
     metrics::BridgeMetrics,
     origin_client::OriginClient,
     origin_watcher::{DetectedDeposit, OriginWatcher},
@@ -26,8 +26,10 @@ use crate::{
 };
 
 use alloy::providers::{Provider, ProviderBuilder};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::Mutex,
+};
 
 struct InFlightGuard<'a> {
     set: &'a Mutex<HashSet<alloy::primitives::B256>>,
@@ -303,8 +305,7 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
                 })
                 .await?;
 
-                let required_block =
-                    deposit.block_number + chain_config.l1_finality_confirmations;
+                let required_block = deposit.block_number + chain_config.l1_finality_confirmations;
                 let is_finalized = current_block >= required_block;
 
                 if !is_finalized {
@@ -563,7 +564,8 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
         let rpc_start = std::time::Instant::now();
         let header = match tempo_client.get_block_header(burn.tempo_block_number).await {
             Ok(h) => {
-                self.metrics.record_rpc_latency(rpc_start.elapsed().as_secs_f64());
+                self.metrics
+                    .record_rpc_latency(rpc_start.elapsed().as_secs_f64());
                 h
             }
             Err(e) => {
@@ -577,9 +579,13 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
         };
 
         let rpc_start = std::time::Instant::now();
-        let receipts = match tempo_client.get_block_receipts(burn.tempo_block_number).await {
+        let receipts = match tempo_client
+            .get_block_receipts(burn.tempo_block_number)
+            .await
+        {
             Ok(r) => {
-                self.metrics.record_rpc_latency(rpc_start.elapsed().as_secs_f64());
+                self.metrics
+                    .record_rpc_latency(rpc_start.elapsed().as_secs_f64());
                 r
             }
             Err(e) => {
@@ -767,7 +773,7 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
         // F-03 fix: Use validator attestations instead of binary Merkle proofs
         // Binary Merkle proofs are incompatible with Ethereum's MPT receipt trie
         let proof_start = std::time::Instant::now();
-        
+
         let mut attestation = AttestationGenerator::<()>::create_unsigned_attestation(
             burn.burn_id,
             burn.tempo_block_number,
@@ -789,12 +795,15 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
 
         let tempo_chain_id = self.config.tempo_chain_id;
         let attestation_digest = attestation.compute_digest(tempo_chain_id);
-        
+
         match signer.sign_hash(&attestation_digest).await {
             Ok(signature) => {
                 let sig_bytes: Vec<u8> = signature.to_vec();
-                attestation.signatures.push(alloy::primitives::Bytes::from(sig_bytes));
-                self.metrics.record_proof_generation(proof_start.elapsed().as_secs_f64());
+                attestation
+                    .signatures
+                    .push(alloy::primitives::Bytes::from(sig_bytes));
+                self.metrics
+                    .record_proof_generation(proof_start.elapsed().as_secs_f64());
             }
             Err(e) => {
                 error!(
@@ -872,5 +881,3 @@ impl<Node: FullNodeComponents> BridgeExEx<Node> {
         Ok(())
     }
 }
-
-

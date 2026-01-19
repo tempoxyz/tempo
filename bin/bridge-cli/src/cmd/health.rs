@@ -1,8 +1,7 @@
 use alloy::providers::{Provider, ProviderBuilder};
 use clap::Parser;
 use eyre::Result;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 use tempo_bridge_exex::BridgeConfig;
 
 #[derive(Parser, Debug)]
@@ -85,8 +84,7 @@ impl HealthArgs {
             rpcs.push(health);
 
             if let Some(secondary_url) = &chain_config.secondary_rpc_url {
-                let secondary_health =
-                    check_rpc(&format!("{name}-secondary"), secondary_url).await;
+                let secondary_health = check_rpc(&format!("{name}-secondary"), secondary_url).await;
                 let secondary_block = secondary_health.block_number;
                 rpcs.push(secondary_health);
 
@@ -143,7 +141,10 @@ impl HealthArgs {
                 .map(|l| format!("{l}ms"))
                 .unwrap_or_else(|| "-".to_string());
 
-            println!("{:<20} {:<8} {:>10} {:>12}", rpc.name, status, block, latency);
+            println!(
+                "{:<20} {:<8} {:>10} {:>12}",
+                rpc.name, status, block, latency
+            );
 
             if let Some(err) = &rpc.error {
                 println!("  Error: {err}");

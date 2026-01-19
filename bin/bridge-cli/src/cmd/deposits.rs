@@ -42,10 +42,7 @@ impl DepositsArgs {
             return Ok(());
         }
 
-        println!(
-            "{:<66} {:>10}",
-            "Request ID", "Status"
-        );
+        println!("{:<66} {:>10}", "Request ID", "Status");
         println!("{}", "-".repeat(80));
 
         for request_id in &pending_ids {

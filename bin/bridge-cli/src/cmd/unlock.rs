@@ -1,5 +1,7 @@
-use alloy::primitives::{Address, Bytes, B256};
-use alloy::signers::local::PrivateKeySigner;
+use alloy::{
+    primitives::{Address, B256, Bytes},
+    signers::local::PrivateKeySigner,
+};
 use clap::Parser;
 use eyre::{Context, Result};
 use std::path::PathBuf;
@@ -64,7 +66,8 @@ impl UnlockArgs {
             .ok_or_else(|| eyre::eyre!("Chain '{}' not found in config", self.chain))?;
 
         // Read proof file
-        let proof_contents = std::fs::read_to_string(&self.proof).context("Failed to read proof file")?;
+        let proof_contents =
+            std::fs::read_to_string(&self.proof).context("Failed to read proof file")?;
         let proof_data: UnlockProof =
             serde_json::from_str(&proof_contents).context("Invalid proof format")?;
 
@@ -76,10 +79,7 @@ impl UnlockArgs {
             .unwrap_or(proof_data.recipient);
 
         let amount = self.amount.unwrap_or(proof_data.amount);
-        let proof_bytes: Bytes = proof_data
-            .proof
-            .parse()
-            .context("Invalid proof hex")?;
+        let proof_bytes: Bytes = proof_data.proof.parse().context("Invalid proof hex")?;
 
         println!("Manual Unlock");
         println!("=============");
@@ -107,9 +107,7 @@ impl UnlockArgs {
             .to_string();
         let signer: PrivateKeySigner = key_hex.parse().context("Invalid private key")?;
 
-        let light_client_address = chain_config
-            .light_client_address
-            .unwrap_or(Address::ZERO);
+        let light_client_address = chain_config.light_client_address.unwrap_or(Address::ZERO);
 
         let client = OriginClient::new(
             self.chain.clone(),

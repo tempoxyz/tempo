@@ -15,39 +15,39 @@ use tempo_contracts::precompiles::BRIDGE_ADDRESS;
 mod test_vectors {
     use super::*;
 
-    pub const TEMPO_CHAIN_ID: u64 = 42069;
-    pub const ORIGIN_CHAIN_ID: u64 = 1;
-    pub const ORIGIN_LOG_INDEX: u32 = 7;
-    pub const AMOUNT: u64 = 1_000_000_000_000_000_000; // 1e18
-    pub const ORIGIN_BLOCK_NUMBER: u64 = 19_500_000;
+    pub(super) const TEMPO_CHAIN_ID: u64 = 42069;
+    pub(super) const ORIGIN_CHAIN_ID: u64 = 1;
+    pub(super) const ORIGIN_LOG_INDEX: u32 = 7;
+    pub(super) const AMOUNT: u64 = 1_000_000_000_000_000_000; // 1e18
+    pub(super) const ORIGIN_BLOCK_NUMBER: u64 = 19_500_000;
 
-    pub fn bridge_address() -> Address {
+    pub(super) fn bridge_address() -> Address {
         BRIDGE_ADDRESS
     }
 
-    pub fn request_id() -> B256 {
+    pub(super) fn request_id() -> B256 {
         b256!("deadbeef00000000000000000000000000000000000000000000000000000001")
     }
 
-    pub fn origin_escrow() -> Address {
+    pub(super) fn origin_escrow() -> Address {
         address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
     }
 
-    pub fn origin_token() -> Address {
+    pub(super) fn origin_token() -> Address {
         address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48") // USDC on mainnet
     }
 
-    pub fn origin_tx_hash() -> B256 {
+    pub(super) fn origin_tx_hash() -> B256 {
         b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
     }
 
-    pub fn tempo_recipient() -> Address {
+    pub(super) fn tempo_recipient() -> Address {
         address!("1111111111111111111111111111111111111111")
     }
 
     /// A fixed validator set hash for testing.
     /// In production, this is computed from active validator addresses.
-    pub fn validator_set_hash() -> B256 {
+    pub(super) fn validator_set_hash() -> B256 {
         b256!("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
     }
 
@@ -57,12 +57,11 @@ mod test_vectors {
     /// Format: keccak256(domain || tempo_chain_id || bridge_address || request_id ||
     ///         origin_chain_id || origin_escrow || origin_token || origin_tx_hash ||
     ///         origin_log_index || tempo_recipient || amount || origin_block_number || validator_set_hash)
-    pub fn expected_digest() -> B256 {
+    pub(super) fn expected_digest() -> B256 {
         // Compute the expected digest manually to establish the golden value
         let domain = b"TEMPO_BRIDGE_DEPOSIT_V2";
-        let mut buf = Vec::with_capacity(
-            domain.len() + 8 + 20 + 32 + 8 + 20 + 20 + 32 + 4 + 20 + 8 + 8 + 32,
-        );
+        let mut buf =
+            Vec::with_capacity(domain.len() + 8 + 20 + 32 + 8 + 20 + 20 + 32 + 4 + 20 + 8 + 8 + 32);
         buf.extend_from_slice(domain);
         buf.extend_from_slice(&TEMPO_CHAIN_ID.to_be_bytes());
         buf.extend_from_slice(bridge_address().as_slice());
@@ -82,8 +81,7 @@ mod test_vectors {
 
 #[cfg(test)]
 mod tests {
-    use super::test_vectors::*;
-    use super::*;
+    use super::{test_vectors::*, *};
 
     #[test]
     fn test_digest_matches_expected() {
@@ -358,10 +356,9 @@ mod tests {
     async fn test_sign_and_recover() {
         // Use a deterministic test private key
         let key_bytes: [u8; 32] = [
-            0xac, 0x09, 0x74, 0xbe, 0xc3, 0x9a, 0x17, 0xe3,
-            0x6b, 0xa4, 0xa6, 0xb4, 0xd2, 0x38, 0xff, 0x94,
-            0x4b, 0xac, 0xb4, 0x78, 0xcb, 0xed, 0x5e, 0xfb,
-            0xbf, 0xf0, 0x12, 0xcc, 0xe1, 0x16, 0x22, 0xda,
+            0xac, 0x09, 0x74, 0xbe, 0xc3, 0x9a, 0x17, 0xe3, 0x6b, 0xa4, 0xa6, 0xb4, 0xd2, 0x38,
+            0xff, 0x94, 0x4b, 0xac, 0xb4, 0x78, 0xcb, 0xed, 0x5e, 0xfb, 0xbf, 0xf0, 0x12, 0xcc,
+            0xe1, 0x16, 0x22, 0xda,
         ];
 
         let signer = BridgeSigner::from_bytes(&key_bytes).unwrap();
@@ -385,7 +382,11 @@ mod tests {
 
         // Sign the digest
         let signature = signer.sign_hash(&digest).await.unwrap();
-        assert_eq!(signature.len(), 65, "signature should be 65 bytes (r, s, v)");
+        assert_eq!(
+            signature.len(),
+            65,
+            "signature should be 65 bytes (r, s, v)"
+        );
 
         // Recover the signer address from signature
         let sig = alloy::primitives::Signature::try_from(signature.as_ref()).unwrap();

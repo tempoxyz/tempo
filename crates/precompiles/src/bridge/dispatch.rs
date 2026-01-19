@@ -42,11 +42,9 @@ impl Precompile for Bridge {
             IBridgeCalls::finalizeDeposit(c) => {
                 mutate_void(c, msg_sender, |s, c| self.finalize_deposit(s, c))
             }
-            IBridgeCalls::registerAndFinalizeWithSignatures(c) => {
-                mutate(c, msg_sender, |s, c| {
-                    self.register_and_finalize_with_signatures(s, c)
-                })
-            }
+            IBridgeCalls::registerAndFinalizeWithSignatures(c) => mutate(c, msg_sender, |s, c| {
+                self.register_and_finalize_with_signatures(s, c)
+            }),
             IBridgeCalls::burnForUnlock(c) => {
                 mutate(c, msg_sender, |s, c| self.burn_for_unlock(s, c))
             }

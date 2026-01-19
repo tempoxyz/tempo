@@ -31,7 +31,6 @@ use alloy_rlp::Encodable;
 use alloy_trie::{HashBuilder, Nibbles};
 use eyre::Result;
 
-
 /// Domain separator for burn attestations (must match Solidity constant)
 pub const BURN_ATTESTATION_DOMAIN: B256 = {
     // keccak256("TEMPO_BURN_ATTESTATION_V1")
@@ -63,7 +62,7 @@ impl BurnAttestation {
     /// Compute the attestation digest that validators sign.
     pub fn compute_digest(&self, tempo_chain_id: u64) -> B256 {
         let domain = keccak256("TEMPO_BURN_ATTESTATION_V1");
-        
+
         let mut data = Vec::new();
         data.extend_from_slice(domain.as_slice());
         data.extend_from_slice(&tempo_chain_id.to_be_bytes());
@@ -73,13 +72,13 @@ impl BurnAttestation {
         data.extend_from_slice(self.origin_token.as_slice());
         data.extend_from_slice(self.recipient.as_slice());
         data.extend_from_slice(&self.amount.to_be_bytes());
-        
+
         keccak256(&data)
     }
 
     /// Encode as ABI-encoded proof for `unlockWithProof`.
     pub fn encode_proof(&self) -> Bytes {
-        // ABI encode: (bytes32 burnId, uint64 tempoHeight, address originToken, 
+        // ABI encode: (bytes32 burnId, uint64 tempoHeight, address originToken,
         //              address recipient, uint64 amount, bytes[] signatures)
         let encoded = alloy::sol_types::SolValue::abi_encode(&(
             self.burn_id,
@@ -118,7 +117,10 @@ pub struct AttestationGenerator<P> {
 impl<P> AttestationGenerator<P> {
     /// Create a new attestation generator.
     pub const fn new(provider: P, tempo_chain_id: u64) -> Self {
-        Self { provider, tempo_chain_id }
+        Self {
+            provider,
+            tempo_chain_id,
+        }
     }
 
     /// Compute the receipts root from a list of receipts.
@@ -171,7 +173,9 @@ impl<P> AttestationGenerator<P> {
     ) -> Result<()> {
         let digest = attestation.compute_digest(self.tempo_chain_id);
         let signature = signer.sign_hash(&digest).await?;
-        attestation.signatures.push(Bytes::from(signature.as_bytes().to_vec()));
+        attestation
+            .signatures
+            .push(Bytes::from(signature.as_bytes().to_vec()));
         Ok(())
     }
 }
@@ -198,10 +202,7 @@ where
     }
 
     /// Fetch all receipts for a block.
-    pub async fn get_block_receipts(
-        &self,
-        block_number: u64,
-    ) -> Result<Vec<TransactionReceipt>> {
+    pub async fn get_block_receipts(&self, block_number: u64) -> Result<Vec<TransactionReceipt>> {
         let receipts = self
             .provider
             .get_block_receipts(block_number.into())
