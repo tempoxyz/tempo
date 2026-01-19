@@ -149,9 +149,8 @@ async fn wait_for_height(context: &Context, target_height: u64) {
 /// 1. After a full DKG, the RPC returns a transition with different old/new public keys
 /// 2. The transition epoch matches where the full DKG occurred
 /// 3. The proof contains a valid header and certificate
-#[tokio::test]
 #[test_traced]
-async fn get_identity_transition_proof_after_full_dkg() {
+fn get_identity_transition_proof_after_full_dkg() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 1;

@@ -300,7 +300,7 @@ impl ConsensusFeed for FeedStateHandle {
             let prev_outcome = match get_outcome(&mut marshal, &epocher, search_epoch - 1).await {
                 Ok(o) => o,
                 Err(err) => {
-                    tracing::debug!(
+                    tracing::info!(
                         ?err,
                         start_epoch,
                         search_epoch,
@@ -319,7 +319,7 @@ impl ConsensusFeed for FeedStateHandle {
                     .expect("fixed epocher is valid for all epochs");
 
                 let Some(proof_block) = marshal.get_block(proof_height).await else {
-                    tracing::debug!(
+                    tracing::info!(
                         height = proof_height.get(),
                         start_epoch,
                         search_epoch,
@@ -329,7 +329,7 @@ impl ConsensusFeed for FeedStateHandle {
                 };
 
                 let Some(finalization) = marshal.get_finalization(proof_height).await else {
-                    tracing::debug!(
+                    tracing::info!(
                         height = proof_height.get(),
                         start_epoch,
                         search_epoch,
