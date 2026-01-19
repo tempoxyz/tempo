@@ -3,6 +3,11 @@ target
 scripts/logs
 scripts/data
 
+# Foundry artifacts
+contracts/*/out/
+contracts/*/cache/
+contracts/*/broadcast/
+
 # Benchmarking artifacts
 contrib/bench/logs/
 report.json
