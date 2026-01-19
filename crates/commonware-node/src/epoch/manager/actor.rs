@@ -51,7 +51,7 @@ use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporters,
     marshal::Update,
-    simplex::{self, elector, scheme::bls12381_threshold::Scheme},
+    simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -63,6 +63,7 @@ use commonware_p2p::{
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
+    telemetry::metrics::status::GaugeExt as _,
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
@@ -322,7 +323,9 @@ where
         self.config.scheme_provider.register(epoch, scheme.clone());
 
         let engine = simplex::Engine::new(
-            self.context.with_label(&format!("simplex_epoch_{epoch}")),
+            self.context
+                .with_label("simplex")
+                .with_attribute("epoch", epoch),
             simplex::Config {
                 scheme,
                 elector: elector::Random,
@@ -376,7 +379,7 @@ where
 
         self.metrics.latest_participants.set(n_participants as i64);
         self.metrics.active_epochs.inc();
-        self.metrics.latest_epoch.set(epoch.get() as i64);
+        let _ = self.metrics.latest_epoch.try_set(epoch.get());
         self.metrics.how_often_signer.inc_by(is_signer as u64);
         self.metrics.how_often_verifier.inc_by(!is_signer as u64);
 

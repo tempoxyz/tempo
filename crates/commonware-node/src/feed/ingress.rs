@@ -2,7 +2,7 @@
 
 use commonware_consensus::{
     Reporter,
-    simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use futures::channel::mpsc;
