@@ -7,10 +7,11 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_primitives::{Address, uint};
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::abi::ITIP20::{self, abiInstance as ITIP20Instance};
+use tempo_precompiles::abi::ITIP20::{self, ITIP20Instance};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    tip_fee_manager::{IFeeManager, ITIPFeeAMM, amm::{MIN_LIQUIDITY, PoolKey}},
+    abi::IFeeManager,
+    tip_fee_manager::amm::{MIN_LIQUIDITY, PoolKey},
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -29,7 +30,7 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     // Setup test token and fee AMM
     let token_0 = setup_test_token(provider.clone(), caller).await?;
     let token_1 = setup_test_token(provider.clone(), caller).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint, approve and create pool
     let mut pending = vec![];
@@ -132,7 +133,7 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     // Setup test token and fee AMM
     let token_0 = setup_test_token(provider.clone(), caller).await?;
     let token_1 = setup_test_token(provider.clone(), caller).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Mint tokens to caller
     let mut pending = vec![];
@@ -279,7 +280,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Create new pool for fee tokens
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let pool_key = PoolKey::new(*user_token.address(), *validator_token.address());
     let pool_id = pool_key.get_id();
 
@@ -315,7 +316,7 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     assert_eq!(user_lp_balance, expected_initial_liquidity);
 
     // Cache pool balances before setting tokens (to avoid any fee swaps affecting the baseline)
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let pool_before = fee_amm
         .getPool(*user_token.address(), *validator_token.address())
         .call()
@@ -394,7 +395,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     // Setup test tokens and fee AMM
     let user_token = setup_test_token(provider.clone(), alice).await?;
     let validator_token = setup_test_token(provider.clone(), alice).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
     let amount0 = uint!(100000_000000000000000000_U256);
@@ -474,7 +475,7 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     // Setup test tokens and fee AMM
     let user_token = setup_test_token(provider.clone(), alice).await?;
     let validator_token = setup_test_token(provider.clone(), alice).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
     let amount0 = uint!(100000_000000000000000000_U256);
@@ -584,7 +585,7 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
 
     // Setup test tokens and fee AMM
     let user_token = setup_test_token(provider.clone(), alice).await?;
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
     // Define amounts (100000 * 1e18)
     let amount0 = uint!(100000_000000000000000000_U256);

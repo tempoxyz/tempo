@@ -32,7 +32,7 @@ fn test_tip403_registry_layout() {
 
 #[test]
 fn test_fee_manager_layout() {
-    use tempo_precompiles::tip_fee_manager::{abi::__packing_pool::*, slots};
+    use tempo_precompiles::tip_fee_manager::{IFeeManager::__packing_pool::*, slots};
 
     let sol_path = testdata("fee_manager.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -113,7 +113,7 @@ fn test_stablecoin_dex_layout() {
 
 #[test]
 fn test_tip20_layout() {
-    use tempo_precompiles::tip20::{abi::__packing_user_reward_info::*, slots};
+    use tempo_precompiles::tip20::{ITIP20::__packing_user_reward_info::*, slots};
 
     let sol_path = testdata("tip20.sol");
     let solc_layout = load_solc_layout(&sol_path);
@@ -209,7 +209,7 @@ fn export_all_storage_constants() {
 
     // Fee Manager
     {
-        use tempo_precompiles::tip_fee_manager::{abi::__packing_pool::*, slots};
+        use tempo_precompiles::tip_fee_manager::{IFeeManager::__packing_pool::*, slots};
 
         let fields = layout_fields!(
             validator_tokens,
@@ -284,7 +284,7 @@ fn export_all_storage_constants() {
 
     // TIP20 Token
     {
-        use tempo_precompiles::tip20::{abi::__packing_user_reward_info::*, slots};
+        use tempo_precompiles::tip20::{ITIP20::__packing_user_reward_info::*, slots};
 
         let fields = layout_fields!(
             // RolesAuth

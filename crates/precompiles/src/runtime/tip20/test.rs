@@ -5,8 +5,8 @@ mod tests {
         storage::StorageCtx,
         test_util::{TIP20Setup, setup_storage},
         tip20::{
+            ITIP20::{self as tip20, Error as TIP20Error},
             TIP20Token,
-            abi::{self as tip20, Error as TIP20Error},
             prelude::*,
         },
         tip403_registry::{PolicyType, TIP403Registry, traits::*},

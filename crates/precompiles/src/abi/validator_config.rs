@@ -4,7 +4,7 @@ use tempo_precompiles_macros::abi;
 
 #[abi(dispatch)]
 #[rustfmt::skip]
-pub mod abi {
+pub mod IValidatorConfig {
     use alloy::primitives::{Address, B256};
 
     #[cfg(feature = "precompile")]

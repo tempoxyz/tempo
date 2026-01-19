@@ -4,7 +4,7 @@ use tempo_precompiles_macros::abi;
 
 #[abi(dispatch)]
 #[rustfmt::skip]
-pub mod abi {
+pub mod ITIP403Registry {
     use alloy::primitives::Address;
 
     #[cfg(feature = "precompile")]

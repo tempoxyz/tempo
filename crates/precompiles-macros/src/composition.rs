@@ -1,8 +1,8 @@
 //! ABI type aliasing and Precompile implementation for `#[contract(abi)]`.
 //!
-//! When a contract specifies `#[contract(abi)]`, this generates:
-//! - Type aliases from the `abi` module's types to contract-prefixed names
-//! - Re-exports of `abi::prelude` and `abi::traits` submodules
+//! When a contract specifies `#[contract(abi)]` or `#[contract(abi = ModName)]`, this generates:
+//! - Type aliases from the ABI module's types to contract-prefixed names
+//! - Re-exports of `{abi_mod}::prelude` and `{abi_mod}::traits` submodules
 //! - Implementation of `IConstants` trait
 //!
 //! When `#[contract(abi, dispatch)]` is specified, additionally generates:
@@ -10,10 +10,11 @@
 //! - Implementation of `Precompile` trait (with initialization check for dynamic precompiles)
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::format_ident;
+use quote::quote;
 use syn::Ident;
 
-/// Generate type aliases, re-exports, and trait implementations for the `abi` module.
+/// Generate type aliases, re-exports, and trait implementations for the ABI module.
 ///
 /// For `#[contract(abi)]` on `struct MyContract`, generates:
 /// - `pub type MyContractCalls = abi::Calls;`
@@ -21,8 +22,9 @@ use syn::Ident;
 /// - `pub type MyContractEvent = abi::Event;`
 /// - `pub use abi::prelude;` - Re-export prelude submodule
 /// - `pub use abi::traits;` - Re-export traits submodule
-/// - `pub mod rpc { pub use abi::abiInstance as IMyContract; }` - RPC module with interface alias
 /// - `impl abi::IConstants for MyContract {}`
+///
+/// For `#[contract(abi = IFeeManager)]`, uses `IFeeManager` instead of `abi`.
 ///
 /// For `#[contract(abi, dispatch)]`, additionally generates:
 /// - `impl abi::Dispatch for MyContract {}`
@@ -30,17 +32,19 @@ use syn::Ident;
 ///
 /// # Arguments
 /// * `struct_name` - The name of the contract struct
+/// * `abi_mod` - The ABI module name (e.g., `abi` or `IFeeManager`)
 /// * `dispatch` - If true, generate `Dispatch` and `Precompile` impls
 /// * `is_dynamic` - If true (no fixed address), add initialization check before dispatch
 pub(crate) fn generate_abi_aliases(
     struct_name: &Ident,
+    abi_mod: &Ident,
     dispatch: bool,
     is_dynamic: bool,
 ) -> syn::Result<TokenStream> {
     let calls_alias = format_ident!("{}Calls", struct_name);
     let error_alias = format_ident!("{}Error", struct_name);
     let event_alias = format_ident!("{}Event", struct_name);
-    let rpc_alias = format_ident!("I{}", struct_name);
+    let iconstants_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&abi_mod.to_string()));
 
     let dispatch_impls = if dispatch {
         // For dynamic precompiles (no fixed address), add initialization check.
@@ -50,7 +54,7 @@ pub(crate) fn generate_abi_aliases(
                 if !self.is_initialized().unwrap_or(false) {
                     return Ok(::revm::precompile::PrecompileOutput::new_reverted(
                         self.storage.gas_used(),
-                        ::alloy::sol_types::SolError::abi_encode(&abi::Uninitialized {}).into(),
+                        ::alloy::sol_types::SolError::abi_encode(&#abi_mod::Uninitialized {}).into(),
                     ));
                 }
             }
@@ -59,7 +63,7 @@ pub(crate) fn generate_abi_aliases(
         };
 
         quote! {
-            impl abi::Dispatch for #struct_name {}
+            impl #abi_mod::Dispatch for #struct_name {}
 
             impl crate::dispatch::Precompile for #struct_name {
                 fn call(
@@ -75,7 +79,7 @@ pub(crate) fn generate_abi_aliases(
 
                     #init_check
 
-                    abi::precompile_call(self, calldata, msg_sender)
+                    #abi_mod::precompile_call(self, calldata, msg_sender)
                 }
             }
         }
@@ -85,32 +89,28 @@ pub(crate) fn generate_abi_aliases(
 
     Ok(quote! {
         /// Unified calls enum for this contract.
-        pub type #calls_alias = abi::Calls;
+        pub type #calls_alias = #abi_mod::Calls;
 
         /// Unified error enum for this contract.
-        pub type #error_alias = abi::Error;
+        pub type #error_alias = #abi_mod::Error;
 
         /// Unified event enum for this contract.
-        pub type #event_alias = abi::Event;
+        pub type #event_alias = #abi_mod::Event;
 
         /// Re-export prelude for convenient glob imports.
         ///
         /// Usage: `use crate::module::prelude::*;`
-        pub use abi::prelude;
+        pub use #abi_mod::prelude;
 
         /// Re-export traits for selective trait imports.
         ///
         /// Usage: `use crate::module::traits::*;`
-        pub use abi::traits;
+        pub use #abi_mod::traits;
 
-        /// RPC module for provider-bound contract interactions.
-        ///
-        /// Usage: `use crate::module::rpc::I{ContractName};`
-        pub mod rpc {
-            pub use super::abi::abiInstance as #rpc_alias;
-        }
+        #[cfg(feature = "rpc")]
+        pub use #abi_mod::new;
 
-        impl abi::IConstants for #struct_name {}
+        impl #abi_mod::#iconstants_name for #struct_name {}
 
         #dispatch_impls
     })

@@ -33,12 +33,12 @@ use tempo_precompiles::{
         IAccountKeychain::{SignatureType as PrecompileSignatureType, TokenLimit},
         INonce,
     },
-    account_keychain::{AccountKeychain, IAccountKeychain},
+    account_keychain::{AccountKeychain, IAccountKeychain::IAccountKeychain},
     error::TempoPrecompileError,
     nonce::NonceManager,
     storage::StorageCtx,
     tip_fee_manager::{Error as TipFeeManagerError, TipFeeManager},
-    tip20::{TIP20Error, TIP20Token, abi::InsufficientBalance},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
 };
 use tempo_primitives::transaction::{
     PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,

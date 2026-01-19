@@ -1,15 +1,12 @@
 use crate::{
-    abi::{
-        ITIP20::traits::*,
-        tip_fee_manager::abi::prelude::*,
-    },
+    abi::{ITIP20::traits::*, tip_fee_manager::IFeeManager::prelude::*},
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip_fee_manager::TipFeeManager,
     tip20::{TIP20Token, validate_usd_currency},
 };
 
-pub use crate::abi::tip_fee_manager::abi::{MIN_LIQUIDITY, Pool};
+pub use crate::abi::tip_fee_manager::IFeeManager::{MIN_LIQUIDITY, Pool};
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
@@ -169,7 +166,7 @@ impl TipFeeManager {
     }
 }
 
-impl ITIPFeeAMM for TipFeeManager {
+impl IFeeAMM for TipFeeManager {
     fn get_pool_id(&self, user_token: Address, validator_token: Address) -> Result<B256> {
         Ok(self.pool_id(user_token, validator_token))
     }
@@ -509,7 +506,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
-            let result = ITIPFeeAMM::mint(&mut amm, 
+            let result = IFeeAMM::mint(
+                &mut amm,
                 admin,
                 token.address(),
                 token.address(),
@@ -533,7 +531,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("Test", "TST", admin).apply()?;
             let mut amm = TipFeeManager::new();
-            let result = ITIPFeeAMM::burn(&mut amm, 
+            let result = IFeeAMM::burn(
+                &mut amm,
                 admin,
                 token.address(),
                 token.address(),
@@ -569,7 +568,8 @@ mod tests {
                 amount,
             )?;
 
-            let result = ITIPFeeAMM::rebalance_swap(&mut amm, 
+            let result = IFeeAMM::rebalance_swap(
+                &mut amm,
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -595,7 +595,8 @@ mod tests {
             let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
-            let result = ITIPFeeAMM::mint(&mut amm, 
+            let result = IFeeAMM::mint(
+                &mut amm,
                 admin,
                 eur_token.address(),
                 usd_token.address(),
@@ -609,7 +610,8 @@ mod tests {
                 )))
             ));
 
-            let result = ITIPFeeAMM::mint(&mut amm, 
+            let result = IFeeAMM::mint(
+                &mut amm,
                 admin,
                 usd_token.address(),
                 eur_token.address(),
@@ -637,7 +639,8 @@ mod tests {
             let usd_token = TIP20Setup::create("USDToken", "USD", admin).apply()?;
             let mut amm = TipFeeManager::new();
 
-            let result = ITIPFeeAMM::burn(&mut amm, 
+            let result = IFeeAMM::burn(
+                &mut amm,
                 admin,
                 eur_token.address(),
                 usd_token.address(),
@@ -651,7 +654,8 @@ mod tests {
                 )))
             ));
 
-            let result = ITIPFeeAMM::burn(&mut amm, 
+            let result = IFeeAMM::burn(
+                &mut amm,
                 admin,
                 usd_token.address(),
                 eur_token.address(),
@@ -679,7 +683,8 @@ mod tests {
 
             // MIN_LIQUIDITY = 1000, amount/2 must be > 1000, so 2000 should fail
             let insufficient = uint!(2000_U256);
-            let result = ITIPFeeAMM::mint(&mut amm, 
+            let result = IFeeAMM::mint(
+                &mut amm,
                 admin,
                 user_token.address(),
                 validator_token.address(),
@@ -716,7 +721,7 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
             let amount = uint!(10000_U256);
-            let result = ITIPFeeAMM::mint(&mut amm, admin, token1, token2, amount, admin)?;
+            let result = IFeeAMM::mint(&mut amm, admin, token1, token2, amount, admin)?;
             let expected_mean = amount / uint!(2_U256);
             let expected_liquidity = expected_mean - MIN_LIQUIDITY;
 
@@ -987,7 +992,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = ITIPFeeAMM::burn(&mut amm, admin, user_token, validator_token, U256::ZERO, admin);
+            let result = IFeeAMM::burn(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                admin,
+            );
 
             assert!(matches!(
                 result,
@@ -1014,7 +1026,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = ITIPFeeAMM::mint(&mut amm, admin, user_token, validator_token, U256::ZERO, admin);
+            let result = IFeeAMM::mint(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                admin,
+            );
 
             assert!(matches!(
                 result,
@@ -1060,8 +1079,14 @@ mod tests {
             let amount_out = uint!(1000_U256);
             let expected_in = (amount_out * N) / SCALE + U256::ONE;
 
-            let amount_in =
-                ITIPFeeAMM::rebalance_swap(&mut amm, admin, user_token, validator_token, amount_out, recipient)?;
+            let amount_in = IFeeAMM::rebalance_swap(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                amount_out,
+                recipient,
+            )?;
 
             assert_eq!(amount_in, expected_in);
 
@@ -1100,8 +1125,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let initial_amount = uint!(100000_U256);
-            let first_liquidity =
-                ITIPFeeAMM::mint(&mut amm, admin, user_token, validator_token, initial_amount, admin)?;
+            let first_liquidity = IFeeAMM::mint(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                initial_amount,
+                admin,
+            )?;
 
             let expected_first_liquidity = initial_amount / uint!(2_U256) - MIN_LIQUIDITY;
             assert_eq!(first_liquidity, expected_first_liquidity);
@@ -1114,7 +1145,8 @@ mod tests {
             let reserve_val = U256::from(pool_after_first.reserve_validator_token);
 
             let second_amount = uint!(50000_U256);
-            let second_liquidity = ITIPFeeAMM::mint(&mut amm, 
+            let second_liquidity = IFeeAMM::mint(
+                &mut amm,
                 second_user,
                 user_token,
                 validator_token,
@@ -1162,7 +1194,14 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = ITIPFeeAMM::mint(&mut amm, admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = IFeeAMM::mint(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
             let expected_liquidity = deposit_amount / uint!(2_U256) - MIN_LIQUIDITY;
             assert_eq!(liquidity, expected_liquidity);
@@ -1172,8 +1211,14 @@ mod tests {
             let total_supply_before = amm.get_total_supply(pool_id)?;
 
             let burn_amount = liquidity / uint!(2_U256);
-            let (amount_user, amount_validator) =
-                ITIPFeeAMM::burn(&mut amm, admin, user_token, validator_token, burn_amount, recipient)?;
+            let (amount_user, amount_validator) = IFeeAMM::burn(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                burn_amount,
+                recipient,
+            )?;
 
             let expected_user =
                 burn_amount * U256::from(pool_before.reserve_user_token) / total_supply_before;
@@ -1225,9 +1270,17 @@ mod tests {
             let mut amm = TipFeeManager::new();
 
             let deposit_amount = uint!(100000_U256);
-            let liquidity = ITIPFeeAMM::mint(&mut amm, admin, user_token, validator_token, deposit_amount, admin)?;
+            let liquidity = IFeeAMM::mint(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                deposit_amount,
+                admin,
+            )?;
 
-            let result = ITIPFeeAMM::burn(&mut amm, 
+            let result = IFeeAMM::burn(
+                &mut amm,
                 other_user,
                 user_token,
                 validator_token,
@@ -1263,7 +1316,14 @@ mod tests {
 
             let mut amm = TipFeeManager::new();
 
-            let result = ITIPFeeAMM::rebalance_swap(&mut amm, admin, user_token, validator_token, U256::ZERO, to);
+            let result = IFeeAMM::rebalance_swap(
+                &mut amm,
+                admin,
+                user_token,
+                validator_token,
+                U256::ZERO,
+                to,
+            );
 
             assert!(matches!(
                 result,

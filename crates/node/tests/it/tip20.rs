@@ -784,8 +784,8 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        abi::IFeeManager,
         tip20::PAUSE_ROLE,
-        tip_fee_manager::{IFeeManager, ITIPFeeAMM},
     };
 
     reth_tracing::init_test_tracing();
@@ -827,7 +827,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
         .await?;
 
     // Add liquidity to the AMM pool so the token can be used for fees
-    let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
+    let fee_amm = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, admin_provider.clone());
     fee_amm
         .mint(*token.address(), PATH_USD_ADDRESS, U256::from(1e18), admin)
         .gas(gas)

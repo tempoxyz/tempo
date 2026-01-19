@@ -4,7 +4,7 @@ use tempo_precompiles_macros::abi;
 
 #[abi(dispatch)]
 #[rustfmt::skip]
-pub mod abi {
+pub mod IFeeManager {
     use alloy::primitives::{Address, B256, U256, uint};
 
     #[cfg(feature = "precompile")]
@@ -28,7 +28,7 @@ pub mod abi {
         fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()>;
     }
 
-    pub trait ITIPFeeAMM {
+    pub trait IFeeAMM {
         fn get_pool_id(&self, user_token: Address, validator_token: Address) -> Result<B256>;
         fn get_pool(&self, user_token: Address, validator_token: Address) -> Result<Pool>;
         fn pools(&self, pool_id: B256) -> Result<Pool>;
@@ -59,7 +59,7 @@ pub mod abi {
         CannotChangeWithinBlock,
         CannotChangeWithPendingFees,
         TokenPolicyForbids,
-        // ITIPFeeAMM errors
+        // IFeeAMM errors
         IdenticalAddresses,
         InsufficientLiquidity,
         InsufficientReserves,
@@ -74,7 +74,7 @@ pub mod abi {
         UserTokenSet { #[indexed] user: Address, #[indexed] token: Address },
         ValidatorTokenSet { #[indexed] validator: Address, #[indexed] token: Address },
         FeesDistributed { #[indexed] validator: Address, #[indexed] token: Address, amount: U256 },
-        // ITIPFeeAMM events
+        // IFeeAMM events
         Mint { sender: Address, #[indexed] to: Address, #[indexed] user_token: Address, #[indexed] validator_token: Address, amount_validator_token: U256, liquidity: U256 },
         Burn { #[indexed] sender: Address, #[indexed] user_token: Address, #[indexed] validator_token: Address, amount_user_token: U256, amount_validator_token: U256, liquidity: U256, to: Address },
         RebalanceSwap { #[indexed] user_token: Address, #[indexed] validator_token: Address, #[indexed] swapper: Address, amount_in: U256, amount_out: U256 },

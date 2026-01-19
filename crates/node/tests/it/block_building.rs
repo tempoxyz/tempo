@@ -24,7 +24,7 @@ async fn setup_token_manual<P>(
     provider: &P,
     sender: &alloy::signers::local::PrivateKeySigner,
     chain_id: u64,
-) -> eyre::Result<ITIP20::abiInstance<P>>
+) -> eyre::Result<ITIP20::ITIP20Instance<P>>
 where
     P: Provider + Clone,
 {
@@ -80,7 +80,7 @@ where
     let token_addr = event.token;
 
     // Grant issuer role
-    let token = ITIP20::abiInstance::new(token_addr, provider.clone());
+    let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let grant_call = ITIP20::grantRoleCall {
         role: *ISSUER_ROLE,
         account: sender_address,
@@ -146,7 +146,7 @@ async fn inject_payment_txs_from_sender<P>(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     provider: &P,
     sender: &alloy::signers::local::PrivateKeySigner,
-    token: &ITIP20::abiInstance<P>,
+    token: &ITIP20::ITIP20Instance<P>,
     chain_id: u64,
     count: usize,
 ) -> eyre::Result<()>

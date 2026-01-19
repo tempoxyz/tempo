@@ -56,9 +56,9 @@ use tempo_node::{
 };
 use tempo_precompiles::{
     VALIDATOR_CONFIG_ADDRESS,
-    abi::validator_config::abi::abiInstance as IValidatorConfigInstance,
+    abi::validator_config::IValidatorConfig::IValidatorConfigInstance,
     storage::StorageCtx,
-    validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config::{IValidatorConfig::IValidatorConfig, ValidatorConfig},
 };
 
 const ADMIN_INDEX: u32 = 0;

@@ -7,7 +7,7 @@ use alloy::{
     primitives::{Address, B256, IntoLogData, U256},
     sol_types::{SolCall, SolInterface},
 };
-use tempo_precompiles::tip20::abi;
+use tempo_precompiles::tip20::ITIP20 as abi;
 
 #[test]
 fn test_calls_enum_decode() {

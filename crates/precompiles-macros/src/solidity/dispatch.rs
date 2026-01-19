@@ -10,6 +10,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use syn::Ident;
 
 use super::parser::{ConstantDef, InterfaceDef, MethodDef};
 
@@ -17,10 +18,11 @@ use super::parser::{ConstantDef, InterfaceDef, MethodDef};
 ///
 /// The generated trait:
 /// - Requires all interface traits as supertraits
-/// - Also requires `IConstants` as a supertrait (for constants access)
+/// - Also requires `{ModName}Constants` as a supertrait (for constants access)
 /// - Provides a `dispatch` method that matches on `Calls` variants
 /// - Uses appropriate helpers based on method type (provided by the implementor's crate)
 pub(super) fn generate_dispatch_trait(
+    mod_name: &Ident,
     interfaces: &[InterfaceDef],
     constants: &[ConstantDef],
 ) -> TokenStream {
@@ -28,7 +30,9 @@ pub(super) fn generate_dispatch_trait(
         return quote! {};
     }
 
-    // Build the supertrait bounds (require all interface traits + IConstants)
+    let iconstants_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&mod_name.to_string()));
+
+    // Build the supertrait bounds (require all interface traits + {ModName}Constants)
     let mut trait_bounds: Vec<TokenStream> = interfaces
         .iter()
         .map(|iface| {
@@ -37,8 +41,8 @@ pub(super) fn generate_dispatch_trait(
         })
         .collect();
 
-    // Always add IConstants as a bound (it's always generated, even if empty)
-    trait_bounds.push(quote! { IConstants });
+    // Always add {ModName}Constants as a bound (it's always generated, even if empty)
+    trait_bounds.push(quote! { #iconstants_name });
     let bounds = quote! { : #(#trait_bounds)+* };
     let match_body = generate_match_body(interfaces, constants);
 

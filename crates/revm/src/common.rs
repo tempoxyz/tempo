@@ -9,14 +9,14 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::abi::IStablecoinDEX;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    abi::IStablecoinDEX,
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
-    tip_fee_manager::{TipFeeManager, abi::setUserTokenCall},
-    tip20::{TIP20Token, abi as tip20, is_tip20_prefix},
-    tip403_registry::{TIP403Registry, abi::IRegistry as _},
+    tip_fee_manager::{IFeeManager::setUserTokenCall, TipFeeManager},
+    tip20::{ITIP20 as tip20, TIP20Token, is_tip20_prefix},
+    tip403_registry::{ITIP403Registry::IRegistry as _, TIP403Registry},
 };
 use tempo_primitives::TempoTxEnvelope;
 
@@ -407,7 +407,7 @@ mod tests {
     use super::*;
     use alloy_primitives::address;
     use revm::{context::TxEnv, database::EmptyDB, interpreter::instructions::utility::IntoU256};
-    use tempo_precompiles::{PATH_USD_ADDRESS, abi::ITipFeeManager::setUserTokenCall};
+    use tempo_precompiles::{PATH_USD_ADDRESS, abi::IFeeManager::setUserTokenCall};
 
     #[test]
     fn test_get_fee_token_fee_token_set() -> eyre::Result<()> {
@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn test_is_tip20_fee_inference_call() {
-        use tempo_precompiles::tip20::abi::{
+        use tempo_precompiles::tip20::ITIP20::{
             approveCall, distributeRewardCall, grantRoleCall, mintCall, transferCall,
             transferWithMemoCall,
         };

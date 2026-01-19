@@ -52,11 +52,11 @@ use tempo_precompiles::{
     nonce::NonceManager,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
-    tip_fee_manager::{TipFeeManager, abi::traits::*},
+    tip_fee_manager::{IFeeManager::traits::*, TipFeeManager},
     tip20::TIP20Token,
-    tip20_factory::{TIP20Factory, abi::IFactory as _},
+    tip20_factory::{TIP20Factory, traits::IFactory as _},
     tip403_registry::TIP403Registry,
-    validator_config::{IValidatorConfig, ValidatorConfig},
+    validator_config::{IValidatorConfig::IValidatorConfig as _, ValidatorConfig},
 };
 
 /// Generate genesis allocation file for testing
@@ -777,16 +777,18 @@ fn initialize_validator_config(
                 let validator_address = onchain_validator_addresses[i];
                 let public_key = validator.public_key();
                 let addr = validator.addr;
-                IValidatorConfig::add_validator(
-                    &mut validator_config,
-                    admin,
-                    validator_address,
-                    public_key.encode().as_ref().try_into().unwrap(),
-                    true,
-                    addr.to_string(),
-                    addr.to_string(),
-                )
-                .wrap_err("failed to execute smart contract call to add validator to evm state")?;
+                validator_config
+                    .add_validator(
+                        admin,
+                        validator_address,
+                        public_key.encode().as_ref().try_into().unwrap(),
+                        true,
+                        addr.to_string(),
+                        addr.to_string(),
+                    )
+                    .wrap_err(
+                        "failed to execute smart contract call to add validator to evm state",
+                    )?;
                 println!(
                     "added validator\
                 \n\tpublic key: {public_key}\
@@ -867,7 +869,7 @@ fn mint_pairwise_liquidity(
         let mut fee_manager = TipFeeManager::new();
 
         for b_token_address in b_tokens {
-            ITIPFeeAMM::mint(
+            IFeeAMM::mint(
                 &mut fee_manager,
                 admin,
                 a_token,

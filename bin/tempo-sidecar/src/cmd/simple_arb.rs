@@ -16,7 +16,7 @@ use std::{collections::HashSet, time::Duration};
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     abi::ITIP20Factory,
-    tip_fee_manager::abi::{abiInstance as ITIPFeeAMMInstance, getPoolCall, rebalanceSwapCall},
+    tip_fee_manager::{IFeeManager::IFeeManagerInstance, IFeeManager::getPoolCall, IFeeManager::rebalanceSwapCall},
 };
 use tempo_telemetry_util::error_field;
 use tracing::{debug, error, info, instrument};
@@ -120,7 +120,7 @@ impl SimpleArbArgs {
             .wallet(wallet)
             .connect_http(self.rpc_url.parse().context("failed to parse RPC URL")?);
 
-        let fee_amm = ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+        let fee_amm = IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
 
         info!("Fetching all pairs...");
         let pairs = fetch_all_pairs(provider.clone()).await?;

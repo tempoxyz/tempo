@@ -19,7 +19,7 @@ mod utils;
 
 use alloy::primitives::U256;
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{
     Data, DeriveInput, Expr, Fields, Ident, Token, Type, Visibility,
     parse::{Parse, ParseStream, Parser},
@@ -34,8 +34,9 @@ use crate::utils::extract_attributes;
 struct ContractConfig {
     /// Optional address expression for generating `Self::new()` and `Default`.
     address: Option<Expr>,
-    /// Whether to link to an `abi` module for ABI types.
-    use_abi: bool,
+    /// ABI module name. If `Some`, links to that module for ABI types.
+    /// Use `abi` for default module name, or `abi = IFeeManager` for custom name.
+    abi: Option<Ident>,
     /// Whether to generate `Dispatch` and `Precompile` impls (requires `abi`).
     dispatch: bool,
 }
@@ -52,14 +53,12 @@ impl Parse for ContractConfig {
                     config.address = Some(input.parse()?);
                 }
                 "abi" => {
-                    if input.peek(syn::token::Paren) {
-                        return Err(syn::Error::new(
-                            ident.span(),
-                            "`abi` attribute does not accept arguments; \
-                             define a sibling `#[abi] pub mod abi { ... }` module instead",
-                        ));
+                    if input.peek(Token![=]) {
+                        input.parse::<Token![=]>()?;
+                        config.abi = Some(input.parse()?);
+                    } else {
+                        config.abi = Some(format_ident!("abi"));
                     }
-                    config.use_abi = true;
                 }
                 "dispatch" => {
                     config.dispatch = true;
@@ -94,6 +93,7 @@ const RESERVED: &[&str] = &["address", "storage", "msg_sender"];
 /// - `#[contract]` - Basic contract with storage accessors
 /// - `#[contract(addr = EXPR)]` - Contract with fixed address (generates `new()` and `Default`)
 /// - `#[contract(abi)]` - Link to a sibling `#[abi] pub mod abi { ... }` module (generates type aliases and `IConstants` impl)
+/// - `#[contract(abi = IFeeManager)]` - Link to a custom-named ABI module instead of `abi`
 /// - `#[contract(abi, dispatch)]` - Same as above plus `Dispatch` and `Precompile` impls (adds initialization check for dynamic precompiles)
 ///
 /// # Storage Layout Example
@@ -366,9 +366,9 @@ fn gen_contract_output(
 
     let storage_output = gen_contract_storage(&ident, &vis, &fields, config.address.as_ref())?;
 
-    let abi_aliases = if config.use_abi {
+    let abi_aliases = if let Some(abi_mod) = &config.abi {
         let is_dynamic = config.address.is_none();
-        composition::generate_abi_aliases(&ident, config.dispatch, is_dynamic)?
+        composition::generate_abi_aliases(&ident, abi_mod, config.dispatch, is_dynamic)?
     } else {
         proc_macro2::TokenStream::new()
     };

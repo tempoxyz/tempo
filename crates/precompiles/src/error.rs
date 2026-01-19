@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::abi::{
-    IAccountKeychain, INonce, IStablecoinDEX, ITIP20, ITIP20Factory, ITIP403Registry,
-    ITipFeeManager, IValidatorConfig,
+    IAccountKeychain, IFeeManager, INonce, IStablecoinDEX, ITIP20, ITIP20Factory, ITIP403Registry,
+    IValidatorConfig,
 };
 use alloy::{
     primitives::{Selector, U256},
@@ -37,7 +37,7 @@ pub enum TempoPrecompileError {
 
     /// Error from TIP fee manager
     #[error("TIP fee manager error: {0:?}")]
-    TipFeeManager(ITipFeeManager::Error),
+    TipFeeManager(IFeeManager::Error),
 
     /// Error from Tempo Transaction nonce manager
     #[error("Tempo Transaction nonce error: {0:?}")]

@@ -30,7 +30,7 @@
 //! use crate::tip20::abi::traits::*;
 //! ```
 //!
-//! Includes: `IConstants` and all interface traits (`IToken`, `IRolesAuth`, etc.).
+//! Includes: `{ModName}Constants` and all interface traits (`IToken`, `IRolesAuth`, etc.).
 //!
 //! # Example
 //!
@@ -97,6 +97,7 @@ use registry::TypeRegistry;
 /// - `prelude` - all public types for glob imports
 /// - `traits` - only interface traits for selective imports
 fn generate_submodules(
+    mod_name: &Ident,
     structs: &[SolStructDef],
     unit_enums: &[UnitEnumDef],
     interfaces: &[InterfaceDef],
@@ -104,6 +105,7 @@ fn generate_submodules(
     has_error: bool,
     has_event: bool,
 ) -> TokenStream {
+    let iconstants_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&mod_name.to_string()));
     // Collect trait names
     let trait_names: Vec<&Ident> = interfaces.iter().map(|i| &i.name).collect();
 
@@ -169,10 +171,10 @@ fn generate_submodules(
         quote! {}
     };
 
-    // IConstants re-export is gated by cfg
+    // {ModName}Constants re-export is gated by cfg
     let iconstants_reexport = quote! {
         #[cfg(feature = "precompile")]
-        pub use super::IConstants;
+        pub use super::#iconstants_name;
     };
 
     // Traits module is gated by cfg
@@ -185,8 +187,8 @@ fn generate_submodules(
         /// use crate::module::abi::traits::*;
         /// ```
         pub mod traits {
-            // IConstants trait (always present)
-            pub use super::IConstants;
+            // {ModName}Constants trait (always present)
+            pub use super::#iconstants_name;
 
             // Interface traits
             #trait_reexports
@@ -206,7 +208,7 @@ fn generate_submodules(
             // Unified Calls enum (always present)
             pub use super::Calls;
 
-            // IConstants trait (when traits are enabled)
+            // {ModName}Constants trait (when traits are enabled)
             #iconstants_reexport
 
             // Interface traits
@@ -282,8 +284,8 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
         .map(|def| interface::generate_interface(def, &registry))
         .collect::<syn::Result<Vec<_>>>()?;
 
-    // Generate IConstants trait
-    let constants_trait = constants::generate_trait(&module.constants);
+    // Generate {ModName}Constants trait
+    let constants_trait = constants::generate_trait(mod_name, &module.constants);
 
     // Generate constants definitions, call structs, and calls enum (only if constants exist)
     let constants_impl = constants::generate_constants(&module.constants, &registry)?;
@@ -295,7 +297,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
     // Generate the Dispatch trait for routing calls to methods (only when dispatch flag is set)
     // This requires revm types and dispatch helpers from tempo_precompiles
     let dispatch_trait = if config.dispatch {
-        dispatch::generate_dispatch_trait(&module.interfaces, &module.constants)
+        dispatch::generate_dispatch_trait(mod_name, &module.interfaces, &module.constants)
     } else {
         quote! {}
     };
@@ -337,6 +339,7 @@ pub(crate) fn expand(item: ItemMod, config: SolidityConfig) -> syn::Result<Token
 
     // Generate prelude and traits submodules
     let submodules = generate_submodules(
+        mod_name,
         &module.structs,
         &module.unit_enums,
         &module.interfaces,

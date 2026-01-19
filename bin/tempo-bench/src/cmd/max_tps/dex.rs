@@ -4,7 +4,7 @@ use indicatif::ProgressIterator;
 use tempo_precompiles::abi::IStablecoinDEX;
 use tempo_precompiles::{
     PATH_USD_ADDRESS,
-    tip20::{U128_MAX, abi::grantRoleCall},
+    tip20::{ITIP20::grantRoleCall, U128_MAX},
 };
 
 /// This method performs a one-time setup for sending a lot of transactions:

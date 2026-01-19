@@ -15,20 +15,22 @@ use alloy::primitives::{Address, B256, U256, hex, uint};
 use tempo_precompiles_macros::contract;
 
 pub use crate::abi::{
-    ITIP20::{Error as TIP20Error, InvalidCurrency, PolicyForbids},
-    tip20::abi,
-    tip20::abi::{BURN_BLOCKED_ROLE, ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+    ITIP20,
+    ITIP20::{
+        BURN_BLOCKED_ROLE, Error as TIP20Error, ISSUER_ROLE, InvalidCurrency, PAUSE_ROLE,
+        PolicyForbids, UNPAUSE_ROLE,
+    },
 };
 use crate::{
     abi::{
-        ITIP20::{self, prelude::*},
-        PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+        ITIP20::prelude::*, ITIP20Factory::traits::*, ITIP403Registry::traits::*, PATH_USD_ADDRESS,
+        STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     },
     account_keychain::AccountKeychain,
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20_factory::{TIP20Factory, abi::traits::*},
-    tip403_registry::{TIP403Registry, abi::traits::*},
+    tip20_factory::TIP20Factory,
+    tip403_registry::TIP403Registry,
 };
 pub use roles::DEFAULT_ADMIN_ROLE;
 use tracing::trace;
@@ -46,7 +48,7 @@ pub(crate) const USD_CURRENCY: &str = "USD";
 /// The full address is: TIP20_TOKEN_PREFIX (12 bytes) || derived_bytes (8 bytes)
 pub(crate) const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 
-#[contract(abi, dispatch)]
+#[contract(abi = ITIP20, dispatch)]
 pub struct TIP20Token {
     // RolesAuth
     roles: Mapping<Address, Mapping<B256, bool>>,

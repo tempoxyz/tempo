@@ -163,47 +163,53 @@ fn test_error_enum_selectors() {
     assert_eq!(insufficient.available, decoded.available);
 }
 
-#[allow(dead_code)]
-struct TestToken {
-    info: e2e::TokenInfo,
-    paused: bool,
-    balances: HashMap<Address, U256>,
-    admin: Address,
-}
+// Trait implementation is gated because e2e::Interface requires precompile feature
+#[cfg(feature = "precompile")]
+mod test_token_impl {
+    use super::*;
 
-impl e2e::Interface for TestToken {
-    fn info(&self) -> Result<e2e::TokenInfo> {
-        Ok(self.info)
+    #[allow(dead_code)]
+    pub struct TestToken {
+        pub info: e2e::TokenInfo,
+        pub paused: bool,
+        pub balances: HashMap<Address, U256>,
+        pub admin: Address,
     }
 
-    fn is_paused(&self) -> Result<bool> {
-        Ok(self.paused)
-    }
-
-    fn balance_of(&self, account: Address) -> Result<U256> {
-        Ok(*self.balances.get(&account).unwrap_or(&U256::ZERO))
-    }
-
-    fn transfer(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<bool> {
-        if self.paused {
-            return Err(());
+    impl e2e::Interface for TestToken {
+        fn info(&self) -> Result<e2e::TokenInfo> {
+            Ok(self.info)
         }
-        let sender_balance = *self.balances.get(&msg_sender).unwrap_or(&U256::ZERO);
-        if sender_balance < amount {
-            return Err(());
-        }
-        self.balances.insert(msg_sender, sender_balance - amount);
-        let to_balance = *self.balances.get(&to).unwrap_or(&U256::ZERO);
-        self.balances.insert(to, to_balance + amount);
-        Ok(true)
-    }
 
-    fn pause(&mut self, msg_sender: Address) -> Result<()> {
-        if msg_sender != self.admin {
-            return Err(());
+        fn is_paused(&self) -> Result<bool> {
+            Ok(self.paused)
         }
-        self.paused = true;
-        Ok(())
+
+        fn balance_of(&self, account: Address) -> Result<U256> {
+            Ok(*self.balances.get(&account).unwrap_or(&U256::ZERO))
+        }
+
+        fn transfer(&mut self, msg_sender: Address, to: Address, amount: U256) -> Result<bool> {
+            if self.paused {
+                return Err(());
+            }
+            let sender_balance = *self.balances.get(&msg_sender).unwrap_or(&U256::ZERO);
+            if sender_balance < amount {
+                return Err(());
+            }
+            self.balances.insert(msg_sender, sender_balance - amount);
+            let to_balance = *self.balances.get(&to).unwrap_or(&U256::ZERO);
+            self.balances.insert(to, to_balance + amount);
+            Ok(true)
+        }
+
+        fn pause(&mut self, msg_sender: Address) -> Result<()> {
+            if msg_sender != self.admin {
+                return Err(());
+            }
+            self.paused = true;
+            Ok(())
+        }
     }
 }
 
@@ -263,8 +269,10 @@ fn test_interface_call_structs() {
 }
 
 #[test]
+#[cfg(feature = "precompile")]
 fn test_full_module_integration() {
     use e2e::{Calls, Event, Interface, TokenInfo, balanceOfCall, transferCall};
+    use test_token_impl::TestToken;
 
     let admin = Address::random();
     let user1 = Address::random();
@@ -521,8 +529,9 @@ fn test_constants_only_module() {
         constants_only::PAUSE_ROLECall::SELECTOR
     ));
 
-    // Verify IConstants trait exists with the expected methods
-    fn _assert_iconstants<T: constants_only::IConstants>() {}
+    // Verify Constants trait exists with the expected methods (trait is gated by precompile feature)
+    #[cfg(feature = "precompile")]
+    fn _assert_iconstants<T: constants_only::ConstantsOnlyConstants>() {}
 }
 
 #[abi]
@@ -558,7 +567,9 @@ fn test_constants_with_interface() {
         constants_with_interface::grantRoleCall::SELECTOR
     ));
 
-    // Verify IConstants and IRoles traits exist with the expected methods
-    fn _assert_iconstants<T: constants_with_interface::IConstants>() {}
+    // Verify Constants and IRoles traits exist with the expected methods (traits are gated by precompile feature)
+    #[cfg(feature = "precompile")]
+    fn _assert_iconstants<T: constants_with_interface::ConstantsWithInterfaceConstants>() {}
+    #[cfg(feature = "precompile")]
     fn _assert_iroles<T: constants_with_interface::IRoles>() {}
 }

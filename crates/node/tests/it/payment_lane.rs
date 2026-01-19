@@ -7,7 +7,7 @@ use alloy::{
 };
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_precompiles::{abi::ITIP20, tip_fee_manager::IFeeManager};
+use tempo_precompiles::abi::{ITIP20, IFeeManager};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
 #[tokio::test(flavor = "multi_thread")]

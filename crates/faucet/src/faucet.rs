@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use jsonrpsee::{core::RpcResult, proc_macros::rpc, types::error::INTERNAL_ERROR_CODE};
 use reth_rpc_server_types::result::rpc_err;
 use tempo_alloy::TempoNetwork;
-use tempo_precompiles::tip20::rpc::ITIP20Token;
+use tempo_precompiles::abi::ITIP20::ITIP20Instance;
 
 #[rpc(server, namespace = "tempo")]
 pub trait TempoFaucetExtApi {
@@ -39,7 +39,7 @@ impl TempoFaucetExtApiServer for TempoFaucetExt {
     async fn fund_address(&self, address: Address) -> RpcResult<Vec<B256>> {
         let mut tx_hashes = Vec::new();
         for token in &self.faucet_token_addresses {
-            let tx_hash = *ITIP20Token::new(*token, &self.provider)
+            let tx_hash = *ITIP20Instance::new(*token, &self.provider)
                 .mint(address, self.funding_amount)
                 .send()
                 .await

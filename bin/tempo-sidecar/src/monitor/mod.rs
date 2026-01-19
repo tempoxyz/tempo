@@ -21,7 +21,7 @@ use tempo_precompiles::{
     abi::ITIP20,
     tip_fee_manager::{
         Pool,
-        abi::{Mint, abiInstance as ITIPFeeAMMInstance, getPoolCall},
+        IFeeManager::{Mint, IFeeManagerInstance, getPoolCall},
     },
 };
 use tracing::{debug, error, info, instrument};
@@ -149,7 +149,7 @@ impl MonitorConfig {
             .permutations(2)
             .map(|pair| {
                 let (token_a, token_b) = (*pair[0], *pair[1]);
-                let fee_amm = ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
+                let fee_amm = IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
                 async move {
                     match fee_amm
                         .call_builder(&getPoolCall {
@@ -239,8 +239,8 @@ impl Monitor {
             .connect(self.rpc_url.as_str())
             .await?;
 
-        let fee_amm: ITIPFeeAMMInstance<_, _> =
-            ITIPFeeAMMInstance::new(TIP_FEE_MANAGER_ADDRESS, provider);
+        let fee_amm: IFeeManagerInstance<_, _> =
+            IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider);
 
         for &(token_a, token_b) in &self.known_pairs {
             debug!(%token_a, %token_b, "fetching pool");

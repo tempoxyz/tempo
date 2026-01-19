@@ -287,7 +287,7 @@ mod tests {
     use super::*;
     use crate::{
         abi::PATH_USD_ADDRESS,
-        tip20::{TIP20Token, abi as ITIP20},
+        tip20::{ITIP20, TIP20Token},
     };
     use alloy::primitives::{Address, Bytes, U256, bytes};
     use alloy_evm::{

@@ -2,11 +2,11 @@ use alloy::primitives::{Address, FixedBytes, U256};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tempo_precompiles::{
-    abi::ITIP403Registry,
+    abi::{ITIP20::traits::*, ITIP403Registry, ITIP403Registry::traits::*},
     storage::{StorageCtx, hashmap::HashMapStorageProvider},
     test_util::TIP20Setup,
-    tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE, abi::IToken as _},
-    tip403_registry::{TIP403Registry, abi::IRegistry as _},
+    tip20::{ISSUER_ROLE, PAUSE_ROLE, UNPAUSE_ROLE},
+    tip403_registry::TIP403Registry,
 };
 
 fn tip20_metadata(c: &mut Criterion) {

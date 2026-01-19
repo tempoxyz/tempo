@@ -1,14 +1,12 @@
 //! Test utilities for precompile dispatch testing
 
-#[cfg(any(test, feature = "test-utils"))]
-use crate::error::TempoPrecompileError;
 use crate::{
     PATH_USD_ADDRESS, Precompile, TIP20_FACTORY_ADDRESS,
     abi::ITIP20::{Error as TIP20Error, prelude::*},
     error::Result,
     storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
     tip20::TIP20Token,
-    tip20_factory::{self, TIP20Factory},
+    tip20_factory::{TIP20Factory, traits::IFactory as _},
 };
 use alloy::{
     primitives::{Address, B256, U256},
@@ -16,6 +14,9 @@ use alloy::{
 };
 use revm::precompile::PrecompileError;
 use tempo_contracts::precompiles::UnknownFunctionSelector;
+
+#[cfg(any(test, feature = "test-utils"))]
+use crate::{abi::ITIP20Factory::TokenCreated, error::TempoPrecompileError};
 
 /// Checks that all selectors in an interface have dispatch handlers.
 ///
@@ -300,8 +301,7 @@ impl TIP20Setup {
                 let admin = self.admin.expect("initializing a token requires an admin");
                 let quote = self.quote_token.unwrap_or(PATH_USD_ADDRESS);
                 let salt = self.salt.unwrap_or_else(B256::random);
-                let token_address = tip20_factory::abi::IFactory::create_token(
-                    &mut factory,
+                let token_address = factory.create_token(
                     admin,
                     name.to_string(),
                     symbol.to_string(),
@@ -381,7 +381,6 @@ fn is_initialized(address: Address) -> bool {
 #[cfg(any(test, feature = "test-utils"))]
 fn get_tip20_admin(token: Address) -> Option<Address> {
     use alloy::{primitives::Log, sol_types::SolEvent};
-    use tip20_factory::abi::TokenCreated;
 
     let events = StorageCtx.get_events(TIP20_FACTORY_ADDRESS);
     for log_data in events {

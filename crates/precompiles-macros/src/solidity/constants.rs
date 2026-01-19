@@ -7,6 +7,7 @@ use alloy_sol_macro_expander::{
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use syn::Ident;
 
 use super::{
     common::{self, SynSolType, Unzip4},
@@ -59,11 +60,12 @@ fn generate_definitions(constants: &[ConstantDef]) -> TokenStream {
     quote! { #(#defs)* }
 }
 
-/// Generate the IConstants trait with default implementations.
+/// Generate the {ModName}Constants trait with default implementations.
 ///
 /// The trait is gated by `#[cfg(feature = "precompile")]` so it's only generated
 /// when the precompile feature is enabled.
-pub(super) fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
+pub(super) fn generate_trait(mod_name: &Ident, constants: &[ConstantDef]) -> TokenStream {
+    let trait_name = format_ident!("{}Constants", crate::utils::to_pascal_case(&mod_name.to_string()));
     let methods = constants.iter().map(|c| {
         let (name, ty, is_lazy) = (&c.name, &c.ty, c.is_lazy);
         let body = if is_lazy {
@@ -75,7 +77,7 @@ pub(super) fn generate_trait(constants: &[ConstantDef]) -> TokenStream {
     });
     quote! {
         #[cfg(feature = "precompile")]
-        pub trait IConstants {
+        pub trait #trait_name {
             #(#methods)*
         }
     }

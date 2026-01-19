@@ -4,7 +4,7 @@ use alloy::{
 };
 use tempo_precompiles::abi::{
     IStablecoinDEX,
-    ITIP20::{self, abiInstance as ITIP20Instance},
+    ITIP20::{self, ITIP20Instance},
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS, stablecoin_dex::MIN_ORDER_AMOUNT,

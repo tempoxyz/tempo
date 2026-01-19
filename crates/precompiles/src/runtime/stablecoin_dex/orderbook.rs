@@ -1,7 +1,7 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
 use crate::{
-    abi::stablecoin_dex::abi::{self, MAX_TICK, MIN_TICK, PRICE_SCALE},
+    abi::IStablecoinDEX::{self, MAX_TICK, MIN_TICK, PRICE_SCALE, MAX_PRICE, MIN_PRICE},
     error::Result,
     storage::{Handler, Mapping},
 };
@@ -77,7 +77,7 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
     result.try_into().ok()
 }
 
-use abi::{MAX_PRICE, MIN_PRICE};
+
 
 /// Represents a price level in the orderbook with a doubly-linked list of orders
 /// Orders are maintained in FIFO order at each tick level
@@ -121,7 +121,7 @@ impl TickLevel {
     }
 }
 
-impl From<TickLevel> for abi::PriceLevel {
+impl From<TickLevel> for IStablecoinDEX::PriceLevel {
     fn from(value: TickLevel) -> Self {
         Self {
             head: value.head,
@@ -217,7 +217,7 @@ impl OrderbookHandler {
 
     fn calc_tick_word_idx(&self, tick: i16) -> Result<i16> {
         if !(MIN_TICK..=MAX_TICK).contains(&tick) {
-            return Err(abi::Error::invalid_tick().into());
+            return Err(IStablecoinDEX::Error::invalid_tick().into());
         }
 
         Ok(tick >> 8)
@@ -394,7 +394,7 @@ impl OrderbookHandler {
     }
 }
 
-impl From<Orderbook> for abi::Orderbook {
+impl From<Orderbook> for IStablecoinDEX::Orderbook {
     fn from(value: Orderbook) -> Self {
         Self {
             base: value.base,
@@ -423,7 +423,7 @@ pub fn tick_to_price(tick: i16) -> u32 {
 pub fn price_to_tick(price: u32) -> Result<i16> {
     if !(MIN_PRICE..=MAX_PRICE).contains(&price) {
         let invalid_tick = (price as i32 - PRICE_SCALE as i32) as i16;
-        return Err(abi::Error::tick_out_of_bounds(invalid_tick).into());
+        return Err(IStablecoinDEX::Error::tick_out_of_bounds(invalid_tick).into());
     }
     Ok((price as i32 - PRICE_SCALE as i32) as i16)
 }
@@ -482,7 +482,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TempoPrecompileError::StablecoinDEX(abi::Error::TickOutOfBounds(_))
+            TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::TickOutOfBounds(_))
         ));
     }
 
@@ -493,7 +493,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            TempoPrecompileError::StablecoinDEX(abi::Error::TickOutOfBounds(_))
+            TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::TickOutOfBounds(_))
         ));
     }
 
@@ -742,7 +742,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -750,7 +750,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
                 Ok(())
             })
@@ -769,7 +769,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -777,7 +777,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
                 Ok(())
             })
@@ -795,7 +795,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
 
                 // Test tick below MIN_TICK
@@ -803,7 +803,7 @@ mod tests {
                 assert!(result.is_err());
                 assert!(matches!(
                     result.unwrap_err(),
-                    TempoPrecompileError::StablecoinDEX(abi::Error::InvalidTick(_))
+                    TempoPrecompileError::StablecoinDEX(IStablecoinDEX::Error::InvalidTick(_))
                 ));
                 Ok(())
             })

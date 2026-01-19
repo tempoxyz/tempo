@@ -320,7 +320,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
-        tip403_registry::{PolicyType, TIP403Registry, abi::traits::*},
+        tip403_registry::{ITIP403Registry::IRegistry as _, PolicyType, TIP403Registry},
     };
     use alloy::primitives::{Address, U256};
 
