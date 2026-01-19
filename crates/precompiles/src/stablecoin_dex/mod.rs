@@ -593,7 +593,12 @@ impl StablecoinDEX {
     }
 
     /// Partially fill an order with the specified amount.
-    /// Fill amount is denominated in base token
+    /// Fill amount is denominated in base token.
+    ///
+    /// If the remaining amount after fill falls below MIN_ORDER_AMOUNT, the order is
+    /// automatically cancelled and remaining tokens are refunded to the maker. This
+    /// prevents DoS attacks where users create tiny orders by partially filling their
+    /// own orders.
     fn partial_fill_order(
         &mut self,
         order: &mut Order,
@@ -605,9 +610,6 @@ impl StablecoinDEX {
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
-        self.orders[order.order_id()]
-            .remaining
-            .write(new_remaining)?;
 
         // Calculate quote amount for this fill (used by both maker settlement and taker output)
         let quote_amount = base_to_quote(
@@ -636,19 +638,127 @@ impl StablecoinDEX {
             fill_amount
         };
 
-        // Update price level total liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(fill_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        level.total_liquidity = new_liquidity;
+        // Check if remaining amount falls below minimum order size (dust)
+        // If so, treat as early completion: refund dust to maker and mark as executed
+        if new_remaining > 0 && new_remaining < MIN_ORDER_AMOUNT {
+            // Refund dust to maker's internal balance
+            if order.is_bid() {
+                // Bid orders escrowed quote tokens using RoundingDirection::Up
+                let refund_quote =
+                    base_to_quote(new_remaining, order.tick(), RoundingDirection::Up)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                self.increment_balance(order.maker(), orderbook.quote, refund_quote)?;
+            } else {
+                // Ask orders escrowed base tokens
+                self.increment_balance(order.maker(), orderbook.base, new_remaining)?;
+            }
 
-        self.books[order.book_key()]
-            .tick_level_handler_mut(order.tick(), order.is_bid())
-            .write(*level)?;
+            // Update linked list to remove this order
+            if order.prev() != 0 {
+                self.orders[order.prev()].next.write(order.next())?;
+            } else {
+                level.head = order.next();
+            }
 
-        // Emit OrderFilled event for partial fill
-        self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
+            if order.next() != 0 {
+                self.orders[order.next()].prev.write(order.prev())?;
+            } else {
+                level.tail = order.prev();
+            }
+
+            // Update level liquidity (subtract entire remaining, not just fill_amount)
+            let new_liquidity = level
+                .total_liquidity
+                .checked_sub(order.remaining())
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            level.total_liquidity = new_liquidity;
+
+            // If this was the last order at this tick, clear the bitmap bit
+            if level.head == 0 {
+                self.books[order.book_key()].delete_tick_bit(order.tick(), order.is_bid())?;
+
+                // If this was the best tick, update it
+                let best_tick = if order.is_bid() {
+                    orderbook.best_bid_tick
+                } else {
+                    orderbook.best_ask_tick
+                };
+
+                if best_tick == order.tick() {
+                    let (next_tick, has_liquidity) = self.books[order.book_key()]
+                        .next_initialized_tick(order.tick(), order.is_bid())?;
+
+                    if order.is_bid() {
+                        let new_best = if has_liquidity { next_tick } else { i16::MIN };
+                        self.books[order.book_key()].best_bid_tick.write(new_best)?;
+                    } else {
+                        let new_best = if has_liquidity { next_tick } else { i16::MAX };
+                        self.books[order.book_key()].best_ask_tick.write(new_best)?;
+                    }
+                }
+            }
+
+            self.books[order.book_key()]
+                .tick_level_handler_mut(order.tick(), order.is_bid())
+                .write(*level)?;
+
+            // Delete order from storage
+            self.orders[order.order_id()].delete()?;
+
+            // Handle flip orders: create flip in "partially filled" state
+            // The flip order has amount = original amount, but remaining = filled portion
+            // This preserves the original order size for future flips while only exposing
+            // the actually-filled portion as tradeable liquidity
+            if order.is_flip() {
+                let total_filled = order
+                    .amount()
+                    .checked_sub(new_remaining)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                if total_filled >= MIN_ORDER_AMOUNT {
+                    // Create flip order with total_filled as amount (correct escrow)
+                    // Then update amount to original value to preserve flip chain semantics
+                    let flip_order_id = self.place_flip(
+                        order.maker(),
+                        orderbook.base,
+                        total_filled, // Use filled amount for correct escrow
+                        !order.is_bid(),
+                        order.flip_tick(),
+                        order.tick(),
+                        true,
+                    )?;
+
+                    // Update the order's amount to the original value
+                    // This preserves flip chain semantics: when this order is fully filled,
+                    // the next flip will use the original amount
+                    self.orders[flip_order_id].amount.write(order.amount())?;
+                }
+                // If total_filled < MIN_ORDER_AMOUNT, no flip (filled amount too small)
+            }
+
+            // Emit as complete fill (partialFill = false) since order is now fully executed
+            // The dust was refunded to maker, not traded, but the order is complete
+            self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, false)?;
+        } else {
+            // Normal partial fill - order remains active
+            self.orders[order.order_id()]
+                .remaining
+                .write(new_remaining)?;
+
+            // Update price level total liquidity
+            let new_liquidity = level
+                .total_liquidity
+                .checked_sub(fill_amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            level.total_liquidity = new_liquidity;
+
+            self.books[order.book_key()]
+                .tick_level_handler_mut(order.tick(), order.is_bid())
+                .write(*level)?;
+
+            // Emit OrderFilled event for partial fill
+            self.emit_order_filled(order.order_id(), order.maker(), taker, fill_amount, true)?;
+        }
 
         Ok(amount_out)
     }
@@ -4069,6 +4179,326 @@ mod tests {
             exchange
                 .swap_exact_amount_out(bob, base_token, quote_token, 100009999, u128::MAX)
                 .expect("Swap should succeed");
+
+            Ok(())
+        })
+    }
+
+    /// Test that orders are early-completed when partial fill leaves remaining
+    /// amount below MIN_ORDER_AMOUNT (dust). This prevents DoS attacks where users
+    /// create tiny orders by self-matching.
+    #[test]
+    fn test_partial_fill_early_completes_below_minimum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::from([2u8; 20]);
+            let alice = Address::from([3u8; 20]);
+            let bob = Address::from([4u8; 20]);
+
+            // Setup tokens with enough balance
+            let initial_balance = 500_000_000u128; // $500
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, STABLECOIN_DEX_ADDRESS, initial_balance)?;
+
+            // Also setup bob with quote tokens to swap
+            TIP20Setup::config(quote_token)
+                .with_admin(admin)
+                .with_mint(bob, U256::from(initial_balance))
+                .with_approval(bob, STABLECOIN_DEX_ADDRESS, U256::from(initial_balance))
+                .apply()?;
+
+            let mut exchange = StablecoinDEX::new();
+
+            let tick = 0i16; // Price = 1.0
+
+            // Alice places a $150 ask order (150_000_000 base tokens)
+            let order_amount = 150_000_000u128;
+            let order_id = exchange.place(alice, base_token, order_amount, false, tick)?;
+            assert_eq!(order_id, 1);
+
+            // Verify order exists with full amount
+            let order = exchange.orders[order_id].read()?;
+            assert_eq!(order.remaining(), order_amount);
+
+            // Bob buys $60 worth, leaving $90 remaining (below $100 minimum)
+            // For an ask order at tick 0, amount_in (quote) = amount_out (base)
+            let swap_amount = 60_000_000u128;
+            exchange.swap_exact_amount_in(bob, quote_token, base_token, swap_amount, 0)?;
+
+            // The order should be early-completed because remaining ($90) < MIN_ORDER_AMOUNT ($100)
+            // Verify order is deleted (maker should be zero address)
+            let order_after = exchange.orders[order_id].read()?;
+            assert!(
+                order_after.maker().is_zero(),
+                "Order should be deleted after early completion"
+            );
+
+            // Check that the orderbook has no remaining liquidity at this tick
+            let book_key = compute_book_key(base_token, quote_token);
+            let level = exchange.books[book_key]
+                .tick_level_handler(tick, false)
+                .read()?;
+            assert_eq!(
+                level.total_liquidity, 0,
+                "Tick level should have zero liquidity after early completion"
+            );
+
+            // Verify alice got the dust refunded to her internal balance
+            // She should have 90_000_000 base tokens refunded
+            let alice_base_balance = exchange.balance_of(alice, base_token)?;
+            assert_eq!(
+                alice_base_balance, 90_000_000,
+                "Alice should have dust refunded"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test that orders are NOT cancelled when remaining is exactly at or above minimum
+    #[test]
+    fn test_partial_fill_keeps_order_at_minimum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::from([2u8; 20]);
+            let alice = Address::from([3u8; 20]);
+            let bob = Address::from([4u8; 20]);
+
+            let initial_balance = 500_000_000u128;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, STABLECOIN_DEX_ADDRESS, initial_balance)?;
+
+            TIP20Setup::config(quote_token)
+                .with_admin(admin)
+                .with_mint(bob, U256::from(initial_balance))
+                .with_approval(bob, STABLECOIN_DEX_ADDRESS, U256::from(initial_balance))
+                .apply()?;
+
+            let mut exchange = StablecoinDEX::new();
+
+            let tick = 0i16;
+
+            // Alice places a $200 ask order
+            let order_amount = 200_000_000u128;
+            let order_id = exchange.place(alice, base_token, order_amount, false, tick)?;
+
+            // Bob buys exactly $100, leaving $100 remaining (exactly at minimum)
+            let swap_amount = 100_000_000u128;
+            exchange.swap_exact_amount_in(bob, quote_token, base_token, swap_amount, 0)?;
+
+            // Order should still exist with $100 remaining
+            let order_after = exchange.orders[order_id].read()?;
+            assert!(
+                !order_after.maker().is_zero(),
+                "Order should NOT be cancelled when remaining equals minimum"
+            );
+            assert_eq!(
+                order_after.remaining(),
+                MIN_ORDER_AMOUNT,
+                "Order should have exactly MIN_ORDER_AMOUNT remaining"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test flip order with sufficient filled amount creates proportional flip
+    #[test]
+    fn test_flip_order_proportional_flip_on_force_complete() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::from([2u8; 20]);
+            let alice = Address::from([3u8; 20]);
+            let bob = Address::from([4u8; 20]);
+
+            let initial_balance = 500_000_000u128;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, STABLECOIN_DEX_ADDRESS, initial_balance)?;
+
+            // Bob needs base tokens to sell against Alice's bid
+            TIP20Setup::config(base_token)
+                .with_admin(admin)
+                .with_mint(bob, U256::from(initial_balance))
+                .with_approval(bob, STABLECOIN_DEX_ADDRESS, U256::from(initial_balance))
+                .apply()?;
+
+            let mut exchange = StablecoinDEX::new();
+
+            // For bid orders: flip_tick must be > tick (buy low, sell high)
+            // Use tick 0 for 1:1 pricing
+            let tick = 0i16;
+            let flip_tick = 100i16;
+
+            // Alice places $200 flip bid order (buy base at tick 0, flip to sell at tick 100)
+            let order_amount = 200_000_000u128;
+            let order_id =
+                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+            assert_eq!(order_id, 1);
+
+            // Bob sells $110 base, leaving $90 remaining (below minimum)
+            let swap_amount = 110_000_000u128;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, swap_amount, 0)?;
+
+            // Original order should be cancelled
+            let order_after = exchange.orders[order_id].read()?;
+            assert!(
+                order_after.maker().is_zero(),
+                "Original flip order should be deleted"
+            );
+
+            // A proportional flip order ($110) should have been created
+            // The flip order should be order_id = 2
+            let flip_order = exchange.orders[2].read()?;
+            assert!(
+                !flip_order.maker().is_zero(),
+                "Flip order should exist"
+            );
+            assert_eq!(flip_order.maker(), alice, "Flip order maker should be Alice");
+            assert!(flip_order.is_ask(), "Flip order should be an ask (flipped from bid)");
+            assert_eq!(flip_order.tick(), flip_tick, "Flip order should be at flip_tick");
+            assert_eq!(
+                flip_order.amount(),
+                200_000_000,
+                "Flip order amount should be original amount (preserves flip chain)"
+            );
+            assert_eq!(
+                flip_order.remaining(),
+                110_000_000,
+                "Flip order remaining should equal filled portion"
+            );
+            assert!(flip_order.is_flip(), "Flip order should also be a flip order");
+
+            // Alice should have $90 quote tokens refunded (bid orders escrow quote)
+            let alice_quote_balance = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(
+                alice_quote_balance, 90_000_000,
+                "Alice should have remaining quote tokens refunded"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test flip order with insufficient filled amount does NOT create flip
+    #[test]
+    fn test_flip_order_no_flip_when_filled_below_minimum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::from([2u8; 20]);
+            let alice = Address::from([3u8; 20]);
+            let bob = Address::from([4u8; 20]);
+
+            let initial_balance = 500_000_000u128;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, STABLECOIN_DEX_ADDRESS, initial_balance)?;
+
+            // Bob needs base tokens to sell
+            TIP20Setup::config(base_token)
+                .with_admin(admin)
+                .with_mint(bob, U256::from(initial_balance))
+                .with_approval(bob, STABLECOIN_DEX_ADDRESS, U256::from(initial_balance))
+                .apply()?;
+
+            let mut exchange = StablecoinDEX::new();
+
+            // For bid orders: flip_tick must be > tick
+            let tick = 0i16;
+            let flip_tick = 100i16;
+
+            // Alice places $150 flip bid order
+            let order_amount = 150_000_000u128;
+            let order_id =
+                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+
+            // Bob sells $60 base, leaving $90 remaining (below minimum)
+            // Filled amount = $60, which is also below minimum
+            let swap_amount = 60_000_000u128;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, swap_amount, 0)?;
+
+            // Original order should be cancelled
+            let order_after = exchange.orders[order_id].read()?;
+            assert!(
+                order_after.maker().is_zero(),
+                "Original flip order should be deleted"
+            );
+
+            // NO flip order should be created because filled ($60) < MIN_ORDER_AMOUNT ($100)
+            let flip_order = exchange.orders[2].read()?;
+            assert!(
+                flip_order.maker().is_zero(),
+                "No flip order should be created when filled amount is below minimum"
+            );
+
+            // Alice should have $90 quote tokens refunded (bid orders escrow quote)
+            let alice_quote_balance = exchange.balance_of(alice, quote_token)?;
+            assert_eq!(
+                alice_quote_balance, 90_000_000,
+                "Alice should have remaining quote tokens refunded"
+            );
+
+            Ok(())
+        })
+    }
+
+    /// Test flip order at exact minimum filled amount creates flip
+    #[test]
+    fn test_flip_order_creates_flip_at_exact_minimum() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let admin = Address::from([2u8; 20]);
+            let alice = Address::from([3u8; 20]);
+            let bob = Address::from([4u8; 20]);
+
+            let initial_balance = 500_000_000u128;
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, STABLECOIN_DEX_ADDRESS, initial_balance)?;
+
+            // Bob needs base tokens to sell
+            TIP20Setup::config(base_token)
+                .with_admin(admin)
+                .with_mint(bob, U256::from(initial_balance))
+                .with_approval(bob, STABLECOIN_DEX_ADDRESS, U256::from(initial_balance))
+                .apply()?;
+
+            let mut exchange = StablecoinDEX::new();
+
+            // For bid orders: flip_tick must be > tick
+            let tick = 0i16;
+            let flip_tick = 100i16;
+
+            // Alice places $190 flip bid order
+            let order_amount = 190_000_000u128;
+            let order_id =
+                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+
+            // Bob sells $100 base, leaving $90 remaining (below minimum)
+            // Filled amount = $100, exactly at minimum
+            let swap_amount = 100_000_000u128;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, swap_amount, 0)?;
+
+            // Original order should be cancelled
+            let order_after = exchange.orders[order_id].read()?;
+            assert!(
+                order_after.maker().is_zero(),
+                "Original flip order should be deleted"
+            );
+
+            // Flip order should be created with original amount but remaining = $100
+            let flip_order = exchange.orders[2].read()?;
+            assert!(
+                !flip_order.maker().is_zero(),
+                "Flip order should exist at exact minimum"
+            );
+            assert_eq!(
+                flip_order.amount(),
+                190_000_000,
+                "Flip order amount should be original amount"
+            );
+            assert_eq!(
+                flip_order.remaining(),
+                MIN_ORDER_AMOUNT,
+                "Flip order remaining should be exactly MIN_ORDER_AMOUNT"
+            );
 
             Ok(())
         })
