@@ -1,6 +1,6 @@
 //! The executor is sending fork-choice-updates to the execution layer.
 use commonware_consensus::types::Height;
-use commonware_runtime::{Metrics, Pacer, Spawner};
+use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
 mod actor;
 mod ingress;
@@ -16,7 +16,7 @@ pub(crate) fn init<TContext>(
     config: Config,
 ) -> eyre::Result<(Actor<TContext>, Mailbox)>
 where
-    TContext: Metrics + Pacer + Spawner,
+    TContext: Clock + Metrics + Pacer + Spawner,
 {
     let (tx, rx) = mpsc::unbounded();
     let mailbox = Mailbox { inner: tx };
@@ -37,4 +37,8 @@ pub(crate) struct Config {
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: crate::alias::marshal::Mailbox,
+
+    /// The interval at which to send a forkchoice update heartbeat to the
+    /// execution layer.
+    pub(crate) fcu_heartbeat_interval: std::time::Duration,
 }

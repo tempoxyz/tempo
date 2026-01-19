@@ -21,3 +21,14 @@ pub(crate) static MODERATO_BOOTNODES: [&str; 4] = [
 pub(crate) fn moderato_nodes() -> Vec<NodeRecord> {
     parse_nodes(MODERATO_BOOTNODES)
 }
+
+pub(crate) static PRESTO_BOOTNODES: [&str; 4] = [
+    "enode://f314fd4d28a25e3fe8c8f42e794a95fbdeb47afff5bf1f50ba82f6e647f566b1266f8feb15549b2a50092ddd7a8b423a574bea67dec6d400343480e16d90215a@40.160.24.34:30002",
+    "enode://a3cc3ec05f75b5d71d838a6b4a822044efef67b145ba14fcac3a7798de92806e59b12def3087c9453968e41a8d46439b35510a19014592afdd8962ab27060d67@40.160.24.210:30004",
+    "enode://34b106ae5eddcaf9943987a9d38bb45dc2a64bbac996f34ddecd863217af567273102b4b7010e7cf516151c3903927a18abb1fafe32bb999d752fca064158e05@40.160.64.50:30006",
+    "enode://b8c911b351614b71d027fcec98957be800cdc5e290b616d7f034a89c07d2be480fb9f11700cf7fc77073119b7d3d0855f697ebd4118fb34a35bd53ac58503122@148.113.220.159:30008",
+];
+
+pub(crate) fn presto_nodes() -> Vec<NodeRecord> {
+    parse_nodes(PRESTO_BOOTNODES)
+}

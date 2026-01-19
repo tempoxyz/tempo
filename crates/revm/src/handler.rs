@@ -603,6 +603,15 @@ where
         })
         .map_err(|e| EVMError::Custom(e.to_string()))?;
 
+        // Validate fee token has TIP20 prefix before loading balance.
+        // This prevents panics in get_token_balance for invalid fee tokens.
+        // Note: Full fee token validation (currency check) happens in load_fee_fields,
+        // but is skipped for free non-subblock transactions. This prefix check ensures
+        // we don't panic even for those cases.
+        if !is_tip20_prefix(self.fee_token) {
+            return Err(TempoInvalidTransaction::InvalidFeeToken(self.fee_token).into());
+        }
+
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, self.fee_token, self.fee_payer)?;
 
