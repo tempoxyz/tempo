@@ -8,7 +8,7 @@ use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
 use reth_storage_api::StateProviderFactory;
-use reth_transaction_pool::{FullTransactionEvent, TransactionPool};
+use reth_transaction_pool::TransactionPool;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::IAccountKeychain;
@@ -24,16 +24,18 @@ type KeychainKey = (Address, Address);
 /// Groups the data structures needed to track:
 /// - AA transaction expiry (`valid_before` timestamps)
 /// - Keychain-signed transactions (for revocation eviction)
+///
+/// Note: Stale entries (transactions no longer in the pool) are cleaned up lazily
+/// when we check `pool.contains()` before eviction. This avoids the overhead of
+/// subscribing to all transaction lifecycle events.
 #[derive(Default)]
 struct TempoPoolState {
     /// Maps `valid_before` timestamp to transaction hashes that expire at that time.
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
-    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup).
+    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
     tx_to_expiry: HashMap<TxHash, u64>,
     /// Maps (account, key_id) to the set of transaction hashes using that key.
     keychain_txs: HashMap<KeychainKey, HashSet<TxHash>>,
-    /// Reverse mapping: tx_hash -> (account, key_id) (for cleanup when tx is removed).
-    tx_to_key: HashMap<TxHash, KeychainKey>,
 }
 
 impl TempoPoolState {
@@ -66,37 +68,6 @@ impl TempoPoolState {
         let key = (account, key_id);
 
         self.keychain_txs.entry(key).or_default().insert(tx_hash);
-        self.tx_to_key.insert(tx_hash, key);
-    }
-
-    /// Removes a transaction from keychain tracking maps.
-    fn remove_from_keychain_tracking(&mut self, tx_hash: &TxHash) {
-        if let Some(key) = self.tx_to_key.remove(tx_hash)
-            && let Some(hashes) = self.keychain_txs.get_mut(&key)
-        {
-            hashes.remove(tx_hash);
-            if hashes.is_empty() {
-                self.keychain_txs.remove(&key);
-            }
-        }
-    }
-
-    /// Removes a transaction from expiry tracking maps.
-    fn remove_from_expiry_tracking(&mut self, tx_hash: &TxHash) {
-        if let Some(valid_before) = self.tx_to_expiry.remove(tx_hash)
-            && let Some(hashes) = self.expiry_map.get_mut(&valid_before)
-        {
-            hashes.retain(|h| h != tx_hash);
-            if hashes.is_empty() {
-                self.expiry_map.remove(&valid_before);
-            }
-        }
-    }
-
-    /// Removes a transaction from all tracking maps.
-    fn remove_tx(&mut self, tx_hash: &TxHash) {
-        self.remove_from_keychain_tracking(tx_hash);
-        self.remove_from_expiry_tracking(tx_hash);
     }
 
     /// Collects and removes all expired transactions up to the given timestamp.
@@ -140,9 +111,8 @@ where
 {
     let mut state = TempoPoolState::default();
 
-    // Subscribe to new transactions, transaction events, and chain events
+    // Subscribe to new transactions and chain events
     let mut new_txs = pool.new_transactions_listener();
-    let mut tx_events = pool.all_transactions_event_listener();
     let mut chain_events = pool.client().canonical_state_stream();
 
     // Populate tracking maps with existing transactions to prevent race conditions at start-up
@@ -173,19 +143,6 @@ where
                 state.track_keychain_tx(maybe_aa, tx_hash);
             }
 
-            // Clean up tracking maps when transactions are removed from the pool
-            Some(event) = tx_events.next() => {
-                let tx_hash = match event {
-                    FullTransactionEvent::Mined { tx_hash, .. }
-                    | FullTransactionEvent::Discarded(tx_hash)
-                    | FullTransactionEvent::Invalid(tx_hash) => tx_hash,
-                    FullTransactionEvent::Replaced { transaction, .. } => *transaction.hash(),
-                    // Pending/Queued/Propagated don't indicate removal
-                    _ => continue,
-                };
-                state.remove_tx(&tx_hash);
-            }
-
             // Process all maintenance operations on new block commit
             Some(event) = chain_events.next() => {
                 let CanonStateNotification::Commit { new } = event else {
@@ -195,9 +152,11 @@ where
                 let tip = &new;
                 let bundle_state = tip.execution_outcome().state().state();
 
-                // 1. Evict expired AA transactions
+                // 1. Evict expired AA transactions (filter to only those still in pool)
                 let tip_timestamp = tip.tip().header().timestamp();
-                let mut to_remove = state.drain_expired(tip_timestamp);
+                let expired = state.drain_expired(tip_timestamp);
+                let mut to_remove: Vec<_> =
+                    expired.into_iter().filter(|h| pool.contains(h)).collect();
 
                 if !to_remove.is_empty() {
                     debug!(
@@ -209,8 +168,6 @@ where
                 }
 
                 // 2. Evict transactions with revoked keychain keys by scanning for KeyRevoked events
-                let mut revoked_txs = Vec::new();
-
                 for receipts in tip.execution_outcome().receipts().iter() {
                     for receipt in receipts {
                         for log in &receipt.logs {
@@ -221,22 +178,26 @@ where
                             if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log)
                                 && let Some(tx_hashes) = state.txs_for_key(event.account, event.publicKey)
                             {
-                                revoked_txs.extend(tx_hashes.iter().copied());
+                                // Filter to only transactions still in pool (lazy cleanup)
+                                let revoked: Vec<_> = tx_hashes
+                                    .iter()
+                                    .copied()
+                                    .filter(|h| pool.contains(h))
+                                    .collect();
+
+                                if !revoked.is_empty() {
+                                    debug!(
+                                        target: "txpool",
+                                        count = revoked.len(),
+                                        account = %event.account,
+                                        key_id = %event.publicKey,
+                                        "Evicting AA transactions with revoked keychain key"
+                                    );
+                                    to_remove.extend(revoked);
+                                }
                             }
                         }
                     }
-                }
-
-                if !revoked_txs.is_empty() {
-                    debug!(
-                        target: "txpool",
-                        count = revoked_txs.len(),
-                        "Evicting AA transactions with revoked keychain keys"
-                    );
-                    for tx_hash in &revoked_txs {
-                        state.remove_from_keychain_tracking(tx_hash);
-                    }
-                    to_remove.extend(revoked_txs);
                 }
 
                 // 3. Remove all collected transactions in a single batch
