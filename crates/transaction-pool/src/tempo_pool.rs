@@ -6,7 +6,7 @@ use crate::{
     amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_primitives::{Address, B256, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -114,6 +114,91 @@ where
         }
 
         if !to_remove.is_empty() {
+            self.remove_transactions(to_remove);
+        }
+    }
+
+    /// Evicts transactions that may fail due to validator token preference changes.
+    ///
+    /// When a validator changes their token preference, transactions paying fees in
+    /// a different token may fail if there's insufficient liquidity in the AMM pool
+    /// for the (user_token, new_validator_token) pair.
+    ///
+    /// This checks each pooled transaction against the new validator tokens:
+    /// - If user_token == new_validator_token, the transaction is fine (no swap needed)
+    /// - Otherwise, checks if pool(user_token, new_validator_token) has sufficient liquidity
+    ///
+    /// Transactions that would fail with ANY of the changed validators are evicted.
+    pub fn evict_transactions_by_validator_token_change(
+        &self,
+        validator_token_changes: &[(Address, Address)],
+    ) {
+        use tempo_precompiles::{
+            TIP_FEE_MANAGER_ADDRESS,
+            tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+        };
+
+        let Ok(state_provider) = self.client().latest() else {
+            return;
+        };
+
+        let mut to_remove = Vec::new();
+
+        for tx in self.all_transactions().all() {
+            let user_token = tx
+                .fee_token()
+                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+            let cost = tempo_primitives::transaction::calc_gas_balance_spending(
+                tx.gas_limit(),
+                tx.max_fee_per_gas(),
+            );
+
+            let amount_out = match compute_amount_out(cost) {
+                Ok(amount) => amount,
+                Err(_) => continue,
+            };
+
+            // Check against each new validator token
+            for &(_validator, new_validator_token) in validator_token_changes {
+                // If user token matches the new validator token, no swap needed
+                if user_token == new_validator_token {
+                    continue;
+                }
+
+                // Check if there's enough liquidity in pool(user_token, new_validator_token)
+                let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
+                let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools[pool_key]
+                    .base_slot();
+
+                let pool_value = match state_provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into())
+                {
+                    Ok(Some(value)) => value,
+                    Ok(None) => {
+                        // Pool doesn't exist - transaction would fail
+                        to_remove.push(*tx.tx_hash());
+                        break;
+                    }
+                    Err(_) => continue,
+                };
+
+                let reserve = alloy_primitives::U256::from(
+                    Pool::decode_from_slot(pool_value).reserve_validator_token,
+                );
+
+                if reserve < amount_out {
+                    // Insufficient liquidity - transaction would fail
+                    to_remove.push(*tx.tx_hash());
+                    break;
+                }
+            }
+        }
+
+        if !to_remove.is_empty() {
+            tracing::debug!(
+                target: "txpool",
+                count = to_remove.len(),
+                "Evicting transactions with insufficient liquidity after validator token change"
+            );
             self.remove_transactions(to_remove);
         }
     }

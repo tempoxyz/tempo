@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::TempoTransactionPool;
-use alloy_primitives::TxHash;
+use alloy_primitives::{Address, TxHash};
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
@@ -11,8 +11,8 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::TransactionPool;
 use std::collections::{BTreeMap, HashMap};
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::IAccountKeychain;
-use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager};
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
@@ -154,12 +154,36 @@ where
                 // 3. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 4. Update AMM liquidity cache
+                // 4. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
                         error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                     }
+                }
+
+                // 5. Evict transactions affected by validator token preference changes
+                // When a validator changes their token preference, transactions that don't have
+                // enough liquidity in the new (user_token, validator_token) pool must be evicted.
+                // This must happen after AMM cache update so we have the new validator tokens.
+                let validator_token_changes: Vec<(Address, Address)> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
+                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
+                    .map(|event| (event.validator, event.token))
+                    .collect();
+
+                if !validator_token_changes.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = validator_token_changes.len(),
+                        "Processing validator token preference changes"
+                    );
+                    pool.evict_transactions_by_validator_token_change(&validator_token_changes);
                 }
             }
         }
