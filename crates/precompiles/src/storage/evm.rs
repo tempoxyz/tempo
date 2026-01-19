@@ -77,12 +77,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
-        // let skip_cold_load = 0 < additional_cost;
-        let skip_cold_load = false;
 
         let mut account = self
             .internals
-            .load_account_mut_skip_cold_load(address, skip_cold_load)?;
+            .load_account_mut_skip_cold_load(address, additional_cost == 0)?;
 
         // TODO(rakita) can be moved to the beginning of the function. Requires fork.
         deduct_gas(&mut self.gas_remaining, WARM_STORAGE_READ_COST)?;
@@ -105,9 +103,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        //let skip_cold_load = 0 < self.gas_params.cold_storage_additional_cost();
-        let skip_cold_load = false;
-
+        let skip_cold_load = self.gas_params.cold_storage_additional_cost() == 0;
         let result =
             self.internals
                 .load_account_mut(address)?
@@ -161,9 +157,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
-
-        //let skip_cold_load = 0 < additional_cost;
-        let skip_cold_load = false;
+        let skip_cold_load = additional_cost == 0;
 
         let value;
         let is_cold;

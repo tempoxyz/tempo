@@ -532,8 +532,7 @@ where
                     // T0 hardfork: skip keychain signatures in auth list processing
                     .filter(|auth| !(spec.is_t0() && auth.signature().is_keychain())),
                 journal,
-            )
-            .unwrap();
+            )?;
             return Ok(refunded_gas);
         }
 
