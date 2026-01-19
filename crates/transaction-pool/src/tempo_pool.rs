@@ -81,6 +81,40 @@ where
             .notify_on_transaction_updates(promoted, Vec::new());
     }
 
+    /// Evicts all transactions signed with a revoked keychain key.
+    ///
+    /// This scans both pools for AA transactions using the specified keychain key
+    /// and removes them. Called when a `KeyRevoked` event is detected on-chain.
+    ///
+    /// Key revocations are expected to be rare, so this on-demand scan is more
+    /// efficient than tracking all keychain-signed transactions in the pool.
+    pub(crate) fn evict_transactions_by_revoked_key(&self, account: Address, key_id: Address) {
+        let mut to_remove = Vec::new();
+
+        // Scan all transactions in both pools
+        for tx in self.all_transactions().all() {
+            let Some(aa_tx) = tx.inner().as_aa() else {
+                continue;
+            };
+
+            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+                continue;
+            };
+
+            // Check if this transaction uses the revoked key
+            if keychain_sig.user_address == account
+                && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
+                && tx_key_id == key_id
+            {
+                to_remove.push(*aa_tx.hash());
+            }
+        }
+
+        if !to_remove.is_empty() {
+            self.remove_transactions(to_remove);
+        }
+    }
+
     fn add_validated_transactions(
         &self,
         origin: TransactionOrigin,
