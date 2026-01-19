@@ -1,0 +1,8 @@
+{
+  "lib/tempo-std": {
+    "branch": {
+      "name": "master",
+      "rev": "91dfcf70289b07ec6409f289917c6d4c9ce7e73e"
+    }
+  }
+}
