@@ -529,7 +529,7 @@ where
             let mut refunded_accounts = 0;
 
             for authorization in &tempo_tx_env.tempo_authorization_list {
-                if spec.is_t1() && authorization.signature().is_keychain() {
+                if spec.is_t0() && authorization.signature().is_keychain() {
                     continue;
                 }
 
