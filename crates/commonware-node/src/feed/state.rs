@@ -43,7 +43,7 @@ struct IdentityTransitionCache {
     /// Identity at `from_epoch`.
     identity: String,
     /// Cached transitions, ordered newest to oldest.
-    transitions: Vec<IdentityTransition>,
+    transitions: Arc<Vec<IdentityTransition>>,
 }
 
 /// Handle to shared feed state.
@@ -145,15 +145,20 @@ impl FeedStateHandle {
             .cloned()
             .collect();
 
-        // Determine identity at start_epoch by looking at the first transition
-        // that's at or after start_epoch, or use the cached identity
+        // Determine identity at start_epoch:
+        // - If start_epoch == from_epoch, use cached identity
+        // - Otherwise, find the first transition AFTER start_epoch and use its old_identity
+        //   (that was the identity at start_epoch before that transition happened)
+        // - If no transition after start_epoch, identity hasn't changed since from_epoch
         let identity = if start_epoch == cache.from_epoch {
             cache.identity.clone()
         } else {
-            // Find the newest transition at or before start_epoch
-            transitions
-                .first()
-                .map(|t| t.new_identity.clone())
+            // Find first transition that happened AFTER start_epoch
+            cache
+                .transitions
+                .iter()
+                .find(|t| t.transition_epoch > start_epoch)
+                .map(|t| t.old_identity.clone())
                 .unwrap_or_else(|| cache.identity.clone())
         };
 
@@ -260,11 +265,10 @@ impl ConsensusFeed for FeedStateHandle {
         // Check if we can serve from cache
         let cached = self.identity_cache.read().clone();
         if let Some(ref cache) = cached {
-            // Case 1: Requested epoch is within cached range - return subsection
+            // Requested epoch is within cached range - return subsection
             if start_epoch <= cache.from_epoch && start_epoch >= cache.to_epoch {
                 return Ok(self.serve_from_cache(cache, start_epoch, full));
             }
-            // Case 2: Requested epoch is newer than cache - we'll extend below
         }
 
         // Identity active at epoch N is set by the last block of epoch N-1
@@ -291,7 +295,7 @@ impl ConsensusFeed for FeedStateHandle {
                 && let Some(ref cache) = cached
             {
                 // Append cached transitions and stop walking
-                transitions.extend(cache.transitions.clone());
+                transitions.extend(cache.transitions.iter().cloned());
                 search_epoch = cache.to_epoch;
                 reached_genesis = cache.to_epoch == 0;
                 break;
@@ -400,13 +404,43 @@ impl ConsensusFeed for FeedStateHandle {
                 from_epoch: start_epoch,
                 to_epoch: search_epoch,
                 identity: identity.clone(),
-                transitions: transitions.clone(),
+                transitions: Arc::new(transitions.clone()),
             };
-            // Only update if this extends or improves the cache
+            // Only update if this extends the cache (newer start OR older end)
             let should_update = cached
                 .as_ref()
                 .map(|c| start_epoch > c.from_epoch || search_epoch < c.to_epoch)
                 .unwrap_or(true);
+            // Merge with existing cache if we're extending
+            let new_cache = if let Some(ref c) = cached {
+                IdentityTransitionCache {
+                    from_epoch: start_epoch.max(c.from_epoch),
+                    to_epoch: search_epoch.min(c.to_epoch),
+                    identity: if start_epoch >= c.from_epoch {
+                        identity.clone()
+                    } else {
+                        c.identity.clone()
+                    },
+                    transitions: if start_epoch > c.from_epoch {
+                        // Merge: new transitions + cached (deduplicated)
+                        let mut merged = transitions.clone();
+                        for t in c.transitions.iter() {
+                            if !merged
+                                .iter()
+                                .any(|m| m.transition_epoch == t.transition_epoch)
+                            {
+                                merged.push(t.clone());
+                            }
+                        }
+                        merged.sort_by(|a, b| b.transition_epoch.cmp(&a.transition_epoch));
+                        Arc::new(merged)
+                    } else {
+                        Arc::new(transitions.clone())
+                    },
+                }
+            } else {
+                new_cache
+            };
             if should_update {
                 *self.identity_cache.write() = Some(new_cache);
             }
