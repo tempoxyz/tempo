@@ -816,43 +816,32 @@ export default defineConfig({
 
                 const parsedBody = JSON.parse(body)
 
-                // Import and execute the index supply serverless function
-                const handler = (await import('./api/index-supply.js')).default
+                // Import and execute the shared query function
+                const { executeQuery } = await import('./api/index-supply.js')
 
-                const mockRes = {
-                  statusCode: 200,
-                  headers: {} as Record<string, string>,
-                  setHeader(key: string, value: string) {
-                    this.headers[key] = value
-                    return this
-                  },
-                  status(code: number) {
-                    this.statusCode = code
-                    return this
-                  },
-                  json(data: unknown) {
-                    res.setHeader('Content-Type', 'application/json')
-                    res.statusCode = this.statusCode
-                    Object.entries(this.headers).forEach(([key, value]) => {
-                      res.setHeader(key, value)
-                    })
-                    res.end(JSON.stringify(data))
-                    return this
-                  },
-                  end() {
-                    res.end()
-                    return this
-                  },
+                const apiKey = process.env['INDEXSUPPLY_API_KEY']
+                if (!apiKey) {
+                  console.error('INDEXSUPPLY_API_KEY is not configured')
+                  res.statusCode = 500
+                  res.setHeader('Content-Type', 'application/json')
+                  res.end(
+                    JSON.stringify({
+                      error: 'Server configuration error: API key not found',
+                    }),
+                  )
+                  return
                 }
 
-                const mockReq = {
-                  method: req.method,
-                  headers: req.headers as Record<string, string>,
-                  body: parsedBody,
-                }
+                const result = await executeQuery(parsedBody, apiKey)
 
-                // biome-ignore lint/suspicious/noExplicitAny: Local mock request
-                await handler(mockReq as any, mockRes as any)
+                res.setHeader('Content-Type', 'application/json')
+                res.statusCode = result.status
+
+                if (result.success) {
+                  res.end(JSON.stringify(result.data))
+                } else {
+                  res.end(JSON.stringify({ error: result.error }))
+                }
               } catch (error) {
                 console.error('API route error:', error)
                 res.statusCode = 500
