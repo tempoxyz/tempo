@@ -19,7 +19,7 @@ use commonware_codec::Encode;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::{future::BoxFuture, StreamExt};
+use futures::{StreamExt, future::BoxFuture};
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
     evm::{
