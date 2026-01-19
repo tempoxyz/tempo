@@ -130,24 +130,25 @@ where
                 // 2. Evict transactions with revoked keychain keys
                 // Key revocations are rare, so we scan the pool on-demand rather than
                 // tracking all keychain-signed transactions.
-                for receipts in tip.execution_outcome().receipts().iter() {
-                    for receipt in receipts {
-                        for log in &receipt.logs {
-                            if log.address != ACCOUNT_KEYCHAIN_ADDRESS {
-                                continue;
-                            }
+                // Collect all revocations first, then scan the pool once per block.
+                let revoked_keys: Vec<_> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
+                    .filter_map(|log| IAccountKeychain::KeyRevoked::decode_log(log).ok())
+                    .map(|event| (event.account, event.publicKey))
+                    .collect();
 
-                            if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
-                                debug!(
-                                    target: "txpool",
-                                    account = %event.account,
-                                    key_id = %event.publicKey,
-                                    "Processing keychain key revocation"
-                                );
-                                pool.evict_transactions_by_revoked_key(event.account, event.publicKey);
-                            }
-                        }
-                    }
+                if !revoked_keys.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = revoked_keys.len(),
+                        "Processing keychain key revocations"
+                    );
+                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
                 }
 
                 // 3. Update 2D nonce pool

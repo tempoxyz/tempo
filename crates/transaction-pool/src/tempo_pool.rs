@@ -81,17 +81,17 @@ where
             .notify_on_transaction_updates(promoted, Vec::new());
     }
 
-    /// Evicts all transactions signed with a revoked keychain key.
+    /// Evicts all transactions signed with revoked keychain keys.
     ///
-    /// This scans both pools for AA transactions using the specified keychain key
-    /// and removes them. Called when a `KeyRevoked` event is detected on-chain.
+    /// This scans both pools for AA transactions using any of the specified keychain keys
+    /// and removes them. Called once per block when `KeyRevoked` events are detected.
     ///
     /// Key revocations are expected to be rare, so this on-demand scan is more
     /// efficient than tracking all keychain-signed transactions in the pool.
-    pub(crate) fn evict_transactions_by_revoked_key(&self, account: Address, key_id: Address) {
+    pub(crate) fn evict_transactions_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
         let mut to_remove = Vec::new();
 
-        // Scan all transactions in both pools
+        // Scan all transactions in both pools once
         for tx in self.all_transactions().all() {
             let Some(aa_tx) = tx.inner().as_aa() else {
                 continue;
@@ -101,12 +101,15 @@ where
                 continue;
             };
 
-            // Check if this transaction uses the revoked key
-            if keychain_sig.user_address == account
-                && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
-                && tx_key_id == key_id
-            {
-                to_remove.push(*aa_tx.hash());
+            // Check if this transaction uses any of the revoked keys
+            for &(account, key_id) in revoked_keys {
+                if keychain_sig.user_address == account
+                    && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
+                    && tx_key_id == key_id
+                {
+                    to_remove.push(*aa_tx.hash());
+                    break;
+                }
             }
         }
 
