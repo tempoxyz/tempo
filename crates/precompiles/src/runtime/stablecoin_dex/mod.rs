@@ -4,27 +4,22 @@ pub mod order;
 pub mod orderbook;
 
 pub use crate::abi::{
-    IStablecoinDEX,
-    IStablecoinDEX::{
-        MAX_PRICE, MAX_TICK, MIN_ORDER_AMOUNT, MIN_PRICE, MIN_TICK, PRICE_SCALE, TICK_SPACING,
-        prelude::*,
-    },
-    PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    IStablecoinDEX, IStablecoinDEX::prelude::*, PATH_USD_ADDRESS, STABLECOIN_DEX_ADDRESS,
 };
-use crate::abi::IStablecoinDEX::IStablecoinDEX as _;
+use IStablecoinDEX::IStablecoinDEX as _;
 pub use order::Order;
 pub use orderbook::{
     Orderbook, RoundingDirection, TickLevel, base_to_quote, quote_to_base, tick_to_price,
 };
 
 use crate::{
-    abi::{ITIP20::traits::*, ITIP20Factory::traits::*},
+    abi::{ITIP20::traits::*, ITIP20Factory::traits::*, ITIP403Registry::traits::*},
     error::{Result, TempoPrecompileError},
     stablecoin_dex::orderbook::compute_book_key,
     storage::{Handler, Mapping},
     tip20::{TIP20Token, is_tip20_prefix, validate_usd_currency},
     tip20_factory::TIP20Factory,
-    tip403_registry::{ITIP403Registry::traits::*, TIP403Registry},
+    tip403_registry::TIP403Registry,
 };
 use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;

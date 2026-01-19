@@ -1,5 +1,5 @@
 use crate::{
-    abi::{ITIP20::traits::*, tip_fee_manager::IFeeManager::prelude::*},
+    abi::{IFeeManager::prelude::*, ITIP20::traits::*},
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip_fee_manager::TipFeeManager,

@@ -24,13 +24,14 @@
 //! Includes: all traits, `{Trait}Calls` enums, `Calls`, `Error`, `Event`,
 //! structs, unit enums, and constants.
 //!
-//! ## `traits` - Only interface traits
+//! ## `traits` - Interface traits and constants (for cross-calling)
 //!
 //! ```ignore
 //! use crate::tip20::abi::traits::*;
 //! ```
 //!
-//! Includes: `{ModName}Constants` and all interface traits (`IToken`, `IRolesAuth`, etc.).
+//! Includes: `{ModName}Constants`, interface traits (`IToken`, `IRolesAuth`, etc.),
+//! and constants. Use this for cross-calling other precompiles.
 //!
 //! # Example
 //!
@@ -180,18 +181,24 @@ fn generate_submodules(
     // Traits module is gated by cfg
     let traits_mod = quote! {
         #[cfg(feature = "precompile")]
-        /// Traits module for selective trait imports.
+        /// Traits module for cross-calling other precompiles.
         ///
-        /// Import only the interface traits:
+        /// Import interface traits and constants:
         /// ```ignore
         /// use crate::module::abi::traits::*;
         /// ```
+        ///
+        /// For implementing a contract (when you need Error, Event, structs),
+        /// use `prelude::*` instead.
         pub mod traits {
             // {ModName}Constants trait (always present)
             pub use super::#iconstants_name;
 
             // Interface traits
             #trait_reexports
+
+            // Constants
+            #constant_reexports
         }
     };
 

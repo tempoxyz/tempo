@@ -5,7 +5,7 @@ use tracing::trace;
 pub use crate::abi::{
     IValidatorConfig, IValidatorConfig::prelude::*, VALIDATOR_CONFIG_ADDRESS,
 };
-use crate::abi::IValidatorConfig::IValidatorConfig as _;
+use IValidatorConfig::IValidatorConfig as _;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
