@@ -3111,8 +3111,10 @@ mod tests {
             .unwrap();
         pool.add_transaction(Arc::new(wrap_valid_tx(tx_med, TransactionOrigin::Local)), 0)
             .unwrap();
-        let result =
-            pool.add_transaction(Arc::new(wrap_valid_tx(tx_high, TransactionOrigin::Local)), 0);
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx_high, TransactionOrigin::Local)),
+            0,
+        );
         assert!(result.is_ok());
 
         let added = result.unwrap();
