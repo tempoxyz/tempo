@@ -16,6 +16,7 @@ pub mod amm;
 pub mod best;
 pub mod maintain;
 pub mod metrics;
+pub mod paused;
 pub mod tt_2d_pool;
 
 pub use metrics::AA2dPoolMetrics;

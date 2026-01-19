@@ -12,8 +12,8 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::TransactionPool;
 use std::collections::{BTreeMap, HashMap};
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager};
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20};
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::is_tip20_prefix};
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
@@ -68,6 +68,7 @@ impl TempoPoolState {
 /// - Updating the AA 2D nonce pool from `NonceManager` changes
 /// - Refreshing the AMM liquidity cache from `FeeManager` updates
 /// - Removing transactions signed with revoked keychain keys
+/// - Moving transactions to/from the paused pool when fee tokens are paused/unpaused
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
@@ -155,10 +156,71 @@ where
                     .map(|event| (event.validator, event.token))
                     .collect();
 
-                // 3. Update 2D nonce pool
+                if !revoked_keys.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = revoked_keys.len(),
+                        "Processing keychain key revocations"
+                    );
+                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
+                    pool.evict_paused_by_revoked_keys(&revoked_keys);
+                }
+
+                // 3. Handle fee token pause/unpause events
+                // Collect PauseStateUpdate events from TIP20 tokens
+                let pause_events: Vec<(Address, bool)> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| is_tip20_prefix(log.address))
+                    .filter_map(|log| {
+                        ITIP20::PauseStateUpdate::decode_log(log)
+                            .ok()
+                            .map(|event| (log.address, event.isPaused))
+                    })
+                    .collect();
+
+                for (token, is_paused) in pause_events {
+                    if is_paused {
+                        let count = pool.pause_fee_token(token);
+                        if count > 0 {
+                            debug!(
+                                target: "txpool",
+                                %token,
+                                count,
+                                "Moved transactions to paused pool (fee token paused)"
+                            );
+                        }
+                    } else {
+                        let count = pool.unpause_fee_token(token).await;
+                        if count > 0 {
+                            debug!(
+                                target: "txpool",
+                                %token,
+                                count,
+                                "Restored transactions from paused pool (fee token unpaused)"
+                            );
+                        }
+                    }
+                }
+
+                // 4. Evict expired transactions from the paused pool
+                let paused_expired = pool.evict_expired_paused(tip_timestamp);
+                if paused_expired > 0 {
+                    debug!(
+                        target: "txpool",
+                        count = paused_expired,
+                        tip_timestamp,
+                        "Evicted expired transactions from paused pool"
+                    );
+                }
+
+                // 5. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 4. Remove included expiring nonce transactions
+                // 6. Remove included expiring nonce transactions
                 // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
                 // so we need to remove them on inclusion rather than relying on nonce changes.
                 let mined_tx_hashes: Vec<_> = tip
@@ -168,7 +230,7 @@ where
                     .collect();
                 pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
 
-                // 5. Update AMM liquidity cache (must happen before validator token eviction)
+                // 7. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
@@ -176,17 +238,14 @@ where
                     }
                 }
 
-                // 5. Evict invalidated transactions in a single pool scan
-                // This checks both revoked keys and validator token changes together
-                // to avoid scanning all transactions multiple times per block.
-                if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
+                // 8. Evict invalidated transactions for validator token changes
+                if !validator_token_changes.is_empty() {
                     debug!(
                         target: "txpool",
-                        revoked_keys = revoked_keys.len(),
                         validator_token_changes = validator_token_changes.len(),
-                        "Processing transaction invalidation events"
+                        "Processing validator token change events"
                     );
-                    pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
+                    pool.evict_invalidated_transactions(&[], &validator_token_changes);
                 }
             }
         }

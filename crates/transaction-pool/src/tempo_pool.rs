@@ -3,8 +3,12 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    paused::{PausedEntry, PausedFeeTokenPool},
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, TxHash, map::HashMap};
@@ -38,6 +42,10 @@ pub struct TempoTransactionPool<Client> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
+    /// Pool for transactions whose fee token is temporarily paused.
+    /// Transactions are moved here when their fee token is paused, and moved back
+    /// when the token is unpaused.
+    paused_fee_token_pool: Arc<RwLock<PausedFeeTokenPool>>,
 }
 
 impl<Client> TempoTransactionPool<Client> {
@@ -52,6 +60,7 @@ impl<Client> TempoTransactionPool<Client> {
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
+            paused_fee_token_pool: Arc::new(RwLock::new(PausedFeeTokenPool::new())),
         }
     }
 }
@@ -209,6 +218,134 @@ where
         }
     }
 
+    /// Evicts transactions with revoked keychain keys from the paused pool.
+    ///
+    /// Called by the maintenance task when `KeyRevoked` events are detected.
+    pub(crate) fn evict_paused_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
+        let mut paused_pool = self.paused_fee_token_pool.write();
+        let mut to_remove = Vec::new();
+
+        for (tx_hash, entry) in paused_pool.all_entries() {
+            let Some(aa_tx) = entry.tx.as_aa() else {
+                continue;
+            };
+
+            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+                continue;
+            };
+
+            for &(account, key_id) in revoked_keys {
+                if keychain_sig.user_address == account
+                    && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
+                    && tx_key_id == key_id
+                {
+                    to_remove.push(*tx_hash);
+                    break;
+                }
+            }
+        }
+
+        for tx_hash in to_remove {
+            paused_pool.remove(&tx_hash);
+        }
+    }
+
+    /// Moves transactions using the specified fee token to the paused pool.
+    ///
+    /// Called when a `PauseStateUpdate(isPaused=true)` event is detected.
+    /// Transactions are scanned on-demand (pauses are rare).
+    ///
+    /// Returns the number of transactions moved to the paused pool.
+    pub(crate) fn pause_fee_token(&self, fee_token: Address) -> usize {
+        use reth_primitives_traits::transaction::TxHashRef;
+
+        let mut to_pause = Vec::new();
+
+        for tx in self.all_transactions().all() {
+            if let Some(tx_fee_token) = tx.inner().fee_token()
+                && tx_fee_token == fee_token
+            {
+                to_pause.push(tx);
+            }
+        }
+
+        if to_pause.is_empty() {
+            return 0;
+        }
+
+        let count = to_pause.len();
+        let hashes: Vec<_> = to_pause.iter().map(|tx| *tx.tx_hash()).collect();
+        self.remove_transactions(hashes);
+
+        let mut paused_pool = self.paused_fee_token_pool.write();
+        for tx in to_pause {
+            let valid_before = tx.inner().as_aa().and_then(|aa| aa.tx().valid_before);
+            let entry = PausedEntry {
+                tx,
+                // Note: Original origin is not preserved because `all_transactions().all()` returns
+                // `Recovered<TempoTxEnvelope>` rather than `ValidPoolTransaction` which tracks origin.
+                // Using `External` is conservative (won't bypass validation on re-add).
+                origin: TransactionOrigin::External,
+                paused_at: Instant::now(),
+                valid_before,
+            };
+            paused_pool.insert(fee_token, entry);
+        }
+
+        count
+    }
+
+    /// Moves transactions for the specified fee token back from the paused pool.
+    ///
+    /// Called when a `PauseStateUpdate(isPaused=false)` event is detected.
+    /// Transactions are re-added via the normal validation path, so they will
+    /// be dropped if they have become invalid for other reasons.
+    ///
+    /// Returns the number of transactions that were re-added successfully.
+    pub(crate) async fn unpause_fee_token(&self, fee_token: Address) -> usize {
+        let entries = self.paused_fee_token_pool.write().drain_token(&fee_token);
+        if entries.is_empty() {
+            return 0;
+        }
+
+        let mut success_count = 0;
+        for entry in entries {
+            let tx = TempoPooledTransaction::new(entry.tx);
+            match self.add_transaction(entry.origin, tx).await {
+                Ok(_) => success_count += 1,
+                Err(_) => {
+                    // Transaction is no longer valid (e.g., nonce advanced, expired, etc.)
+                    // Just drop it.
+                }
+            }
+        }
+
+        success_count
+    }
+
+    /// Removes expired transactions from the paused pool.
+    ///
+    /// Called by the maintenance task during regular expiry checks.
+    pub(crate) fn evict_expired_paused(&self, tip_timestamp: u64) -> usize {
+        let mut paused_pool = self.paused_fee_token_pool.write();
+        let expired = paused_pool.expired_hashes(tip_timestamp);
+        let count = expired.len();
+        for tx_hash in expired {
+            paused_pool.remove(&tx_hash);
+        }
+        count
+    }
+
+    /// Returns the number of transactions in the paused pool.
+    pub fn paused_pool_size(&self) -> usize {
+        self.paused_fee_token_pool.read().len()
+    }
+
+    /// Returns true if a transaction is in the paused pool.
+    pub fn is_paused(&self, tx_hash: &B256) -> bool {
+        self.paused_fee_token_pool.read().contains(tx_hash)
+    }
+
     fn add_validated_transactions(
         &self,
         origin: TransactionOrigin,
@@ -330,6 +467,7 @@ impl<Client> Clone for TempoTransactionPool<Client> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
+            paused_fee_token_pool: Arc::clone(&self.paused_fee_token_pool),
         }
     }
 }
@@ -340,6 +478,7 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
+            .field("paused_fee_token_pool", &"PausedFeeTokenPool<...>")
             .finish_non_exhaustive()
     }
 }
