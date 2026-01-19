@@ -157,6 +157,10 @@ pub struct MaxTpsArgs {
     #[arg(long)]
     faucet: bool,
 
+    /// URL for the faucet service. If not provided, uses the first target URL.
+    #[arg(long)]
+    faucet_url: Option<Url>,
+
     /// Clear the transaction pool before running the benchmark.
     ///
     /// Calls admin_clearTxpool.
@@ -256,8 +260,17 @@ impl MaxTpsArgs {
 
         // Fund accounts from faucet if requested
         if self.faucet {
+            let faucet_provider: DynProvider<TempoNetwork> =
+                if let Some(ref faucet_url) = self.faucet_url {
+                    info!(%faucet_url, "Using custom faucet URL");
+                    ProviderBuilder::new_with_network::<TempoNetwork>()
+                        .connect_http(faucet_url.clone())
+                        .erased()
+                } else {
+                    provider.clone()
+                };
             fund_accounts(
-                &provider,
+                &faucet_provider,
                 &signer_providers
                     .iter()
                     .map(|(signer, _)| signer.address())

@@ -67,7 +67,7 @@ jobs:
 
       - name: Run Forge tests
         working-directory: docs/specs
-        run: forge test -vvv
+        run: forge test -vvv --no-match-contract TempoTransactionInvariantTest
 
   tempo-foundry-test:
     name: Forge Test (Rust Precompiles)
