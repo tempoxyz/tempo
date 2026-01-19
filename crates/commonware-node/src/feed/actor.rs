@@ -9,7 +9,7 @@ use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     Heightable as _,
-    simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
