@@ -10,7 +10,7 @@ use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 use alloy::transports::http::reqwest::Url;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
-use commonware_consensus::simplex::{scheme::bls12381_threshold::Scheme, types::Finalization};
+use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
 use commonware_cryptography::{
     bls12381::primitives::{
         ops::verify_message,
@@ -161,7 +161,8 @@ fn get_identity_transition_proof_after_full_dkg() {
         .how_many_signers(how_many_signers)
         .epoch_length(epoch_length);
 
-    let cfg = deterministic::Config::default().with_seed(setup.seed);
+    let seed = setup.seed;
+    let cfg = deterministic::Config::default().with_seed(seed);
 
     let (addr_tx, addr_rx) = oneshot::channel::<String>();
     let (done_tx, done_rx) = oneshot::channel::<()>();
@@ -219,85 +220,87 @@ fn get_identity_transition_proof_after_full_dkg() {
         });
     });
 
-    // Wait for the HTTP URL
-    let http_url = addr_rx.await.unwrap();
-    let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
+    Runner::from(deterministic::Config::default().with_seed(seed)).start(|_| async move {
+        // Wait for the HTTP URL
+        let http_url = addr_rx.await.unwrap();
+        let http_client = HttpClientBuilder::default().build(&http_url).unwrap();
 
-    // Test 1: Query from latest epoch (after full DKG) - should have transition
-    let response = http_client
-        .get_identity_transition_proof(None, Some(false))
-        .await
-        .unwrap();
+        // Test 1: Query from latest epoch (after full DKG) - should have transition
+        let response = http_client
+            .get_identity_transition_proof(None, Some(false))
+            .await
+            .unwrap();
 
-    assert!(
-        !response.identity.is_empty(),
-        "Identity should always be present"
-    );
-    assert_eq!(
-        response.transitions.len(),
-        1,
-        "Expected exactly one transition"
-    );
+        assert!(
+            !response.identity.is_empty(),
+            "Identity should always be present"
+        );
+        assert_eq!(
+            response.transitions.len(),
+            1,
+            "Expected exactly one transition"
+        );
 
-    let transition = &response.transitions[0];
-    assert_eq!(
-        transition.transition_epoch, full_dkg_epoch,
-        "Transition epoch should match full DKG epoch"
-    );
-    assert_ne!(
-        transition.old_identity, transition.new_identity,
-        "Old and new public keys should be different"
-    );
-    assert_eq!(
-        response.identity, transition.new_identity,
-        "Identity should match the new public key from the latest transition"
-    );
+        let transition = &response.transitions[0];
+        assert_eq!(
+            transition.transition_epoch, full_dkg_epoch,
+            "Transition epoch should match full DKG epoch"
+        );
+        assert_ne!(
+            transition.old_identity, transition.new_identity,
+            "Old and new public keys should be different"
+        );
+        assert_eq!(
+            response.identity, transition.new_identity,
+            "Identity should match the new public key from the latest transition"
+        );
 
-    // Decode and verify the BLS signature
-    let old_pubkey_bytes = hex::decode(&transition.old_identity).unwrap();
-    let old_pubkey = <MinSig as Variant>::Public::read(&mut old_pubkey_bytes.as_slice())
-        .expect("valid BLS public key");
-    let proof = transition
-        .proof
-        .as_ref()
-        .expect("non-genesis transition should have proof");
-    let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::read(
-        &mut hex::decode(&proof.finalization_certificate)
-            .unwrap()
-            .as_slice(),
-    )
-    .expect("valid finalization");
+        // Decode and verify the BLS signature
+        let old_pubkey_bytes = hex::decode(&transition.old_identity).unwrap();
+        let old_pubkey = <MinSig as Variant>::Public::read(&mut old_pubkey_bytes.as_slice())
+            .expect("valid BLS public key");
+        let proof = transition
+            .proof
+            .as_ref()
+            .expect("non-genesis transition should have proof");
+        let finalization = Finalization::<Scheme<PublicKey, MinSig>, Digest>::read(
+            &mut hex::decode(&proof.finalization_certificate)
+                .unwrap()
+                .as_slice(),
+        )
+        .expect("valid finalization");
 
-    // Verify the certificate was signed by the old network identity
-    let namespace = b"TEMPO_FINALIZE";
-    let message = finalization.proposal.encode();
-    verify_message::<MinSig>(
-        &old_pubkey,
-        namespace,
-        &message,
-        &finalization.certificate.vote_signature,
-    )
-    .expect("BLS signature verification failed");
+        // Verify the certificate was signed by the old network identity
+        let namespace = b"TEMPO_FINALIZE";
+        let message = finalization.proposal.encode();
+        verify_message::<MinSig>(
+            &old_pubkey,
+            namespace,
+            &message,
+            &finalization.certificate.vote_signature,
+        )
+        .expect("BLS signature verification failed");
 
-    // Test 2: Query from epoch 0 (before full DKG) - should have identity but no transitions
-    let response_epoch0 = http_client
-        .get_identity_transition_proof(Some(0), Some(false))
-        .await
-        .unwrap();
+        // Test 2: Query from epoch 0 (before full DKG) - should have identity but no transitions
+        let response_epoch0 = http_client
+            .get_identity_transition_proof(Some(0), Some(false))
+            .await
+            .unwrap();
 
-    assert!(
-        !response_epoch0.identity.is_empty(),
-        "Identity should be present even at epoch 0"
-    );
-    assert!(
-        response_epoch0.transitions.is_empty(),
-        "Should have no transitions when querying from epoch 0"
-    );
-    assert_eq!(
-        response_epoch0.identity, transition.old_identity,
-        "Identity at epoch 0 should be the old public key (before full DKG)"
-    );
+        assert!(
+            !response_epoch0.identity.is_empty(),
+            "Identity should be present even at epoch 0"
+        );
+        assert!(
+            response_epoch0.transitions.is_empty(),
+            "Should have no transitions when querying from epoch 0"
+        );
+        assert_eq!(
+            response_epoch0.identity, transition.old_identity,
+            "Identity at epoch 0 should be the old public key (before full DKG)"
+        );
 
-    drop(done_tx);
-    executor_handle.join().unwrap();
+        drop(done_tx);
+        executor_handle.join().unwrap();
+    });
 }
