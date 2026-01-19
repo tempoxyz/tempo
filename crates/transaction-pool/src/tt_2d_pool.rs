@@ -172,10 +172,11 @@ impl AA2dPool {
                 }
 
                 let old_tx = entry.insert(tx.clone());
+                // counters always mirror actual tx count, so underflow is impossible
                 if old_tx.is_pending {
-                    self.pending_count = self.pending_count.saturating_sub(1);
+                    self.pending_count -= 1;
                 } else {
-                    self.queued_count = self.queued_count.saturating_sub(1);
+                    self.queued_count -= 1;
                 }
                 Some(old_tx)
             }
@@ -234,7 +235,7 @@ impl AA2dPool {
         // Update counters for promoted transactions
         let promoted_count = promoted.len();
         if !promoted.is_empty() {
-            self.queued_count = self.queued_count.saturating_sub(promoted_count);
+            self.queued_count -= promoted_count;
             self.pending_count += promoted_count;
         }
 
@@ -464,9 +465,9 @@ impl AA2dPool {
 
         // Update counters based on the removed transaction's pending status
         if tx.is_pending {
-            self.pending_count = self.pending_count.saturating_sub(1);
+            self.pending_count -= 1;
         } else {
-            self.queued_count = self.queued_count.saturating_sub(1);
+            self.queued_count -= 1;
         }
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
@@ -649,7 +650,7 @@ impl AA2dPool {
                     // Promote if transaction was previously queued (not pending)
                     if !std::mem::replace(&mut existing_tx.is_pending, true) {
                         // Update counters for txs promoted from queued to pending
-                        self.queued_count = self.queued_count.saturating_sub(1);
+                        self.queued_count -= 1;
                         self.pending_count += 1;
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
