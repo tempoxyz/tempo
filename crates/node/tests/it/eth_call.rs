@@ -13,7 +13,7 @@ use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
-use tempo_contracts::precompiles::UnknownFunctionSelector;
+use tempo_precompiles::contracts::UnknownFunctionSelector;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::TIP20Token};
 use tempo_precompiles::abi::tip20::tip20;
 use tip20::transferCall;

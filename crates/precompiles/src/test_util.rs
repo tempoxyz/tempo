@@ -13,7 +13,7 @@ use alloy::{
     sol_types::SolError,
 };
 use revm::precompile::PrecompileError;
-use tempo_contracts::precompiles::UnknownFunctionSelector;
+use crate::contracts::UnknownFunctionSelector;
 
 #[cfg(any(test, feature = "test-utils"))]
 use crate::{abi::tip20_factory::tip20_factory::TokenCreated, error::TempoPrecompileError};

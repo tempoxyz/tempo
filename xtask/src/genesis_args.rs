@@ -38,10 +38,10 @@ use std::{
 };
 use tempo_chainspec::spec::TEMPO_BASE_FEE;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
-use tempo_contracts::{
-    ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
-    PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
-    contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
+use tempo_precompiles::contracts::{
+    ARACHNID_CREATE2_FACTORY_ADDRESS, ARACHNID_CREATE2_FACTORY_BYTECODE, CREATEX_ADDRESS,
+    CreateX, MULTICALL3_ADDRESS, Multicall3, PERMIT2_ADDRESS, PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
+    SafeDeployer,
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -537,7 +537,7 @@ fn deploy_arachnid_create2_factory(evm: &mut TempoEvm<CacheDB<EmptyDB>>) {
 /// Deploys Permit2 contract via the Arachnid CREATE2 factory.
 fn deploy_permit2(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     // Build calldata for Arachnid CREATE2 factory: salt (32 bytes) || creation bytecode
-    let bytecode = &tempo_contracts::Permit2::BYTECODE;
+    let bytecode = &tempo_precompiles::contracts::Permit2::BYTECODE;
     let calldata: Bytes = PERMIT2_SALT
         .as_slice()
         .iter()

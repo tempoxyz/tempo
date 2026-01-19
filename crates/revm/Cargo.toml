@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 tempo-precompiles = { workspace = true, features = ["precompile"] }
 tempo-primitives.workspace = true
-tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
 
 reth-evm.workspace = true

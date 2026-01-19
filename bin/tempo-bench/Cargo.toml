@@ -11,7 +11,6 @@ publish.workspace = true
 # Tempo
 tempo-alloy.workspace = true
 tempo-precompiles = { workspace = true, features = ["rpc"] }
-tempo-contracts.workspace = true
 
 # Workspace dependencies
 alloy = { workspace = true, features = [

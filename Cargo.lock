@@ -11655,7 +11655,6 @@ dependencies = [
  "reth-rpc-convert",
  "reth-rpc-eth-types",
  "serde",
- "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
@@ -11685,7 +11684,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-alloy",
- "tempo-contracts",
  "tempo-precompiles",
  "tokio",
  "tokio-util",
@@ -11787,17 +11785,6 @@ dependencies = [
  "reth-primitives-traits",
  "tempo-chainspec",
  "tempo-primitives",
-]
-
-[[package]]
-name = "tempo-contracts"
-version = "1.0.0-rc.6"
-dependencies = [
- "alloy-contract",
- "alloy-primitives 1.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "alloy-provider",
- "alloy-sol-types",
- "tokio",
 ]
 
 [[package]]
@@ -11952,7 +11939,6 @@ dependencies = [
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus",
- "tempo-contracts",
  "tempo-e2e",
  "tempo-evm",
  "tempo-payload-builder",
@@ -12022,6 +12008,7 @@ dependencies = [
  "alloy-contract",
  "alloy-evm",
  "alloy-primitives 1.5.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "alloy-provider",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
@@ -12035,10 +12022,10 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-chainspec",
- "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles-macros",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
 ]
 
@@ -12110,7 +12097,6 @@ dependencies = [
  "revm",
  "sha2 0.10.9",
  "tempo-chainspec",
- "tempo-contracts",
  "tempo-evm",
  "tempo-precompiles",
  "tempo-primitives",
@@ -12207,7 +12193,6 @@ dependencies = [
  "serde_json",
  "tempo-chainspec",
  "tempo-commonware-node-config",
- "tempo-contracts",
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",

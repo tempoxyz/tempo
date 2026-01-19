@@ -13,7 +13,7 @@ use alloy::{
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
-use tempo_contracts::precompiles::UnknownFunctionSelector;
+use crate::contracts::UnknownFunctionSelector;
 
 /// Top-level error type for all Tempo precompile operations
 #[derive(

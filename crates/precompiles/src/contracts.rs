@@ -1,9 +1,9 @@
-//! Tempo predeployed contracts and bindings.
+//! External contracts and predeployed bindings.
+//!
+//! This module contains bindings for standard external contracts that are
+//! predeployed on the Tempo network.
 
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-
-use alloy_primitives::{Address, B256, address, b256};
+use alloy::primitives::{Address, B256, Bytes, address, b256, bytes};
 
 /// Default address for the Multicall3 contract on most chains. See: <https://github.com/mds1/multicall>
 pub const MULTICALL3_ADDRESS: Address = address!("0xcA11bde05977b3631167028862bE2a173976CA11");
@@ -15,66 +15,67 @@ pub const PERMIT2_SALT: B256 =
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
+/// Keccak256 hash of CreateX deployed bytecode
+pub const CREATEX_BYTECODE_HASH: B256 =
+    b256!("0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f");
+
+/// Keccak256 hash of Multicall3 deployed bytecode
+pub const MULTICALL3_DEPLOYED_BYTECODE_HASH: B256 =
+    b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
+
+pub const ARACHNID_CREATE2_FACTORY_BYTECODE: Bytes = bytes!(
+    "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
+);
+
 /// Helper macro to allow feature-gating rpc implementations behind the `rpc` feature.
+#[cfg(feature = "rpc")]
 macro_rules! sol {
     ($($input:tt)*) => {
-        #[cfg(feature = "rpc")]
-        alloy_sol_types::sol! {
+        alloy::sol! {
             #[sol(rpc)]
             $($input)*
         }
-        #[cfg(not(feature = "rpc"))]
+    };
+}
+
+#[cfg(not(feature = "rpc"))]
+macro_rules! sol {
+    ($($input:tt)*) => {
         alloy_sol_types::sol! {
             $($input)*
         }
     };
 }
 
-pub(crate) use sol;
-
-pub mod contracts {
-    use alloy_primitives::{B256, Bytes, b256, bytes};
-
-    sol!(
-        #[allow(missing_docs)]
-        CreateX,
-        "abi/CreateX.json",
-    );
-
-    /// Keccak256 hash of CreateX deployed bytecode
-    pub const CREATEX_BYTECODE_HASH: B256 =
-        b256!("0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f");
-
-    sol!(
-        #[allow(missing_docs)]
-        Permit2,
-        "abi/Permit2.json"
-    );
-
-    sol!(
-        #[allow(missing_docs)]
-        SafeDeployer,
-        "abi/SafeDeployer.json",
-    );
-
-    pub const ARACHNID_CREATE2_FACTORY_BYTECODE: Bytes = bytes!(
-        "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3"
-    );
-
-    sol!(
-        #[allow(missing_docs)]
-        Multicall3,
-        "abi/Multicall3.json",
-    );
-
-    /// Keccak256 hash of Multicall3 deployed bytecode
-    pub const MULTICALL3_DEPLOYED_BYTECODE_HASH: B256 =
-        b256!("0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891");
+sol! {
+    /// Error returned when a function selector is not recognized
+    #[derive(Debug, PartialEq, Eq)]
+    error UnknownFunctionSelector(bytes4 selector);
 }
 
-pub use contracts::{CreateX, Multicall3, Permit2, SafeDeployer};
+sol!(
+    #[allow(missing_docs)]
+    CreateX,
+    "abi/CreateX.json",
+);
 
-pub mod precompiles;
+sol!(
+    #[allow(missing_docs)]
+    Permit2,
+    "abi/Permit2.json"
+);
+
+sol!(
+    #[allow(missing_docs)]
+    SafeDeployer,
+    "abi/SafeDeployer.json",
+);
+
+sol!(
+    #[allow(missing_docs)]
+    Multicall3,
+    "abi/Multicall3.json",
+);
 
 #[cfg(test)]
 mod tests {
@@ -86,14 +87,14 @@ mod tests {
     //!
     //! Run with:
     //! ```sh
-    //! cargo test -p tempo-contracts
+    //! cargo test -p tempo-precompiles --features rpc contracts
     //! ```
     //!
     //! Optionally set `ETH_RPC_URL` to use a custom RPC endpoint.
 
     use super::*;
-    use alloy_primitives::{B256, keccak256};
-    use alloy_provider::{Provider, ProviderBuilder};
+    use alloy::primitives::keccak256;
+    use alloy::providers::{Provider, ProviderBuilder};
 
     /// Default public RPC URL for Ethereum mainnet.
     const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
@@ -118,9 +119,8 @@ mod tests {
 
     #[tokio::test]
     async fn multicall3_bytecode_matches_mainnet() {
-        // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&Multicall3::DEPLOYED_BYTECODE);
-        let stored_hash = contracts::MULTICALL3_DEPLOYED_BYTECODE_HASH;
+        let stored_hash = MULTICALL3_DEPLOYED_BYTECODE_HASH;
         assert_eq!(
             computed_hash, stored_hash,
             "MULTICALL3_DEPLOYED_BYTECODE_HASH does not match the actual bytecode!\n\
@@ -128,7 +128,6 @@ mod tests {
              Stored:   {stored_hash}"
         );
 
-        // Verify our bytecode matches mainnet
         let mainnet_hash = get_mainnet_code_hash(MULTICALL3_ADDRESS).await;
         assert_eq!(
             mainnet_hash, stored_hash,
@@ -141,9 +140,8 @@ mod tests {
 
     #[tokio::test]
     async fn createx_bytecode_matches_mainnet() {
-        // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&CreateX::DEPLOYED_BYTECODE);
-        let stored_hash = contracts::CREATEX_BYTECODE_HASH;
+        let stored_hash = CREATEX_BYTECODE_HASH;
         assert_eq!(
             computed_hash, stored_hash,
             "CREATEX_BYTECODE_HASH does not match the actual bytecode!\n\
@@ -151,7 +149,6 @@ mod tests {
              Stored:   {stored_hash}"
         );
 
-        // Verify our bytecode matches mainnet
         let mainnet_hash = get_mainnet_code_hash(CREATEX_ADDRESS).await;
         assert_eq!(
             mainnet_hash, stored_hash,
@@ -165,7 +162,7 @@ mod tests {
     #[tokio::test]
     async fn arachnid_create2_factory_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(ARACHNID_CREATE2_FACTORY_ADDRESS).await;
-        let our_hash = keccak256(&contracts::ARACHNID_CREATE2_FACTORY_BYTECODE);
+        let our_hash = keccak256(&ARACHNID_CREATE2_FACTORY_BYTECODE);
 
         assert_eq!(
             mainnet_hash, our_hash,

@@ -3,6 +3,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod abi;
+pub mod contracts;
 
 #[cfg(feature = "precompile")]
 pub mod dispatch;

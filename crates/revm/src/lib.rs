@@ -7,8 +7,6 @@ mod block;
 // Suppress unused_crate_dependencies warnings for test-only deps
 #[cfg(not(test))]
 use tracing as _;
-#[cfg(not(test))]
-use tempo_contracts as _;
 
 mod common;
 pub use common::{TempoStateAccess, TempoTx};

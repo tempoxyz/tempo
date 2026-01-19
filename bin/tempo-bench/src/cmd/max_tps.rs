@@ -53,15 +53,16 @@ use std::{
     thread,
     time::Duration,
 };
-use tempo_precompiles::abi::stablecoin_dex::stablecoin_dex::StablecoinDexInstance;
 use tempo_precompiles::{
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
+    DEFAULT_FEE_TOKEN, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
     abi::{
+        stablecoin_dex::stablecoin_dex::{
+            MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, StablecoinDexInstance, TICK_SPACING,
+        },
         tip20::tip20::{self, ISSUER_ROLE, Tip20Instance},
         tip20_factory::tip20_factory,
+        tip_fee_manager::fee_manager::FeeManagerInstance,
     },
-    stablecoin_dex::{MAX_TICK, MIN_ORDER_AMOUNT, MIN_TICK, TICK_SPACING},
-    tip_fee_manager::{DEFAULT_FEE_TOKEN, fee_manager::FeeManagerInstance},
 };
 use tokio::{
     select,

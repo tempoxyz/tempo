@@ -14,11 +14,10 @@ workspace = true
 [dependencies]
 # Always required (lightweight)
 tempo-precompiles-macros = { workspace = true, default-features = false }
-alloy = { workspace = true, features = ["sol-types", "consensus"] }
+alloy = { workspace = true, features = ["sol-types", "consensus", "json"] }
 alloy-sol-types.workspace = true
 
 # Optional: only needed for precompile runtime
-tempo-contracts = { workspace = true, optional = true }
 tempo-chainspec = { workspace = true, optional = true }
 alloy-contract = { workspace = true, optional = true }
 alloy-evm = { workspace = true, optional = true }
@@ -33,12 +32,14 @@ criterion.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
 eyre.workspace = true
 rand.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [features]
 default = ["rpc", "precompile"]
@@ -47,12 +48,11 @@ bindings = []
 test-utils = ["alloy/getrandom", "precompile"]
 # RPC bindings: generates provider-bound contract instances for alloy RPC interactions
 # This is lightweight and only requires alloy-contract
-rpc = ["tempo-precompiles-macros/rpc", "dep:alloy-contract"]
+rpc = ["tempo-precompiles-macros/rpc", "dep:alloy-contract", "alloy/contract"]
 # Enable precompile runtime support (generates interface traits, Dispatch, storage, etc.)
 precompile = [
     "rpc",
     "tempo-precompiles-macros/precompile",
-    "dep:tempo-contracts",
     "dep:tempo-chainspec",
     "dep:alloy-evm",
     "dep:revm",
