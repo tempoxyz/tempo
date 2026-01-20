@@ -133,7 +133,7 @@ impl Builder {
 
         {
             let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
+            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, &cx.tx, || {
                 // TODO(janis): figure out the owner of the test-genesis.json
                 let mut validator_config = ValidatorConfig::new();
                 validator_config
@@ -726,6 +726,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
+            // TODO: remove once reth state root issues are fixed
+            c.engine.state_root_fallback = true;
             c.network.trusted_peers = config
                 .trusted_peers
                 .into_iter()

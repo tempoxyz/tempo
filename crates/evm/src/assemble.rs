@@ -163,6 +163,7 @@ mod tests {
                 ommers: &[],
                 withdrawals: None,
                 extra_data: Bytes::new(),
+                tx_count_hint: None,
             },
             general_gas_limit,
             shared_gas_limit,
