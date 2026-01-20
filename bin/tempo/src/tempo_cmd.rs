@@ -101,32 +101,36 @@ impl CalculatePublicKey {
 
 /// Validator info output structure
 #[derive(Debug, Serialize)]
-pub struct ValidatorInfoOutput {
+struct ValidatorInfoOutput {
     /// The epoch of the DKG outcome
-    pub epoch: u64,
-    /// Block height of the epoch boundary
-    pub boundary_height: u64,
+    epoch: u64,
+    /// Block height of the epoch boundary where the DKG outcome was read
+    boundary_height: u64,
+    /// Block height at which the smart contract state was read
+    contract_read_height: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
-    pub is_next_full_dkg: bool,
+    is_next_full_dkg: bool,
+    /// The epoch at which the next full DKG ceremony will be triggered (from contract)
+    next_full_dkg_epoch: u64,
     /// List of validators participating in the DKG
-    pub validators: Vec<ValidatorEntry>,
+    validators: Vec<ValidatorEntry>,
 }
 
 /// Individual validator entry
 #[derive(Debug, Serialize)]
-pub struct ValidatorEntry {
+struct ValidatorEntry {
     /// ed25519 public key (hex)
-    pub public_key: String,
+    public_key: String,
     /// Inbound IP address for p2p connections
-    pub inbound_address: String,
+    inbound_address: String,
     /// Outbound IP address
-    pub outbound_address: String,
+    outbound_address: String,
     /// Whether the validator is active in the current contract state
-    pub active: bool,
-    /// Whether this validator is a player in the current DKG epoch
-    pub is_dkg_player: bool,
-    /// Whether this validator is a dealer in the current DKG epoch
-    pub is_dkg_dealer: bool,
+    active: bool,
+    /// Whether this validator was a player (received shares) in the DKG ceremony
+    was_player: bool,
+    /// Whether this validator was a dealer (generated dealings) in the DKG ceremony
+    was_dealer: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -221,26 +225,43 @@ impl ValidatorsInfo {
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
         let validators_call = IValidatorConfig::getValidatorsCall {};
-        let call_data = alloy_sol_types::SolCall::abi_encode(&validators_call);
+        let validators_calldata = alloy_sol_types::SolCall::abi_encode(&validators_call);
 
-        let result = provider
+        let next_dkg_call = IValidatorConfig::getNextFullDkgCeremonyCall {};
+        let next_dkg_calldata = alloy_sol_types::SolCall::abi_encode(&next_dkg_call);
+
+        let validators_result = provider
             .call(
                 alloy_rpc_types_eth::TransactionRequest::default()
                     .to(VALIDATOR_CONFIG_ADDRESS)
-                    .input(call_data.into()),
+                    .input(validators_calldata.into()),
             )
             .await
             .wrap_err("failed to call getValidators")?;
 
-        let decoded: IValidatorConfig::getValidatorsReturn =
-            alloy_sol_types::SolCall::abi_decode_returns(&result, true)
+        let next_dkg_result = provider
+            .call(
+                alloy_rpc_types_eth::TransactionRequest::default()
+                    .to(VALIDATOR_CONFIG_ADDRESS)
+                    .input(next_dkg_calldata.into()),
+            )
+            .await
+            .wrap_err("failed to call getNextFullDkgCeremony")?;
+
+        let decoded_validators: IValidatorConfig::getValidatorsReturn =
+            alloy_sol_types::SolCall::abi_decode_returns(&validators_result, true)
                 .wrap_err("failed to decode getValidators response")?;
 
-        let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> = decoded
-            .validators
-            .into_iter()
-            .map(|v| (v.publicKey.0, v))
-            .collect();
+        let decoded_next_dkg: IValidatorConfig::getNextFullDkgCeremonyReturn =
+            alloy_sol_types::SolCall::abi_decode_returns(&next_dkg_result, true)
+                .wrap_err("failed to decode getNextFullDkgCeremony response")?;
+
+        let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> =
+            decoded_validators
+                .validators
+                .into_iter()
+                .map(|v| (v.publicKey.0, v))
+                .collect();
 
         let players = dkg_outcome.players();
         let dealers = dkg_outcome.dealers();
@@ -265,15 +286,17 @@ impl ValidatorsInfo {
                 inbound_address: inbound,
                 outbound_address: outbound,
                 active,
-                is_dkg_player: true,
-                is_dkg_dealer: dealers.contains(player),
+                was_player: true,
+                was_dealer: dealers.contains(player),
             });
         }
 
         let output = ValidatorInfoOutput {
             epoch: dkg_outcome.epoch.get(),
             boundary_height: boundary_height.get(),
+            contract_read_height: latest_block_number,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
+            next_full_dkg_epoch: decoded_next_dkg._0,
             validators: validator_entries,
         };
 
