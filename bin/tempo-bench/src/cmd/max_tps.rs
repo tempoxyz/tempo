@@ -9,7 +9,10 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork, primitives::TempoTxEnvelope, provider::ext::TempoProviderBuilderExt,
+    TempoFillers, TempoNetwork,
+    fillers::ExpiringNonceFiller,
+    primitives::TempoTxEnvelope,
+    provider::ext::TempoProviderBuilderExt,
 };
 
 use alloy::{
@@ -170,6 +173,13 @@ pub struct MaxTpsArgs {
     /// Disable 2D nonces
     #[arg(long)]
     disable_2d_nonces: bool,
+
+    /// Use expiring nonces (TIP-1009) instead of 2D nonces.
+    ///
+    /// Expiring nonces use a circular buffer for replay protection, avoiding state bloat
+    /// from unbounded 2D nonce storage growth. Each transaction has a valid_before timestamp.
+    #[arg(long)]
+    expiring_nonces: bool,
 }
 
 impl MaxTpsArgs {
@@ -195,7 +205,27 @@ impl MaxTpsArgs {
                 .erased()
         });
 
-        if self.disable_2d_nonces {
+        if self.expiring_nonces {
+            info!(
+                accounts = self.accounts,
+                "Creating signers (with expiring nonces - TIP-1009)"
+            );
+            let signer_provider_manager = SignerProviderManager::new(
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                accounts,
+                self.target_urls.clone(),
+                Box::new(|target_url, _cached_nonce_manager| {
+                    ProviderBuilder::default()
+                        .fetch_chain_id()
+                        .with_gas_estimation()
+                        .filler(TempoFillers::<ExpiringNonceFiller>::default())
+                        .connect_http(target_url)
+                }),
+                signer_provider_factory,
+            );
+            self.run_with_manager(signer_provider_manager).await
+        } else if self.disable_2d_nonces {
             info!(
                 accounts = self.accounts,
                 "Creating signers (with standard nonces)"
