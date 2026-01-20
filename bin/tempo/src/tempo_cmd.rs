@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+};
 
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::BlockNumberOrTag;
@@ -199,13 +202,12 @@ impl ValidatorsInfo {
             Epoch::new(current_epoch_info.epoch().get() - 1)
         };
 
-        let prev_epoch_info = epoch_strategy.epoch(previous_epoch).ok_or_else(|| {
+        let boundary_height = epoch_strategy.last(previous_epoch).ok_or_else(|| {
             eyre!(
-                "failed to get epoch info for epoch {}",
+                "failed to get last height for epoch {}",
                 previous_epoch.get()
             )
         })?;
-        let boundary_height = prev_epoch_info.last();
 
         let boundary_block = provider
             .get_block_by_number(BlockNumberOrTag::Number(boundary_height.get()))
@@ -263,11 +265,11 @@ impl ValidatorsInfo {
                 .map(|v| (v.publicKey.0, v))
                 .collect();
 
-        let players = dkg_outcome.players();
-        let dealers = dkg_outcome.dealers();
+        let players = dkg_outcome.players().clone();
+        let dealers: HashSet<_> = dkg_outcome.dealers().clone().into_iter().collect();
 
         let mut validator_entries = Vec::new();
-        for player in players.iter() {
+        for player in players.into_iter() {
             let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
 
             let (active, inbound, outbound) =
@@ -287,7 +289,7 @@ impl ValidatorsInfo {
                 outbound_address: outbound,
                 active,
                 was_player: true,
-                was_dealer: dealers.contains(player),
+                was_dealer: dealers.contains(&player),
             });
         }
 
