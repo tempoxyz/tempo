@@ -262,7 +262,7 @@ contract ValidatorConfigTest is BaseTest {
     function test_ChangeValidatorStatus_Deactivate() public {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
 
-        validatorConfig.changeValidatorStatus(validator1, false);
+        validatorConfig.changeValidatorStatus(0, false);
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertFalse(validators[0].active, "Validator should be inactive");
@@ -271,7 +271,7 @@ contract ValidatorConfigTest is BaseTest {
     function test_ChangeValidatorStatus_Activate() public {
         validatorConfig.addValidator(validator1, publicKey1, false, inboundAddr1, outboundAddr1);
 
-        validatorConfig.changeValidatorStatus(validator1, true);
+        validatorConfig.changeValidatorStatus(0, true);
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertTrue(validators[0].active, "Validator should be active");
@@ -281,7 +281,7 @@ contract ValidatorConfigTest is BaseTest {
         validatorConfig.addValidator(validator1, publicKey1, true, inboundAddr1, outboundAddr1);
 
         vm.prank(nonOwner);
-        try validatorConfig.changeValidatorStatus(validator1, false) {
+        try validatorConfig.changeValidatorStatus(0, false) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -289,7 +289,7 @@ contract ValidatorConfigTest is BaseTest {
     }
 
     function test_ChangeValidatorStatus_NotFound() public {
-        try validatorConfig.changeValidatorStatus(validator1, false) {
+        try validatorConfig.changeValidatorStatus(0, false) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.ValidatorNotFound.selector));
@@ -301,7 +301,7 @@ contract ValidatorConfigTest is BaseTest {
 
         // Validator tries to change their own status
         vm.prank(validator1);
-        try validatorConfig.changeValidatorStatus(validator1, false) {
+        try validatorConfig.changeValidatorStatus(0, false) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -380,7 +380,7 @@ contract ValidatorConfigTest is BaseTest {
 
         // Non-owner tries to change status
         vm.prank(caller);
-        try validatorConfig.changeValidatorStatus(validator1, status) {
+        try validatorConfig.changeValidatorStatus(0, status) {
             revert CallShouldHaveReverted();
         } catch (bytes memory err) {
             assertEq(err, abi.encodeWithSelector(IValidatorConfig.Unauthorized.selector));
@@ -425,7 +425,7 @@ contract ValidatorConfigTest is BaseTest {
 
         // Deactivate every other validator
         for (uint8 i = 0; i < numValidators; i += 2) {
-            validatorConfig.changeValidatorStatus(validatorAddrs[i], false);
+            validatorConfig.changeValidatorStatus(i, false);
         }
 
         // Verify statuses
@@ -492,7 +492,7 @@ contract ValidatorConfigTest is BaseTest {
 
         // Bob can manage validators
         vm.prank(bob);
-        validatorConfig.changeValidatorStatus(validator1, false);
+        validatorConfig.changeValidatorStatus(0, false);
 
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
         assertEq(validators.length, 2);

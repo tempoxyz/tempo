@@ -79,9 +79,9 @@ interface IValidatorConfig {
     ) external;
 
     /// @notice Change validator active status (owner only)
-    /// @param validator The validator address
+    /// @param index The validator index in the validators array
     /// @param active Whether the validator should be active
-    function changeValidatorStatus(address validator, bool active) external;
+    function changeValidatorStatus(uint64 index, bool active) external;
 
     /// @notice Get the owner of the precompile
     /// @return The owner address

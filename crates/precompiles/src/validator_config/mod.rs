@@ -254,13 +254,15 @@ impl ValidatorConfig {
     ) -> Result<()> {
         self.check_owner(sender)?;
 
-        if !self.validator_exists(call.validator)? {
-            return Err(ValidatorConfigError::validator_not_found())?;
-        }
+        // Look up validator address by index
+        let validator_address = match self.validators_array.at(call.index as usize)? {
+            Some(elem) => elem.read()?,
+            None => return Err(ValidatorConfigError::validator_not_found())?,
+        };
 
-        let mut validator = self.validators[call.validator].read()?;
+        let mut validator = self.validators[validator_address].read()?;
         validator.active = call.active;
-        self.validators[call.validator].write(validator)
+        self.validators[validator_address].write(validator)
     }
 
     /// Get the epoch at which a fresh DKG ceremony will be triggered.
@@ -377,7 +379,7 @@ mod tests {
             validator_config.change_validator_status(
                 owner1,
                 IValidatorConfig::changeValidatorStatusCall {
-                    validator: validator1,
+                    index: 0,
                     active: false,
                 },
             )?;
@@ -403,7 +405,7 @@ mod tests {
             let res = validator_config.change_validator_status(
                 owner2,
                 IValidatorConfig::changeValidatorStatusCall {
-                    validator: validator1,
+                    index: 0,
                     active: true,
                 },
             );

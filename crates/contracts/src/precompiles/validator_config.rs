@@ -42,9 +42,9 @@ crate::sol! {
         function updateValidator(address newValidatorAddress, bytes32 publicKey, string calldata inboundAddress, string calldata outboundAddress) external;
 
         /// Change validator active status (owner only)
-        /// @param validator The validator address
+        /// @param index The validator index in the validators array
         /// @param active Whether the validator should be active
-        function changeValidatorStatus(address validator, bool active) external;
+        function changeValidatorStatus(uint64 index, bool active) external;
 
         /// Get the owner of the precompile
         /// @return owner The owner address

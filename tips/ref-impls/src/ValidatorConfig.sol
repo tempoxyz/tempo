@@ -139,13 +139,14 @@ contract ValidatorConfig is IValidatorConfig {
     }
 
     /// @inheritdoc IValidatorConfig
-    function changeValidatorStatus(address validator, bool active) external onlyOwner {
-        // Check if validator exists
-        if (validators[validator].publicKey == bytes32(0)) {
+    function changeValidatorStatus(uint64 index, bool active) external onlyOwner {
+        // Check if index is valid
+        if (index >= validatorsArray.length) {
             revert ValidatorNotFound();
         }
 
-        validators[validator].active = active;
+        address validatorAddress = validatorsArray[index];
+        validators[validatorAddress].active = active;
     }
 
     /// @inheritdoc IValidatorConfig
