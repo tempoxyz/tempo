@@ -2557,7 +2557,12 @@ mod tests {
 
     /// Helper to compute AA batch gas with no access list.
     fn compute_aa_gas(env: &TempoBatchCallEnv) -> InitialAndFloorGas {
-        calculate_aa_batch_intrinsic_gas(env, None::<std::iter::Empty<&AccessListItem>>).unwrap()
+        calculate_aa_batch_intrinsic_gas(
+            env,
+            &GasParams::default(),
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap()
     }
 
     proptest! {
