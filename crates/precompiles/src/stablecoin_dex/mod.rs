@@ -877,8 +877,13 @@ impl StablecoinDEX {
             if fill_amount < order.remaining() {
                 // For asks, pass the actual amount_in as quote_override to avoid double-rounding
                 let quote_override = if bid { None } else { Some(amount_in) };
-                let amount_out =
-                    self.partial_fill_order(&mut order, &mut level, fill_amount, taker, quote_override)?;
+                let amount_out = self.partial_fill_order(
+                    &mut order,
+                    &mut level,
+                    fill_amount,
+                    taker,
+                    quote_override,
+                )?;
                 total_amount_out = total_amount_out
                     .checked_add(amount_out)
                     .ok_or(TempoPrecompileError::under_overflow())?;
@@ -4105,9 +4110,7 @@ mod tests {
             let amount_in = price + 1; // 102001
 
             // Setup quote token (pathUSD)
-            let quote = TIP20Setup::path_usd(admin)
-                .with_issuer(admin)
-                .apply()?;
+            let quote = TIP20Setup::path_usd(admin).with_issuer(admin).apply()?;
             let quote_token = quote.address();
 
             // Setup base token - Alice needs base tokens to place ask order
@@ -4140,11 +4143,9 @@ mod tests {
             // This is the zero-sum invariant: taker paid == maker received
             let alice_quote_balance = exchange.balance_of(alice, quote_token)?;
             assert_eq!(
-                alice_quote_balance,
-                amount_in,
+                alice_quote_balance, amount_in,
                 "Zero-sum violated: alice received {} but bob spent {}",
-                alice_quote_balance,
-                amount_in
+                alice_quote_balance, amount_in
             );
 
             Ok(())
