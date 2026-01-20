@@ -89,7 +89,7 @@ fn extract_telemetry_url(args: &[String]) -> Option<String> {
 ///
 /// When `--telemetry-url=<url>` is present (e.g., `--telemetry-url=https://user:pass@metrics`),
 /// or the `TELEMETRY_URL` environment variable is set, this function expands it to:
-/// - `--logs-otlp=https://<host>/insert/opentelemetry/v1/logs`
+/// - `--logs-otlp=https://<host>/opentelemetry/v1/logs`
 /// - `--logs-otlp.filter=debug`
 /// - `--metrics.prometheus.push.url=https://<user:pass>@<host>/api/v1/import/prometheus`
 /// - `--consensus.metrics-otlp=https://<host>/opentelemetry/v1/metrics`
@@ -162,7 +162,7 @@ pub(crate) fn expand_telemetry_args(args: Vec<String>) -> eyre::Result<Vec<Strin
     #[cfg(feature = "otlp")]
     {
         expanded.push(format!(
-            "--logs-otlp={base_url_no_creds}/insert/opentelemetry/v1/logs"
+            "--logs-otlp={base_url_no_creds}/opentelemetry/v1/logs"
         ));
         expanded.push(format!("--logs-otlp.filter={DEFAULT_LOGS_OTLP_FILTER}"));
     }

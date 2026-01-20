@@ -58,7 +58,7 @@ pub fn install(context: Context, listen_addr: SocketAddr) -> Handle<eyre::Result
 
 /// Configuration for OTLP metrics export.
 pub struct OtlpConfig {
-    /// The OTLP endpoint URL (e.g., https://metrics.example.com/v1/metrics).
+    /// The OTLP endpoint URL (e.g., `https://metrics.example.com/v1/metrics`).
     pub endpoint: String,
     /// The interval at which to export metrics.
     pub interval: Duration,
