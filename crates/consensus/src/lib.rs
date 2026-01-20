@@ -393,8 +393,7 @@ mod tests {
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
             err.to_string().contains("General gas limit"),
-            "Expected error about general gas limit, got: {}",
-            err
+            "Expected error about general gas limit, got: {err}",
         );
     }
 
