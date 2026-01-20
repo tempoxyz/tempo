@@ -264,7 +264,7 @@ where
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
 
-                    // Check if T1 hardfork is active for expiring nonce handling
+                    // Get the active Tempo hardfork for expiring nonce handling
                     let tip_timestamp = self
                         .protocol_pool
                         .validator()
@@ -272,15 +272,12 @@ where
                         .inner
                         .fork_tracker()
                         .tip_timestamp();
-                    let is_t1_active = self
-                        .client()
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(tip_timestamp);
+                    let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
                     let added = self.aa_2d_pool.write().add_transaction(
                         Arc::new(tx),
                         state_nonce,
-                        is_t1_active,
+                        hardfork,
                     )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {

@@ -575,7 +575,14 @@ where
                         );
                     }
 
-                    if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    // Check if T1 hardfork is active for expiring nonce handling
+                    let current_time = self.inner.fork_tracker().tip_timestamp();
+                    let is_t1_active = self
+                        .inner
+                        .chain_spec()
+                        .is_t1_active_at_timestamp(current_time);
+
+                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transaction - check if tx hash is already seen
                         let tx_hash = *transaction.hash();
                         let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
@@ -590,7 +597,6 @@ where
                         };
 
                         // If expiry is non-zero and in the future, tx hash is still valid (replay)
-                        let current_time = self.inner.fork_tracker().tip_timestamp();
                         if seen_expiry != 0 && seen_expiry > current_time {
                             return TransactionValidationOutcome::Invalid(
                                 transaction.into_transaction(),

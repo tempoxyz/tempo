@@ -103,14 +103,14 @@ impl AA2dPool {
     /// If transaction is using 2D nonces, this is expected to be the nonce corresponding
     /// to the transaction's nonce key.
     ///
-    /// `is_t1_active` indicates whether the T1 hardfork is active. If true, expiring nonce
-    /// transactions (nonce_key == U256::MAX) are handled specially. If false, they are
+    /// `hardfork` indicates the active Tempo hardfork. When T1 or later, expiring nonce
+    /// transactions (nonce_key == U256::MAX) are handled specially. Otherwise, they are
     /// treated as regular 2D nonce transactions.
     pub(crate) fn add_transaction(
         &mut self,
         transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         on_chain_nonce: u64,
-        is_t1_active: bool,
+        hardfork: tempo_chainspec::hardfork::TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         debug_assert!(
             transaction.transaction.is_aa(),
@@ -124,8 +124,8 @@ impl AA2dPool {
         }
 
         // Handle expiring nonce transactions separately - they use tx hash as unique ID
-        // Only treat as expiring nonce if T1 is active
-        if is_t1_active && transaction.transaction.is_expiring_nonce() {
+        // Only treat as expiring nonce if T1 hardfork is active
+        if hardfork.is_t1() && transaction.transaction.is_expiring_nonce() {
             return self.add_expiring_nonce_transaction(transaction);
         }
 
@@ -1187,6 +1187,7 @@ mod tests {
     use alloy_primitives::{Address, U256};
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test_case::test_case(U256::ZERO)]
     #[test_case::test_case(U256::random())]
@@ -1201,7 +1202,7 @@ mod tests {
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         // Add the transaction to the pool
-        let result = pool.add_transaction(Arc::new(valid_tx), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx), 0, TempoHardfork::T1);
 
         // Should be added as pending
         assert!(result.is_ok(), "Transaction should be added successfully");
@@ -1232,7 +1233,7 @@ mod tests {
         let valid_tx1 = wrap_valid_tx(tx1, TransactionOrigin::Local);
         let tx1_hash = *valid_tx1.hash();
 
-        let result1 = pool.add_transaction(Arc::new(valid_tx1), 0, true);
+        let result1 = pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1);
 
         // Should be queued due to nonce gap
         assert!(
@@ -1271,7 +1272,7 @@ mod tests {
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
         let tx0_hash = *valid_tx0.hash();
 
-        let result0 = pool.add_transaction(Arc::new(valid_tx0), 0, true);
+        let result0 = pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1);
 
         // Should be pending and promote tx1
         assert!(
@@ -1348,7 +1349,7 @@ mod tests {
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
         let tx_low_hash = *valid_tx_low.hash();
 
-        let result_low = pool.add_transaction(Arc::new(valid_tx_low), 0, true);
+        let result_low = pool.add_transaction(Arc::new(valid_tx_low), 0, TempoHardfork::T1);
 
         // Should be pending (at on-chain nonce)
         assert!(
@@ -1394,7 +1395,7 @@ mod tests {
         let valid_tx_high = wrap_valid_tx(tx_high, TransactionOrigin::Local);
         let tx_high_hash = *valid_tx_high.hash();
 
-        let result_high = pool.add_transaction(Arc::new(valid_tx_high), 0, true);
+        let result_high = pool.add_transaction(Arc::new(valid_tx_high), 0, TempoHardfork::T1);
 
         // Should successfully replace
         assert!(
@@ -1500,11 +1501,11 @@ mod tests {
         let tx6_hash = *valid_tx6.hash();
 
         // Add all transactions
-        pool.add_transaction(Arc::new(valid_tx0), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx3), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx4), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx6), 0, true).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx3), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx4), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx6), 0, TempoHardfork::T1).unwrap();
 
         // Verify initial state
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -1679,7 +1680,7 @@ mod tests {
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
         // Try to insert it and specify the on-chain nonce 5, making it outdated
-        let result = pool.add_transaction(Arc::new(valid_tx), 5, true);
+        let result = pool.add_transaction(Arc::new(valid_tx), 5, TempoHardfork::T1);
 
         // Should fail with nonce error
         assert!(result.is_err(), "Should reject outdated transaction");
@@ -1720,7 +1721,7 @@ mod tests {
             .build();
         let valid_tx_low = wrap_valid_tx(tx_low, TransactionOrigin::Local);
 
-        pool.add_transaction(Arc::new(valid_tx_low), 0, true)
+        pool.add_transaction(Arc::new(valid_tx_low), 0, TempoHardfork::T1)
             .unwrap();
 
         // Try to replace with only 5% price bump (default requires 10%)
@@ -1731,7 +1732,7 @@ mod tests {
             .build();
         let valid_tx_insufficient = wrap_valid_tx(tx_insufficient, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx_insufficient), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx_insufficient), 0, TempoHardfork::T1);
 
         // Should fail with ReplacementUnderpriced
         assert!(
@@ -1764,25 +1765,25 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -1795,7 +1796,7 @@ mod tests {
         let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
         let valid_tx2 = wrap_valid_tx(tx2, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx2), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1);
         assert!(result.is_ok(), "Should successfully add tx2");
 
         // Verify tx3 and tx4 were promoted
@@ -1840,9 +1841,9 @@ mod tests {
 
         let tx1_hash = *valid_tx1.hash();
 
-        pool.add_transaction(Arc::new(valid_tx0), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1), 0, true).unwrap();
-        pool.add_transaction(Arc::new(valid_tx2), 0, true).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1).unwrap();
 
         // All should be pending
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -1911,13 +1912,13 @@ mod tests {
 
         let tx_a0_hash = *valid_tx_a0.hash();
 
-        pool.add_transaction(Arc::new(valid_tx_a0), 0, true)
+        pool.add_transaction(Arc::new(valid_tx_a0), 0, TempoHardfork::T1)
             .unwrap();
-        pool.add_transaction(Arc::new(valid_tx_a1), 0, true)
+        pool.add_transaction(Arc::new(valid_tx_a1), 0, TempoHardfork::T1)
             .unwrap();
-        pool.add_transaction(Arc::new(valid_tx_b0), 0, true)
+        pool.add_transaction(Arc::new(valid_tx_b0), 0, TempoHardfork::T1)
             .unwrap();
-        pool.add_transaction(Arc::new(valid_tx_b1), 0, true)
+        pool.add_transaction(Arc::new(valid_tx_b1), 0, TempoHardfork::T1)
             .unwrap();
 
         // Both senders' tx0 should be in independent set
@@ -1999,7 +2000,7 @@ mod tests {
             .build();
         let tx0_hash = *tx0.hash();
         let valid_tx0 = wrap_valid_tx(tx0, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx0), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1);
         assert!(result.is_ok());
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -2011,7 +2012,7 @@ mod tests {
             .max_fee(2_100_000_000)
             .build();
         let valid_tx1 = wrap_valid_tx(tx0_replacement1, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx1), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1);
         assert!(result.is_err(), "Should reject insufficient price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -2028,7 +2029,7 @@ mod tests {
             .build();
         let tx0_replacement2_hash = *tx0_replacement2.hash();
         let valid_tx2 = wrap_valid_tx(tx0_replacement2, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx2), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1);
         assert!(result.is_ok(), "Should accept 10% price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1, "Pool size should remain 1");
@@ -2046,7 +2047,7 @@ mod tests {
             .build();
         let tx0_replacement3_hash = *tx0_replacement3.hash();
         let valid_tx3 = wrap_valid_tx(tx0_replacement3, TransactionOrigin::Local);
-        let result = pool.add_transaction(Arc::new(valid_tx3), 0, true);
+        let result = pool.add_transaction(Arc::new(valid_tx3), 0, TempoHardfork::T1);
         assert!(result.is_ok(), "Should accept higher price bump");
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count + queued_count, 1);
@@ -2085,25 +2086,25 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx10, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx15, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2145,7 +2146,7 @@ mod tests {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             )
             .unwrap();
         }
@@ -2186,7 +2187,7 @@ mod tests {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             )
             .unwrap();
         }
@@ -2220,7 +2221,7 @@ mod tests {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             )
             .unwrap();
         }
@@ -2259,7 +2260,7 @@ mod tests {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             )
             .unwrap();
         }
@@ -2314,19 +2315,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2344,7 +2345,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2362,7 +2363,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2413,7 +2414,7 @@ mod tests {
                 pool.add_transaction(
                     Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                     0,
-                    true,
+                    TempoHardfork::T1,
                 )
                 .unwrap();
             }
@@ -2512,19 +2513,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2542,7 +2543,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2550,7 +2551,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2595,7 +2596,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)),
             3,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2617,7 +2618,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2627,7 +2628,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2637,7 +2638,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2732,7 +2733,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2756,13 +2757,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2784,13 +2785,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2825,7 +2826,7 @@ mod tests {
             pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             )
             .unwrap();
         }
@@ -2857,13 +2858,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2887,13 +2888,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::External)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2919,13 +2920,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2948,13 +2949,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -2975,13 +2976,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3000,13 +3001,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3029,13 +3030,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3065,13 +3066,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3105,13 +3106,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3139,19 +3140,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3220,7 +3221,7 @@ mod tests {
             .build();
         let valid_tx = wrap_valid_tx(tx, TransactionOrigin::Local);
 
-        let result = pool.add_transaction(Arc::new(valid_tx), u64::MAX, true);
+        let result = pool.add_transaction(Arc::new(valid_tx), u64::MAX, TempoHardfork::T1);
         assert!(result.is_ok());
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
@@ -3257,7 +3258,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_max, TransactionOrigin::Local)),
             u64::MAX - 1,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3268,7 +3269,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_max_minus_1, TransactionOrigin::Local)),
             u64::MAX - 1,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3342,9 +3343,9 @@ mod tests {
         let tx_hash = *tx.hash();
         let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
 
-        pool.add_transaction(valid_tx.clone(), 0, true).unwrap();
+        pool.add_transaction(valid_tx.clone(), 0, TempoHardfork::T1).unwrap();
 
-        let result = pool.add_transaction(valid_tx, 0, true);
+        let result = pool.add_transaction(valid_tx, 0, TempoHardfork::T1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.hash, tx_hash);
@@ -3366,7 +3367,7 @@ mod tests {
         let tx_hash = *tx.hash();
         let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
 
-        let result = pool.add_transaction(valid_tx, 10, true);
+        let result = pool.add_transaction(valid_tx, 10, TempoHardfork::T1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.hash, tx_hash);
@@ -3398,7 +3399,7 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3411,7 +3412,7 @@ mod tests {
         let result = pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         );
 
         assert!(result.is_err());
@@ -3450,7 +3451,7 @@ mod tests {
             let result = pool.add_transaction(
                 Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
                 0,
-                true,
+                TempoHardfork::T1,
             );
             assert!(result.is_ok());
         }
@@ -3484,19 +3485,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         let result = pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         );
         assert!(result.is_ok());
 
@@ -3547,19 +3548,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1_0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1_1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2_0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3616,13 +3617,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(low_priority, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(high_priority, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3658,19 +3659,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3720,19 +3721,19 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3777,13 +3778,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx2.clone(), TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3831,31 +3832,31 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_a0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_b0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_a1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_b2, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_b1, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 
@@ -3886,13 +3887,13 @@ mod tests {
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_a5, TransactionOrigin::Local)),
             5,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx_b0, TransactionOrigin::Local)),
             0,
-            true,
+            TempoHardfork::T1,
         )
         .unwrap();
 

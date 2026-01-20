@@ -33,6 +33,7 @@ use tempo_primitives::{
             WebAuthnSignature,
         },
         tt_signed::AASigned,
+        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,
     },
 };
 
@@ -5904,8 +5905,6 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
 /// Test basic expiring nonce flow - submit transaction with expiring nonce, verify it executes
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing Expiring Nonce Basic Flow ===\n");
@@ -6000,8 +5999,6 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
 /// Test expiring nonce replay protection - same tx hash should be rejected
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing Expiring Nonce Replay Protection ===\n");
@@ -6093,10 +6090,6 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 /// Test expiring nonce validity window - reject transactions outside the valid window
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
-    use tempo_primitives::transaction::{
-        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,
-    };
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing Expiring Nonce Validity Window ===\n");
@@ -6202,34 +6195,23 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
 
         let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
         let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
-        let tx_hash = *envelope.tx_hash();
 
-        // This should be rejected at pool or execution level
+        // This should be rejected at pool level with ExpiringNonceValidBeforeTooFar error
         let inject_result = setup
             .node
             .rpc
             .inject_tx(envelope.encoded_2718().into())
             .await;
 
-        if inject_result.is_err() {
-            println!("✓ valid_before = now + 31s rejected at pool level");
-        } else {
-            setup.node.advance_block().await?;
-            // Use raw RPC for Tempo tx type
-            let raw_receipt: Option<serde_json::Value> = provider
-                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
-                .await?;
-            let status = raw_receipt
-                .as_ref()
-                .and_then(|r| r["status"].as_str())
-                .map(|s| s == "0x1")
-                .unwrap_or(false);
-            if raw_receipt.is_none() || !status {
-                println!("✓ valid_before = now + 31s rejected at execution level");
-            } else {
-                panic!("Transaction with valid_before too far in future should be rejected");
-            }
-        }
+        let err = inject_result.expect_err(
+            "Transaction with valid_before too far in future should be rejected at pool level",
+        );
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("exceeds max allowed") || err_str.contains("valid_before"),
+            "Expected ExpiringNonceValidBeforeTooFar error, got: {err_str}"
+        );
+        println!("✓ valid_before = now + 31s rejected at pool level with expected error");
     }
 
     // TEST 3: valid_before in the past (should fail)
@@ -6304,8 +6286,6 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
 /// protocol nonce - alice can use expiring nonce, then use protocol nonce afterward.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Result<()> {
-    use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
-
     reth_tracing::init_test_tracing();
 
     println!("\n=== Testing Expiring Nonce Independence from Protocol Nonce ===\n");
