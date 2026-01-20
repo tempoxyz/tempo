@@ -36,7 +36,7 @@ jobs:
         run: forge --version
 
       - name: Run Forge build
-        working-directory: specs
+        working-directory: tips/ref-impls
         run: forge build --sizes
 
   lint:
@@ -51,7 +51,7 @@ jobs:
         uses: foundry-rs/foundry-toolchain@8b0419c685ef46cb79ec93fbdc131174afceb730 # v1.6.0
 
       - name: Run Forge fmt check
-        working-directory: specs
+        working-directory: tips/ref-impls
         run: forge fmt --check
 
   test:
@@ -66,7 +66,7 @@ jobs:
         uses: foundry-rs/foundry-toolchain@8b0419c685ef46cb79ec93fbdc131174afceb730 # v1.6.0
 
       - name: Run Forge tests
-        working-directory: specs
+        working-directory: tips/ref-impls
         run: forge test -vvv --no-match-contract TempoTransactionInvariantTest
 
   tempo-foundry-test:
@@ -118,7 +118,7 @@ jobs:
         run: cargo build -p forge --profile release
 
       - name: Run Forge tests with Rust precompiles
-        working-directory: tempo/specs
+        working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with tempo-foundry (isTempo=true)"
           ../../tempo-foundry/target/release/forge test -vvv
