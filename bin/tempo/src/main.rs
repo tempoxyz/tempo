@@ -222,7 +222,7 @@ fn main() -> eyre::Result<()> {
                             tracing::warn!(reason, "the metrics server exited");
                         }
 
-                        Some(ret) = async { 
+                        Some(ret) = async {
                             match &mut metrics_push {
                                 Some(handle) if !handle.is_terminated() => Some(handle.await),
                                 _ => std::future::pending().await,
