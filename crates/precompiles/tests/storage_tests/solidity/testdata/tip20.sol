@@ -33,7 +33,6 @@ contract TIP20 {
     string public name;
     string public symbol;
     string public currency;
-    bytes32 public domainSeparator;
     address public quoteToken;
     address public nextQuoteToken;
     uint64 public transferPolicyId;
@@ -43,10 +42,8 @@ contract TIP20 {
     uint256 public totalSupply;
     mapping(address => uint256) public balances;
     mapping(address => mapping(address => uint256)) public allowances;
-    mapping(address => uint256) public nonces;
     bool public paused;
     uint256 public supplyCap;
-    mapping(bytes32 => bool) public salts;
 
     // ========== Rewards Storage ==========
 
