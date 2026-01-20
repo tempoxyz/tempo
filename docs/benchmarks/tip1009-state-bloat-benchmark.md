@@ -1,5 +1,9 @@
 # TIP-1009 Expiring Nonces: State Bloat Benchmark Report
 
+## Summary
+
+Expiring nonces (TIP-1009) save **~100 bytes per transaction** by avoiding unbounded 2D nonce storage growth. The circular buffer caps nonce storage at 300,000 entries regardless of transaction volume.
+
 ## Benchmark Environment
 
 | Parameter | Value |
@@ -11,7 +15,11 @@
 | Gas Limit | 3,000,000,000 |
 | Date | 2026-01-20 |
 
-## Benchmark Configuration
+## Controlled Benchmark (100k Transactions, 20 seconds)
+
+This benchmark uses identical conditions for both nonce types to isolate nonce storage overhead.
+
+### Configuration
 
 | Parameter | Value |
 |-----------|-------|
@@ -22,32 +30,15 @@
 | Transaction Type | TIP-20 transfers |
 | Expiry Window | 25 seconds (protocol max: 30s) |
 
-## Benchmark Procedure
-
-1. Clean data directory (`~/tempo/localnet/reth`)
-2. Start fresh dev node with genesis state
-3. Fund 500 accounts via faucet
-4. Generate and sign 100k TIP-20 transfer transactions
-5. Send transactions at 5,000 TPS rate limit
-6. Wait for all receipts
-7. Measure final DB size with `du -sb`
-8. Repeat for both nonce types
-
-## Results (100k Transactions)
+### Results
 
 | Metric | 2D Nonces | Expiring Nonces | Difference |
 |--------|-----------|-----------------|------------|
-| Final DB Size | 4,141.66 MB | 4,131.48 MB | -10.17 MB |
+| Final DB Size | 4,342.85 MB | 4,332.18 MB | -10.67 MB |
+| Transactions | 100,000 | 100,000 | - |
 | Success Rate | 100% | 100% | - |
-| Per-TX Nonce Overhead | ~100 bytes | ~0 bytes | -100 bytes |
 
-## Per-Transaction Savings
-
-| Metric | Value |
-|--------|-------|
-| Measured savings | ~100 bytes/tx |
-| Savings for 100k txs | 10.17 MB |
-| Savings per 1M txs | ~100 MB |
+**Per-Transaction Nonce Savings: ~107 bytes**
 
 ### Storage Breakdown
 
@@ -56,43 +47,75 @@ Each 2D nonce entry stores:
 - **Slot value**: 8 bytes (u64 nonce)
 - **Raw total**: 40 bytes
 
-Measured overhead (~100 bytes) includes:
+The measured overhead (~100 bytes) includes:
 - Merkle Patricia Trie node overhead (branch/extension/leaf nodes)
 - MDBX database key-value pair metadata
 - RLP encoding overhead
 
-## Time-Based Scaling (at 5,000 TPS)
+## Extended Benchmark (3M Transactions, 10 minutes)
 
-| Time Period | Transactions | State Savings |
-|-------------|--------------|---------------|
-| 1 second | 5,000 | 500 KB |
-| 1 minute | 300,000 | 30 MB |
-| 1 hour | 18 million | 1.8 GB |
-| 1 day | 432 million | 43 GB |
-| 1 week | 3 billion | 300 GB |
-| 1 month | 13 billion | 1.3 TB |
-| 1 year | 158 billion | 15.8 TB |
+A longer benchmark was run to observe behavior after the circular buffer fills.
 
-## TPS-Based Scaling (per year)
+### Results
 
-| TPS | Daily Savings | Monthly Savings | Yearly Savings |
-|-----|---------------|-----------------|----------------|
-| 5,000 | 43 GB | 1.3 TB | 15.8 TB |
-| 10,000 | 86 GB | 2.6 TB | 31.5 TB |
-| 50,000 | 430 GB | 13 TB | 158 TB |
+| Metric | 2D Nonces | Expiring Nonces |
+|--------|-----------|-----------------|
+| Final DB Size | 9,476.60 MB | 4,755.94 MB |
+| Transactions | 3,000,000 | 3,000,000 |
+| Blocks | 597 | 361 |
+| Success Rate | 100% | 100% |
 
-## Scaling Formula
+**Observed Difference: 4,720.66 MB**
+
+### Analysis
+
+The 4.7 GB difference is NOT purely from nonce storage. The tests had different block counts (597 vs 361), which introduces confounding factors:
+
+1. **Nonce-specific savings**: 2.7M entries × 100 bytes = ~270 MB
+2. **Block count difference**: 236 extra blocks in 2D test
+3. **Per-block overhead**: (4,720 MB - 270 MB) / 236 blocks ≈ 18.9 MB/block
+
+The large per-block overhead suggests the 2D nonces test ran differently (lower tx packing efficiency, more blocks for same tx count).
+
+**Conservative estimate for nonce savings: ~100 bytes per unique nonce entry**
+
+## Scaling Projections
+
+Based on the controlled measurement of ~100 bytes per nonce entry:
+
+### Time-Based Scaling (at 5,000 TPS)
+
+| Time Period | Transactions | Nonce Entries Saved | State Savings |
+|-------------|--------------|---------------------|---------------|
+| 1 minute | 300,000 | 300,000 | 30 MB |
+| 10 minutes | 3,000,000 | 2,700,000* | 270 MB |
+| 1 hour | 18,000,000 | 17,700,000* | 1.77 GB |
+| 1 day | 432,000,000 | 431,700,000* | 43.2 GB |
+
+*After buffer fills (300k entries), savings = total_txs - 300,000
+
+### TPS-Based Scaling (per day)
+
+| TPS | Transactions/Day | Nonce Savings/Day |
+|-----|------------------|-------------------|
+| 5,000 | 432M | 43.2 GB |
+| 10,000 | 864M | 86.4 GB |
+| 50,000 | 4.32B | 432 GB |
+
+### Scaling Formula
 
 ```
-State Savings (bytes) = TPS × 100 × time_in_seconds
+Nonce Savings (bytes) = (total_transactions - 300,000) × 100
 ```
+
+After the circular buffer fills (~60 seconds at 5k TPS), expiring nonces maintain constant nonce storage while 2D nonces grow by 100 bytes per transaction.
 
 ## Key Findings
 
-1. **Expiring nonces eliminate per-transaction nonce storage** (~100 bytes/tx saved)
-2. **No transaction failures** with 25-second expiry window
-3. **Linear scaling** - savings grow proportionally with transaction volume
-4. **Significant long-term impact** - 1.3 TB/month at 5k TPS, 13 TB/month at 50k TPS
+1. **~100 bytes saved per unique 2D nonce entry**
+2. **Bounded state growth** - circular buffer caps nonce storage at 300,000 entries
+3. **No transaction failures** with 25-second expiry window
+4. **At 5k TPS**: ~43 GB/day saved, ~1.3 TB/month saved
 
 ## How to Reproduce
 
@@ -102,33 +125,7 @@ State Savings (bytes) = TPS × 100 × time_in_seconds
 - [Nushell](https://www.nushell.sh/) (`nu`) for running `tempo.nu` scripts
 - Access to a machine with sufficient resources (recommended: 8+ cores, 32GB+ RAM)
 
-### Option 1: Using the Benchmark Script
-
-The benchmark script automates running both tests and comparing results:
-
-```bash
-# SSH into the benchmark machine
-ssh ubuntu@reth5
-
-# Ensure you're on the correct branch
-cd ~/tempo
-git checkout tanishk/state-bloat-benchmarks
-git pull
-
-# Rebuild the binaries (important after code changes)
-source ~/.cargo/env
-cargo build --release --features jemalloc,asm-keccak --bin tempo --bin tempo-bench
-
-# Run the full benchmark
-bash ~/run_state_bloat_bench.sh 2>&1 | tee ~/bench_results.log
-```
-
-The script will:
-1. Run 2D nonces benchmark → measure DB size
-2. Clean state and run expiring nonces benchmark → measure DB size
-3. Output comparison summary
-
-### Option 2: Manual Benchmarking with tempo.nu
+### Running the Controlled Benchmark (Recommended)
 
 ```bash
 cd ~/tempo
@@ -139,85 +136,39 @@ cargo build --release --features jemalloc,asm-keccak --bin tempo --bin tempo-ben
 # Clean any previous state
 rm -rf localnet/reth
 
-# Run 2D nonces benchmark (default)
+# Run 2D nonces benchmark (20 seconds)
 nu tempo.nu bench --mode dev --preset tip20 --duration 20 --tps 5000 --accounts 500 --profile release
 
-# Measure DB size
+# Record DB size
 du -sb localnet/reth
 
-# Clean state for next test
+# Clean state
 pkill -f tempo
 rm -rf localnet/reth
 
-# Run expiring nonces benchmark (TIP-1009)
+# Run expiring nonces benchmark (20 seconds)
 nu tempo.nu bench --mode dev --preset tip20 --duration 20 --tps 5000 --accounts 500 --profile release --bench-args "--expiring-nonces"
 
-# Measure DB size
+# Record DB size
 du -sb localnet/reth
 ```
 
-### Option 3: Direct tempo-bench CLI
+### Running Extended Benchmarks (10+ minutes)
 
-For more control, use `tempo-bench` directly:
+For expiring nonces with durations longer than 20 seconds, use the `--expiring-nonces` flag which automatically batches transaction signing to avoid expiry:
 
 ```bash
-# Start a dev node first
-./target/release/tempo node \
-  --chain localnet/genesis.json \
-  --datadir localnet/reth \
-  --http --http.addr 0.0.0.0 --http.port 8545 --http.api all \
-  --dev --dev.block-time 1sec \
-  --builder.gaslimit 3000000000 \
-  --faucet.enabled \
-  --faucet.private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-
-# In another terminal, run the benchmark
-
-# 2D nonces (default random nonce keys)
-./target/release/tempo-bench run-max-tps \
-  --tps 5000 \
-  --duration 20 \
-  --accounts 500 \
-  --target-urls http://localhost:8545 \
-  --faucet \
-  --clear-txpool \
-  --tip20-weight 1.0
-
-# Expiring nonces (TIP-1009)
-./target/release/tempo-bench run-max-tps \
-  --tps 5000 \
-  --duration 20 \
-  --accounts 500 \
-  --target-urls http://localhost:8545 \
-  --faucet \
-  --clear-txpool \
-  --tip20-weight 1.0 \
-  --expiring-nonces
+# 10-minute benchmark with expiring nonces (batched signing)
+nu tempo.nu bench --mode dev --preset tip20 --duration 600 --tps 5000 --accounts 500 --profile release --bench-args "--expiring-nonces"
 ```
 
-### Benchmark Parameters
-
-| Parameter | Flag | Description |
-|-----------|------|-------------|
-| TPS | `--tps` | Target transactions per second |
-| Duration | `--duration` | Test duration in seconds (keep ≤20s for expiring nonces) |
-| Accounts | `--accounts` | Number of sender accounts to use |
-| Expiring | `--expiring-nonces` | Use expiring nonces instead of 2D nonces |
-
-**Important**: For expiring nonces, keep `--duration` ≤ 20 seconds. The expiry window is 25 seconds, and transactions are signed before sending, so longer durations may cause transactions to expire before inclusion.
+The benchmark will generate/sign/send transactions in 15-second batches to stay within the 25-second expiry window.
 
 ### Interpreting Results
 
-After each benchmark:
-
 1. **Check success rate**: Look for `Finished sending transactions success=X failed=0`
-2. **Measure DB size**: `du -sb localnet/reth` or `du -h localnet/reth`
-3. **Compare sizes**: The difference represents nonce storage overhead
-
-Expected results for 100k transactions:
-- 2D nonces: ~4,142 MB
-- Expiring nonces: ~4,131 MB
-- Difference: ~10 MB (~100 bytes/tx)
+2. **Measure DB size**: `du -sb localnet/reth`
+3. **Compare sizes**: Difference ÷ transactions ≈ 100 bytes/tx for nonce storage
 
 ## Implementation Details
 
@@ -228,84 +179,9 @@ The `ExpiringNonceFiller` in `crates/alloy/src/fillers/nonce.rs` sets:
 
 This triggers the circular buffer replay protection path instead of 2D nonce storage.
 
-## Benchmark Script Source
+### Circular Buffer
 
-The benchmark script used on reth5 (`~/run_state_bloat_bench.sh`):
-
-```bash
-#!/bin/bash
-set -e
-cd ~/tempo
-source ~/.cargo/env
-
-# Configuration - use same duration and tx count for fair comparison
-DURATION=20
-TPS=5000
-ACCOUNTS=500
-DATA_DIR=~/tempo/localnet/reth
-
-echo "=== State Bloat Benchmark (Fair Comparison) ==="
-echo "Duration: ${DURATION}s, TPS: ${TPS}, Accounts: ${ACCOUNTS}"
-echo "Expected transactions: $((DURATION * TPS))"
-
-get_db_size() {
-    if [ -d "$DATA_DIR" ]; then
-        du -sb $DATA_DIR 2>/dev/null | cut -f1
-    else
-        echo "0"
-    fi
-}
-
-# Clean any previous runs
-pkill -f "tempo" 2>/dev/null || true
-sleep 3
-
-echo ""
-echo "========================================"
-echo "BENCHMARK 1: 2D NONCES (default)"
-echo "========================================"
-rm -rf $DATA_DIR
-
-nu tempo.nu bench --mode dev --preset tip20 --duration $DURATION --tps $TPS \
-  --accounts $ACCOUNTS --profile release 2>&1 | tee bench_2d_nu.log
-
-sleep 3
-FINAL_SIZE_2D=$(get_db_size)
-echo "Final DB size (2D): $FINAL_SIZE_2D bytes ($(echo "scale=2; $FINAL_SIZE_2D/1024/1024" | bc) MB)"
-
-pkill -f "tempo" 2>/dev/null || true
-sleep 5
-rm -rf $DATA_DIR
-
-echo ""
-echo "========================================"
-echo "BENCHMARK 2: EXPIRING NONCES (TIP-1009)"
-echo "========================================"
-
-nu tempo.nu bench --mode dev --preset tip20 --duration $DURATION --tps $TPS \
-  --accounts $ACCOUNTS --profile release --bench-args "--expiring-nonces" 2>&1 | tee bench_exp_nu.log
-
-sleep 3
-FINAL_SIZE_EXP=$(get_db_size)
-echo "Final DB size (Expiring): $FINAL_SIZE_EXP bytes ($(echo "scale=2; $FINAL_SIZE_EXP/1024/1024" | bc) MB)"
-
-pkill -f "tempo" 2>/dev/null || true
-
-echo ""
-echo "========================================"
-echo "RESULTS SUMMARY"
-echo "========================================"
-TX_COUNT=$((DURATION * TPS))
-echo "Both tests: $TX_COUNT transactions"
-echo ""
-echo "2D Nonces:       $FINAL_SIZE_2D bytes ($(echo "scale=2; $FINAL_SIZE_2D/1024/1024" | bc) MB)"
-echo "Expiring Nonces: $FINAL_SIZE_EXP bytes ($(echo "scale=2; $FINAL_SIZE_EXP/1024/1024" | bc) MB)"
-echo ""
-
-DIFF=$((FINAL_SIZE_2D - FINAL_SIZE_EXP))
-DIFF_MB=$(echo "scale=2; $DIFF/1024/1024" | bc)
-echo "State Savings: $DIFF bytes ($DIFF_MB MB)"
-echo "Per-TX Savings: $(echo "scale=2; $DIFF / $TX_COUNT" | bc) bytes"
-echo ""
-echo "Benchmark complete!"
-```
+- **Capacity**: 300,000 entries (`EXPIRING_NONCE_SET_CAPACITY`)
+- **Storage**: `mapping(bytes32 => uint64)` for seen tx hashes
+- **Behavior**: Wraps around, overwriting oldest entries when full
+- **State size**: Fixed regardless of transaction volume
