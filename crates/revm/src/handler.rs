@@ -653,6 +653,25 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
+        // Check if root key is disabled for transactions that require root key privileges
+        // Root key is needed when: (1) using primitive signature OR (2) including KeyAuthorization
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
+            let uses_root_key = tempo_tx_env.signature.as_keychain().is_none();
+            let has_key_auth = tempo_tx_env.key_authorization.is_some();
+
+            if uses_root_key || has_key_auth {
+                let is_disabled = StorageCtx::enter_evm(journal, block, cfg, || {
+                    let keychain = AccountKeychain::new();
+                    keychain.check_root_key_disabled(tx.caller())
+                })
+                .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                if is_disabled {
+                    return Err(TempoInvalidTransaction::RootKeyDisabled.into());
+                }
+            }
+        }
+
         // If the transaction includes a KeyAuthorization, validate and authorize the key
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization

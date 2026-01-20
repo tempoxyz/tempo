@@ -191,6 +191,13 @@ pub enum TempoInvalidTransaction {
     #[error("keychain operations are not supported in subblock transactions")]
     KeychainOpInSubblockTransaction,
 
+    /// Root key has been disabled for this account.
+    ///
+    /// The account has permanently disabled its root key. Only access keys can sign
+    /// transactions, and no new keys can be authorized.
+    #[error("root key is disabled for this account")]
+    RootKeyDisabled,
+
     /// Fee payment error.
     #[error(transparent)]
     CollectFeePreTx(#[from] FeePaymentError),

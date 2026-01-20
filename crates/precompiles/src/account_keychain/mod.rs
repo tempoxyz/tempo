@@ -7,8 +7,9 @@ use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getKeyCall, getRemainingLimitCall,
-        getTransactionKeyCall, revokeKeyCall, updateSpendingLimitCall,
+        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, disableRootKeyCall, getKeyCall,
+        getRemainingLimitCall, getTransactionKeyCall, isRootKeyDisabledCall, revokeKeyCall,
+        updateSpendingLimitCall,
     },
 };
 
@@ -100,6 +101,10 @@ pub struct AccountKeychain {
     // spendingLimits[(account, keyId)][token] -> amount
     // Using a hash of account and keyId as the key to avoid triple nesting
     spending_limits: Mapping<B256, Mapping<Address, U256>>,
+    // root_key_disabled[account] -> bool
+    // Once disabled, the root key can never sign transactions or authorize new keys.
+    // This is irreversible and enables multisig, PQ migration, and ephemeral key patterns.
+    root_key_disabled: Mapping<Address, bool>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -325,6 +330,61 @@ impl AccountKeychain {
         _msg_sender: Address,
     ) -> Result<Address> {
         self.transaction_key.t_read()
+    }
+
+    /// Permanently disable the root key for the caller's account
+    ///
+    /// This action is IRREVERSIBLE. Once disabled, the root key can never sign
+    /// transactions or authorize new keys for this account.
+    ///
+    /// Use cases:
+    /// - Multisig security: Remove root key as single point of failure
+    /// - Post-quantum migration: Disable ECDSA root key after authorizing PQ key
+    /// - Ephemeral key pattern: Cryptographically ensure ephemeral key cannot be reused
+    pub fn disable_root_key(
+        &mut self,
+        msg_sender: Address,
+        call: disableRootKeyCall,
+    ) -> Result<()> {
+        // Check that the transaction key for this transaction is zero (main key)
+        let transaction_key = self.transaction_key.t_read()?;
+        if transaction_key != Address::ZERO {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        // Check if root key is already disabled
+        if self.root_key_disabled[msg_sender].read()? {
+            return Err(AccountKeychainError::root_key_already_disabled().into());
+        }
+
+        // Verify the specified access key exists, is not revoked, and is not expired
+        // This prevents account lockout by ensuring at least one key remains active
+        let key = self.load_active_key(msg_sender, call.activeKeyId)?;
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // Disable the root key - this is irreversible
+        self.root_key_disabled[msg_sender].write(true)?;
+
+        // Emit event
+        self.emit_event(AccountKeychainEvent::RootKeyDisabled(
+            IAccountKeychain::RootKeyDisabled {
+                account: msg_sender,
+            },
+        ))
+    }
+
+    /// Check if an account's root key has been disabled
+    pub fn is_root_key_disabled(&self, call: isRootKeyDisabledCall) -> Result<bool> {
+        self.root_key_disabled[call.account].read()
+    }
+
+    /// Internal: Check if an account's root key is disabled (for use by handler)
+    pub fn check_root_key_disabled(&self, account: Address) -> Result<bool> {
+        self.root_key_disabled[account].read()
     }
 
     /// Internal: Set the transaction key (called during transaction validation)
@@ -1069,5 +1129,147 @@ mod tests {
         let encoded = revoked.encode_to_slot();
         let decoded = AuthorizedKey::decode_from_slot(encoded);
         assert_eq!(decoded, revoked);
+    }
+
+    #[test]
+    fn test_disable_root_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let access_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Use main key (root key)
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            // First, authorize an access key
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Test 1: Root key is initially not disabled
+            let is_disabled = keychain.is_root_key_disabled(isRootKeyDisabledCall { account })?;
+            assert!(!is_disabled, "Root key should not be disabled initially");
+
+            // Test 2: Disable root key with active access key
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
+            keychain.disable_root_key(account, disable_call)?;
+
+            // Test 3: Verify root key is now disabled
+            let is_disabled = keychain.is_root_key_disabled(isRootKeyDisabledCall { account })?;
+            assert!(
+                is_disabled,
+                "Root key should be disabled after calling disableRootKey"
+            );
+
+            // Test 4: Check via internal method
+            let is_disabled_internal = keychain.check_root_key_disabled(account)?;
+            assert!(
+                is_disabled_internal,
+                "check_root_key_disabled should return true"
+            );
+
+            // Test 5: Trying to disable again should fail
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
+            let result = keychain.disable_root_key(account, disable_call);
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::RootKeyAlreadyDisabled(_)
+                    ))
+                ),
+                "Should fail with RootKeyAlreadyDisabled error"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_disable_root_key_requires_active_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let nonexistent_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Use main key (root key)
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            // Try to disable root key with non-existent access key
+            let disable_call = disableRootKeyCall {
+                activeKeyId: nonexistent_key,
+            };
+            let result = keychain.disable_root_key(account, disable_call);
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::KeyNotFound(_)
+                    ))
+                ),
+                "Should fail with KeyNotFound error when no active access key exists"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_disable_root_key_blocked_by_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+
+        let account = Address::random();
+        let access_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            // Setup: Authorize an access key first
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            let auth_call = authorizeKeyCall {
+                keyId: access_key,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Switch to access key
+            keychain.set_transaction_key(access_key)?;
+
+            // Try to disable root key using access key - should fail
+            let disable_call = disableRootKeyCall {
+                activeKeyId: access_key,
+            };
+            let result = keychain.disable_root_key(account, disable_call);
+
+            assert_unauthorized_error(result.unwrap_err());
+
+            Ok(())
+        })
     }
 }

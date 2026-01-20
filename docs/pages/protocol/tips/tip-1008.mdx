@@ -1,0 +1,282 @@
+# Root Key Disabling
+
+This document specifies the addition of root key disabling functionality to the AccountKeychain precompile, enabling accounts to permanently disable their root key after authorizing alternative signing keys.
+
+- **TIP ID**: TIP-1008
+- **Authors/Owners**: Georgios Konstantopoulos
+- **Status**: Draft
+- **Related Specs/TIPs**: [Account Keychain](/protocol/transactions/AccountKeychain)
+- **Protocol Version**: TBD
+
+---
+
+# Overview
+
+## Abstract
+
+TIP-1008 adds a `disableRootKey()` function to the AccountKeychain precompile that allows an account to permanently disable its root key (the original EOA private key). Once disabled, the root key can no longer sign transactions or authorize new keys—only previously authorized access keys remain valid. This enables advanced security models including multisig accounts, post-quantum cryptography migration, and ephemeral key patterns.
+
+## Motivation
+
+The root key (original EOA private key) currently has permanent, irrevocable control over an account. While access keys can be revoked, the root key cannot be disabled. This limitation prevents several important use cases:
+
+### 1. Multisig Security
+
+For accounts controlled by multiple parties (e.g., DAOs, treasuries, or shared wallets), the root key represents a single point of failure. If an attacker compromises the root key, they gain full control regardless of any multisig logic implemented at the access key level. Disabling the root key allows multisig setups where control is distributed exclusively among the configured signers.
+
+### 2. Post-Quantum Cryptography Migration
+
+Quantum computers pose a future threat to ECDSA signatures (Secp256k1). By authorizing a post-quantum access key and then disabling the root key, accounts can migrate to quantum-resistant cryptography without changing their address. This provides a clean upgrade path when PQ signature schemes are added to Tempo.
+
+### 3. Ephemeral Key Pattern
+
+Following the pattern established by [Porto](https://porto.sh), accounts can be created with an ephemeral private key that:
+1. Signs the initial EIP-7702 authorization
+2. Authorizes a passkey or other access key as the primary credential
+3. Is immediately discarded
+
+Currently, even if the ephemeral key is discarded client-side, it could theoretically be recovered or the signature replayed. Explicitly disabling the root key provides cryptographic assurance that the ephemeral key can never be used again.
+
+### 4. Hardware Security Module (HSM) Migration
+
+Enterprise users may want to migrate account control entirely to HSM-backed keys. Disabling the root key ensures that only the HSM can authorize transactions, meeting compliance requirements.
+
+---
+
+# Specification
+
+## New Function
+
+The following function is added to the `IAccountKeychain` interface:
+
+```solidity
+interface IAccountKeychain {
+    // ... existing functions ...
+
+    /// @notice Permanently disable the root key for the caller's account
+    /// @dev MUST only be called in transactions signed by the Root Key.
+    ///      This action is IRREVERSIBLE. Once disabled, the root key can never
+    ///      sign transactions or authorize new keys for this account.
+    ///
+    ///      Requirements:
+    ///      - Transaction MUST be signed by the root key (not an access key)
+    ///      - Account MUST have at least one non-expired, non-revoked access key
+    ///
+    ///      After calling this function:
+    ///      - Root key signatures will be rejected during transaction validation
+    ///      - KeyAuthorization in transaction envelope will fail validation
+    ///      - Only existing access keys can sign transactions
+    ///      - Access keys with admin privileges can authorize new keys (if supported)
+    ///
+    /// @custom:emits RootKeyDisabled(account)
+    function disableRootKey() external;
+
+    /// @notice Check if an account's root key has been disabled
+    /// @param account The account address to check
+    /// @return True if the root key is disabled, false otherwise
+    function isRootKeyDisabled(address account) external view returns (bool);
+}
+```
+
+## New Event
+
+```solidity
+/// @notice Emitted when an account's root key is permanently disabled
+/// @param account The account whose root key was disabled
+event RootKeyDisabled(address indexed account);
+```
+
+## New Errors
+
+```solidity
+/// @notice Thrown when attempting to disable root key with no active access keys
+error NoActiveAccessKeys();
+
+/// @notice Thrown when the root key is already disabled
+error RootKeyAlreadyDisabled();
+
+/// @notice Thrown when a root key operation is attempted on an account with disabled root key
+error RootKeyDisabled();
+```
+
+## Storage
+
+A new storage slot is added to track root key status:
+
+```
+rootKeyDisabled[account] → bool
+```
+
+This is stored as a single bit in the account's keychain metadata storage slot.
+
+## Behavior
+
+### Preconditions
+
+Before `disableRootKey()` succeeds, the following MUST be true:
+
+1. **Root Key Signing**: The transaction MUST be signed by the root key (checked via `transactionKey[msg.sender] == Address::ZERO`)
+2. **Active Access Key Exists**: The account MUST have at least one access key that is:
+   - Not revoked (`is_revoked == false`)
+   - Not expired (`expiry > block.timestamp` or `expiry == type(uint64).max`)
+
+If no active access keys exist, the function reverts with `NoActiveAccessKeys()` to prevent account lockout.
+
+### State Changes
+
+When `disableRootKey()` is called:
+
+1. Set `rootKeyDisabled[msg.sender] = true`
+2. Emit `RootKeyDisabled(msg.sender)`
+
+### Protocol-Level Enforcement
+
+After root key is disabled, the following protocol changes take effect:
+
+#### Transaction Validation
+
+In the handler's validation phase:
+
+```rust
+// Before processing any root key operations, check if disabled
+if keychain.is_root_key_disabled(tx.caller)? {
+    // Root key is disabled - transaction MUST use an access key
+    match &tx.signature {
+        TempoSignature::Primitive(_) => {
+            return Err(AccountKeychainError::root_key_disabled().into());
+        }
+        TempoSignature::Keychain(_) => {
+            // Access key - proceed with normal validation
+        }
+    }
+}
+```
+
+#### KeyAuthorization Rejection
+
+If a transaction includes `key_authorization` (used to authorize new access keys):
+
+```rust
+// KeyAuthorization requires root key signature
+if keychain.is_root_key_disabled(authorization.account)? {
+    return Err(AccountKeychainError::root_key_disabled().into());
+}
+```
+
+#### Precompile Function Restrictions
+
+The following functions MUST revert with `RootKeyDisabled()` if called on an account with disabled root key:
+
+- `authorizeKey()` - Cannot authorize new keys
+- `revokeKey()` - Cannot revoke keys
+- `updateSpendingLimit()` - Cannot update limits
+
+This ensures that once the root key is disabled, the key configuration is frozen unless access keys with admin privileges are implemented in a future TIP.
+
+### Gas Cost
+
+- `disableRootKey()`: ~25,000 gas (cold storage write + active key enumeration)
+- `isRootKeyDisabled()`: 100 gas (warm SLOAD)
+
+## Example Usage
+
+### Multisig Setup
+
+```solidity
+// Step 1: Authorize multisig signers as access keys
+IAccountKeychain keychain = IAccountKeychain(0xaAAAaaAA00000000000000000000000000000000);
+
+keychain.authorizeKey(signer1, SignatureType.Secp256k1, type(uint64).max, false, new TokenLimit);
+keychain.authorizeKey(signer2, SignatureType.Secp256k1, type(uint64).max, false, new TokenLimit);
+keychain.authorizeKey(signer3, SignatureType.P256, type(uint64).max, false, new TokenLimit);
+
+// Step 2: Disable root key - now only the 3 signers can control the account
+keychain.disableRootKey();
+```
+
+### Post-Quantum Migration
+
+```solidity
+// Step 1: Authorize PQ-resistant key (when supported)
+keychain.authorizeKey(pqKeyId, SignatureType.PostQuantum, type(uint64).max, false, new TokenLimit);
+
+// Step 2: Disable vulnerable ECDSA root key
+keychain.disableRootKey();
+
+// Account is now quantum-resistant
+```
+
+### Ephemeral Key Pattern (Porto-style)
+
+```typescript
+// 1. Generate ephemeral key
+const ephemeralKey = Secp256k1.randomPrivateKey()
+
+// 2. Sign EIP-7702 authorization and passkey authorization
+const authList = signAuthorizationList(ephemeralKey, ...)
+const keyAuth = signKeyAuthorization(ephemeralKey, passkeyId, ...)
+
+// 3. Submit transaction that authorizes passkey and disables root key
+await sendTransaction({
+  authorizationList: authList,
+  keyAuthorization: keyAuth,
+  calls: [{
+    to: ACCOUNT_KEYCHAIN,
+    data: encodeFunctionData({ functionName: 'disableRootKey' })
+  }]
+})
+
+// 4. Ephemeral key is now cryptographically useless
+// Even if recovered, the root key is disabled on-chain
+```
+
+## Interaction with Future Features
+
+### Admin Access Keys
+
+A future TIP may introduce admin access keys that can authorize/revoke other keys even when the root key is disabled. This TIP is forward-compatible with such extensions.
+
+### Key Recovery
+
+If key recovery mechanisms are added in the future, they would need to explicitly handle accounts with disabled root keys.
+
+---
+
+# Invariants
+
+## Core Invariants
+
+1. **Irreversibility**: Once `disableRootKey()` is called, `isRootKeyDisabled(account)` MUST return `true` forever. There is no mechanism to re-enable a root key.
+
+2. **No Account Lockout**: `disableRootKey()` MUST revert if the account has no active (non-expired, non-revoked) access keys.
+
+3. **Root Key Rejection**: When root key is disabled, transactions signed with the root key (primitive signatures where recovered address == tx.caller) MUST be rejected during validation.
+
+4. **KeyAuthorization Rejection**: When root key is disabled, transactions containing `key_authorization` MUST be rejected.
+
+5. **Management Function Lockout**: `authorizeKey()`, `revokeKey()`, and `updateSpendingLimit()` MUST revert with `RootKeyDisabled()` when called on an account with disabled root key.
+
+6. **Access Key Continuity**: Existing access keys MUST continue to function normally after root key is disabled.
+
+7. **View Function Accessibility**: `isRootKeyDisabled()` MUST be callable without restrictions and MUST work in `staticcall` contexts.
+
+## Test Cases
+
+The test suite MUST cover:
+
+1. **Happy Path**: Successfully disable root key with active access keys
+2. **No Access Keys**: Revert when attempting to disable with no access keys
+3. **All Keys Expired**: Revert when all access keys are expired
+4. **All Keys Revoked**: Revert when all access keys are revoked
+5. **Already Disabled**: Revert when root key is already disabled
+6. **Access Key Attempt**: Revert when access key tries to call `disableRootKey()`
+7. **Post-Disable Root Tx**: Reject root key transactions after disabling
+8. **Post-Disable Access Tx**: Accept access key transactions after disabling
+9. **Post-Disable KeyAuth**: Reject KeyAuthorization after disabling
+10. **Post-Disable authorizeKey**: Revert `authorizeKey()` after disabling
+11. **Post-Disable revokeKey**: Revert `revokeKey()` after disabling
+12. **Post-Disable updateSpendingLimit**: Revert `updateSpendingLimit()` after disabling
+13. **View Function**: `isRootKeyDisabled()` returns correct state
+14. **Gas Metering**: Verify gas costs are within expected bounds
+15. **Event Emission**: Verify `RootKeyDisabled` event is emitted correctly
+16. **Cross-Transaction Persistence**: Disabled state persists across transactions

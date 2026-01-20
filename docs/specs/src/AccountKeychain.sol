@@ -13,6 +13,7 @@ import { IAccountKeychain } from "./interfaces/IAccountKeychain.sol";
 /// contract AccountKeychain {
 ///     mapping(address => mapping(address => AuthorizedKey)) private keys;     // slot 0
 ///     mapping(bytes32 => mapping(address => uint256)) private spendingLimits; // slot 1
+///     mapping(address => bool) private rootKeyDisabled;                       // slot 2
 /// }
 /// ```
 ///
@@ -41,6 +42,11 @@ contract AccountKeychain is IAccountKeychain {
 
     /// @dev Mapping from keccak256(account || keyId) -> token -> spending limit
     mapping(bytes32 => mapping(address => uint256)) private spendingLimits;
+
+    /// @dev Mapping from account -> bool indicating if root key is disabled
+    /// Once disabled, the root key can never sign transactions or authorize new keys.
+    /// This is irreversible and enables multisig, PQ migration, and ephemeral key patterns.
+    mapping(address => bool) private rootKeyDisabled;
 
     /// @dev Transient storage for the transaction key
     /// Set by the protocol during transaction validation to indicate which key signed the tx
@@ -225,6 +231,44 @@ contract AccountKeychain is IAccountKeychain {
     /// @inheritdoc IAccountKeychain
     function getTransactionKey() external view returns (address) {
         return _transactionKey;
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function disableRootKey(address activeKeyId) external {
+        // Check that the transaction key for this transaction is zero (main key)
+        _requireRootKey();
+
+        // Check if root key is already disabled
+        if (rootKeyDisabled[msg.sender]) {
+            revert RootKeyAlreadyDisabled();
+        }
+
+        // Verify the specified access key exists, is not revoked, and is not expired
+        // This prevents account lockout by ensuring at least one key remains active
+        AuthorizedKey storage key = keys[msg.sender][activeKeyId];
+
+        if (key.isRevoked) {
+            revert KeyAlreadyRevoked();
+        }
+
+        if (key.expiry == 0) {
+            revert KeyNotFound();
+        }
+
+        if (block.timestamp >= key.expiry) {
+            revert KeyExpired();
+        }
+
+        // Disable the root key - this is irreversible
+        rootKeyDisabled[msg.sender] = true;
+
+        // Emit event
+        emit RootKeyDisabled(msg.sender);
+    }
+
+    /// @inheritdoc IAccountKeychain
+    function isRootKeyDisabled(address account) external view returns (bool) {
+        return rootKeyDisabled[account];
     }
 
     // ============ Internal Protocol Functions ============

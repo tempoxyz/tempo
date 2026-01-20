@@ -93,6 +93,24 @@ crate::sol! {
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
 
+        /// Permanently disable the root key for the caller's account
+        /// @dev This action is IRREVERSIBLE. Once disabled, the root key can never
+        ///      sign transactions or authorize new keys for this account.
+        ///      Requirements:
+        ///      - Transaction MUST be signed by the root key (not an access key)
+        ///      - The specified access key MUST exist, not be revoked, and not be expired
+        /// @param activeKeyId An access key that must be active (prevents account lockout)
+        function disableRootKey(address activeKeyId) external;
+
+        /// Check if an account's root key has been disabled
+        /// @param account The account address to check
+        /// @return True if the root key is disabled, false otherwise
+        function isRootKeyDisabled(address account) external view returns (bool);
+
+        // Events
+        /// Emitted when an account's root key is permanently disabled
+        event RootKeyDisabled(address indexed account);
+
         // Errors
         error UnauthorizedCaller();
         error KeyAlreadyExists();
@@ -103,6 +121,9 @@ crate::sol! {
         error ZeroPublicKey();
         error ExpiryInPast();
         error KeyAlreadyRevoked();
+        error NoActiveAccessKeys();
+        error RootKeyAlreadyDisabled();
+        error RootKeyIsDisabled();
     }
 }
 
@@ -152,5 +173,20 @@ impl AccountKeychainError {
     /// This prevents replay attacks where a revoked key's authorization is reused.
     pub const fn key_already_revoked() -> Self {
         Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
+    }
+
+    /// Creates an error for when attempting to disable root key with no active access keys.
+    pub const fn no_active_access_keys() -> Self {
+        Self::NoActiveAccessKeys(IAccountKeychain::NoActiveAccessKeys {})
+    }
+
+    /// Creates an error for when the root key is already disabled.
+    pub const fn root_key_already_disabled() -> Self {
+        Self::RootKeyAlreadyDisabled(IAccountKeychain::RootKeyAlreadyDisabled {})
+    }
+
+    /// Creates an error for when a root key operation is attempted on an account with disabled root key.
+    pub const fn root_key_is_disabled() -> Self {
+        Self::RootKeyIsDisabled(IAccountKeychain::RootKeyIsDisabled {})
     }
 }

@@ -63,6 +63,9 @@ interface IAccountKeychain {
         address indexed account, address indexed publicKey, address indexed token, uint256 newLimit
     );
 
+    /// @notice Emitted when an account's root key is permanently disabled
+    event RootKeyDisabled(address indexed account);
+
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -77,6 +80,9 @@ interface IAccountKeychain {
     error ZeroPublicKey();
     error ExpiryInPast();
     error UnauthorizedCaller();
+    error NoActiveAccessKeys();
+    error RootKeyAlreadyDisabled();
+    error RootKeyIsDisabled();
 
     /*//////////////////////////////////////////////////////////////
                         MANAGEMENT FUNCTIONS
@@ -148,5 +154,22 @@ interface IAccountKeychain {
      * @return The key ID that signed the transaction
      */
     function getTransactionKey() external view returns (address);
+
+    /**
+     * @notice Permanently disable the root key for the caller's account
+     * @dev MUST only be called in transactions signed by the Root Key
+     *      This action is IRREVERSIBLE. Once disabled, the root key can never
+     *      sign transactions or authorize new keys for this account.
+     *      The specified access key must exist and not be expired or revoked.
+     * @param activeKeyId An access key that must be active (prevents account lockout)
+     */
+    function disableRootKey(address activeKeyId) external;
+
+    /**
+     * @notice Check if an account's root key has been disabled
+     * @param account The account address to check
+     * @return True if the root key is disabled, false otherwise
+     */
+    function isRootKeyDisabled(address account) external view returns (bool);
 
 }
