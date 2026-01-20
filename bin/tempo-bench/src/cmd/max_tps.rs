@@ -180,6 +180,17 @@ pub struct MaxTpsArgs {
     /// from unbounded 2D nonce storage growth. Each transaction has a valid_before timestamp.
     #[arg(long)]
     expiring_nonces: bool,
+
+    /// Batch size for signing transactions when using expiring nonces.
+    ///
+    /// Since expiring nonces have a 25-second validity window, transactions must be signed
+    /// in batches close to when they're sent. This controls how many transactions to
+    /// generate/sign before sending. Default is 15 seconds worth of transactions at the
+    /// target TPS (e.g., 75,000 at 5,000 TPS).
+    ///
+    /// Only used with --expiring-nonces.
+    #[arg(long)]
+    expiring_batch_secs: Option<u64>,
 }
 
 impl MaxTpsArgs {
@@ -359,13 +370,14 @@ impl MaxTpsArgs {
             Vec::new()
         };
 
-        // Generate all transactions
+        // Generate and send transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
-        let transactions = generate_transactions(GenerateTransactionsInput {
+
+        let gen_input = GenerateTransactionsInput {
             total_txs,
             accounts,
             signer_provider_manager: signer_provider_manager.clone(),
@@ -377,19 +389,111 @@ impl MaxTpsArgs {
             quote_token,
             user_tokens,
             erc20_tokens,
-        })
-        .await
-        .context("Failed to generate transactions")?;
+        };
 
-        // Send transactions
-        let mut pending_txs = send_transactions(
-            transactions,
-            signer_provider_manager.clone(),
-            self.max_concurrent_requests,
-            self.tps,
-            sleep(Duration::from_secs(self.duration)),
-        )
-        .await;
+        // For expiring nonces, we need to generate/sign/send in batches to avoid
+        // transactions expiring before they're sent.
+        let mut pending_txs = if self.expiring_nonces {
+            let batch_secs = self.expiring_batch_secs.unwrap_or(15);
+            let batch_size = self.tps * batch_secs;
+            let num_batches = (total_txs + batch_size - 1) / batch_size;
+
+            info!(
+                total_txs,
+                batch_size,
+                num_batches,
+                batch_secs,
+                "Generating and sending transactions in batches (expiring nonces)"
+            );
+
+            let tx_counter = Arc::new(AtomicUsize::new(0));
+            let success_counter = Arc::new(AtomicUsize::new(0));
+            let failed_counter = Arc::new(AtomicUsize::new(0));
+            let tx_counter_clone = tx_counter.clone();
+            let success_counter_clone = success_counter.clone();
+            let failed_counter_clone = failed_counter.clone();
+            let target_count = total_txs as usize;
+            let token = CancellationToken::new();
+            let token_clone = token.clone();
+
+            // Start TPS monitor
+            tokio::spawn(async move {
+                monitor_tps(tx_counter_clone, target_count, token_clone).await;
+            });
+
+            let mut all_pending_txs = VecDeque::new();
+            let start_time = std::time::Instant::now();
+            let total_duration = Duration::from_secs(self.duration);
+
+            for batch_idx in 0..num_batches {
+                let remaining_txs = total_txs - (batch_idx * batch_size);
+                let this_batch_size = remaining_txs.min(batch_size);
+
+                // Generate this batch
+                let batch_input = GenerateTransactionsInput {
+                    total_txs: this_batch_size,
+                    ..gen_input.clone()
+                };
+                let transactions = generate_transactions(batch_input)
+                    .await
+                    .context("Failed to generate batch transactions")?;
+
+                // Calculate remaining time for this batch
+                let elapsed = start_time.elapsed();
+                let remaining_duration = total_duration.saturating_sub(elapsed);
+                let batch_duration = Duration::from_secs(batch_secs).min(remaining_duration);
+
+                if batch_duration.is_zero() {
+                    info!(batch_idx, "Time expired, stopping batch generation");
+                    break;
+                }
+
+                // Send this batch
+                let batch_pending = send_transactions_with_counters(
+                    transactions,
+                    signer_provider_manager.clone(),
+                    self.max_concurrent_requests,
+                    self.tps,
+                    sleep(batch_duration),
+                    tx_counter.clone(),
+                    success_counter.clone(),
+                    failed_counter.clone(),
+                )
+                .await;
+
+                all_pending_txs.extend(batch_pending);
+
+                // Small delay between batches to let previous transactions settle
+                if batch_idx + 1 < num_batches {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+
+            token.cancel();
+            info!(
+                success = success_counter_clone.load(Ordering::Relaxed),
+                failed = failed_counter_clone.load(Ordering::Relaxed),
+                timeout = 0,
+                "Finished sending transactions"
+            );
+
+            all_pending_txs
+        } else {
+            let transactions = generate_transactions(gen_input)
+                .await
+                .context("Failed to generate transactions")?;
+
+            // Send transactions
+            send_transactions(
+                transactions,
+                signer_provider_manager.clone(),
+                self.max_concurrent_requests,
+                self.tps,
+                sleep(Duration::from_secs(self.duration)),
+            )
+            .await
+        };
+
         let end_block_number = provider.get_block_number().await?;
 
         info!("Retrieving first block number from sent transactions");
@@ -556,6 +660,59 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
         timeout = timeout.load(Ordering::Relaxed),
         "Finished sending transactions"
     );
+
+    transactions
+}
+
+/// Same as `send_transactions` but uses external counters for batch mode.
+async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
+    transactions: Vec<Vec<u8>>,
+    signer_provider_manager: SignerProviderManager<F>,
+    max_concurrent_requests: usize,
+    tps: u64,
+    deadline: Sleep,
+    tx_counter: Arc<AtomicUsize>,
+    success_counter: Arc<AtomicUsize>,
+    failed_counter: Arc<AtomicUsize>,
+) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
+    // Create a rate limiter
+    let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
+
+    let transactions = stream::iter(transactions)
+        .ratelimit_stream(&rate_limiter)
+        .zip(stream::repeat_with(|| {
+            signer_provider_manager.random_unsigned_provider()
+        }))
+        .map(|(bytes, provider)| async move {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                provider.send_raw_transaction(&bytes),
+            )
+            .await
+        })
+        .buffer_unordered(max_concurrent_requests)
+        .filter_map(|result| async {
+            match result {
+                Ok(Ok(pending_tx)) => {
+                    tx_counter.fetch_add(1, Ordering::Relaxed);
+                    success_counter.fetch_add(1, Ordering::Relaxed);
+                    Some(pending_tx)
+                }
+                Ok(Err(err)) => {
+                    failed_counter.fetch_add(1, Ordering::Relaxed);
+                    debug!(?err, "Failed to send transaction");
+                    None
+                }
+                Err(_) => {
+                    failed_counter.fetch_add(1, Ordering::Relaxed);
+                    debug!("Transaction sending timed out");
+                    None
+                }
+            }
+        })
+        .take_until(deadline)
+        .collect()
+        .await;
 
     transactions
 }
@@ -983,6 +1140,7 @@ async fn assert_receipt<R: ReceiptResponse>(receipt: R) -> eyre::Result<()> {
     Ok(())
 }
 
+#[derive(Clone)]
 struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     total_txs: u64,
     accounts: u64,
