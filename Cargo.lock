@@ -11806,6 +11806,7 @@ dependencies = [
  "prometheus-client",
  "rand 0.8.5",
  "rand_core 0.6.4",
+ "reqwest",
  "reth-consensus-common",
  "reth-ethereum",
  "reth-evm",

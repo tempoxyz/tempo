@@ -182,6 +182,22 @@ fn main() -> eyre::Result<()> {
                     args.consensus.metrics_address,
                 )
                 .fuse();
+
+                // Start the metrics push task if a push URL is configured
+                let mut metrics_push = args.consensus.metrics_push_url.clone().map(|push_url| {
+                    tracing::info!(
+                        url = %push_url,
+                        interval = ?args.consensus.metrics_push_interval,
+                        "starting consensus metrics push"
+                    );
+                    tempo_commonware_node::metrics::install_push(
+                        ctx.with_label("metrics_push"),
+                        push_url,
+                        args.consensus.metrics_push_interval,
+                    )
+                    .fuse()
+                });
+
                 let consensus_stack =
                     run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
                 tokio::pin!(consensus_stack);
@@ -206,6 +222,19 @@ fn main() -> eyre::Result<()> {
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
                             tracing::warn!(reason, "the metrics server exited");
+                        }
+
+                        Some(ret) = async { 
+                            match &mut metrics_push {
+                                Some(handle) if !handle.is_terminated() => Some(handle.await),
+                                _ => std::future::pending().await,
+                            }
+                        } => {
+                            let reason = match ret.wrap_err("task_panicked") {
+                                Ok(Ok(())) => "unexpected regular exit".to_string(),
+                                Ok(Err(err)) | Err(err) => format!("{err}"),
+                            };
+                            tracing::warn!(reason, "the metrics push task exited");
                         }
                     )
                 }
