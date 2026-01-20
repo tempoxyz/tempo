@@ -206,10 +206,10 @@ impl MaxTpsArgs {
         });
 
         if self.expiring_nonces {
-            // Use a large expiry window for benchmarking to avoid transactions expiring
-            // before they're sent (transactions are pre-generated in bulk).
-            // Add duration + 60 seconds buffer for transaction generation time.
-            let expiry_secs = self.duration + 120;
+            // Use the default 25-second expiry window (protocol max is 30s).
+            // For expiring nonces benchmarks, keep duration short (< 20s recommended)
+            // to ensure transactions don't expire before being sent.
+            let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
             info!(
                 accounts = self.accounts,
                 expiry_secs,
