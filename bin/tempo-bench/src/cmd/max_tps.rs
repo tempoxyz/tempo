@@ -9,7 +9,7 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoFillers, TempoNetwork,
+    TempoNetwork,
     fillers::ExpiringNonceFiller,
     primitives::TempoTxEnvelope,
     provider::ext::TempoProviderBuilderExt,
@@ -206,8 +206,13 @@ impl MaxTpsArgs {
         });
 
         if self.expiring_nonces {
+            // Use a large expiry window for benchmarking to avoid transactions expiring
+            // before they're sent (transactions are pre-generated in bulk).
+            // Add duration + 60 seconds buffer for transaction generation time.
+            let expiry_secs = self.duration + 120;
             info!(
                 accounts = self.accounts,
+                expiry_secs,
                 "Creating signers (with expiring nonces - TIP-1009)"
             );
             let signer_provider_manager = SignerProviderManager::new(
@@ -215,11 +220,11 @@ impl MaxTpsArgs {
                 self.from_mnemonic_index,
                 accounts,
                 self.target_urls.clone(),
-                Box::new(|target_url, _cached_nonce_manager| {
+                Box::new(move |target_url, _cached_nonce_manager| {
                     ProviderBuilder::default()
-                        .fetch_chain_id()
+                        .filler(ExpiringNonceFiller::with_expiry_secs(expiry_secs))
                         .with_gas_estimation()
-                        .filler(TempoFillers::<ExpiringNonceFiller>::default())
+                        .fetch_chain_id()
                         .connect_http(target_url)
                 }),
                 signer_provider_factory,

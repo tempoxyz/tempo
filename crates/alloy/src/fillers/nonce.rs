@@ -73,14 +73,33 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for R
 
 /// A [`TxFiller`] that populates transactions with expiring nonce fields (TIP-1009).
 ///
-/// Sets `nonce_key` to `U256::MAX`, `nonce` to `0`, and `valid_before` to current time + 25 seconds.
+/// Sets `nonce_key` to `U256::MAX`, `nonce` to `0`, and `valid_before` to current time + expiry window.
 /// This enables transactions to use the circular buffer replay protection instead of 2D nonce storage.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ExpiringNonceFiller;
+#[derive(Clone, Copy, Debug)]
+pub struct ExpiringNonceFiller {
+    /// Expiry window in seconds from current time.
+    expiry_secs: u64,
+}
+
+impl Default for ExpiringNonceFiller {
+    fn default() -> Self {
+        Self {
+            expiry_secs: Self::DEFAULT_EXPIRY_SECS,
+        }
+    }
+}
 
 impl ExpiringNonceFiller {
     /// Default expiry window in seconds (25s, within the 30s max allowed by TIP-1009).
-    const DEFAULT_EXPIRY_SECS: u64 = 25;
+    pub const DEFAULT_EXPIRY_SECS: u64 = 25;
+
+    /// Create a new filler with a custom expiry window.
+    ///
+    /// For benchmarking purposes, use a large value (e.g., 3600 for 1 hour) to avoid
+    /// transactions expiring before they're sent.
+    pub fn with_expiry_secs(expiry_secs: u64) -> Self {
+        Self { expiry_secs }
+    }
 
     /// Returns `true` if the nonce key is already set to the expiring nonce key.
     fn is_filled(tx: &TempoTransactionRequest) -> bool {
@@ -114,8 +133,8 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for E
             builder.set_nonce_key(TEMPO_EXPIRING_NONCE_KEY);
             // Nonce must be 0 for expiring nonce transactions
             builder.set_nonce(0);
-            // Set valid_before to current time + 25 seconds
-            builder.set_valid_before(Self::current_timestamp() + Self::DEFAULT_EXPIRY_SECS);
+            // Set valid_before to current time + expiry window
+            builder.set_valid_before(Self::current_timestamp() + self.expiry_secs);
         }
     }
 
