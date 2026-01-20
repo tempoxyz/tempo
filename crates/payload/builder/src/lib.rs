@@ -68,6 +68,145 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
+/// Gas limits derived from the block gas limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GasLimits {
+    shared: u64,
+    non_shared: u64,
+    general: u64,
+}
+
+impl GasLimits {
+    /// Calculates gas limits from the block gas limit.
+    fn new(block_gas_limit: u64) -> Self {
+        let reserved = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let budget = block_gas_limit - reserved;
+        let general = budget / TEMPO_GENERAL_GAS_DIVISOR;
+        Self {
+            shared: reserved,
+            non_shared: budget,
+            general,
+        }
+    }
+}
+
+/// Tracks cumulative resource usage during block building.
+#[derive(Debug, Clone, Copy, Default)]
+struct BlockBuildState {
+    total_gas_used: u64,
+    non_payment_gas_used: u64,
+    block_size: usize,
+}
+
+impl BlockBuildState {
+    /// Creates a new state with an initial block size (header overhead + withdrawals).
+    fn new(initial_block_size: usize) -> Self {
+        Self {
+            total_gas_used: 0,
+            non_payment_gas_used: 0,
+            block_size: initial_block_size,
+        }
+    }
+
+    /// Records a transaction's gas usage and size.
+    fn add_tx(
+        &mut self,
+        gas_used: u64,
+        rlp_length: usize,
+        is_payment: bool,
+    ) -> Result<(), InvalidPoolTransactionError> {
+        self.total_gas_used = self.total_gas_used.checked_add(gas_used).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
+        if !is_payment {
+            self.non_payment_gas_used =
+                self.non_payment_gas_used.checked_add(gas_used).ok_or_else(|| {
+                    InvalidPoolTransactionError::Other(Box::new(
+                        TempoPoolTransactionError::GasOverflow,
+                    ))
+                })?;
+        }
+        self.block_size = self.block_size.checked_add(rlp_length).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
+        Ok(())
+    }
+
+    /// Accounts for additional block size (subblocks, system transactions).
+    fn add_size(&mut self, size: usize) {
+        self.block_size += size;
+    }
+
+    /// Checks if a transaction fits within the pool gas budget.
+    fn check_gas_limit(
+        &self,
+        tx_gas_limit: u64,
+        gas_limits: &GasLimits,
+    ) -> Result<(), InvalidPoolTransactionError> {
+        let total = self.total_gas_used.checked_add(tx_gas_limit).ok_or_else(|| {
+            InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+        })?;
+        if total > gas_limits.non_shared {
+            return Err(InvalidPoolTransactionError::ExceedsGasLimit(
+                tx_gas_limit,
+                gas_limits.non_shared.saturating_sub(self.total_gas_used),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks if a non-payment transaction fits within the non-payment gas limit.
+    fn check_non_payment_gas_limit(
+        &self,
+        tx_gas_limit: u64,
+        is_payment: bool,
+        gas_limits: &GasLimits,
+    ) -> Result<(), InvalidPoolTransactionError> {
+        if !is_payment {
+            let total = self.non_payment_gas_used.checked_add(tx_gas_limit).ok_or_else(|| {
+                InvalidPoolTransactionError::Other(Box::new(TempoPoolTransactionError::GasOverflow))
+            })?;
+            if total > gas_limits.general {
+                return Err(InvalidPoolTransactionError::Other(Box::new(
+                    TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks if adding a transaction would exceed the max block size (osaka only).
+    fn check_block_size(
+        &self,
+        tx_rlp_length: usize,
+        is_osaka: bool,
+    ) -> Result<(), InvalidPoolTransactionError> {
+        if is_osaka {
+            let estimated_size = self.block_size + tx_rlp_length;
+            if estimated_size > MAX_RLP_BLOCK_SIZE {
+                return Err(InvalidPoolTransactionError::OversizedData {
+                    size: estimated_size,
+                    limit: MAX_RLP_BLOCK_SIZE,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Determines whether subblocks should be included in the payload.
+///
+/// Returns `false` for empty payloads or when an invalid subblock was seen at a height
+/// greater than the parent block (indicating ongoing issues at this height).
+fn should_include_subblocks(
+    is_empty_payload: bool,
+    highest_invalid_subblock: u64,
+    parent_block_number: u64,
+) -> bool {
+    !is_empty_payload && highest_invalid_subblock <= parent_block_number
+}
+
+/// Builds execution payloads for Tempo blocks.
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -255,20 +394,13 @@ where
             .build();
 
         let chain_spec = self.provider.chain_spec();
-        let is_osaka = self
-            .provider
-            .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp());
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp());
 
         let block_gas_limit: u64 = parent_header.gas_limit();
-        let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit = non_shared_gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
+        let gas_limits = GasLimits::new(block_gas_limit);
 
-        let mut cumulative_gas_used = 0;
-        let mut non_payment_gas_used = 0;
         // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
-        let mut block_size_used = attributes.withdrawals().length() + 1024;
+        let mut build_state = BlockBuildState::new(attributes.withdrawals().length() + 1024);
         let mut payment_transactions = 0u64;
         let mut total_fees = U256::ZERO;
 
@@ -276,12 +408,14 @@ where
         //
         // Also don't include any subblocks if we've seen an invalid subblock
         // at this height or above.
-        let mut subblocks = if empty
-            || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
-        {
-            vec![]
-        } else {
+        let mut subblocks = if should_include_subblocks(
+            empty,
+            self.highest_invalid_subblock.load(Ordering::Relaxed),
+            parent_header.number(),
+        ) {
             attributes.subblocks()
+        } else {
+            vec![]
         };
 
         subblocks.retain(|subblock| {
@@ -295,7 +429,7 @@ where
             }
 
             // Account for the subblock's size
-            block_size_used += subblock.total_tx_size();
+            build_state.add_size(subblock.total_tx_size());
 
             true
         });
@@ -325,8 +459,8 @@ where
                         withdrawals: Some(attributes.withdrawals().clone()),
                         extra_data: attributes.extra_data().clone(),
                     },
-                    general_gas_limit,
-                    shared_gas_limit,
+                    general_gas_limit: gas_limits.general,
+                    shared_gas_limit: gas_limits.shared,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
                     subblock_fee_recipients,
                 },
@@ -344,7 +478,7 @@ where
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(builder.evm().block(), &subblocks);
         for tx in &system_txs {
-            block_size_used += tx.inner().length();
+            build_state.add_size(tx.inner().length());
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
         self.metrics
@@ -364,30 +498,21 @@ where
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
             // ensure we still have capacity for this transaction
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
+            if let Err(err) = build_state.check_gas_limit(pool_tx.gas_limit(), &gas_limits) {
+                best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
 
-            // If the tx is not a payment and will exceed the general gas limit
+            let is_payment = pool_tx.transaction.is_payment();
+
+            // If the tx is not a payment and will exceed the non-payment gas limit
             // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + pool_tx.gas_limit() > general_gas_limit
-            {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
+            if let Err(err) = build_state.check_non_payment_gas_limit(
+                pool_tx.gas_limit(),
+                is_payment,
+                &gas_limits,
+            ) {
+                best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
 
@@ -401,22 +526,13 @@ where
                 return Ok(BuildOutcome::Cancelled);
             }
 
-            let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
             }
 
             let tx_rlp_length = pool_tx.transaction.inner().length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
-
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
+            if let Err(err) = build_state.check_block_size(tx_rlp_length, is_osaka) {
+                best_txs.mark_invalid(&pool_tx, &err);
                 continue;
             }
 
@@ -461,11 +577,10 @@ where
 
             // update and add to total fees
             total_fees += calc_gas_balance_spending(gas_used, effective_gas_price);
-            cumulative_gas_used += gas_used;
-            if !is_payment {
-                non_payment_gas_used += gas_used;
+            if let Err(err) = build_state.add_tx(gas_used, tx_rlp_length, is_payment) {
+                best_txs.mark_invalid(&pool_tx, &err);
+                continue;
             }
-            block_size_used += tx_rlp_length;
         }
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
@@ -499,21 +614,18 @@ where
         for subblock in &subblocks {
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
+                    if matches!(
+                        &err,
+                        BlockExecutionError::Validation(BlockValidationError::InvalidTx { .. })
+                    ) {
                         error!(
                             ?err,
                             "subblock transaction failed execution, aborting payload building"
                         );
                         self.highest_invalid_subblock
                             .store(builder.evm().block().number.to(), Ordering::Relaxed);
-
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
                     }
+                    return Err(PayloadBuilderError::evm(err));
                 }
 
                 subblock_transactions += 1.0;
@@ -627,6 +739,10 @@ where
     }
 }
 
+/// Returns `true` if the given subblocks contain more entries than the best payload.
+///
+/// Used to determine if a new payload with more subblocks should replace the current best,
+/// even if it doesn't have higher fees.
 pub fn is_more_subblocks(
     best_payload: Option<&EthBuiltPayload<TempoPrimitives>>,
     subblocks: &[RecoveredSubBlock],
@@ -808,5 +924,110 @@ mod tests {
         // No valid_before → NOT expired
         let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
         assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
+    }
+
+    #[test]
+    fn test_gas_limits_new() {
+        let limits = GasLimits::new(30_000_000);
+        assert_eq!(limits.shared, 3_000_000);
+        assert_eq!(limits.non_shared, 27_000_000);
+        assert_eq!(limits.general, 13_500_000);
+
+        let limits = GasLimits::new(0);
+        assert_eq!(limits.shared, 0);
+        assert_eq!(limits.non_shared, 0);
+        assert_eq!(limits.general, 0);
+
+        // Edge case: small value
+        let limits = GasLimits::new(10);
+        assert_eq!(limits.shared, 1);
+        assert_eq!(limits.non_shared, 9);
+        assert_eq!(limits.general, 4);
+    }
+
+    #[test]
+    fn test_block_build_state() {
+        let mut state = BlockBuildState::new(1024);
+
+        // Initial state
+        assert_eq!(state.total_gas_used, 0);
+        assert_eq!(state.non_payment_gas_used, 0);
+        assert_eq!(state.block_size, 1024);
+
+        // Add payment tx - doesn't count toward general
+        state.add_tx(21_000, 100, true).unwrap();
+        assert_eq!(state.total_gas_used, 21_000);
+        assert_eq!(state.non_payment_gas_used, 0);
+        assert_eq!(state.block_size, 1124);
+
+        // Add non-payment tx
+        state.add_tx(50_000, 200, false).unwrap();
+        assert_eq!(state.total_gas_used, 71_000);
+        assert_eq!(state.non_payment_gas_used, 50_000);
+        assert_eq!(state.block_size, 1324);
+
+        // Add size only
+        state.add_size(500);
+        assert_eq!(state.block_size, 1824);
+
+        // Overflow tests
+        let mut overflow_state = BlockBuildState::new(0);
+        overflow_state.total_gas_used = u64::MAX;
+        assert!(overflow_state.add_tx(1, 0, true).is_err());
+
+        let mut overflow_state = BlockBuildState::new(0);
+        overflow_state.non_payment_gas_used = u64::MAX;
+        assert!(overflow_state.add_tx(1, 0, false).is_err());
+
+        let mut overflow_state = BlockBuildState::new(usize::MAX);
+        assert!(overflow_state.add_tx(0, 1, true).is_err());
+    }
+
+    #[test]
+    fn test_check_gas_limit() {
+        let gas_limits = GasLimits {
+            shared: 15_000_000,
+            non_shared: 15_000_000,
+            general: 7_500_000,
+        };
+        let empty_state = BlockBuildState::new(1024);
+
+        // Can include: plenty of room
+        assert!(empty_state.check_gas_limit(21_000, &gas_limits).is_ok());
+
+        // At gas limit
+        let at_limit = BlockBuildState {
+            total_gas_used: gas_limits.non_shared,
+            ..empty_state
+        };
+        assert!(at_limit.check_gas_limit(1, &gas_limits).is_err());
+
+        // At non-payment limit
+        let at_np_limit = BlockBuildState {
+            non_payment_gas_used: gas_limits.general,
+            ..empty_state
+        };
+        assert!(
+            at_np_limit
+                .check_non_payment_gas_limit(1, false, &gas_limits)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_should_include_subblocks() {
+        for (is_empty, highest_invalid, parent_num, expected) in [
+            (true, 0, 100, false),    // empty payload
+            (false, 0, 100, true),    // normal
+            (false, 101, 100, false), // invalid > parent
+            (false, 100, 100, true),  // invalid == parent (<=)
+            (false, 50, 100, true),   // invalid < parent
+        ] {
+            assert_eq!(
+                should_include_subblocks(is_empty, highest_invalid, parent_num),
+                expected,
+                "is_empty={is_empty}, highest_invalid={highest_invalid}, parent={parent_num}"
+            );
+        }
     }
 }
