@@ -19,10 +19,10 @@ localnet/**
 !docs/.claude/
 
 # Docs
-specs/cache/
-specs/out/
-specs/*.log
-specs/soljson-latest.js
+tips/ref-impls/cache/
+tips/ref-impls/out/
+tips/ref-impls/*.log
+tips/ref-impls/soljson-latest.js
 
 _
 .vercel
