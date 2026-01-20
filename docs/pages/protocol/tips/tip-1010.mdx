@@ -44,7 +44,7 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 
 ## Payment Lane Gas Limit
 
-**Value**: 500,000,000 gas per block
+**Value**: 500,000,000 gas per block (total block gas limit)
 
 **Rationale**:
 - At 50,000 gas per TIP-20 transfer: `500,000,000 / 50,000 = 10,000 transfers per block`
@@ -52,8 +52,12 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 - This capacity supports Tempo's target throughput for payment use cases
 
 **Constraints**:
-- Only transactions qualifying for the payment lane (simple TIP-20 transfers, memos, etc.) consume this gas limit
+- Only transactions qualifying for the payment lane (simple TIP-20 transfers, memos, etc.) may exceed the `general_gas_limit`
 - Complex contract interactions use the general gas limit instead
+
+:::info
+**Shared capacity model**: The payment lane is non-dedicated. General transactions consume from the same 500M total block gas limit, reducing the remaining capacity available for payment transactions. However, general transactions are capped at `general_gas_limit` (30M), guaranteeing that at least 470M gas remains available for payments even under maximum general transaction load.
+:::
 
 ## Main Transaction Gas Limit
 
@@ -92,7 +96,7 @@ The parameters defined in this TIP represent the initial mainnet configuration a
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | Base fee | `2 × 10^10` wei (20 gwei) | Target 0.1 cent per TIP-20 transfer |
-| Payment lane gas limit | 500,000,000 gas/block | Support ~20,000 TPS for payments |
+| Total block gas limit | 500,000,000 gas/block | Shared capacity; supports ~20,000 TPS for payments |
 | General gas limit | 30,000,000 gas/block | General contract interactions |
 | Transaction gas cap | 30,000,000 gas | Allow max-size contract deployment |
 
@@ -121,9 +125,9 @@ At full payment lane utilization:
 
 1. **Base Fee Floor**: The base fee MUST NOT fall below a minimum threshold that would enable economically viable spam attacks.
 
-2. **Payment Lane Priority**: Transactions qualifying for the payment lane MUST be able to consume up to the full payment lane gas limit, independent of general transaction demand.
+2. **Payment Lane Priority**: Transactions qualifying for the payment lane MUST be able to consume up to the remaining block gas capacity (total gas limit minus gas already consumed by general transactions).
 
-3. **Gas Limit Separation**: The payment lane gas limit and general gas limit MUST be tracked and enforced separately.
+3. **Shared Gas Pool**: The payment lane and general transactions share a common block gas limit (500M). General transactions are additionally constrained by `general_gas_limit` (30M), ensuring payment transactions always have access to at least 470M gas.
 
 4. **Transaction Gas Cap**: No single transaction MUST be allowed to consume more than the transaction gas cap (30,000,000 gas).
 
