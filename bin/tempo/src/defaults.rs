@@ -1,6 +1,11 @@
 use reth_cli_commands::download::DownloadDefaults;
-use reth_ethereum::node::core::args::{DefaultPayloadBuilderValues, DefaultTxPoolValues};
+use reth_ethereum::node::core::args::{
+    DefaultPayloadBuilderValues, DefaultPruningValues, DefaultTxPoolValues,
+};
+use reth_prune_types::{PruneMode, PruneModes};
 use std::{borrow::Cow, time::Duration};
+
+const PRUNING_HISTORY_DISTANCE: u64 = 50_000;
 
 pub(crate) const DEFAULT_DOWNLOAD_URL: &str = "https://snapshots.tempoxyz.dev/42431";
 
@@ -26,6 +31,21 @@ fn init_payload_builder_defaults() {
         .with_deadline(4)
         .try_init()
         .expect("failed to initialize payload builder defaults");
+}
+
+fn init_pruning_defaults() {
+    DefaultPruningValues::default()
+        .with_minimal_prune_modes(PruneModes {
+            sender_recovery: Some(PruneMode::Full),
+            transaction_lookup: Some(PruneMode::Full),
+            receipts: Some(PruneMode::Full),
+            account_history: Some(PruneMode::Distance(PRUNING_HISTORY_DISTANCE)),
+            storage_history: Some(PruneMode::Distance(PRUNING_HISTORY_DISTANCE)),
+            bodies_history: Some(PruneMode::Distance(PRUNING_HISTORY_DISTANCE)),
+            receipts_log_filter: Default::default(),
+        })
+        .try_init()
+        .expect("failed to initialize pruning defaults");
 }
 
 fn init_txpool_defaults() {
@@ -54,5 +74,6 @@ fn init_txpool_defaults() {
 pub(crate) fn init_defaults() {
     init_download_urls();
     init_payload_builder_defaults();
+    init_pruning_defaults();
     init_txpool_defaults();
 }
