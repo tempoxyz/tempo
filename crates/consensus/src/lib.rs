@@ -6,7 +6,7 @@
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_evm::block::BlockExecutionResult;
 use reth_chainspec::EthChainSpec;
-use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
+use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator};
 use reth_consensus_common::validation::{
     validate_against_parent_4844, validate_against_parent_eip1559_base_fee,
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
@@ -173,14 +173,8 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         &self,
         block: &RecoveredBlock<Block>,
         result: &BlockExecutionResult<TempoReceipt>,
-        receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        FullConsensus::<TempoPrimitives>::validate_block_post_execution(
-            &self.inner,
-            block,
-            result,
-            receipt_root_bloom,
-        )
+        FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result)
     }
 }
 
