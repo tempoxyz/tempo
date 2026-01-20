@@ -6,7 +6,7 @@ use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
-    simplex::scheme::bls12381_threshold::Scheme,
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{

@@ -61,7 +61,9 @@ pub const INPUT_PER_WORD_COST: u64 = 6;
 
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
-    revm::interpreter::gas::cost_per_word(calldata_len, INPUT_PER_WORD_COST).unwrap_or(u64::MAX)
+    calldata_len
+        .div_ceil(32)
+        .saturating_mul(INPUT_PER_WORD_COST as usize) as u64
 }
 
 pub trait Precompile {
@@ -69,25 +71,25 @@ pub trait Precompile {
 }
 
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
-    let chain_id = cfg.chain_id;
-    let spec = cfg.spec;
+    let cfg = cfg.clone();
+
     precompiles.set_precompile_lookup(move |address: &Address| {
         if is_tip20_prefix(*address) {
-            Some(TIP20Precompile::create(*address, chain_id, spec))
+            Some(TIP20Precompile::create(*address, &cfg))
         } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20FactoryPrecompile::create(chain_id, spec))
+            Some(TIP20FactoryPrecompile::create(&cfg))
         } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403RegistryPrecompile::create(chain_id, spec))
+            Some(TIP403RegistryPrecompile::create(&cfg))
         } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManagerPrecompile::create(chain_id, spec))
+            Some(TipFeeManagerPrecompile::create(&cfg))
         } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEXPrecompile::create(chain_id, spec))
+            Some(StablecoinDEXPrecompile::create(&cfg))
         } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NoncePrecompile::create(chain_id, spec))
+            Some(NoncePrecompile::create(&cfg))
         } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfigPrecompile::create(chain_id, spec))
+            Some(ValidatorConfigPrecompile::create(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychainPrecompile::create(chain_id, spec))
+            Some(AccountKeychainPrecompile::create(&cfg))
         } else {
             None
         }
@@ -100,7 +102,9 @@ sol! {
 }
 
 macro_rules! tempo_precompile {
-    ($id:expr, $chain_id:ident, $spec:ident, |$input:ident| $impl:expr) => {
+    ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
+        let spec = $cfg.spec;
+        let gas_params = $cfg.gas_params.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::new_reverted(
@@ -111,48 +115,42 @@ macro_rules! tempo_precompile {
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
                 $input.gas,
-                $chain_id,
-                $spec,
+                spec,
                 $input.is_static,
+                gas_params.clone(),
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })
         })
-    };
+    }};
 }
 
 pub struct TipFeeManagerPrecompile;
 impl TipFeeManagerPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TipFeeManager", chain_id, spec, |input| {
-            TipFeeManager::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TipFeeManager", cfg, |input| { TipFeeManager::new() })
     }
 }
 
 pub struct TIP403RegistryPrecompile;
 impl TIP403RegistryPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP403Registry", chain_id, spec, |input| {
-            TIP403Registry::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP403Registry", cfg, |input| { TIP403Registry::new() })
     }
 }
 
 pub struct TIP20FactoryPrecompile;
 impl TIP20FactoryPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20Factory", chain_id, spec, |input| {
-            TIP20Factory::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20Factory", cfg, |input| { TIP20Factory::new() })
     }
 }
 
 pub struct TIP20Precompile;
 impl TIP20Precompile {
-    pub fn create(address: Address, chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+    pub fn create(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20Token", cfg, |input| {
             TIP20Token::from_address(address).expect("TIP20 prefix already verified")
         })
     }
@@ -160,37 +158,29 @@ impl TIP20Precompile {
 
 pub struct StablecoinDEXPrecompile;
 impl StablecoinDEXPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("StablecoinDEX", chain_id, spec, |input| {
-            StablecoinDEX::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("StablecoinDEX", cfg, |input| { StablecoinDEX::new() })
     }
 }
 
 pub struct NoncePrecompile;
 impl NoncePrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("NonceManager", chain_id, spec, |input| {
-            NonceManager::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("NonceManager", cfg, |input| { NonceManager::new() })
     }
 }
 
 pub struct AccountKeychainPrecompile;
 impl AccountKeychainPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("AccountKeychain", chain_id, spec, |input| {
-            AccountKeychain::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("AccountKeychain", cfg, |input| { AccountKeychain::new() })
     }
 }
 
 pub struct ValidatorConfigPrecompile;
 impl ValidatorConfigPrecompile {
-    pub fn create(chain_id: u64, spec: TempoHardfork) -> DynPrecompile {
-        tempo_precompile!("ValidatorConfig", chain_id, spec, |input| {
-            ValidatorConfig::new()
-        })
+    pub fn create(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("ValidatorConfig", cfg, |input| { ValidatorConfig::new() })
     }
 }
 
@@ -308,7 +298,7 @@ mod tests {
         precompiles::{Precompile as AlloyEvmPrecompile, PrecompileInput},
     };
     use revm::{
-        context::ContextTr,
+        context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         state::{AccountInfo, Bytecode},
     };
@@ -316,15 +306,16 @@ mod tests {
 
     #[test]
     fn test_precompile_delegatecall() {
-        let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
         let block = evm.block.clone();
-        let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+        let tx = TxEnv::default();
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
 
         let target_address = Address::random();
         let bytecode_address = Address::random();
@@ -353,8 +344,9 @@ mod tests {
 
     #[test]
     fn test_precompile_static_call() {
-        let (chain_id, spec) = (1, TempoHardfork::default());
-        let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let tx = TxEnv::default();
+        let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
             TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
         });
 
@@ -371,7 +363,7 @@ mod tests {
             );
             let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
             let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
 
             let input = PrecompileInput {
                 data: &calldata,

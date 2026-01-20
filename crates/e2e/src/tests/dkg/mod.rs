@@ -1,6 +1,6 @@
 //! Tests on chain DKG and epoch transition
 
-mod common;
+pub(crate) mod common;
 mod dynamic;
 mod fast_sync_after_full_dkg;
 mod full_ceremony;

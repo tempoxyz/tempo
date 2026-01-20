@@ -70,9 +70,13 @@ fn read_validator_config_at_height<T>(
         .wrap_err("failed instantiating evm for block")?;
 
     let ctx = evm.ctx_mut();
-    StorageCtx::enter_evm(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, || {
-        read_fn(&ValidatorConfig::new())
-    })
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || read_fn(&ValidatorConfig::new()),
+    )
 }
 
 /// Reads the validator config from the boundary block of `epoch`.

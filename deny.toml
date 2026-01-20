@@ -6,8 +6,6 @@ yanked = "warn"
 ignore = [
   # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
   "RUSTSEC-2024-0436",
-  # https://rustsec.org/advisories/RUSTSEC-2026-0002 lru IterMut unsoundness. alloy-provider doesn't use the vulnerable API
-  "RUSTSEC-2026-0002",
   # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained
   "RUSTSEC-2025-0141",
   # https://rustsec.org/advisories/RUSTSEC-2026-0003 cmov timing on ARM32 - we don't target ARM32

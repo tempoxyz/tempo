@@ -80,6 +80,12 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
+    }
+}
+
 impl From<SpecId> for TempoHardfork {
     fn from(spec: SpecId) -> Self {
         if spec.is_enabled_in(SpecId::from(Self::T0)) {
