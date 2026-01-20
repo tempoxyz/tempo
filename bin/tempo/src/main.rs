@@ -110,12 +110,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
+    // Expand --telemetry-url into the equivalent telemetry arguments
+    let args = defaults::expand_telemetry_args(std::env::args().collect())?;
+
     let cli = Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
-    >::parse();
+    >::parse_from(args);
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
