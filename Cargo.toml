@@ -152,7 +152,6 @@ reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f
 reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
 reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6", default-features = false }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "5e178f6ac6" }
