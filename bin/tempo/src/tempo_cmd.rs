@@ -46,11 +46,25 @@ pub(crate) struct GeneratePrivateKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
+    /// Overwrite the file if it already exists.
+    #[arg(long, short)]
+    force: bool,
 }
 
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { output } = self;
+        // 👇 FIX: Extract both 'output' and 'force' from the struct
+        let Self { output, force } = self;
+        // Safety check: Prevent accidental overwrite of existing key files.
+        // If the file exists and the user did not explicitly provide the --force flag,
+        // we abort the operation to protect the user's funds/identity.
+        if output.exists() && !force {
+            eyre::bail!(
+                "File `{}` already exists. Use --force to overwrite it.",
+                output.display()
+            );
+        }
+
         let signing_key = PrivateKey::random(&mut rand::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
