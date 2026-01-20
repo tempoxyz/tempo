@@ -63,6 +63,8 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc"]
 
 asm-keccak = [
+	"alloy-primitives/asm-keccak",
+	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak"
 ]

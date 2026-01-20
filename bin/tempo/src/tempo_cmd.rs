@@ -149,8 +149,8 @@ impl ValidatorsInfo {
     }
 
     async fn run_async(self) -> eyre::Result<()> {
-        use alloy_provider::ProviderBuilder;
         use alloy_consensus::BlockHeader;
+        use alloy_provider::ProviderBuilder;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
@@ -195,9 +195,12 @@ impl ValidatorsInfo {
             Epoch::new(current_epoch_info.epoch().get() - 1)
         };
 
-        let prev_epoch_info = epoch_strategy
-            .epoch(previous_epoch)
-            .ok_or_else(|| eyre!("failed to get epoch info for epoch {}", previous_epoch.get()))?;
+        let prev_epoch_info = epoch_strategy.epoch(previous_epoch).ok_or_else(|| {
+            eyre!(
+                "failed to get epoch info for epoch {}",
+                previous_epoch.get()
+            )
+        })?;
         let boundary_height = prev_epoch_info.last();
 
         let boundary_block = provider
@@ -246,11 +249,16 @@ impl ValidatorsInfo {
         for player in players.iter() {
             let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
 
-            let (active, inbound, outbound) = if let Some(v) = contract_validators.get(&pubkey_bytes) {
-                (v.active, v.inboundAddress.clone(), v.outboundAddress.clone())
-            } else {
-                (false, String::new(), String::new())
-            };
+            let (active, inbound, outbound) =
+                if let Some(v) = contract_validators.get(&pubkey_bytes) {
+                    (
+                        v.active,
+                        v.inboundAddress.clone(),
+                        v.outboundAddress.clone(),
+                    )
+                } else {
+                    (false, String::new(), String::new())
+                };
 
             validator_entries.push(ValidatorEntry {
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
