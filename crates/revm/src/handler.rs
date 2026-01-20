@@ -822,11 +822,18 @@ where
                     if !is_authorizing_this_key {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
+
+                        // Extract the signature type from the inner signature to validate it matches
+                        // the key_type stored in the keychain. This prevents using a signature of one
+                        // type to authenticate as a key registered with a different type.
+                        let sig_type: u8 = keychain_sig.signature.signature_type().into();
+
                         keychain
                             .validate_keychain_authorization(
                                 *user_address,
                                 access_key_addr,
                                 block.timestamp().to::<u64>(),
+                                sig_type,
                             )
                             .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: format!("{e:?}"),
