@@ -1265,8 +1265,8 @@ where
         batch_gas.floor_gas = 0u64;
     }
 
-    // For T1, include 2D nonce gas in the validation
-    if spec.is_t1() {
+    // For T0+, include 2D nonce gas in the validation
+    if spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
 
@@ -1279,8 +1279,8 @@ where
         .into());
     }
 
-    // For pre-T1, add 2D nonce gas after validation
-    if !spec.is_t1() {
+    // For pre-T0, add 2D nonce gas after validation
+    if !spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }
 

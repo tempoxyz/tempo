@@ -41,10 +41,10 @@ hardfork!(
     TempoHardfork {
         /// Genesis hardfork
         Genesis,
-        /// T0 hardfork
-        T0,
         #[default]
-        /// T1 hardfork (default)
+        /// T0 hardfork (default until T1 activates on mainnet)
+        T0,
+        /// T1 hardfork
         T1,
     }
 );
@@ -114,21 +114,10 @@ mod tests {
     use reth_chainspec::Hardfork;
 
     #[test]
-    fn test_genesis_hardfork_name() {
-        let fork = TempoHardfork::Genesis;
-        assert_eq!(fork.name(), "Genesis");
-    }
-
-    #[test]
-    fn test_t0_hardfork_name() {
-        let fork = TempoHardfork::T0;
-        assert_eq!(fork.name(), "T0");
-    }
-
-    #[test]
-    fn test_t1_hardfork_name() {
-        let fork = TempoHardfork::T1;
-        assert_eq!(fork.name(), "T1");
+    fn test_hardfork_name() {
+        assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
+        assert_eq!(TempoHardfork::T0.name(), "T0");
+        assert_eq!(TempoHardfork::T1.name(), "T1");
     }
 
     #[test]
