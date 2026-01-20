@@ -2424,7 +2424,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2442,7 +2442,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "paste",
@@ -2454,7 +2454,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2482,7 +2482,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2513,7 +2513,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "futures",
  "proc-macro-crate",
@@ -2528,7 +2528,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2540,7 +2540,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2566,7 +2566,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "cfg-if",
  "rayon",
@@ -2575,7 +2575,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2595,7 +2595,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "async-lock",
  "axum",
@@ -2631,7 +2631,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2654,7 +2654,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "chacha20poly1305",
@@ -2674,7 +2674,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "0.0.65"
-source = "git+https://github.com/commonwarexyz/monorepo?rev=cf349ae38b862f0336e9b33b3559ec846a499e0c#cf349ae38b862f0336e9b33b3559ec846a499e0c"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=374285d20a3333acf06ffd954e6eb7eb2826568e#374285d20a3333acf06ffd954e6eb7eb2826568e"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -11633,7 +11633,7 @@ dependencies = [
 
 [[package]]
 name = "tempo"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "clap",
  "commonware-cryptography",
@@ -11666,7 +11666,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11698,7 +11698,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-bench"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -11725,7 +11725,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-chainspec"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-eips",
  "alloy-evm",
@@ -11743,7 +11743,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11781,6 +11781,8 @@ dependencies = [
  "reth-primitives-traits",
  "reth-provider",
  "reth-revm",
+ "reth-rpc-convert",
+ "tempo-alloy",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
  "tempo-node",
@@ -11794,7 +11796,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-commonware-node-config"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -11807,7 +11809,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-consensus"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11823,7 +11825,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -11834,7 +11836,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-dkg-onchain-artifacts"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -11848,7 +11850,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-e2e"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -11891,7 +11893,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-evm"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -11921,7 +11923,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-eyre"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "eyre",
  "indenter",
@@ -11929,7 +11931,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-faucet"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "async-trait",
@@ -11942,7 +11944,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-node"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-eips",
@@ -12001,7 +12003,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-builder"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -12031,7 +12033,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-payload-types"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-primitives",
  "alloy-rpc-types-engine",
@@ -12048,7 +12050,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-evm",
@@ -12074,7 +12076,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-precompiles-macros"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "proc-macro2",
@@ -12084,7 +12086,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12117,7 +12119,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-revm"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12130,6 +12132,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "p256",
+ "proptest",
  "reth-evm",
  "reth-rpc-eth-types",
  "reth-storage-api",
@@ -12146,7 +12149,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-sidecar"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "clap",
@@ -12169,7 +12172,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-telemetry-util"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "eyre",
  "jiff",
@@ -12178,7 +12181,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-transaction-pool"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -12186,6 +12189,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "futures",
  "metrics",
  "parking_lot",
@@ -12201,6 +12205,7 @@ dependencies = [
  "reth-transaction-pool",
  "revm",
  "tempo-chainspec",
+ "tempo-contracts",
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-revm",
@@ -12212,7 +12217,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-xtask"
-version = "1.0.0-rc.6"
+version = "1.0.2"
 dependencies = [
  "alloy",
  "alloy-primitives",

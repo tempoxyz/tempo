@@ -10,7 +10,7 @@ use std::{
 use commonware_broadcast::buffered;
 use commonware_consensus::{
     Reporters, marshal,
-    simplex::scheme::bls12381_threshold::Scheme,
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_cryptography::{
@@ -90,6 +90,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub new_payload_wait_time: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
+    pub fcu_heartbeat_interval: Duration,
 
     pub feed_state: crate::feed::FeedStateHandle,
 }
@@ -307,6 +308,7 @@ where
         let (feed, feed_mailbox) = crate::feed::init(
             context.with_label("feed"),
             marshal_mailbox.clone(),
+            epoch_strategy.clone(),
             self.feed_state,
         );
 
@@ -316,6 +318,7 @@ where
                 execution_node: execution_node.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
+                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
             },
         )
         .wrap_err("failed initialization executor actor")?;

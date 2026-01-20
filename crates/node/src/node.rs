@@ -465,24 +465,11 @@ where
 
         spawn_maintenance_tasks(ctx, transaction_pool.clone(), &pool_config)?;
 
-        // Spawn (protocol) mempool maintenance tasks
-        let task_pool = transaction_pool.clone();
-        let task_provider = ctx.provider().clone();
+        // Spawn unified Tempo pool maintenance task
+        // This consolidates: expired AA txs, 2D nonce updates, AMM cache, and keychain revocations
         ctx.task_executor().spawn_critical(
-            "txpool maintenance (protocol) - evict expired AA txs",
-            tempo_transaction_pool::maintain::evict_expired_aa_txs(task_pool, task_provider),
-        );
-
-        // Spawn (AA 2d nonce) mempool maintenance tasks
-        ctx.task_executor().spawn_critical(
-            "txpool maintenance - 2d nonce AA txs",
-            tempo_transaction_pool::maintain::maintain_2d_nonce_pool(transaction_pool.clone()),
-        );
-
-        // Spawn AMM liquidity cache maintenance task
-        ctx.task_executor().spawn_critical(
-            "txpool maintenance - amm liquidity cache",
-            tempo_transaction_pool::maintain::maintain_amm_cache(transaction_pool.clone()),
+            "txpool maintenance - tempo pool",
+            tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
 
         info!(target: "reth::cli", "Transaction pool initialized");

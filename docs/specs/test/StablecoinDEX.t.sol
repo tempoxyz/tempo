@@ -604,14 +604,16 @@ contract StablecoinDEXTest is BaseTest {
     }
 
     function test_PlaceOrder_SucceedsAbove_MinimumOrderSize(uint128 amount) public {
-        // For bid orders (buying token1 with pathUSD), the escrow amount is:
-        // escrow = amount * tickToPrice(100) / PRICE_SCALE
-        // escrow = amount * (PRICE_SCALE + 100) / PRICE_SCALE
-        // escrow = amount * (1000000 + 100) / 1000000
-        // We need escrow <= INITIAL_BALANCE
-        // So: amount * 1000100 / 1000000 <= INITIAL_BALANCE
-        // Therefore: amount <= INITIAL_BALANCE * 1000000 / 1000100
-        uint128 maxAmount = uint128((uint256(INITIAL_BALANCE) * 1_000_000) / 1_000_100);
+        // For bid orders (buying token1 with pathUSD), the escrow amount uses ceiling division:
+        // escrow = ceil(amount * tickToPrice(100) / PRICE_SCALE)
+        //        = (amount * price + PRICE_SCALE - 1) / PRICE_SCALE
+        // We need escrow <= INITIAL_BALANCE, so:
+        // amount * price + PRICE_SCALE - 1 <= INITIAL_BALANCE * PRICE_SCALE
+        // amount <= (INITIAL_BALANCE * PRICE_SCALE - PRICE_SCALE + 1) / price
+        uint256 priceScale = exchange.PRICE_SCALE();
+        uint256 price = exchange.tickToPrice(100);
+        uint128 maxAmount =
+            uint128((uint256(INITIAL_BALANCE) * priceScale - priceScale + 1) / price);
         vm.assume(amount >= exchange.MIN_ORDER_AMOUNT() && amount <= maxAmount);
 
         vm.prank(alice);

@@ -1,79 +1,121 @@
 //! Transaction pool maintenance tasks.
 
-use crate::{TempoTransactionPool, transaction::TempoPooledTransaction};
+use crate::TempoTransactionPool;
 use alloy_primitives::TxHash;
+use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::TransactionPool;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use tempo_chainspec::TempoChainSpec;
+use tempo_contracts::precompiles::IAccountKeychain;
+use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
-/// Spawns a background task that evicts expired AA transactions.
+/// Tracking state for pool maintenance operations.
 ///
-/// - Listens for new blocks to get chain timestamp
-/// - Listens for new transactions to track `valid_before` timestamps
-/// - Evicts transactions when `valid_before <= tip_timestamp`
-pub async fn evict_expired_aa_txs<P, C>(pool: P, client: C)
-where
-    P: TransactionPool<Transaction = TempoPooledTransaction> + 'static,
-    C: CanonStateSubscriptions + 'static,
-{
-    // Helper to track AA transactions with `valid_before` timestamps
-    let track_expiry = |map: &mut BTreeMap<u64, Vec<TxHash>>, maybe_aa_tx: Option<&AASigned>| {
+/// Tracks AA transaction expiry (`valid_before` timestamps) for eviction.
+///
+/// Note: Stale entries (transactions no longer in the pool) are cleaned up lazily
+/// when we check `pool.contains()` before eviction. This avoids the overhead of
+/// subscribing to all transaction lifecycle events.
+#[derive(Default)]
+struct TempoPoolState {
+    /// Maps `valid_before` timestamp to transaction hashes that expire at that time.
+    expiry_map: BTreeMap<u64, Vec<TxHash>>,
+    /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
+    tx_to_expiry: HashMap<TxHash, u64>,
+}
+
+impl TempoPoolState {
+    /// Tracks an AA transaction with a `valid_before` timestamp.
+    fn track_expiry(&mut self, maybe_aa_tx: Option<&AASigned>) {
         if let Some(aa_tx) = maybe_aa_tx
             && let Some(valid_before) = aa_tx.tx().valid_before
         {
             let hash = *aa_tx.hash();
-            map.entry(valid_before).or_default().push(hash);
+            self.expiry_map.entry(valid_before).or_default().push(hash);
+            self.tx_to_expiry.insert(hash, valid_before);
         }
-    };
+    }
 
-    // Track valid_before timestamp -> Vec<TxHash>
-    let mut expiry_map: BTreeMap<u64, Vec<TxHash>> = BTreeMap::new();
+    /// Collects and removes all expired transactions up to the given timestamp.
+    /// Returns the list of expired transaction hashes.
+    fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
+        let mut expired = Vec::new();
+        while let Some(entry) = self.expiry_map.first_entry()
+            && *entry.key() <= tip_timestamp
+        {
+            let expired_hashes = entry.remove();
+            for tx_hash in &expired_hashes {
+                self.tx_to_expiry.remove(tx_hash);
+            }
+            expired.extend(expired_hashes);
+        }
+        expired
+    }
+}
 
-    // Small delay to allow backup tasks to initialize
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+/// Unified maintenance task for the Tempo transaction pool.
+///
+/// Handles:
+/// - Evicting expired AA transactions (`valid_before <= tip_timestamp`)
+/// - Updating the AA 2D nonce pool from `NonceManager` changes
+/// - Refreshing the AMM liquidity cache from `FeeManager` updates
+/// - Removing transactions signed with revoked keychain keys
+///
+/// Consolidates these operations into a single event loop to avoid multiple tasks
+/// competing for canonical state updates and to minimize contention on pool locks.
+pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
+where
+    Client: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + CanonStateSubscriptions<Primitives = TempoPrimitives>
+        + 'static,
+{
+    let mut state = TempoPoolState::default();
 
-    // Subscribe to new transactions and blocks
+    // Subscribe to new transactions and chain events
     let mut new_txs = pool.new_transactions_listener();
-    let mut chain_events = client.canonical_state_stream();
+    let mut chain_events = pool.client().canonical_state_stream();
 
-    // Populate expiry map to prevent race condition at start-up
-    pool.all_transactions()
-        .all()
-        .for_each(|tx| track_expiry(&mut expiry_map, tx.inner().as_aa()));
+    // Populate expiry tracking with existing transactions to prevent race conditions at start-up
+    pool.all_transactions().all().for_each(|tx| {
+        state.track_expiry(tx.inner().as_aa());
+    });
+
+    let amm_cache = pool.amm_liquidity_cache();
 
     loop {
         tokio::select! {
-            // Update cache when a txs are added to the mempool
+            // Track new transactions for expiry
             tx_event = new_txs.recv() => {
                 let Some(tx_event) = tx_event else {
                     break;
                 };
 
-                // Check if it's an AA tx with `valid_before`
                 let tx = &tx_event.transaction.transaction;
-                track_expiry(&mut expiry_map, tx.inner().as_aa());
+                state.track_expiry(tx.inner().as_aa());
             }
 
-            // Check for expired txs when a new block is committed
+            // Process all maintenance operations on new block commit
             Some(event) = chain_events.next() => {
                 let CanonStateNotification::Commit { new } = event else {
                     continue;
                 };
 
-                let tip_timestamp = new.tip().header().timestamp();
+                let tip = &new;
+                let bundle_state = tip.execution_outcome().state().state();
 
-                // Gather expired tx hashes and evict them
-                let mut to_remove = Vec::new();
-                while let Some(entry) = expiry_map.first_entry() && *entry.key() <= tip_timestamp {
-                    to_remove.extend(entry.remove());
-                }
+                // 1. Evict expired AA transactions (filter to only those still in pool)
+                let tip_timestamp = tip.tip().header().timestamp();
+                let expired = state.drain_expired(tip_timestamp);
+                let to_remove: Vec<_> =
+                    expired.into_iter().filter(|h| pool.contains(h)).collect();
 
                 if !to_remove.is_empty() {
                     debug!(
@@ -82,58 +124,43 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions"
                     );
-                    // Note: txs already mined or evicted by other means are ignored
                     pool.remove_transactions(to_remove);
                 }
-            }
-        }
-    }
-}
 
-/// An endless future that maintains the [`TempoTransactionPool`] 2d nonce pool based on the storage changes of the `NonceManager` precompile.
-///
-/// The `NonceManager` contains
-///
-/// ```solidity
-///  mapping(address => mapping(uint256 => uint64)) public nonces
-/// ```
-///
-/// where each slot tracks the current nonce for a nonce key assigned to the transaction.
-/// The next executable nonce is the current value of in the contract's state.
-pub async fn maintain_2d_nonce_pool<Client>(pool: TempoTransactionPool<Client>)
-where
-    Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
-        + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + 'static,
-{
-    let mut events = pool.client().canonical_state_stream();
-    while let Some(notification) = events.next().await {
-        pool.notify_aa_pool_on_state_updates(
-            notification.committed().execution_outcome().state().state(),
-        );
-    }
-}
+                // 2. Evict transactions with revoked keychain keys
+                // Key revocations are rare, so we scan the pool on-demand rather than
+                // tracking all keychain-signed transactions.
+                // Collect all revocations first, then scan the pool once per block.
+                let revoked_keys: Vec<_> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
+                    .filter_map(|log| IAccountKeychain::KeyRevoked::decode_log(log).ok())
+                    .map(|event| (event.account, event.publicKey))
+                    .collect();
 
-/// An endless future that updates the [`crate::amm::AmmLiquidityCache`] based
-/// on the storage changes of the `FeeManager` precompile.
-pub async fn maintain_amm_cache<Client>(pool: TempoTransactionPool<Client>)
-where
-    Client: StateProviderFactory
-        + ChainSpecProvider<ChainSpec = TempoChainSpec>
-        + CanonStateSubscriptions<Primitives = TempoPrimitives>
-        + 'static,
-{
-    let amm_cache = pool.amm_liquidity_cache();
-    let mut events = pool.client().canonical_state_stream();
+                if !revoked_keys.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = revoked_keys.len(),
+                        "Processing keychain key revocations"
+                    );
+                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
+                }
 
-    while let Some(notification) = events.next().await {
-        let tip = notification.committed();
+                // 3. Update 2D nonce pool
+                pool.notify_aa_pool_on_state_updates(bundle_state);
 
-        amm_cache.on_new_state(tip.execution_outcome());
-        for block in tip.blocks_iter() {
-            if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
-                error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+                // 4. Update AMM liquidity cache
+                amm_cache.on_new_state(tip.execution_outcome());
+                for block in tip.blocks_iter() {
+                    if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
+                        error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+                    }
+                }
             }
         }
     }
