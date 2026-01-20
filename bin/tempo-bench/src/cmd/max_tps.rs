@@ -392,7 +392,8 @@ impl MaxTpsArgs {
         };
 
         // For expiring nonces, we need to generate/sign/send in batches to avoid
-        // transactions expiring before they're sent.
+        // transactions expiring before they're sent. We pipeline batch generation
+        // with sending to avoid gaps that would cause empty blocks.
         let mut pending_txs = if self.expiring_nonces {
             let batch_secs = self.expiring_batch_secs.unwrap_or(15);
             let batch_size = self.tps * batch_secs;
@@ -403,7 +404,7 @@ impl MaxTpsArgs {
                 batch_size,
                 num_batches,
                 batch_secs,
-                "Generating and sending transactions in batches (expiring nonces)"
+                "Generating and sending transactions in batches (expiring nonces, pipelined)"
             );
 
             let tx_counter = Arc::new(AtomicUsize::new(0));
@@ -425,32 +426,33 @@ impl MaxTpsArgs {
             let start_time = std::time::Instant::now();
             let total_duration = Duration::from_secs(self.duration);
 
-            for batch_idx in 0..num_batches {
-                let remaining_txs = total_txs - (batch_idx * batch_size);
-                let this_batch_size = remaining_txs.min(batch_size);
-
-                // Generate this batch
-                let batch_input = GenerateTransactionsInput {
-                    total_txs: this_batch_size,
-                    ..gen_input.clone()
-                };
-                let transactions = generate_transactions(batch_input)
+            // Generate first batch before starting the send loop
+            let first_batch_size = batch_size.min(total_txs);
+            let batch_input = GenerateTransactionsInput {
+                total_txs: first_batch_size,
+                ..gen_input.clone()
+            };
+            let mut current_batch = Some(
+                generate_transactions(batch_input)
                     .await
-                    .context("Failed to generate batch transactions")?;
+                    .context("Failed to generate first batch")?,
+            );
 
-                // Calculate remaining time for this batch
+            for batch_idx in 0..num_batches {
                 let elapsed = start_time.elapsed();
                 let remaining_duration = total_duration.saturating_sub(elapsed);
                 let batch_duration = Duration::from_secs(batch_secs).min(remaining_duration);
 
                 if batch_duration.is_zero() {
-                    info!(batch_idx, "Time expired, stopping batch generation");
+                    info!(batch_idx, "Time expired, stopping");
                     break;
                 }
 
-                // Send this batch
-                let batch_pending = send_transactions_with_counters(
-                    transactions,
+                let batch_to_send = current_batch.take().expect("batch should exist");
+
+                // Send current batch while generating next batch in parallel
+                let send_fut = send_transactions_with_counters(
+                    batch_to_send,
                     signer_provider_manager.clone(),
                     self.max_concurrent_requests,
                     self.tps,
@@ -458,14 +460,24 @@ impl MaxTpsArgs {
                     tx_counter.clone(),
                     success_counter.clone(),
                     failed_counter.clone(),
-                )
-                .await;
+                );
 
-                all_pending_txs.extend(batch_pending);
-
-                // Small delay between batches to let previous transactions settle
                 if batch_idx + 1 < num_batches {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let remaining_txs = total_txs - ((batch_idx + 1) * batch_size);
+                    let next_batch_size = remaining_txs.min(batch_size);
+                    let batch_input = GenerateTransactionsInput {
+                        total_txs: next_batch_size,
+                        ..gen_input.clone()
+                    };
+                    // Run send and generate concurrently
+                    let (batch_pending, next) =
+                        tokio::join!(send_fut, generate_transactions(batch_input));
+                    all_pending_txs.extend(batch_pending);
+                    current_batch = Some(next.context("Failed to generate next batch")?);
+                } else {
+                    // Last batch - just send
+                    let batch_pending = send_fut.await;
+                    all_pending_txs.extend(batch_pending);
                 }
             }
 
