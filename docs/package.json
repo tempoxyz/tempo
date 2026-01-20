@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "NODE_OPTIONS=\"--max-old-space-size=16384\" vocs build --searchIndex",
+    "build": "NODE_OPTIONS=\"--max-old-space-size=16384\" vocs build --searchIndex && bun scripts/gen-sitemap.ts",
+    "gen:sitemap": "bun scripts/gen-sitemap.ts",
     "check": "biome check . --write --unsafe",
     "check:ci": "biome check . --diagnostic-level=error",
     "check:types": "tsc --noEmit",
@@ -53,6 +54,7 @@
     "typescript": "^5.9.3",
     "unplugin-auto-import": "^20.2.0",
     "unplugin-icons": "^22.5.0",
-    "vercel": "^50.1.6"
+    "vercel": "^50.1.6",
+    "@types/bun": "latest"
   }
 }
