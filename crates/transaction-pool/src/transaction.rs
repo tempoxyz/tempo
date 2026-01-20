@@ -223,6 +223,32 @@ pub enum TempoPoolTransactionError {
         size: usize,
         max_allowed: usize,
     },
+
+    /// Thrown when an AA transaction has too many accounts in its access list.
+    #[error("Too many access list accounts: {count} exceeds maximum allowed {max_allowed}")]
+    TooManyAccessListAccounts { count: usize, max_allowed: usize },
+
+    /// Thrown when an access list entry has too many storage keys.
+    #[error(
+        "Too many storage keys in access list entry {account_index}: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyStorageKeysPerAccount {
+        account_index: usize,
+        count: usize,
+        max_allowed: usize,
+    },
+
+    /// Thrown when the total number of storage keys across all access list entries is too large.
+    #[error(
+        "Too many total storage keys in access list: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyTotalStorageKeys { count: usize, max_allowed: usize },
+
+    /// Thrown when a key authorization has too many token limits.
+    #[error(
+        "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
+    )]
+    TooManyTokenLimits { count: usize, max_allowed: usize },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -241,7 +267,11 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InsufficientGasForAAIntrinsicCost { .. }
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
-            | Self::CallInputTooLarge { .. } => true,
+            | Self::CallInputTooLarge { .. }
+            | Self::TooManyAccessListAccounts { .. }
+            | Self::TooManyStorageKeysPerAccount { .. }
+            | Self::TooManyTotalStorageKeys { .. }
+            | Self::TooManyTokenLimits { .. } => true,
         }
     }
 

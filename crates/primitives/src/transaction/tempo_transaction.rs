@@ -16,6 +16,14 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// Maximum RLP-encoded size for a single Tempo transaction (128 KB).
+///
+/// This limit is enforced during RLP decoding to prevent DoS attacks that would
+/// allocate large buffers before transaction validation. Without this limit,
+/// attackers could send transactions with large call inputs, access lists, or
+/// key authorization token limits that would exhaust validator memory.
+pub const MAX_TX_RLP_BYTES: usize = 128 * 1024;
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -479,8 +487,8 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = Decodable::decode(buf)?;
-        let access_list = Decodable::decode(buf)?;
+        let calls: Vec<Call> = Decodable::decode(buf)?;
+        let access_list: AccessList = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
 
@@ -542,7 +550,7 @@ impl TempoTransaction {
         // KeyAuthorization is encoded as a list, so it would start with 0xc0-0xf7 (short list) or 0xf8-0xff (long list)
         // If it's a bytes string (0x80-0xbf for short, 0xb8-0xbf for long), it's not a
         // KeyAuthorization and most likely a signature bytes following the AA transaction.
-        let key_authorization = if let Some(&first) = buf.first() {
+        let key_authorization: Option<SignedKeyAuthorization> = if let Some(&first) = buf.first() {
             // Check if this looks like an RLP list (KeyAuthorization is always a list)
             if first >= 0xc0 {
                 // This could be a KeyAuthorization
@@ -760,6 +768,13 @@ impl Decodable for TempoTransaction {
 
         if header.payload_length > remaining {
             return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        // Enforce transaction size limit before allocating any buffers.
+        // This prevents DoS attacks via large call inputs, access lists, or token limits.
+        let tx_size = header.length_with_payload();
+        if tx_size > MAX_TX_RLP_BYTES {
+            return Err(alloy_rlp::Error::Custom("tx exceeds max size"));
         }
 
         let mut fields_buf = &buf[..header.payload_length];
@@ -1924,5 +1939,98 @@ mod tests {
             ..Default::default()
         };
         assert!(tx.validate().is_ok());
+    }
+
+    #[test]
+    fn test_decode_rejects_oversized_transaction() {
+        // Create a transaction with a large call input that exceeds MAX_TX_RLP_BYTES (128KB)
+        let large_input = Bytes::from(vec![0u8; 150 * 1024]); // 150KB of calldata
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: large_input,
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![call],
+            ..Default::default()
+        };
+
+        // Encode the oversized transaction
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        // Verify the encoded size exceeds 128KB
+        assert!(
+            buf.len() > MAX_TX_RLP_BYTES,
+            "Test setup: encoded tx should exceed MAX_TX_RLP_BYTES, got {} bytes",
+            buf.len()
+        );
+
+        // Decode should reject the oversized transaction
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(
+            result.is_err(),
+            "Decode should reject transactions exceeding MAX_TX_RLP_BYTES"
+        );
+
+        // Verify the error message mentions size
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds max")
+                || err.to_string().contains("too large")
+                || matches!(err, alloy_rlp::Error::Custom(_)),
+            "Error should indicate size limit exceeded, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_decode_accepts_transaction_at_size_limit() {
+        // Create a transaction that is just under MAX_TX_RLP_BYTES
+        // The base tx overhead is ~100 bytes, so use 128KB - 200 bytes for input
+        let input_size = MAX_TX_RLP_BYTES - 200;
+        let input = Bytes::from(vec![0u8; input_size]);
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input,
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![call],
+            ..Default::default()
+        };
+
+        // Encode the transaction
+        let mut buf = Vec::new();
+        tx.encode(&mut buf);
+
+        // Verify the encoded size is at or below 128KB
+        assert!(
+            buf.len() <= MAX_TX_RLP_BYTES,
+            "Test setup: encoded tx should be at or below MAX_TX_RLP_BYTES, got {} bytes",
+            buf.len()
+        );
+
+        // Decode should succeed
+        let result = TempoTransaction::decode(&mut buf.as_slice());
+        assert!(
+            result.is_ok(),
+            "Decode should accept transactions at or below MAX_TX_RLP_BYTES, got: {:?}",
+            result.err()
+        );
+
+        // Verify roundtrip
+        let decoded = result.unwrap();
+        assert_eq!(decoded.chain_id, tx.chain_id);
+        assert_eq!(decoded.calls.len(), 1);
     }
 }

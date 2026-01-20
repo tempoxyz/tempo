@@ -1,5 +1,5 @@
 use super::{
-    tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
+    tempo_transaction::{MAX_TX_RLP_BYTES, TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
 };
 use alloy_consensus::{Transaction, transaction::TxHashRef};
@@ -152,6 +152,13 @@ impl AASigned {
 
         if header.payload_length > remaining {
             return Err(alloy_rlp::Error::InputTooShort);
+        }
+
+        // Enforce transaction size limit before allocating any buffers.
+        // This prevents DoS attacks via large call inputs, access lists, or token limits.
+        let tx_size = header.length_with_payload();
+        if tx_size > MAX_TX_RLP_BYTES {
+            return Err(alloy_rlp::Error::Custom("tx exceeds max size"));
         }
 
         // Decode transaction fields directly from the buffer
@@ -600,5 +607,49 @@ mod tests {
         let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
         let bad_recovered = bad_signed.recover_signer().unwrap();
         assert_ne!(bad_recovered, expected_address);
+    }
+
+    #[test]
+    fn test_rlp_decode_rejects_oversized_signed_transaction() {
+        use alloy_primitives::Bytes;
+
+        // Create a transaction with a large call input that exceeds MAX_TX_RLP_BYTES
+        let large_input = Bytes::from(vec![0u8; 150 * 1024]); // 150KB
+        let call = crate::transaction::Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: large_input,
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            max_priority_fee_per_gas: 1_000_000_000,
+            max_fee_per_gas: 2_000_000_000,
+            gas_limit: 100_000,
+            calls: vec![call],
+            ..Default::default()
+        };
+
+        let sig =
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(Signature::test_signature()));
+        let signed = AASigned::new_unhashed(tx, sig);
+
+        // Encode
+        let mut buf = Vec::new();
+        signed.rlp_encode(&mut buf);
+
+        // Verify the encoded size exceeds 128KB
+        assert!(
+            buf.len() > MAX_TX_RLP_BYTES,
+            "Test setup: encoded tx should exceed MAX_TX_RLP_BYTES, got {} bytes",
+            buf.len()
+        );
+
+        // Decode should reject the oversized transaction
+        let result = AASigned::rlp_decode(&mut buf.as_slice());
+        assert!(
+            result.is_err(),
+            "rlp_decode should reject transactions exceeding MAX_TX_RLP_BYTES"
+        );
     }
 }

@@ -40,6 +40,18 @@ pub const MAX_AA_CALLS: usize = 32;
 /// Maximum size of input data per call in bytes (128KB, DoS protection).
 pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
 
+/// Maximum number of accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_ACCOUNTS: usize = 256;
+
+/// Maximum number of storage keys per account in the access list (DoS protection).
+pub const MAX_STORAGE_KEYS_PER_ACCOUNT: usize = 256;
+
+/// Maximum total number of storage keys across all accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
+
+/// Maximum number of token limits in a KeyAuthorization (DoS protection).
+pub const MAX_TOKEN_LIMITS: usize = 256;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -310,15 +322,12 @@ where
         Ok(())
     }
 
-    /// Validates the size of calls in an AA transaction.
+    /// Validates AA transaction field limits (calls, access list, token limits).
     ///
-    /// This prevents DoS attacks where attackers send transactions with:
-    /// - Too many calls (exceeding `MAX_AA_CALLS`)
-    /// - Calls with oversized input data (exceeding `MAX_CALL_INPUT_SIZE`)
-    ///
-    /// These limits are enforced at the pool level rather than RLP decoding to keep
-    /// the core transaction format flexible while still protecting validators.
-    fn ensure_aa_call_limits(
+    /// These limits are enforced at the pool level rather than RLP decoding to:
+    /// - Keep the core transaction format flexible
+    /// - Allow peer penalization for sending bad transactions
+    fn ensure_aa_field_limits(
         &self,
         transaction: &TempoPooledTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
@@ -326,18 +335,18 @@ where
             return Ok(());
         };
 
-        let calls = &aa_tx.tx().calls;
+        let tx = aa_tx.tx();
 
         // Check number of calls
-        if calls.len() > MAX_AA_CALLS {
+        if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
-                count: calls.len(),
+                count: tx.calls.len(),
                 max_allowed: MAX_AA_CALLS,
             });
         }
 
         // Check each call's input size
-        for (idx, call) in calls.iter().enumerate() {
+        for (idx, call) in tx.calls.iter().enumerate() {
             if call.input.len() > MAX_CALL_INPUT_SIZE {
                 return Err(TempoPoolTransactionError::CallInputTooLarge {
                     call_index: idx,
@@ -345,6 +354,45 @@ where
                     max_allowed: MAX_CALL_INPUT_SIZE,
                 });
             }
+        }
+
+        // Check access list accounts
+        if tx.access_list.len() > MAX_ACCESS_LIST_ACCOUNTS {
+            return Err(TempoPoolTransactionError::TooManyAccessListAccounts {
+                count: tx.access_list.len(),
+                max_allowed: MAX_ACCESS_LIST_ACCOUNTS,
+            });
+        }
+
+        // Check storage keys per account and total
+        let mut total_storage_keys = 0usize;
+        for (idx, entry) in tx.access_list.iter().enumerate() {
+            if entry.storage_keys.len() > MAX_STORAGE_KEYS_PER_ACCOUNT {
+                return Err(TempoPoolTransactionError::TooManyStorageKeysPerAccount {
+                    account_index: idx,
+                    count: entry.storage_keys.len(),
+                    max_allowed: MAX_STORAGE_KEYS_PER_ACCOUNT,
+                });
+            }
+            total_storage_keys = total_storage_keys.saturating_add(entry.storage_keys.len());
+        }
+
+        if total_storage_keys > MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL {
+            return Err(TempoPoolTransactionError::TooManyTotalStorageKeys {
+                count: total_storage_keys,
+                max_allowed: MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL,
+            });
+        }
+
+        // Check token limits in key_authorization
+        if let Some(ref key_auth) = tx.key_authorization
+            && let Some(ref limits) = key_auth.limits
+            && limits.len() > MAX_TOKEN_LIMITS
+        {
+            return Err(TempoPoolTransactionError::TooManyTokenLimits {
+                count: limits.len(),
+                max_allowed: MAX_TOKEN_LIMITS,
+            });
         }
 
         Ok(())
@@ -417,9 +465,9 @@ where
             );
         }
 
-        // Validate AA transaction call limits (number of calls and input sizes).
+        // Validate AA transaction field limits (calls, access list, token limits).
         // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_call_limits(&transaction) {
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
