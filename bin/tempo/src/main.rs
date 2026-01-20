@@ -181,33 +181,33 @@ fn main() -> eyre::Result<()> {
                 )
                 .fuse();
 
-                // Start the OTLP metrics exporter if configured
-                let mut metrics_otlp = args.consensus.metrics_otlp_url.clone().map(|endpoint| {
-                    // Build labels for identifying this node in metrics
-                    let mut labels = std::collections::HashMap::new();
+                // Start the OTLP metrics exporter if configured.
+                // Hold onto the meter provider for the lifetime of the consensus stack.
+                let _meter_provider = args
+                    .consensus
+                    .metrics_otlp_url
+                    .clone()
+                    .map(|endpoint| {
+                        // Build labels for identifying this node in metrics
+                        let mut labels = std::collections::HashMap::new();
 
-                    // Add consensus public key as node identifier
-                    if let Ok(Some(public_key)) = args.consensus.public_key() {
-                        let pubkey_hex: String = public_key
-                            .as_ref()
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        labels.insert("consensus_pubkey".to_string(), pubkey_hex);
-                    }
+                        // Add consensus public key as node identifier
+                        if let Ok(Some(public_key)) = args.consensus.public_key() {
+                            labels.insert("consensus_pubkey".to_string(), public_key.to_string());
+                        }
 
-                    let config = tempo_commonware_node::metrics::OtlpConfig {
-                        endpoint,
-                        interval: args.consensus.metrics_otlp_interval,
-                        labels,
-                    };
+                        let config = tempo_commonware_node::metrics::OtlpConfig {
+                            endpoint,
+                            interval: args.consensus.metrics_otlp_interval,
+                            labels,
+                        };
 
-                    tempo_commonware_node::metrics::install_otlp(
-                        ctx.with_label("metrics_otlp"),
-                        config,
-                    )
-                    .fuse()
-                });
+                        tempo_commonware_node::metrics::install_otlp(
+                            ctx.with_label("metrics_otlp"),
+                            config,
+                        )
+                    })
+                    .transpose()?;
 
                 let consensus_stack =
                     run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
@@ -233,19 +233,6 @@ fn main() -> eyre::Result<()> {
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
                             tracing::warn!(reason, "the metrics server exited");
-                        }
-
-                        Some(ret) = async {
-                            match &mut metrics_otlp {
-                                Some(handle) if !handle.is_terminated() => Some(handle.await),
-                                _ => std::future::pending().await,
-                            }
-                        } => {
-                            let reason = match ret.wrap_err("task_panicked") {
-                                Ok(Ok(())) => "unexpected regular exit".to_string(),
-                                Ok(Err(err)) | Err(err) => format!("{err}"),
-                            };
-                            tracing::warn!(reason, "the OTLP metrics exporter exited");
                         }
                     )
                 }
