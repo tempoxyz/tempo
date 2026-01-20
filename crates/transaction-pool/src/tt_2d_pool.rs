@@ -1501,11 +1501,16 @@ mod tests {
         let tx6_hash = *valid_tx6.hash();
 
         // Add all transactions
-        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx3), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx4), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx6), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx3), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx4), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx6), 0, TempoHardfork::T1)
+            .unwrap();
 
         // Verify initial state
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -1841,9 +1846,12 @@ mod tests {
 
         let tx1_hash = *valid_tx1.hash();
 
-        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1).unwrap();
-        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(Arc::new(valid_tx0), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx1), 0, TempoHardfork::T1)
+            .unwrap();
+        pool.add_transaction(Arc::new(valid_tx2), 0, TempoHardfork::T1)
+            .unwrap();
 
         // All should be pending
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
@@ -3343,7 +3351,8 @@ mod tests {
         let tx_hash = *tx.hash();
         let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
 
-        pool.add_transaction(valid_tx.clone(), 0, TempoHardfork::T1).unwrap();
+        pool.add_transaction(valid_tx.clone(), 0, TempoHardfork::T1)
+            .unwrap();
 
         let result = pool.add_transaction(valid_tx, 0, TempoHardfork::T1);
         assert!(result.is_err());
