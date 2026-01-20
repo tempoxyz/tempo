@@ -14,7 +14,8 @@
 - **TEMPO-DEX5**: `amountIn <= maxAmountIn` when executing `swapExactAmountOut`.
 - **TEMPO-DEX14**: Swapper total balance (external + internal) changes correctly - loses exact `amountIn` of tokenIn and gains exact `amountOut` of tokenOut. Skipped when swapper has active orders (self-trade makes accounting complex).
 - **TEMPO-DEX16**: Quote functions (`quoteSwapExactAmountIn/Out`) return values matching actual swap execution.
-- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by 1.
+- **TEMPO-DEX18**: Dust invariant - each swap can at maximum increase the dust in the DEX by the number of orders filled.
+- **TEMPO-DEX19**: Post-swap dust bounded - maximum dust accumulation in the protocol is bounded and tracked via `_maxDust`.
 
 ### Balance Invariants
 
@@ -36,6 +37,10 @@
 ### Blacklist Invariants
 
 - **TEMPO-DEX13**: Anyone can cancel a stale order from a blacklisted maker via `cancelStaleOrder`. The escrowed funds are refunded to the blacklisted maker's internal balance.
+
+### Escrow Precision Invariants
+
+- **TEMPO-DEX20**: When `(base * price) % PRICE_SCALE == 0` (perfectly divisible), escrow calculation must be exact with no +1 rounding. Ceil should equal floor when there's no remainder.
 
 ## FeeAMM
 
@@ -89,7 +94,10 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM19**: Must pay at least 1 for any swap - prevents zero-cost extraction.
 - **TEMPO-AMM20**: Reserves are always bounded by uint128.
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
-- **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding.
+- **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
+
+### Burn Rounding Invariants
+
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 

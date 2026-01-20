@@ -86,7 +86,9 @@ contract FeeAMM is IFeeAMM {
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
-        // Round up
+        // Always round up using floor + 1 to ensure pool never loses to rounding.
+        // Note: This adds 1 even when exactly divisible, which is intentional to
+        // guarantee the pool is always favored.
         amountIn = (amountOut * N) / SCALE + 1;
 
         Pool storage pool = pools[poolId];
