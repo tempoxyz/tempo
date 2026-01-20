@@ -219,12 +219,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Ensure the currency is USD
-        // load fee token account to ensure that we can load storage for it.
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: prefix already checked above
-            let token = TIP20Token::from_address(fee_token)?;
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
-        })
+        self.is_tip20_usd(spec, fee_token)
     }
 
     /// Checks if a fee token is paused.

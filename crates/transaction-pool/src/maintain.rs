@@ -13,7 +13,9 @@ use reth_transaction_pool::TransactionPool;
 use std::collections::{BTreeMap, HashMap};
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20};
-use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::is_tip20_prefix};
+use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::is_tip20_prefix,
+};
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
@@ -157,12 +159,6 @@ where
                     .collect();
 
                 if !revoked_keys.is_empty() {
-                    debug!(
-                        target: "txpool",
-                        count = revoked_keys.len(),
-                        "Processing keychain key revocations"
-                    );
-                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
                     pool.evict_paused_by_revoked_keys(&revoked_keys);
                 }
 
@@ -238,14 +234,17 @@ where
                     }
                 }
 
-                // 8. Evict invalidated transactions for validator token changes
-                if !validator_token_changes.is_empty() {
+                // 8. Evict invalidated transactions in a single pool scan
+                // This checks both revoked keys and validator token changes together
+                // to avoid scanning all transactions multiple times per block.
+                if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
                     debug!(
                         target: "txpool",
+                        revoked_keys = revoked_keys.len(),
                         validator_token_changes = validator_token_changes.len(),
-                        "Processing validator token change events"
+                        "Processing transaction invalidation events"
                     );
-                    pool.evict_invalidated_transactions(&[], &validator_token_changes);
+                    pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
                 }
             }
         }
