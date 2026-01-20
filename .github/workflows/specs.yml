@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
     paths:
-      - "specs/**"
+      - "tips/ref-impls/**"
       - "crates/precompiles/**"
       - ".github/workflows/specs.yml"
   merge_group:
   pull_request:
     branches: [main]
     paths:
-      - "specs/**"
+      - "tips/ref-impls/**"
       - "crates/precompiles/**"
       - ".github/workflows/specs.yml"
 
