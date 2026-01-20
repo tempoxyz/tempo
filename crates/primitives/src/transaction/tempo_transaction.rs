@@ -912,14 +912,17 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::{
-        KeyAuthorization, TempoSignedAuthorization,
-        tt_signature::{
-            PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
-            derive_p256_address,
+    use crate::{
+        TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, TempoSignedAuthorization,
+            tt_signature::{
+                PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
+                derive_p256_address,
+            },
         },
     };
-    use alloy_eips::eip7702::Authorization;
+    use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
