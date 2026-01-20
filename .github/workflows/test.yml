@@ -55,7 +55,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
         with:
-          tool: nextest
+          tool: nextest@0.9.123-b.2
       - name: Build and compile tests
         run: cargo nextest run --no-run -j num-cpus
       - name: Run tests

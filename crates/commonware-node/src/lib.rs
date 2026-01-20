@@ -132,6 +132,10 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into().wrap_err(
+            "failed converting argument fcu-heartbeat-interval to regular \
+            duration; was it negative or chosen too large",
+        )?,
 
         feed_state,
     }

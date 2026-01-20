@@ -130,6 +130,13 @@ pub struct Args {
     #[arg(long = "consensus.subblock-broadcast-interval", default_value = "50ms")]
     pub subblock_broadcast_interval: jiff::SignedDuration,
 
+    /// The interval at which to send a forkchoice update heartbeat to the
+    /// execution layer. This is sent periodically even when there are no new
+    /// blocks to ensure the execution layer stays in sync with the consensus
+    /// layer's view of the chain head.
+    #[arg(long = "consensus.fcu-heartbeat-interval", default_value = "5m")]
+    pub fcu_heartbeat_interval: jiff::SignedDuration,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,

@@ -9,7 +9,8 @@ use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     Heightable as _,
-    simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
+    types::FixedEpocher,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -46,10 +47,12 @@ impl<TContext: Spawner> Actor<TContext> {
     pub(crate) fn new(
         context: TContext,
         marshal: marshal::Mailbox,
+        epocher: FixedEpocher,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
+        state.set_epocher(epocher);
 
         Self {
             context: ContextCell::new(context),
