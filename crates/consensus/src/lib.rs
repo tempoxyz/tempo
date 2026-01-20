@@ -61,13 +61,12 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             ));
         }
 
-        // Validate the non-payment gas limit
-        if header.general_gas_limit
-            != (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-        {
-            return Err(ConsensusError::Other(
-                "Non-payment gas limit does not match header gas limit".to_string(),
-            ));
+        // Validate the general (non-payment) gas limit is fixed at TEMPO_GENERAL_GAS_LIMIT
+        if header.general_gas_limit != TEMPO_GENERAL_GAS_LIMIT {
+            return Err(ConsensusError::Other(format!(
+                "General gas limit {} does not match expected {}",
+                header.general_gas_limit, TEMPO_GENERAL_GAS_LIMIT
+            )));
         }
 
         // Validate the timestamp milliseconds part
@@ -178,10 +177,18 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
     }
 }
 
-/// Divisor for calculating non-payment gas limit.
-pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
+/// General (non-payment) gas limit per block: 30M gas
+/// This caps how much gas general transactions can consume, guaranteeing
+/// at least 470M gas remains available for payment transactions.
+pub const TEMPO_GENERAL_GAS_LIMIT: u64 = 30_000_000;
 
-/// Divisor for calculating shared gas limit.
+/// Maximum gas per single transaction: 30M gas
+/// Elevated from 16M to support max-size contract deployments under TIP-1000.
+/// Applications should not rely on >16M gas for normal operations.
+pub const TEMPO_TRANSACTION_GAS_CAP: u64 = 30_000_000;
+
+/// Divisor for calculating shared gas limit (payment lane capacity).
+/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
 pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
 
 /// Maximum extra data size for Tempo blocks.
@@ -257,10 +264,7 @@ mod tests {
             let shared_gas_limit = self
                 .shared_gas_limit
                 .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
-            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
-                (self.gas_limit - self.gas_limit / TEMPO_SHARED_GAS_DIVISOR)
-                    / TEMPO_GENERAL_GAS_DIVISOR
-            });
+            let general_gas_limit = self.general_gas_limit.unwrap_or(TEMPO_GENERAL_GAS_LIMIT);
 
             TempoHeader {
                 inner: Header {
@@ -375,12 +379,12 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_header_non_payment_gas_mismatch() {
+    fn test_validate_header_general_gas_mismatch() {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
+            .gas_limit(500_000_000)
             .timestamp(current_timestamp())
-            .general_gas_limit(999)
+            .general_gas_limit(999) // Should be TEMPO_GENERAL_GAS_LIMIT (30M)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -388,8 +392,9 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Non-payment gas limit does not match header gas limit")
+            err.to_string().contains("General gas limit"),
+            "Expected error about general gas limit, got: {}",
+            err
         );
     }
 

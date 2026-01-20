@@ -15,7 +15,9 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
+/// Target base fee: 20 gwei (2×10^10 wei)
+/// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
+pub const TEMPO_BASE_FEE: u64 = 20_000_000_000;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;

@@ -52,8 +52,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
         use alloy_consensus::BlockHeader as _;
 
         let shared_gas_limit = parent.gas_limit() / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-        let general_gas_limit =
-            (parent.gas_limit() - shared_gas_limit) / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
+        let general_gas_limit = tempo_consensus::TEMPO_GENERAL_GAS_LIMIT;
 
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
@@ -95,10 +94,11 @@ mod tests {
         let expected_shared_gas_limit = gas_limit / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
         assert_eq!(pending_env.shared_gas_limit, expected_shared_gas_limit);
 
-        // general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-        let expected_general_gas_limit =
-            (gas_limit - expected_shared_gas_limit) / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR;
-        assert_eq!(pending_env.general_gas_limit, expected_general_gas_limit);
+        // general_gas_limit is now a fixed constant (TIP-1010)
+        assert_eq!(
+            pending_env.general_gas_limit,
+            tempo_consensus::TEMPO_GENERAL_GAS_LIMIT
+        );
 
         // Verify timestamp_millis_part is carried from parent
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);

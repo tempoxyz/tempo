@@ -68,9 +68,9 @@ impl<DB: Database> TempoEvm<DB> {
         // override the gas params for tempo use case.
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
-        // In TIP-1000 we bumped gas to 30M.
+        // TIP-1010: Transaction gas cap is 30M to support max-size contract deployments
         if input.cfg_env.spec.is_t1() {
-            input.cfg_env.tx_gas_limit_cap = Some(30_000_000);
+            input.cfg_env.tx_gas_limit_cap = Some(tempo_consensus::TEMPO_TRANSACTION_GAS_CAP);
         }
 
         let ctx = Context::mainnet()
