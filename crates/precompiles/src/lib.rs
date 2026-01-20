@@ -427,8 +427,10 @@ mod tests {
     #[test]
     fn test_invalid_calldata_hardfork_behavior() {
         let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
-            let (chain_id, spec) = (1, spec);
-            let precompile = tempo_precompile!("TIP20Token", chain_id, spec, |input| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec(spec);
+            let tx = TxEnv::default();
+            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
                 TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
             });
 
@@ -442,7 +444,7 @@ mod tests {
             );
             let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
             let block = evm.block.clone();
-            let evm_internals = EvmInternals::new(evm.journal_mut(), &block);
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
 
             let input = PrecompileInput {
                 data: &calldata,

@@ -208,7 +208,7 @@ mod tests {
         let (_, sender) = setup_storage();
 
         // T1: invalid selector returns reverted output
-        let (mut storage, _) = setup_storage();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut token = TIP20Setup::create("Test", "TST", sender).apply()?;
 

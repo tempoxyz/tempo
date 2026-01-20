@@ -80,7 +80,7 @@ mod tests {
         let owner = Address::random();
 
         // T1: invalid selector returns reverted output
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
         StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
             let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
