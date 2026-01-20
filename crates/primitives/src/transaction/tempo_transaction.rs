@@ -21,12 +21,6 @@ pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
-/// Maximum number of calls per transaction (DoS protection)
-pub const MAX_CALLS: usize = 32;
-
-/// Maximum size of input data per call in bytes (128KB, DoS protection)
-pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
-
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -140,15 +134,11 @@ impl Decodable for Call {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
-        let to: TxKind = Decodable::decode(buf)?;
-        let value: U256 = Decodable::decode(buf)?;
-        let input: Bytes = Decodable::decode(buf)?;
-
-        if input.len() > MAX_CALL_INPUT_SIZE {
-            return Err(alloy_rlp::Error::Custom("call input exceeds maximum size"));
-        }
-
-        let this = Self { to, value, input };
+        let this = Self {
+            to: Decodable::decode(buf)?,
+            value: Decodable::decode(buf)?,
+            input: Decodable::decode(buf)?,
+        };
 
         if buf.len() + header.payload_length != remaining {
             return Err(alloy_rlp::Error::UnexpectedLength);
@@ -156,35 +146,6 @@ impl Decodable for Call {
 
         Ok(this)
     }
-}
-
-/// Decodes a vector of calls with validation for maximum count.
-/// This must be done during decode (not just validate) to prevent DoS
-/// attacks where attackers send transactions with many calls, causing
-/// memory exhaustion before gas payment.
-fn decode_calls(buf: &mut &[u8]) -> alloy_rlp::Result<Vec<Call>> {
-    let header = alloy_rlp::Header::decode(buf)?;
-    if !header.list {
-        return Err(alloy_rlp::Error::UnexpectedString);
-    }
-
-    if header.payload_length > buf.len() {
-        return Err(alloy_rlp::Error::InputTooShort);
-    }
-
-    let mut calls = Vec::new();
-    let mut remaining = header.payload_length;
-    let start = buf.len();
-
-    while remaining > 0 {
-        if calls.len() >= MAX_CALLS {
-            return Err(alloy_rlp::Error::Custom("too many calls in transaction"));
-        }
-        calls.push(Call::decode(buf)?);
-        remaining = header.payload_length - (start - buf.len());
-    }
-
-    Ok(calls)
 }
 
 /// Tempo transaction following the Tempo spec.
@@ -518,7 +479,7 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls = decode_calls(buf)?;
+        let calls = Decodable::decode(buf)?;
         let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
@@ -951,21 +912,14 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        TempoTxEnvelope,
-        transaction::{
-            KeyAuthorization, TempoSignedAuthorization,
-            tt_signature::{
-                PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
-                derive_p256_address,
-            },
+    use crate::transaction::{
+        KeyAuthorization, TempoSignedAuthorization,
+        tt_signature::{
+            PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
+            derive_p256_address,
         },
     };
-    use alloy_consensus::Transaction;
-    use alloy_eips::{
-        eip2718::{Decodable2718, Encodable2718},
-        eip7702::Authorization,
-    };
+    use alloy_eips::eip7702::Authorization;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -1967,82 +1921,5 @@ mod tests {
             ..Default::default()
         };
         assert!(tx.validate().is_ok());
-    }
-
-    #[test]
-    fn test_max_calls_limit() {
-        let call = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::new(),
-        };
-
-        // Valid: exactly MAX_CALLS calls
-        let tx_at_limit = TempoTransaction {
-            calls: vec![call.clone(); MAX_CALLS],
-            ..Default::default()
-        };
-        assert!(tx_at_limit.validate().is_ok());
-
-        // Also test round-trip
-        let mut buf = Vec::new();
-        tx_at_limit.encode(&mut buf);
-        assert!(TempoTransaction::decode(&mut buf.as_slice()).is_ok());
-
-        // Invalid: MAX_CALLS + 1 calls - should fail during decode
-        let tx_over_limit = TempoTransaction {
-            calls: vec![call; MAX_CALLS + 1],
-            ..Default::default()
-        };
-
-        let mut buf = Vec::new();
-        tx_over_limit.encode(&mut buf);
-        let result = TempoTransaction::decode(&mut buf.as_slice());
-        assert!(
-            result.is_err(),
-            "Should reject transaction with too many calls"
-        );
-    }
-
-    #[test]
-    fn test_max_call_input_size() {
-        // Valid: exactly MAX_CALL_INPUT_SIZE
-        let call_at_limit = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0u8; MAX_CALL_INPUT_SIZE]),
-        };
-
-        let tx_at_limit = TempoTransaction {
-            calls: vec![call_at_limit],
-            ..Default::default()
-        };
-
-        let mut buf = Vec::new();
-        tx_at_limit.encode(&mut buf);
-        assert!(
-            TempoTransaction::decode(&mut buf.as_slice()).is_ok(),
-            "Should accept call with input exactly at limit"
-        );
-
-        // Invalid: MAX_CALL_INPUT_SIZE + 1 bytes
-        let call_over_limit = Call {
-            to: TxKind::Call(Address::random()),
-            value: U256::ZERO,
-            input: Bytes::from(vec![0u8; MAX_CALL_INPUT_SIZE + 1]),
-        };
-
-        let tx_over_limit = TempoTransaction {
-            calls: vec![call_over_limit],
-            ..Default::default()
-        };
-
-        let mut buf = Vec::new();
-        tx_over_limit.encode(&mut buf);
-        let result = TempoTransaction::decode(&mut buf.as_slice());
-        assert!(
-            result.is_err(),
-            "Should reject transaction with call input exceeding limit"
-        );
     }
 }

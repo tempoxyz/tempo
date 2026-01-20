@@ -34,6 +34,12 @@ const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 /// Default maximum number of authorizations allowed in an AA transaction's authorization list.
 pub const DEFAULT_MAX_TEMPO_AUTHORIZATIONS: usize = 16;
 
+/// Maximum number of calls allowed per AA transaction (DoS protection).
+pub const MAX_AA_CALLS: usize = 32;
+
+/// Maximum size of input data per call in bytes (128KB, DoS protection).
+pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
+
 /// Validator for Tempo transactions.
 #[derive(Debug)]
 pub struct TempoTransactionValidator<Client> {
@@ -304,6 +310,46 @@ where
         Ok(())
     }
 
+    /// Validates the size of calls in an AA transaction.
+    ///
+    /// This prevents DoS attacks where attackers send transactions with:
+    /// - Too many calls (exceeding `MAX_AA_CALLS`)
+    /// - Calls with oversized input data (exceeding `MAX_CALL_INPUT_SIZE`)
+    ///
+    /// These limits are enforced at the pool level rather than RLP decoding to keep
+    /// the core transaction format flexible while still protecting validators.
+    fn ensure_aa_call_limits(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(aa_tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        let calls = &aa_tx.tx().calls;
+
+        // Check number of calls
+        if calls.len() > MAX_AA_CALLS {
+            return Err(TempoPoolTransactionError::TooManyCalls {
+                count: calls.len(),
+                max_allowed: MAX_AA_CALLS,
+            });
+        }
+
+        // Check each call's input size
+        for (idx, call) in calls.iter().enumerate() {
+            if call.input.len() > MAX_CALL_INPUT_SIZE {
+                return Err(TempoPoolTransactionError::CallInputTooLarge {
+                    call_index: idx,
+                    size: call.input.len(),
+                    max_allowed: MAX_CALL_INPUT_SIZE,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
@@ -365,6 +411,15 @@ where
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
         if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate AA transaction call limits (number of calls and input sizes).
+        // This prevents DoS attacks via oversized transactions.
+        if let Err(err) = self.ensure_aa_call_limits(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
