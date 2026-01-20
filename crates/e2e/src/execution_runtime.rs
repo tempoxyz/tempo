@@ -726,8 +726,6 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
         })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
-            // TODO: remove once reth state root issues are fixed
-            c.engine.state_root_fallback = true;
             c.network.trusted_peers = config
                 .trusted_peers
                 .into_iter()
