@@ -93,7 +93,7 @@ fn extract_telemetry_url(args: &[String]) -> Option<String> {
 /// - `--logs-otlp=https://<host>/insert/opentelemetry/v1/logs`
 /// - `--logs-otlp.filter=debug`
 /// - `--metrics.prometheus.push.url=https://<user:pass>@<host>/api/v1/import/prometheus`
-/// - `--consensus.metrics-push-url=https://<user:pass>@<host>/api/v1/import/prometheus`
+/// - `--consensus.metrics-otlp=https://<host>/opentelemetry/v1/metrics`
 ///
 /// Also sets `OTEL_EXPORTER_OTLP_HEADERS` with the base64-encoded credentials for OTLP auth.
 ///
@@ -179,9 +179,9 @@ pub(crate) fn expand_telemetry_args(args: Vec<String>) -> eyre::Result<Vec<Strin
         "--metrics.prometheus.push.url={prometheus_push_url}"
     ));
 
-    // Also push consensus metrics to the same endpoint
+    // Also push consensus metrics via OTLP to the same base URL
     expanded.push(format!(
-        "--consensus.metrics-push-url={prometheus_push_url}"
+        "--consensus.metrics-otlp={base_url_no_creds}/opentelemetry/v1/metrics"
     ));
 
     Ok(expanded)

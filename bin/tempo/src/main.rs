@@ -183,17 +183,30 @@ fn main() -> eyre::Result<()> {
                 )
                 .fuse();
 
-                // Start the metrics push task if a push URL is configured
-                let mut metrics_push = args.consensus.metrics_push_url.clone().map(|push_url| {
-                    tracing::info!(
-                        url = %push_url,
-                        interval = ?args.consensus.metrics_push_interval,
-                        "starting consensus metrics push"
-                    );
-                    tempo_commonware_node::metrics::install_push(
-                        ctx.with_label("metrics_push"),
-                        push_url,
-                        args.consensus.metrics_push_interval,
+                // Start the OTLP metrics exporter if configured
+                let mut metrics_otlp = args.consensus.metrics_otlp_url.clone().map(|endpoint| {
+                    // Build labels for identifying this node in metrics
+                    let mut labels = std::collections::HashMap::new();
+
+                    // Add consensus public key as node identifier
+                    if let Ok(Some(public_key)) = args.consensus.public_key() {
+                        let pubkey_hex: String = public_key
+                            .as_ref()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        labels.insert("consensus_pubkey".to_string(), pubkey_hex);
+                    }
+
+                    let config = tempo_commonware_node::metrics::OtlpConfig {
+                        endpoint,
+                        interval: args.consensus.metrics_otlp_interval,
+                        labels,
+                    };
+
+                    tempo_commonware_node::metrics::install_otlp(
+                        ctx.with_label("metrics_otlp"),
+                        config,
                     )
                     .fuse()
                 });
@@ -225,7 +238,7 @@ fn main() -> eyre::Result<()> {
                         }
 
                         Some(ret) = async {
-                            match &mut metrics_push {
+                            match &mut metrics_otlp {
                                 Some(handle) if !handle.is_terminated() => Some(handle.await),
                                 _ => std::future::pending().await,
                             }
@@ -234,7 +247,7 @@ fn main() -> eyre::Result<()> {
                                 Ok(Ok(())) => "unexpected regular exit".to_string(),
                                 Ok(Err(err)) | Err(err) => format!("{err}"),
                             };
-                            tracing::warn!(reason, "the metrics push task exited");
+                            tracing::warn!(reason, "the OTLP metrics exporter exited");
                         }
                     )
                 }
