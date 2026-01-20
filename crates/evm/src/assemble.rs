@@ -88,7 +88,7 @@ mod tests {
     use reth_storage_api::noop::NoopProvider;
     use revm::{context::BlockEnv, database::BundleState};
     use std::collections::HashMap;
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::spec::MODERATO;
     use tempo_primitives::{
         TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope, TempoTxType,
     };
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn test_assemble_block() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let assembler = TempoBlockAssembler::new(chainspec.clone());
 
         let block_number = 1u64;

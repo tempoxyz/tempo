@@ -1,5 +1,5 @@
 use crate::{
-    bootnodes::{andantino_nodes, moderato_nodes, presto_nodes},
+    bootnodes::{moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use alloy_eips::eip7840::BlobParams;
@@ -57,7 +57,7 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato"];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -67,7 +67,6 @@ pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "mainnet" => PRESTO.clone(),
-        "testnet" => ANDANTINO.clone(),
         "moderato" => MODERATO.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
@@ -84,14 +83,6 @@ impl reth_cli::chainspec::ChainSpecParser for TempoChainSpecParser {
         chain_value_parser(s)
     }
 }
-
-pub static ANDANTINO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
-    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/andantino.json"))
-        .expect("`./genesis/andantino.json` must be present and deserializable");
-    TempoChainSpec::from_genesis(genesis)
-        .with_default_follow_url("wss://rpc.testnet.tempo.xyz")
-        .into()
-});
 
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
@@ -257,7 +248,6 @@ impl EthChainSpec for TempoChainSpec {
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
         match self.inner.chain_id() {
             4217 => Some(presto_nodes()),
-            42429 => Some(andantino_nodes()),
             42431 => Some(moderato_nodes()),
             _ => self.inner.bootnodes(),
         }
@@ -297,9 +287,9 @@ mod tests {
     use reth_cli::chainspec::ChainSpecParser as _;
 
     #[test]
-    fn can_load_testnet() {
-        let _ = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
+    fn can_load_moderato() {
+        let _ = super::TempoChainSpecParser::parse("moderato")
+            .expect("the moderato chainspec must always be well formed");
     }
 
     #[test]
@@ -378,21 +368,5 @@ mod tests {
             TempoHardfork::Genesis
         );
 
-        let testnet_chainspec = super::TempoChainSpecParser::parse("testnet")
-            .expect("the mainnet chainspec must always be well formed");
-
-        // Should always return Genesis
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(0),
-            TempoHardfork::Genesis
-        );
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(1000),
-            TempoHardfork::Genesis
-        );
-        assert_eq!(
-            testnet_chainspec.tempo_hardfork_at(u64::MAX),
-            TempoHardfork::Genesis
-        );
     }
 }
