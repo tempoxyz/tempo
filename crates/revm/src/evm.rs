@@ -569,13 +569,11 @@ mod tests {
         let ctx = tempo_evm.ctx_mut();
         ctx.block.timestamp = U256::from(1000);
         ctx.block.timestamp_millis_part = 100;
-        let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-            EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-            &ctx.cfg,
-        );
-        StorageCtx::enter(&mut storage, || {
-            TIP20Setup::create("USD", "USD", Address::ZERO).apply()
-        })?;
+
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+        _ = StorageCtx::enter(&mut storage, || TIP20Setup::path_usd(Address::ZERO).apply())?;
         drop(storage);
 
         let contract = Address::random();
@@ -664,10 +662,10 @@ mod tests {
         // Set up TIP20 using the storage context pattern
         {
             let ctx = &mut evm.ctx;
-            let mut storage = EvmPrecompileStorageProvider::new_max_gas(
-                EvmInternals::new(&mut ctx.journaled_state, &ctx.block),
-                &ctx.cfg,
-            );
+            let internals =
+                EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+
+            let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
             StorageCtx::enter(&mut storage, || {
                 TIP20Setup::path_usd(caller)
                     .with_issuer(caller)
@@ -776,7 +774,8 @@ mod tests {
 
         // Set up TIP20 first (required for fee token validation)
         let block = TempoBlockEnv::default();
-        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let ctx = &mut evm.ctx;
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
@@ -800,7 +799,8 @@ mod tests {
         let signed_tx1 = key_pair.sign_tx(tx1)?;
         let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
 
-        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let ctx = &mut evm.ctx;
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
@@ -818,7 +818,8 @@ mod tests {
         assert!(result1.is_success());
         assert_eq!(result1.gas_used(), 28_671);
 
-        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let ctx = &mut evm.ctx;
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
@@ -849,7 +850,8 @@ mod tests {
         assert!(result2.is_success());
         assert_eq!(result2.gas_used(), 31_286);
 
-        let internals = EvmInternals::new(&mut evm.ctx.journaled_state, &block);
+        let ctx = &mut evm.ctx;
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &block, &ctx.cfg, &ctx.tx);
         let mut provider =
             EvmPrecompileStorageProvider::new_max_gas(internals, &Default::default());
 
@@ -1279,14 +1281,14 @@ mod tests {
             // Default max initcode size is 49152 bytes (2 * MAX_CODE_SIZE)
             let oversized_initcode = vec![0x60; 50_000];
 
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .create(&oversized_initcode)
                     .gas_limit(10_000_000)
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(
                 matches!(
                     result,
@@ -1302,13 +1304,13 @@ mod tests {
 
         // Test 2: ValueTransferNotAllowedInAATx - call has non-zero value
         {
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_with_value(IDENTITY_PRECOMPILE, &[0x01, 0x02], U256::from(1000))
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(
                 matches!(
                     result,
@@ -1322,14 +1324,14 @@ mod tests {
 
         // Test 3: InsufficientGasForIntrinsicCost - gas_limit < intrinsic_gas
         {
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&[0x01, 0x02, 0x03, 0x04])
                     .gas_limit(1000) // Way too low, intrinsic cost is at least 21000
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(
                 matches!(
                     result,
@@ -1348,14 +1350,14 @@ mod tests {
         {
             let large_calldata = vec![0x42; 1000]; // 1000 non-zero bytes = 1000 tokens
 
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
                     .gas_limit(31_000) // Above initial_gas (~30600) but below floor_gas (~32500)
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
 
             // Should fail because gas_limit < floor_gas
             assert!(
@@ -1377,14 +1379,14 @@ mod tests {
         {
             let large_calldata = vec![0x42; 1000];
 
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
                     .gas_limit(100_000) // Plenty of gas for both initial and floor
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(
                 result.is_ok(),
                 "Expected success with sufficient gas, got: {result:?}"
@@ -1402,14 +1404,14 @@ mod tests {
 
         // Test 6: Success case - sufficient gas provided (small calldata)
         {
-            let evm = create_evm_with_tx(
+            let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&[0x01, 0x02, 0x03, 0x04])
                     .gas_limit(100_000)
                     .build(),
             )?;
 
-            let result = handler.validate_initial_tx_gas(&evm);
+            let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(result.is_ok(), "Expected success, got: {result:?}");
 
             let gas = result.unwrap();

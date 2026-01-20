@@ -8,7 +8,10 @@ use alloy::{
     primitives::{Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
-use revm::precompile::{PrecompileError, PrecompileOutput, PrecompileResult};
+use revm::{
+    context::journaled_state::JournalLoadErasedError,
+    precompile::{PrecompileError, PrecompileOutput, PrecompileResult},
+};
 use tempo_contracts::precompiles::{
     AccountKeychainError, FeeManagerError, NonceError, RolesAuthError, StablecoinDEXError,
     TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
@@ -72,6 +75,15 @@ pub enum TempoPrecompileError {
     #[error("Fatal precompile error: {0:?}")]
     #[from(skip)]
     Fatal(String),
+}
+
+impl From<JournalLoadErasedError> for TempoPrecompileError {
+    fn from(value: JournalLoadErasedError) -> Self {
+        match value {
+            JournalLoadErasedError::DBError(e) => Self::Fatal(e.to_string()),
+            JournalLoadErasedError::ColdLoadSkipped => Self::OutOfGas,
+        }
+    }
 }
 
 /// Result type alias for Tempo precompile operations

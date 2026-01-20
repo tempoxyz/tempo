@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 tempo-chainspec.workspace = true
+tempo-contracts.workspace = true
 tempo-primitives = { workspace = true, features = ["serde", "reth-codec"] }
 tempo-revm = { workspace = true, features = ["reth"] }
 tempo-precompiles.workspace = true
@@ -33,6 +34,7 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-evm.workspace = true
+alloy-sol-types.workspace = true
 
 futures.workspace = true
 tracing.workspace = true
@@ -41,10 +43,22 @@ tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true
 
+[features]
+default = []
+test-utils = [
+  "reth-chainspec/test-utils",
+  "reth-ethereum-primitives/test-utils",
+  "reth-evm/test-utils",
+  "reth-primitives-traits/test-utils",
+  "reth-provider/test-utils",
+  "reth-transaction-pool/test-utils",
+  "tempo-precompiles/test-utils",
+]
+
 [dev-dependencies]
+reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
-reth-ethereum-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-signer.workspace = true
