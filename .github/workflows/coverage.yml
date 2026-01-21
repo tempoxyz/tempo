@@ -264,8 +264,8 @@ jobs:
 
                 console.log(`Found ${fileLines.length} file lines in report`);
                 if (fileLines.length > 0) {
-                  console.log(`Sample paths from report:`);
-                  fileLines.slice(0, 3).forEach(l => console.log(`  ${l.split(/\s+/)[0]}`));
+                  console.log(`Sample lines from report:`);
+                  fileLines.slice(0, 2).forEach(l => console.log(`  "${l}"`));
                 }
 
                 // Group files by crate - match paths containing precompiles or contracts
@@ -276,15 +276,26 @@ jobs:
 
                 for (const line of fileLines) {
                   const parts = line.trim().split(/\s+/);
-                  if (parts.length >= 7) {
+                  console.log(`Parsing line with ${parts.length} parts: ${parts[0]}`);
+                  
+                  // llvm-cov report format (13 columns with branches):
+                  // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover Branches MissedBranches BranchCover
+                  // Without branches (10 columns):
+                  // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover
+                  
+                  if (parts.length >= 10) {
                     const fullPath = parts[0];
-                    const linesCoverage = parts[parts.length - 4];
-                    const linesMissed = parseInt(parts[parts.length - 5]) || 0;
-                    const linesTotal = parseInt(parts[parts.length - 6]) || 0;
+                    
+                    // Find Lines columns - they come after Functions columns
+                    // Format: ... Lines MissedLines LineCover% ...
+                    // With 13 cols: indices 7, 8, 9 are Lines, MissedLines, LineCover
+                    // With 10 cols: indices 7, 8, 9 are Lines, MissedLines, LineCover
+                    const linesTotal = parseInt(parts[7]) || 0;
+                    const linesMissed = parseInt(parts[8]) || 0;
+                    const linesCoverage = parts[9];
                     const linesCovered = linesTotal - linesMissed;
                     
                     // Determine which crate this file belongs to
-                    // Match paths like /path/to/crates/precompiles/... or crates/precompiles/...
                     let crateName = null;
                     let shortPath = fullPath;
                     
