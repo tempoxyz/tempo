@@ -160,3 +160,15 @@ jobs:
         with:
           allowed-failures: tempo-foundry-test
           jobs: ${{ toJSON(needs) }}
+
+  precompiles-coverage:
+    name: Precompiles Coverage
+    needs: [specs-success]
+    if: success()
+    uses: ./.github/workflows/coverage.yml
+    with:
+      commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      pr_number: ${{ github.event.pull_request.number || 0 }}
+    permissions:
+      pull-requests: write
+      actions: read
