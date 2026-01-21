@@ -246,11 +246,30 @@ impl ValidatorConfig {
         self.validators[call.newValidatorAddress].write(updated_validator)
     }
 
-    /// Change validator active status (owner only)
+    /// Change validator active status (owner only) - by address
+    /// Deprecated: Use change_validator_status_by_index to prevent front-running attacks
     pub fn change_validator_status(
         &mut self,
         sender: Address,
         call: IValidatorConfig::changeValidatorStatusCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
+
+        if !self.validator_exists(call.validator)? {
+            return Err(ValidatorConfigError::validator_not_found())?;
+        }
+
+        let mut validator = self.validators[call.validator].read()?;
+        validator.active = call.active;
+        self.validators[call.validator].write(validator)
+    }
+
+    /// Change validator active status by index (owner only) - T1+
+    /// Added in T1 to prevent front-running attacks where a validator changes its address
+    pub fn change_validator_status_by_index(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::changeValidatorStatusByIndexCall,
     ) -> Result<()> {
         self.check_owner(sender)?;
 
@@ -379,7 +398,7 @@ mod tests {
             validator_config.change_validator_status(
                 owner1,
                 IValidatorConfig::changeValidatorStatusCall {
-                    index: 0,
+                    validator: validator1,
                     active: false,
                 },
             )?;
@@ -405,7 +424,7 @@ mod tests {
             let res = validator_config.change_validator_status(
                 owner2,
                 IValidatorConfig::changeValidatorStatusCall {
-                    index: 0,
+                    validator: validator1,
                     active: true,
                 },
             );

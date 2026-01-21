@@ -79,9 +79,16 @@ interface IValidatorConfig {
     ) external;
 
     /// @notice Change validator active status (owner only)
+    /// @param validator The validator address
+    /// @param active Whether the validator should be active
+    /// @dev Deprecated: Use changeValidatorStatusByIndex to prevent front-running attacks
+    function changeValidatorStatus(address validator, bool active) external;
+
+    /// @notice Change validator active status by index (owner only) - T1+
     /// @param index The validator index in the validators array
     /// @param active Whether the validator should be active
-    function changeValidatorStatus(uint64 index, bool active) external;
+    /// @dev Added in T1 to prevent front-running attacks where a validator changes its address
+    function changeValidatorStatusByIndex(uint64 index, bool active) external;
 
     /// @notice Get the owner of the precompile
     /// @return The owner address

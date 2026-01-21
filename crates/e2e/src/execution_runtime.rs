@@ -379,7 +379,7 @@ impl ExecutionRuntime {
                             let validator_config =
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
-                                .changeValidatorStatus(index, active)
+                                .changeValidatorStatusByIndex(index, active)
                                 .send()
                                 .await
                                 .unwrap()
