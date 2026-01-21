@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 
 use crate::{
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, get_dkg_outcome::GetDkgOutcome,
+    generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
+    get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -14,6 +15,7 @@ use eyre::Context;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
+mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
 
@@ -32,6 +34,10 @@ async fn main() -> eyre::Result<()> {
             .await
             .wrap_err("failed to generate localnet configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
+        Action::GenerateStateBloat(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate state bloat file"),
     }
 }
 
@@ -52,6 +58,7 @@ enum Action {
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
     GenerateAddPeer(GenerateAddPeer),
+    GenerateStateBloat(GenerateStateBloat),
 }
 
 #[derive(Debug, clap::Args)]

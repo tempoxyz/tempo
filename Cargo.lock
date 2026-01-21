@@ -12420,6 +12420,7 @@ dependencies = [
  "alloy",
  "alloy-primitives",
  "clap",
+ "coins-bip32",
  "commonware-codec",
  "commonware-consensus",
  "commonware-cryptography",
@@ -12442,6 +12443,7 @@ dependencies = [
  "tempo-dkg-onchain-artifacts",
  "tempo-evm",
  "tempo-precompiles",
+ "tempo-primitives",
  "tempo-revm",
  "tokio",
 ]
