@@ -54,10 +54,9 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
         let shared_gas_limit = parent.gas_limit() / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 
         // Determine general gas limit using heuristic based on parent header.
-        // This heuristic has a one-block edge case at the T1 boundary (parent is pre-T1 but child
-        // should be T1), but it doesn't matter because Tempo disables pending block building
-        // entirely (PendingBlockKind::None in TempoEthApi) since we can't build blocks without
-        // consensus data (system transactions).
+        // This has a one-block edge case at T1 boundary (parent is pre-T1 but child should be T1).
+        // However, pending block building is disabled for Tempo (PendingBlockKind::None) since
+        // blocks require consensus data (system transactions) that RPC doesn't have.
         let general_gas_limit =
             if parent.general_gas_limit == tempo_consensus::TEMPO_GENERAL_GAS_LIMIT {
                 tempo_consensus::TEMPO_GENERAL_GAS_LIMIT
