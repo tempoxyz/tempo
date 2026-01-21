@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: tempoxyz/tempo-foundry
-          ref: staging-revm
+          ref: tempo
           path: tempo-foundry
 
       - name: Setup Rust
@@ -95,6 +95,9 @@ jobs:
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
         with:
           workspaces: tempo-foundry
+
+      - name: Install llvm-tools
+        run: rustup component add llvm-tools-preview
 
       - name: Update tempo-foundry to use current commit
         working-directory: tempo-foundry
@@ -114,18 +117,35 @@ jobs:
           # Update Cargo.lock to resolve version conflicts
           cargo update
 
-      - name: Build tempo-foundry forge
+      - name: Build tempo-foundry forge with coverage instrumentation
         working-directory: tempo-foundry
-        run: cargo build -p forge --profile release
+        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release
 
       - name: Run Forge tests with Rust precompiles
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with tempo-foundry (isTempo=true)"
-          ../../tempo-foundry/target/release/forge test -vvv
+          LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../tempo-foundry/target/release/forge test -vvv
 
-  docs-specs-success:
-    name: docs-specs success
+      - name: Generate coverage profdata
+        if: always()
+        run: |
+          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
+          mkdir -p coverage
+          "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/ref-impls/*.profraw -o coverage/forge-test.profdata
+
+      - name: Upload forge coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forge-test-coverage
+          path: |
+            coverage/forge-test.profdata
+            tempo-foundry/target/release/forge
+          retention-days: 1
+
+  specs-success:
+    name: specs success
     runs-on: ubuntu-latest
     if: always()
     needs:
