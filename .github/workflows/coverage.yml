@@ -4,8 +4,6 @@ on:
   workflow_run:
     workflows: ["Test", "Specs"]
     types: [completed]
-  pull_request:
-    branches: [main]
 
 permissions:
   pull-requests: write
@@ -15,9 +13,7 @@ jobs:
   merge-coverage:
     name: Merge Precompiles Coverage
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -34,7 +30,7 @@ jobs:
           path: cargo-coverage
           if_no_artifact_found: warn
           search_artifacts: true
-          branch: ${{ github.head_ref || github.ref_name }}
+          commit: ${{ github.event.workflow_run.head_sha }}
         continue-on-error: true
 
       - name: Download forge test coverage
@@ -45,7 +41,7 @@ jobs:
           path: forge-coverage
           if_no_artifact_found: warn
           search_artifacts: true
-          branch: ${{ github.head_ref || github.ref_name }}
+          commit: ${{ github.event.workflow_run.head_sha }}
         continue-on-error: true
 
       - name: Install lcov
@@ -149,31 +145,37 @@ jobs:
           retention-days: 10
 
       - name: Comment coverage on PR
-        if: github.event_name == 'pull_request'
+        if: github.event.workflow_run.pull_requests[0]
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            
+            const prNumber = context.payload.workflow_run.pull_requests[0]?.number;
+
+            if (!prNumber) {
+              console.log('No PR number found, skipping comment');
+              return;
+            }
+
             let body = '## 📊 Tempo Precompiles Coverage\n\n';
-            
+
             try {
               const report = fs.readFileSync('coverage-report/summary.txt', 'utf-8');
-              
+
               if (report.trim() && !report.includes('No coverage')) {
                 const lines = report.trim().split('\n');
                 const fileLines = lines.filter(l => l.includes('.rs') && !l.startsWith('Filename'));
                 const totalLine = lines.find(l => l.startsWith('TOTAL'));
-                
+
                 if (fileLines.length > 0) {
                   body += '| File | Lines | Line Coverage |\n';
                   body += '|------|-------|---------------|\n';
-                  
+
                   for (const line of fileLines) {
                     const parts = line.trim().split(/\s+/);
                     if (parts.length >= 7) {
                       const fullPath = parts[0];
-                      let shortPath = fullPath.includes('precompiles/') 
+                      let shortPath = fullPath.includes('precompiles/')
                         ? fullPath.substring(fullPath.indexOf('precompiles/'))
                         : fullPath.split('/').slice(-3).join('/');
                       const linesCoverage = parts[parts.length - 4];
@@ -183,7 +185,7 @@ jobs:
                       body += `| \`${shortPath}\` | ${linesCovered}/${linesTotal} | ${linesCoverage} |\n`;
                     }
                   }
-                  
+
                   if (totalLine) {
                     const parts = totalLine.trim().split(/\s+/);
                     if (parts.length >= 7) {
@@ -203,19 +205,19 @@ jobs:
             } catch (e) {
               body += `Coverage report not available: ${e.message}\n`;
             }
-            
+
             body += '\n📦 [Download full HTML report](../actions/runs/${{ github.run_id }})\n';
-            
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: prNumber,
             });
-            
-            const botComment = comments.find(c => 
+
+            const botComment = comments.find(c =>
               c.user.type === 'Bot' && c.body.includes('Tempo Precompiles Coverage')
             );
-            
+
             if (botComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -227,7 +229,7 @@ jobs:
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number: prNumber,
                 body
               });
             }
