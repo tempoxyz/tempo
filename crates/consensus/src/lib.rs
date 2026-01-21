@@ -197,7 +197,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::spec::MODERATO;
 
     fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_validate_header() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_in_the_future() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let future_timestamp = current_timestamp() + ALLOWED_FUTURE_BLOCK_TIME_SECONDS + 10;
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_shared_gas_mismatch() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_non_payment_gas_mismatch() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_timestamp_milli_gte_1000() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
 
         // Test timestamp equal to 1000
         let header = TestHeaderBuilder::default()
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let parent_ts = current_timestamp() - 1;
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_timestamp_not_increasing() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let parent_ts = current_timestamp();
         let parent = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_validate_body_against_header() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let consensus = TempoConsensus::new(MODERATO.clone());
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp(current_timestamp())
@@ -503,8 +503,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let system_tx = create_system_tx(chain_id, SYSTEM_TX_ADDRESSES[0]);
         let user_tx = create_tx(chain_id);
@@ -521,8 +521,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_invalid_system_tx() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let tx = TxLegacy {
             chain_id: Some(chain_id),
@@ -552,8 +552,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_no_system_tx() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let user_tx = create_tx(chain_id);
 
@@ -575,8 +575,8 @@ mod tests {
 
     #[test]
     fn test_validate_block_pre_execution_system_tx_out_of_order() {
-        let consensus = TempoConsensus::new(ANDANTINO.clone());
-        let chain_id = ANDANTINO.chain().id();
+        let consensus = TempoConsensus::new(MODERATO.clone());
+        let chain_id = MODERATO.chain().id();
 
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);

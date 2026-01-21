@@ -94,7 +94,7 @@ mod tests {
     use rayon::iter::ParallelIterator;
     use reth_chainspec::EthChainSpec;
     use reth_evm::ConfigureEngineEvm;
-    use tempo_chainspec::{TempoChainSpec, spec::ANDANTINO};
+    use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
     use tempo_primitives::{
         BlockBody, SubBlockMetadata, TempoHeader, transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE,
     };
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_tx_iterator_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
 
         let tx1 = create_legacy_tx();
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_context_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_evm_env_for_payload() {
-        let chainspec = Arc::new(TempoChainSpec::from_genesis(ANDANTINO.genesis().clone()));
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
 
         let system_tx = create_subblock_metadata_tx(chainspec.chain().id(), 1);
