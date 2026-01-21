@@ -1,5 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
+use jiff::SignedDuration;
+
 use axum::{
     Extension, Router,
     body::Body,
@@ -61,7 +63,7 @@ pub struct OtlpConfig {
     /// The OTLP endpoint URL (e.g., `https://metrics.example.com/v1/metrics`).
     pub endpoint: String,
     /// The interval at which to export metrics.
-    pub interval: Duration,
+    pub interval: SignedDuration,
     /// Labels to add to all metrics (e.g., node_id, consensus_pubkey).
     pub labels: HashMap<String, String>,
 }
@@ -96,7 +98,7 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> Handle<eyre::Result
 
         // Create periodic reader with configured interval
         let reader = PeriodicReader::builder(exporter)
-            .with_interval(config.interval)
+            .with_interval(config.interval.unsigned_abs())
             .build();
 
         // Build meter provider
