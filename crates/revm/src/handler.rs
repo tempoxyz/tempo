@@ -1248,7 +1248,6 @@ where
     DB: alloy_evm::Database,
 {
     let tx = evm.ctx_ref().tx();
-    let spec = *evm.ctx_ref().cfg().spec();
 
     // This function should only be called for AA transactions
     let aa_env = tx
