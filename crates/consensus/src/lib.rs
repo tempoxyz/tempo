@@ -243,6 +243,7 @@ mod tests {
         parent_hash: B256,
         shared_gas_limit: Option<u64>,
         general_gas_limit: Option<u64>,
+        base_fee: Option<u64>,
     }
 
     impl TestHeaderBuilder {
@@ -281,6 +282,11 @@ mod tests {
             self
         }
 
+        fn base_fee(mut self, fee: u64) -> Self {
+            self.base_fee = Some(fee);
+            self
+        }
+
         fn build(self) -> TempoHeader {
             let shared_gas_limit = self
                 .shared_gas_limit
@@ -296,7 +302,10 @@ mod tests {
                     timestamp: self.timestamp,
                     number: self.number,
                     parent_hash: self.parent_hash,
-                    base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
+                    base_fee_per_gas: Some(
+                        self.base_fee
+                            .unwrap_or(tempo_chainspec::spec::TEMPO_BASE_FEE_PRE_T1),
+                    ),
                     withdrawals_root: Some(EMPTY_ROOT_HASH),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
@@ -596,6 +605,77 @@ mod tests {
             result,
             Err(ConsensusError::TimestampIsInPast { .. })
         ));
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_t1() {
+        use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
+
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+
+        let parent_ts = current_timestamp() - 1;
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(result.is_ok(), "T1 validation failed: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_t1_wrong_base_fee() {
+        use tempo_chainspec::spec::{TEMPO_BASE_FEE_POST_T1, TEMPO_BASE_FEE_PRE_T1};
+
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+
+        let parent_ts = current_timestamp() - 1;
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        // Child uses pre-T1 base fee (wrong for T1 chainspec)
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .base_fee(TEMPO_BASE_FEE_PRE_T1)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(
+            matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
+            "Expected BaseFeeDiff error, got: {:?}",
+            result
+        );
     }
 
     #[test]
