@@ -5,10 +5,10 @@ use std::{
 };
 
 use alloy_provider::Provider;
-use alloy_rpc_types_eth::BlockNumberOrTag;
+
 use clap::Subcommand;
 use commonware_codec::ReadExt as _;
-use commonware_consensus::types::{Epoch, Epocher as _, FixedEpocher, Height};
+use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
@@ -107,12 +107,12 @@ impl CalculatePublicKey {
 /// Validator info output structure
 #[derive(Debug, Serialize)]
 struct ValidatorInfoOutput {
-    /// The epoch of the DKG outcome
-    epoch: u64,
+    /// The current epoch (at the time of query)
+    current_epoch: u64,
+    /// The epoch from which the DKG outcome was read (always current_epoch - 1, or 0 for genesis)
+    dkg_outcome_epoch: u64,
     /// Block height of the epoch boundary where the DKG outcome was read
     boundary_height: u64,
-    /// Block height at which the smart contract state was read
-    contract_read_height: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
@@ -184,26 +184,19 @@ impl ValidatorsInfo {
             .containing(current_height)
             .ok_or_else(|| eyre!("failed to determine epoch for height {latest_block_number}"))?;
 
-        let previous_epoch = if current_epoch_info.epoch().get() == 0 {
-            Epoch::new(0)
-        } else {
-            Epoch::new(current_epoch_info.epoch().get() - 1)
-        };
+        let current_epoch = current_epoch_info.epoch();
+        let boundary_height = current_epoch
+            .previous()
+            .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
+            .unwrap_or_default();
 
-        let boundary_height = epoch_strategy.last(previous_epoch).ok_or_else(|| {
-            eyre!(
-                "failed to get last height for epoch {}",
-                previous_epoch.get()
-            )
-        })?;
-
-        let boundary_block = provider
-            .get_block_by_number(BlockNumberOrTag::Number(boundary_height.get()))
+        let boundary_header = provider
+            .get_header_by_number(boundary_height.get().into())
             .await
-            .wrap_err_with(|| format!("failed to get block at height {}", boundary_height.get()))?
-            .ok_or_eyre("boundary block not found")?;
+            .wrap_err_with(|| format!("failed to get header at height {}", boundary_height.get()))?
+            .ok_or_eyre("boundary header not found")?;
 
-        let extra_data = boundary_block.header.extra_data();
+        let extra_data = boundary_header.extra_data();
         if extra_data.is_empty() {
             return Err(eyre!(
                 "boundary block at height {} has no DKG outcome in extra_data",
@@ -282,9 +275,9 @@ impl ValidatorsInfo {
         }
 
         let output = ValidatorInfoOutput {
-            epoch: dkg_outcome.epoch.get(),
+            current_epoch: current_epoch.get(),
+            dkg_outcome_epoch: dkg_outcome.epoch.get(),
             boundary_height: boundary_height.get(),
-            contract_read_height: latest_block_number,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch: decoded_next_dkg._0,
             validators: validator_entries,
