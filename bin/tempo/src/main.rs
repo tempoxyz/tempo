@@ -54,19 +54,6 @@ struct TempoArgs {
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
-    /// Unified telemetry URL for OTLP logs, Prometheus push, and consensus metrics.
-    ///
-    /// When provided (e.g., `--telemetry-url=https://user:pass@metrics.example.com`),
-    /// this configures:
-    /// - OTLP logs export to `<url>/opentelemetry/v1/logs`
-    /// - Prometheus metrics push to `<url>/api/v1/import/prometheus`
-    /// - Consensus metrics OTLP to `<url>/opentelemetry/v1/metrics`
-    ///
-    /// The URL must include credentials in the format `https://user:pass@host`.
-    /// Can also be set via the `TELEMETRY_URL` environment variable.
-    #[arg(long, value_name = "URL", env = "TELEMETRY_URL")]
-    pub telemetry_url: Option<String>,
-
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
 
@@ -123,42 +110,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = Cli::<
+    // Expand --telemetry-url into the equivalent telemetry arguments
+    let args = defaults::expand_telemetry_args(std::env::args().collect())?;
+
+    let cli = Cli::<
         TempoChainSpecParser,
         TempoArgs,
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
-    >::parse();
-
-    // Configure telemetry from --telemetry-url if provided
-    if let Commands::Node(ref mut node_cmd) = cli.command
-        && let Some(ref telemetry_url) = node_cmd.ext.telemetry_url
-    {
-        let telemetry = defaults::parse_telemetry_url(telemetry_url)?;
-
-        // Configure OTLP logs
-        #[cfg(feature = "otlp")]
-        {
-            cli.traces.logs_otlp = Some(telemetry.logs_otlp_url);
-            cli.traces.logs_otlp_filter = defaults::DEFAULT_LOGS_OTLP_FILTER
-                .parse()
-                .expect("valid filter");
-        }
-        #[cfg(not(feature = "otlp"))]
-        {
-            return Err(eyre::eyre!(
-                "--telemetry-url requires the 'otlp' feature to be enabled.\n\
-                 Rebuild with: cargo build --features otlp"
-            ));
-        }
-
-        // Configure Prometheus push gateway
-        node_cmd.metrics.push_gateway_url = Some(telemetry.prometheus_push_url);
-
-        // Configure consensus metrics OTLP
-        node_cmd.ext.consensus.metrics_otlp_url = Some(telemetry.consensus_metrics_otlp_url);
-    }
-
+    >::parse_from(args);
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
@@ -222,8 +182,8 @@ fn main() -> eyre::Result<()> {
                 .fuse();
 
                 // Start the OTLP metrics exporter if configured.
-                // Hold onto the handle for the lifetime of the consensus stack.
-                let _otlp_metrics = args
+                // Hold onto the meter provider for the lifetime of the consensus stack.
+                let _meter_provider = args
                     .consensus
                     .metrics_otlp_url
                     .clone()
