@@ -16,7 +16,7 @@ use eyre::{Context, OptionExt as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
-use tempo_alloy::TempoNetwork;
+use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
@@ -222,7 +222,7 @@ impl ValidatorsInfo {
 
         let validators_result = provider
             .call(
-                alloy_rpc_types_eth::TransactionRequest::default()
+                TempoTransactionRequest::default()
                     .to(VALIDATOR_CONFIG_ADDRESS)
                     .input(validators_calldata.into()),
             )
@@ -231,7 +231,7 @@ impl ValidatorsInfo {
 
         let next_dkg_result = provider
             .call(
-                alloy_rpc_types_eth::TransactionRequest::default()
+                TempoTransactionRequest::default()
                     .to(VALIDATOR_CONFIG_ADDRESS)
                     .input(next_dkg_calldata.into()),
             )
@@ -239,11 +239,11 @@ impl ValidatorsInfo {
             .wrap_err("failed to call getNextFullDkgCeremony")?;
 
         let decoded_validators: IValidatorConfig::getValidatorsReturn =
-            alloy_sol_types::SolCall::abi_decode_returns(&validators_result, true)
+            alloy_sol_types::SolCall::abi_decode_returns(&validators_result)
                 .wrap_err("failed to decode getValidators response")?;
 
         let decoded_next_dkg: IValidatorConfig::getNextFullDkgCeremonyReturn =
-            alloy_sol_types::SolCall::abi_decode_returns(&next_dkg_result, true)
+            alloy_sol_types::SolCall::abi_decode_returns(&next_dkg_result)
                 .wrap_err("failed to decode getNextFullDkgCeremony response")?;
 
         let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> =
