@@ -93,9 +93,10 @@ where
     let mut chain_events = pool.client().canonical_state_stream();
 
     // Populate expiry tracking with existing transactions to prevent race conditions at start-up
-    pool.all_transactions().all().for_each(|tx| {
-        state.track_expiry(tx.inner().as_aa());
-    });
+    let all_txs = pool.all_transactions();
+    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
+        state.track_expiry(tx.transaction.inner().as_aa());
+    }
 
     let amm_cache = pool.amm_liquidity_cache();
 
@@ -182,13 +183,14 @@ where
                 for (token, is_paused) in pause_events {
                     if is_paused {
                         // Pause: remove from main pool and store in paused pool
-                        let hashes_to_pause: Vec<_> = pool
-                            .all_transactions()
-                            .all()
+                        let all_txs = pool.all_transactions();
+                        let hashes_to_pause: Vec<_> = all_txs
+                            .pending
+                            .iter()
+                            .chain(all_txs.queued.iter())
                             .filter_map(|tx| {
-                                tx.inner().fee_token().filter(|&t| t == token).map(|_| {
-                                    use reth_primitives_traits::transaction::TxHashRef;
-                                    *tx.tx_hash()
+                                tx.transaction.inner().fee_token().filter(|&t| t == token).map(|_| {
+                                    *tx.hash()
                                 })
                             })
                             .collect();
