@@ -33,7 +33,9 @@ use tempo_primitives::{
 };
 use tempo_revm::{
     EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
-    calculate_aa_batch_intrinsic_gas, gas_params::tempo_gas_params, handler::EXPIRING_NONCE_GAS,
+    calculate_aa_batch_intrinsic_gas,
+    gas_params::{TempoGasParams, tempo_gas_params},
+    handler::EXPIRING_NONCE_GAS,
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -572,6 +574,11 @@ where
             }
         }
 
+        // validate intrinsic gas with additional TIP-1000 and T1 checks
+        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        }
+
         match self
             .inner
             .validate_one_with_state_provider(origin, transaction, &state_provider)
@@ -673,6 +680,48 @@ where
             }
             outcome => outcome,
         }
+    }
+}
+
+/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+///
+/// Caution: This only checks past the Merge hardfork.
+pub fn ensure_intrinsic_gas_tempo_tx(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+) -> Result<(), InvalidPoolTransactionError> {
+    let gas_params = tempo_gas_params(spec);
+
+    let mut gas = gas_params.initial_tx_gas(
+        tx.input(),
+        tx.is_create(),
+        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+        tx.access_list()
+            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+            .unwrap_or_default() as u64,
+        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
+    );
+
+    // TIP-1000: Storage pricing updates for launch
+    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // no need for v1 fork check as gas_params would be zero
+    for auth in tx.authorization_list().unwrap_or_default() {
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
+    }
+
+    // TIP-1000: Storage pricing updates for launch
+    // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+    if spec.is_t1() && tx.nonce() == 0 {
+        gas.initial_gas += gas_params.get(GasId::new_account_cost());
+    }
+
+    let gas_limit = tx.gas_limit();
+    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+    } else {
+        Ok(())
     }
 }
 
