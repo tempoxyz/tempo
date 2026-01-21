@@ -25,7 +25,8 @@ use crate::config::{
 
 /// Human-readable names for consensus network channels.
 ///
-/// These names correspond to the channel identifiers defined in [`crate::config`].
+/// These names correspond to the channel identifiers exported from the crate root
+/// (e.g., [`PENDING_CHANNEL_IDENT`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelName {
     /// Pending votes channel (channel 0) - used for votes before notarization.
