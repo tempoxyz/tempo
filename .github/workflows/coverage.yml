@@ -155,9 +155,9 @@ jobs:
             --ignore-filename-regex='library/' \
             2>/dev/null > coverage-report/full-summary.txt || true
 
-          # Filter to precompiles crates (crates/precompiles and crates/contracts)
-          # Match paths that contain these directories anywhere (handles absolute paths)
-          grep -E 'Filename|crates/precompiles/|crates/contracts/|TOTAL' coverage-report/full-summary.txt \
+          # Filter to precompiles crates (precompiles/ and contracts/)
+          # Paths in llvm-cov output are like: precompiles/src/... and contracts/src/...
+          grep -E '^Filename|^precompiles/|^contracts/|^TOTAL' coverage-report/full-summary.txt \
             > coverage-report/summary.txt || true
 
           echo "=== Precompiles Coverage ==="
@@ -181,44 +181,45 @@ jobs:
 
           if [[ -s coverage-report/full.lcov ]]; then
             # Generate per-crate lcov files
-            mkdir -p coverage-report/crates/precompiles
-            mkdir -p coverage-report/crates/contracts
+            # Paths in lcov are like: SF:precompiles/src/... or SF:contracts/src/...
+            mkdir -p coverage-report/precompiles
+            mkdir -p coverage-report/contracts
 
-            # Filter lcov for crates/precompiles
+            # Filter lcov for precompiles/
             awk '
-              /^SF:.*crates\/precompiles\/.*\.rs$/ { found=1 }
+              /^SF:precompiles\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/crates/precompiles/coverage.lcov
+            ' coverage-report/full.lcov > coverage-report/precompiles/coverage.lcov
 
-            # Filter lcov for crates/contracts
+            # Filter lcov for contracts/
             awk '
-              /^SF:.*crates\/contracts\/.*\.rs$/ { found=1 }
+              /^SF:contracts\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/crates/contracts/coverage.lcov
+            ' coverage-report/full.lcov > coverage-report/contracts/coverage.lcov
 
-            # Generate HTML for crates/precompiles
-            if [[ -s coverage-report/crates/precompiles/coverage.lcov ]]; then
-              genhtml coverage-report/crates/precompiles/coverage.lcov \
-                --output-directory coverage-report/crates/precompiles/html \
-                --title "crates/precompiles Coverage" \
+            # Generate HTML for precompiles
+            if [[ -s coverage-report/precompiles/coverage.lcov ]]; then
+              genhtml coverage-report/precompiles/coverage.lcov \
+                --output-directory coverage-report/precompiles/html \
+                --title "precompiles Coverage" \
                 --legend 2>/dev/null || true
-              echo "Generated HTML report for crates/precompiles"
+              echo "Generated HTML report for precompiles"
             fi
 
-            # Generate HTML for crates/contracts
-            if [[ -s coverage-report/crates/contracts/coverage.lcov ]]; then
-              genhtml coverage-report/crates/contracts/coverage.lcov \
-                --output-directory coverage-report/crates/contracts/html \
-                --title "crates/contracts Coverage" \
+            # Generate HTML for contracts
+            if [[ -s coverage-report/contracts/coverage.lcov ]]; then
+              genhtml coverage-report/contracts/coverage.lcov \
+                --output-directory coverage-report/contracts/html \
+                --title "contracts Coverage" \
                 --legend 2>/dev/null || true
-              echo "Generated HTML report for crates/contracts"
+              echo "Generated HTML report for contracts"
             fi
 
             # Also generate combined report for all precompiles-related code
             awk '
-              /^SF:.*(crates\/precompiles\/|crates\/contracts\/).*\.rs$/ { found=1 }
+              /^SF:(precompiles\/|contracts\/).*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
             ' coverage-report/full.lcov > coverage-report/combined.lcov
@@ -268,47 +269,38 @@ jobs:
                   fileLines.slice(0, 2).forEach(l => console.log(`  "${l}"`));
                 }
 
-                // Group files by crate - match paths containing precompiles or contracts
+                // Group files by crate - paths are like: precompiles/src/... and contracts/src/...
                 const crates = {
-                  'crates/precompiles': { files: [], covered: 0, total: 0 },
-                  'crates/contracts': { files: [], covered: 0, total: 0 }
+                  'precompiles': { files: [], covered: 0, total: 0 },
+                  'contracts': { files: [], covered: 0, total: 0 }
                 };
 
                 for (const line of fileLines) {
                   const parts = line.trim().split(/\s+/);
-                  console.log(`Parsing line with ${parts.length} parts: ${parts[0]}`);
                   
                   // llvm-cov report format (13 columns with branches):
                   // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover Branches MissedBranches BranchCover
-                  // Without branches (10 columns):
-                  // Filename Regions MissedRegions RegionCover Functions MissedFunctions FuncCover Lines MissedLines LineCover
                   
                   if (parts.length >= 10) {
                     const fullPath = parts[0];
                     
-                    // Find Lines columns - they come after Functions columns
-                    // Format: ... Lines MissedLines LineCover% ...
-                    // With 13 cols: indices 7, 8, 9 are Lines, MissedLines, LineCover
-                    // With 10 cols: indices 7, 8, 9 are Lines, MissedLines, LineCover
+                    // Lines data is at fixed positions: indices 7, 8, 9
                     const linesTotal = parseInt(parts[7]) || 0;
                     const linesMissed = parseInt(parts[8]) || 0;
                     const linesCoverage = parts[9];
                     const linesCovered = linesTotal - linesMissed;
                     
                     // Determine which crate this file belongs to
+                    // Paths are like: precompiles/src/... or contracts/src/...
                     let crateName = null;
                     let shortPath = fullPath;
                     
-                    // Use regex to match crates/precompiles or crates/contracts anywhere in path
-                    const precompilesMatch = fullPath.match(/crates\/precompiles\/(.*)/);
-                    const contractsMatch = fullPath.match(/crates\/contracts\/(.*)/);
-                    
-                    if (precompilesMatch) {
-                      crateName = 'crates/precompiles';
-                      shortPath = precompilesMatch[1];
-                    } else if (contractsMatch) {
-                      crateName = 'crates/contracts';
-                      shortPath = contractsMatch[1];
+                    if (fullPath.startsWith('precompiles/')) {
+                      crateName = 'precompiles';
+                      shortPath = fullPath.substring('precompiles/'.length);
+                    } else if (fullPath.startsWith('contracts/')) {
+                      crateName = 'contracts';
+                      shortPath = fullPath.substring('contracts/'.length);
                     }
                     
                     if (crateName && crates[crateName]) {
@@ -320,14 +312,12 @@ jobs:
                       });
                       crates[crateName].covered += linesCovered;
                       crates[crateName].total += linesTotal;
-                    } else {
-                      console.log(`Unmatched path: ${fullPath}`);
                     }
                   }
                 }
 
-                console.log(`crates/precompiles files: ${crates['crates/precompiles'].files.length}`);
-                console.log(`crates/contracts files: ${crates['crates/contracts'].files.length}`);
+                console.log(`precompiles files: ${crates['precompiles'].files.length}`);
+                console.log(`contracts files: ${crates['contracts'].files.length}`);
 
                 // Generate report per crate
                 for (const [crateName, data] of Object.entries(crates)) {
