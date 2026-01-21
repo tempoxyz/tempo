@@ -210,7 +210,17 @@ where
             <<TempoEvm<DB, I> as EvmTr>::Frame as FrameTr>::FrameInit,
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
-        let gas_limit = evm.ctx().tx().gas_limit() - init_and_floor_gas.initial_gas;
+        // Use checked_sub to prevent panic when initial_gas > gas_limit.
+        // This can happen on pre-T0 when 2D nonce gas is added after validation but before execution.
+        let gas_limit = evm
+            .ctx()
+            .tx()
+            .gas_limit()
+            .checked_sub(init_and_floor_gas.initial_gas)
+            .ok_or_else(|| TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                gas_limit: evm.ctx().tx().gas_limit(),
+                intrinsic_gas: init_and_floor_gas.initial_gas,
+            })?;
 
         // Create first frame action
         let first_frame_input = self.first_frame_input(evm, gas_limit)?;
@@ -268,7 +278,14 @@ where
         let checkpoint = evm.ctx().journal_mut().checkpoint();
 
         let gas_limit = evm.ctx().tx().gas_limit();
-        let mut remaining_gas = gas_limit - init_and_floor_gas.initial_gas;
+        // Use checked_sub to prevent panic when initial_gas > gas_limit.
+        // This can happen on pre-T0 when 2D nonce gas is added after validation but before execution.
+        let mut remaining_gas = gas_limit
+            .checked_sub(init_and_floor_gas.initial_gas)
+            .ok_or_else(|| TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                gas_limit,
+                intrinsic_gas: init_and_floor_gas.initial_gas,
+            })?;
         let mut accumulated_gas_refund = 0i64;
 
         // Store original TxEnv values to restore after batch execution
@@ -2753,6 +2770,85 @@ mod tests {
             prop_assert!(gas >= min_gas,
                 "Key auth gas should be at least {} (base + ecrecover), got {}",
                 min_gas, gas);
+        }
+    }
+
+    /// Regression test for pre-T0 2D nonce gas underflow panic.
+    ///
+    /// When:
+    /// - Pre-T0 (Genesis hardfork) — bypasses T0 gas limit validation
+    /// - AA transaction with 2D nonce (nonce_key != 0)
+    /// - gas_limit passes initial check but insufficient after nonce gas added
+    ///
+    /// The unchecked subtraction in execute_multi_call_with panics with
+    /// "attempt to subtract with overflow".
+    ///
+    /// Regression test for pre-T0 2D nonce gas underflow.
+    ///
+    /// Before the fix, when:
+    /// - Pre-T0 (Genesis hardfork) — bypasses T0 gas limit validation
+    /// - AA transaction with 2D nonce (nonce_key != 0)
+    /// - gas_limit passes initial check but insufficient after nonce gas added
+    ///
+    /// The unchecked subtraction in execute_multi_call_with would panic.
+    /// With the fix, it returns InsufficientGasForIntrinsicCost error instead.
+    #[test]
+    fn test_pre_t0_2d_nonce_gas_returns_error_instead_of_panic() {
+        use crate::evm::TempoEvm;
+
+        // Base intrinsic gas for AA tx with one call
+        const BASE_INTRINSIC_GAS: u64 = 21_000;
+        // Gas limit that passes validation but fails after 2D nonce gas is added
+        // Must be >= BASE_INTRINSIC_GAS but < BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS
+        let gas_limit = BASE_INTRINSIC_GAS + 1000;
+
+        let db = CacheDB::new(EmptyDB::default());
+        let journal = Journal::new(db);
+        // Use Genesis hardfork - pre-T0 adds nonce gas AFTER validation check
+        #[allow(deprecated)]
+        let cfg = CfgEnv::<TempoHardfork>::default().with_spec(TempoHardfork::Genesis);
+        let ctx = Context::mainnet()
+            .with_db(CacheDB::new(EmptyDB::default()))
+            .with_block(TempoBlockEnv::default())
+            .with_cfg(cfg)
+            .with_tx(TempoTxEnv {
+                inner: revm::context::TxEnv {
+                    gas_limit,
+                    ..Default::default()
+                },
+                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    aa_calls: vec![Call {
+                        to: TxKind::Call(Address::random()),
+                        value: U256::ZERO,
+                        input: Bytes::new(),
+                    }],
+                    // Non-zero nonce_key triggers 2D nonce gas calculation
+                    nonce_key: U256::from(1),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            })
+            .with_new_journal(journal);
+
+        let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+        let mut handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+
+        // validate_initial_tx_gas calculates intrinsic gas including 2D nonce gas for pre-T0
+        // The gas returned will be BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS
+        let init_and_floor_gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+        // With the fix, this returns an error instead of panicking
+        let result = handler.execution(&mut evm, &init_and_floor_gas);
+        let err = result.expect_err("should return InsufficientGasForIntrinsicCost");
+        match err.as_invalid_tx_err() {
+            Some(TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                gas_limit: gl,
+                intrinsic_gas,
+            }) => {
+                assert_eq!(*gl, gas_limit);
+                assert!(*intrinsic_gas > gas_limit, "intrinsic_gas should exceed gas_limit");
+            }
+            _ => panic!("Expected InsufficientGasForIntrinsicCost, got: {err:?}"),
         }
     }
 }
