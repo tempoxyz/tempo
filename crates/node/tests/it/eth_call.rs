@@ -12,7 +12,7 @@ use alloy::{
 use alloy_eips::BlockId;
 use alloy_rpc_types_eth::TransactionInput;
 use reth_evm::revm::interpreter::instructions::utility::IntoU256;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
 use tempo_contracts::precompiles::{
     IFeeManager,
     ITIP20::{self, transferCall},
@@ -38,7 +38,7 @@ async fn test_eth_call() -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE_POST_T1 as u128)
         .gas(300_000)
         .send()
         .await?
@@ -78,7 +78,7 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE_POST_T1 as u128)
         .gas(300_000)
         .send()
         .await?
@@ -170,7 +170,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     let mint_receipt = token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE_POST_T1 as u128)
         .gas(300_000)
         .send()
         .await?
@@ -180,7 +180,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .transfer(recipient, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
+        .gas_price(TEMPO_BASE_FEE_POST_T1 as u128)
         .gas(300_000)
         .send()
         .await?

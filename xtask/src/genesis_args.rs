@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -83,7 +83,7 @@ pub(crate) struct GenesisArgs {
     chain_id: u64,
 
     /// Base fee
-    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
+    #[arg(long, default_value_t = TEMPO_BASE_FEE_POST_T1.into())]
     base_fee_per_gas: u128,
 
     /// Genesis block gas limit

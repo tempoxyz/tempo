@@ -22,12 +22,6 @@ pub const TEMPO_BASE_FEE_PRE_T1: u64 = 10_000_000_000;
 /// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
 pub const TEMPO_BASE_FEE_POST_T1: u64 = 20_000_000_000;
 
-/// Alias for T1+ base fee for backwards compatibility in tests.
-/// New code should use `TEMPO_BASE_FEE_PRE_T1` or `TEMPO_BASE_FEE_POST_T1` directly,
-/// or query via chainspec.
-#[doc(hidden)]
-pub const TEMPO_BASE_FEE: u64 = TEMPO_BASE_FEE_POST_T1;
-
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
 pub const SYSTEM_TX_ADDRESSES: [Address; SYSTEM_TX_COUNT] = [Address::ZERO];
