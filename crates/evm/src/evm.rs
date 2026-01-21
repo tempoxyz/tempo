@@ -71,9 +71,8 @@ impl<DB: Database> TempoEvm<DB> {
         // override the gas params for tempo use case.
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
-        // In TIP-1000 we bumped gas to 30M. Only set if not already configured
-        // (eth_call sets cap to u64::MAX to allow high-gas simulations).
-        if input.cfg_env.spec.is_t1() && input.cfg_env.tx_gas_limit_cap.is_none() {
+        // In TIP-1000 we bumped gas to 30M.
+        if input.cfg_env.spec.is_t1() {
             input.cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
         }
 
