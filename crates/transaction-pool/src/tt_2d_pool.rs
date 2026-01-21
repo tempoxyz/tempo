@@ -21,7 +21,7 @@ use std::{
     },
     sync::Arc,
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
@@ -158,7 +158,7 @@ impl AA2dPool {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
                 priority: CoinbaseTipOrdering::default()
-                    .priority(&transaction.transaction, TEMPO_BASE_FEE_POST_T1),
+                    .priority(&transaction.transaction, TempoHardfork::T1.base_fee()),
                 transaction: transaction.clone(),
             },
             is_pending: inserted_as_pending,
@@ -282,7 +282,7 @@ impl AA2dPool {
         let pending_tx = PendingTransaction {
             submission_id: self.next_id(),
             priority: CoinbaseTipOrdering::default()
-                .priority(&transaction.transaction, TEMPO_BASE_FEE_POST_T1),
+                .priority(&transaction.transaction, TempoHardfork::T1.base_fee()),
             transaction: transaction.clone(),
         };
 

@@ -59,6 +59,26 @@ impl TempoHardfork {
     pub fn is_t1(&self) -> bool {
         *self >= Self::T1
     }
+
+    /// Returns the base fee for this hardfork.
+    /// - Pre-T1: 10 gwei
+    /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
+    pub const fn base_fee(&self) -> u64 {
+        match self {
+            Self::T1 => 20_000_000_000,                 // 20 gwei
+            Self::T0 | Self::Genesis => 10_000_000_000, // 10 gwei
+        }
+    }
+
+    /// Returns the general (non-payment) gas limit for this hardfork.
+    /// - Pre-T1: calculated as (block_gas_limit - shared_gas_limit) / 2
+    /// - T1+: fixed at 30M gas
+    pub const fn general_gas_limit(&self) -> Option<u64> {
+        match self {
+            Self::T1 => Some(30_000_000),     // 30M fixed
+            Self::T0 | Self::Genesis => None, // Pre-T1 uses divisor calculation
+        }
+    }
 }
 
 /// Trait for querying Tempo-specific hardfork activations.

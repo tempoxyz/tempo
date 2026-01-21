@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::{TEMPO_BASE_FEE_POST_T1, TEMPO_BASE_FEE_PRE_T1};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -513,9 +513,9 @@ impl GenesisArgs {
         // Determine base fee: explicit value, or default based on T1 activation
         let base_fee = self.base_fee_per_gas.unwrap_or_else(|| {
             if self.t1_time.is_some() {
-                TEMPO_BASE_FEE_POST_T1.into()
+                TempoHardfork::T1.base_fee().into()
             } else {
-                TEMPO_BASE_FEE_PRE_T1.into()
+                TempoHardfork::T0.base_fee().into()
             }
         });
 
