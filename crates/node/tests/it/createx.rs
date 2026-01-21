@@ -28,7 +28,7 @@ async fn test_createx() -> eyre::Result<()> {
     let deployed_address = createx
         .deployCreate(init_code.clone())
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(1_500_000)
+        .gas(5_000_000)
         .call()
         .await?
         .0;
@@ -37,7 +37,7 @@ async fn test_createx() -> eyre::Result<()> {
     createx
         .deployCreate(init_code)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(1_500_000)
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()

@@ -52,7 +52,7 @@ where
             caller,
             salt,
         )
-        .gas(1_500_000)
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()
