@@ -53,6 +53,7 @@ mod tests {
         tip403_registry::ITIP403Registry,
     };
     use alloy::sol_types::{SolCall, SolValue};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
 
     #[test]
@@ -421,18 +422,30 @@ mod tests {
 
     #[test]
     fn test_invalid_selector() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
+
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut registry = TIP403Registry::new();
+
+            let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
+            let result = registry.call(&invalid_data, sender)?;
+            assert!(result.reverted);
+
+            // T1: insufficient data also returns reverted output
+            let short_data = vec![0x12, 0x34];
+            let result = registry.call(&short_data, sender)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient data returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            // Test with invalid selector - should return Ok with reverted status
-            let invalid_data = vec![0x12, 0x34, 0x56, 0x78];
-            let result = registry.call(&invalid_data, sender);
-            assert!(result.is_ok());
-            assert!(result.unwrap().reverted);
-
-            // Test with insufficient data
             let short_data = vec![0x12, 0x34];
             let result = registry.call(&short_data, sender);
             assert!(result.is_err());

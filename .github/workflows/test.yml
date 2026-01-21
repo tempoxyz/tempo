@@ -53,8 +53,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - name: cargo nextest
-        run: cargo install cargo-nextest --git https://github.com/gakonst/nextest --branch fix/write-final-status-timeout-pass --locked
+      - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
+        with:
+          tool: nextest@0.9.123-b.2
       - name: Build and compile tests
         run: cargo nextest run --no-run -j num-cpus
       - name: Run tests
