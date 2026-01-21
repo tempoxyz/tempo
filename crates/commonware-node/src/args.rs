@@ -1,5 +1,5 @@
 //! Command line arguments for configuring the consensus layer of a tempo node.
-use std::{net::SocketAddr, path::PathBuf, sync::OnceLock, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::OnceLock};
 
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
@@ -38,8 +38,8 @@ pub struct Args {
     pub metrics_otlp_url: Option<String>,
 
     /// The interval at which to push consensus metrics via OTLP.
-    #[arg(long = "consensus.metrics-otlp.interval", default_value = "10s", value_parser = parse_duration)]
-    pub metrics_otlp_interval: Duration,
+    #[arg(long = "consensus.metrics-otlp.interval", default_value = "10s")]
+    pub metrics_otlp_interval: jiff::SignedDuration,
 
     #[arg(long = "consensus.max-message-size-bytes", default_value_t = DEFAULT_MAX_MESSAGE_SIZE_BYTES)]
     pub max_message_size_bytes: u32,
@@ -184,18 +184,4 @@ impl Args {
     }
 }
 
-/// Parses a duration string like "10s", "5m", "1h" into a [`Duration`].
-fn parse_duration(s: &str) -> Result<Duration, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Err("duration cannot be empty".to_string());
-    }
 
-    // Parse using jiff for consistency with other duration args in this file
-    let signed_duration: jiff::SignedDuration =
-        s.parse().map_err(|e| format!("invalid duration: {e}"))?;
-
-    signed_duration
-        .try_into()
-        .map_err(|_| "duration must be positive".to_string())
-}
