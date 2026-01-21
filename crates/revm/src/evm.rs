@@ -1681,7 +1681,7 @@ mod tests {
     }
 
     /// Test AA transaction gas for contract creation (CREATE).
-    /// TIP-1000 increases TX create cost to 250,000 and new account cost to 250,000.
+    /// TIP-1000 increases TX create cost to 500,000 and new account cost to 250,000.
     /// Uses T1 hardfork for TIP-1000 gas costs.
     #[test]
     fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
@@ -1693,7 +1693,7 @@ mod tests {
         // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
         let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
 
-        // T1 costs: TX create cost (250k) + new account for sender (250k) + new account for contract (250k)
+        // T1 costs: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k)
         let tx = TxBuilder::new()
             .create(&initcode)
             .gas_limit(1_000_000)
@@ -1705,7 +1705,7 @@ mod tests {
         let result = evm.transact_commit(tx_env)?;
         assert!(result.is_success(), "CREATE transaction should succeed");
 
-        // With TIP-1000: TX create cost (250k) + new account for sender (250k) + base costs
+        // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
         let gas_used = result.gas_used();
         assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
 

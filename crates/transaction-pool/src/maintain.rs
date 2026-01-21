@@ -1,6 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::TempoTransactionPool;
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{Address, TxHash};
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -157,7 +158,17 @@ where
                 // 3. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 4. Update AMM liquidity cache (must happen before validator token eviction)
+                // 4. Remove included expiring nonce transactions
+                // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
+                // so we need to remove them on inclusion rather than relying on nonce changes.
+                let mined_tx_hashes: Vec<_> = tip
+                    .blocks_iter()
+                    .flat_map(|block| block.body().transactions())
+                    .map(|tx| *tx.tx_hash())
+                    .collect();
+                pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
+
+                // 5. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
