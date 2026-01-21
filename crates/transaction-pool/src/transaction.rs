@@ -246,6 +246,10 @@ pub enum TempoPoolTransactionError {
     /// Thrown when an expiring nonce transaction is missing the required valid_before field.
     #[error("Expiring nonce transactions must have 'valid_before' set")]
     ExpiringNonceMissingValidBefore,
+
+    /// Thrown when an expiring nonce transaction has a non-zero nonce.
+    #[error("Expiring nonce transactions must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -267,7 +271,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
-            | Self::ExpiringNonceMissingValidBefore => true,
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero => true,
         }
     }
 

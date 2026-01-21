@@ -210,6 +210,11 @@ where
             return Err(TempoPoolTransactionError::ExpiringNonceMissingValidBefore);
         }
 
+        // Expiring nonce transactions MUST have nonce == 0
+        if is_expiring_nonce && tx.nonce != 0 {
+            return Err(TempoPoolTransactionError::ExpiringNonceNonceNotZero);
+        }
+
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
