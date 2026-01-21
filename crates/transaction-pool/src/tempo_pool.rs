@@ -251,7 +251,6 @@ where
         }
 
         // Build entries from the removed transactions
-        let now = Instant::now();
         let entries: Vec<_> = removed_txs
             .into_iter()
             .map(|tx| {
@@ -260,11 +259,7 @@ where
                     .inner()
                     .as_aa()
                     .and_then(|aa| aa.tx().valid_before);
-                PausedEntry {
-                    tx,
-                    paused_at: now,
-                    valid_before,
-                }
+                PausedEntry { tx, valid_before }
             })
             .collect();
 
