@@ -1230,7 +1230,7 @@ where
         batch_gas.floor_gas = 0u64;
     }
 
-    // For T0, include 2D nonce gas in the validation
+    // For T0+, include 2D nonce gas in the validation
     if spec.is_t0() {
         batch_gas.initial_gas += nonce_2d_gas;
     }

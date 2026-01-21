@@ -69,26 +69,38 @@ mod tests {
         primitives::{Address, FixedBytes},
         sol_types::{SolCall, SolValue},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{
         IValidatorConfig, IValidatorConfig::IValidatorConfigCalls, ValidatorConfigError,
     };
 
     #[test]
     fn test_function_selector_dispatch() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
         let owner = Address::random();
-        StorageCtx::enter(&mut storage, || {
-            let mut validator_config = ValidatorConfig::new();
 
-            // Initialize with owner
+        // T1: invalid selector returns reverted output
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T1);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut validator_config = ValidatorConfig::new();
             validator_config.initialize(owner)?;
 
-            // Test invalid selector - should return Ok with reverted status
             let result = validator_config.call(&[0x12, 0x34, 0x56, 0x78], sender)?;
             assert!(result.reverted);
 
-            // Test insufficient calldata
+            // T1: insufficient calldata also returns reverted output
+            let result = validator_config.call(&[0x12, 0x34], sender)?;
+            assert!(result.reverted);
+
+            Ok(())
+        })?;
+
+        // Pre-T1 (T0): insufficient calldata returns error
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
+        StorageCtx::enter(&mut storage, || {
+            let mut validator_config = ValidatorConfig::new();
+            validator_config.initialize(owner)?;
+
             let result = validator_config.call(&[0x12, 0x34], sender);
             assert!(matches!(result, Err(PrecompileError::Other(_))));
 
