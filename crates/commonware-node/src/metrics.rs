@@ -140,12 +140,6 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> Handle<eyre::Result
             })
             .build();
 
-        tracing::info!(
-            endpoint = %config.endpoint,
-            interval = ?config.interval,
-            "OTLP metrics exporter started"
-        );
-
         // Keep the meter provider alive
         // The periodic reader will automatically export metrics at the configured interval
         loop {
