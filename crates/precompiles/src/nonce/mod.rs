@@ -88,8 +88,6 @@ impl NonceManager {
         Ok(new_nonce)
     }
 
-    // ========== Expiring Nonce Methods ==========
-
     /// Returns the storage slot for a given tx hash in the expiring nonce seen set.
     /// This can be used by the transaction pool to check if a tx hash has been seen.
     pub fn expiring_seen_slot(&self, tx_hash: B256) -> U256 {
