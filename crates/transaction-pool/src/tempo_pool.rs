@@ -231,13 +231,10 @@ where
             .all_transactions()
             .all()
             .filter_map(|tx| {
-tx.inner()
-                    .fee_token()
-                    .filter(|&t| t == fee_token)
-                    .map(|_| {
-                        use reth_primitives_traits::transaction::TxHashRef;
-                        *tx.tx_hash()
-                    })
+                tx.inner().fee_token().filter(|&t| t == fee_token).map(|_| {
+                    use reth_primitives_traits::transaction::TxHashRef;
+                    *tx.tx_hash()
+                })
             })
             .collect();
 
