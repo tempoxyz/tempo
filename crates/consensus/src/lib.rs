@@ -637,7 +637,7 @@ mod tests {
         let child_sealed = SealedHeader::seal_slow(child);
 
         let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
-        assert!(result.is_ok(), "T1 validation failed: {:?}", result);
+        assert!(result.is_ok(), "T1 validation failed: {result:?}");
     }
 
     #[test]
@@ -673,8 +673,7 @@ mod tests {
         let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
         assert!(
             matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
-            "Expected BaseFeeDiff error, got: {:?}",
-            result
+            "Expected BaseFeeDiff error, got: {result:?}"
         );
     }
 
