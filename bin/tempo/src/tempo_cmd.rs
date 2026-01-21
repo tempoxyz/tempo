@@ -111,6 +111,8 @@ struct ValidatorInfoOutput {
     current_height: u64,
     // The boundary height from which the DKG outcome was read
     last_boundary: u64,
+    // The epoch length as set in the chain spec
+    epoch_length: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
@@ -279,6 +281,7 @@ impl ValidatorsInfo {
             current_epoch: current_epoch.get(),
             current_height: current_height.get(),
             last_boundary: boundary_height.get(),
+            epoch_length,
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
             next_full_dkg_epoch: decoded_next_dkg,
             validators: validator_entries,
