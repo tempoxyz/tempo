@@ -249,13 +249,20 @@ fn dispatch_call<T>(
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
-    if calldata.len() < 4 {
-        return Err(PrecompileError::Other(
-            "Invalid input: missing function selector".into(),
-        ));
-    }
-
     let storage = StorageCtx::default();
+
+    if calldata.len() < 4 {
+        if storage.spec().is_t1() {
+            return Ok(fill_precompile_output(
+                PrecompileOutput::new_reverted(0, Bytes::new()),
+                &storage,
+            ));
+        } else {
+            return Err(PrecompileError::Other(
+                "Invalid input: missing function selector".into(),
+            ));
+        }
+    }
     let result = decode(calldata);
 
     match result {
@@ -414,6 +421,76 @@ mod tests {
         assert!(
             !output.reverted,
             "view function should not revert in static context"
+        );
+    }
+
+    #[test]
+    fn test_invalid_calldata_hardfork_behavior() {
+        let call_with_spec = |calldata: Bytes, spec: TempoHardfork| {
+            let mut cfg = CfgEnv::<TempoHardfork>::default();
+            cfg.set_spec(spec);
+            let tx = TxEnv::default();
+            let precompile = tempo_precompile!("TIP20Token", &cfg, |input| {
+                TIP20Token::from_address(PATH_USD_ADDRESS).expect("PATH_USD_ADDRESS is valid")
+            });
+
+            let mut db = CacheDB::new(EmptyDB::new());
+            db.insert_account_info(
+                PATH_USD_ADDRESS,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytes!("0xEF"))),
+                    ..Default::default()
+                },
+            );
+            let mut evm = EthEvmFactory::default().create_evm(db, EvmEnv::default());
+            let block = evm.block.clone();
+            let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+
+            let input = PrecompileInput {
+                data: &calldata,
+                caller: Address::ZERO,
+                internals: evm_internals,
+                gas: 100_000,
+                is_static: false,
+                value: U256::ZERO,
+                target_address: PATH_USD_ADDRESS,
+                bytecode_address: PATH_USD_ADDRESS,
+            };
+
+            AlloyEvmPrecompile::call(&precompile, input)
+        };
+
+        // T1: empty calldata (missing selector) should return a reverted output
+        let empty = call_with_spec(Bytes::new(), TempoHardfork::T1)
+            .expect("T1: expected Ok with reverted output");
+        assert!(empty.reverted, "T1: expected reverted output");
+        assert!(empty.bytes.is_empty());
+        assert!(empty.gas_used != 0);
+        assert_eq!(empty.gas_refunded, 0);
+
+        // T1: unknown selector should return a reverted output with UnknownFunctionSelector error
+        let unknown = call_with_spec(Bytes::from([0xAA; 4]), TempoHardfork::T1)
+            .expect("T1: expected Ok with reverted output");
+        assert!(unknown.reverted, "T1: expected reverted output");
+
+        // Verify it's an UnknownFunctionSelector error with the correct selector
+        let decoded =
+            tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&unknown.bytes)
+                .expect("T1: expected UnknownFunctionSelector error");
+        assert_eq!(decoded.selector.as_slice(), &[0xAA, 0xAA, 0xAA, 0xAA]);
+
+        // Verify gas is tracked for both cases (unknown selector may cost slightly more due `INPUT_PER_WORD_COST`)
+        assert!(unknown.gas_used >= empty.gas_used);
+        assert_eq!(unknown.gas_refunded, empty.gas_refunded);
+
+        // Pre-T1 (T0): invalid calldata should return PrecompileError
+        let result = call_with_spec(Bytes::new(), TempoHardfork::T0);
+        assert!(
+            matches!(
+                &result,
+                Err(PrecompileError::Other(msg)) if msg.contains("missing function selector")
+            ),
+            "T0: expected PrecompileError for invalid calldata, got {result:?}"
         );
     }
 }
