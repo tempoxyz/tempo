@@ -44,6 +44,21 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
         Self::new(internals, u64::MAX, cfg.spec, false, cfg.gas_params.clone())
     }
+
+    /// Create a new storage provider with a specific gas limit.
+    pub fn new_with_gas_limit(
+        internals: EvmInternals<'a>,
+        cfg: &CfgEnv<TempoHardfork>,
+        gas_limit: u64,
+    ) -> Self {
+        Self::new(
+            internals,
+            gas_limit,
+            cfg.spec,
+            false,
+            cfg.gas_params.clone(),
+        )
+    }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {

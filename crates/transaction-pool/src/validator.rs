@@ -14,7 +14,10 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
@@ -25,7 +28,7 @@ use tempo_primitives::{
 };
 use tempo_revm::{
     EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
-    calculate_aa_batch_intrinsic_gas,
+    calculate_aa_batch_intrinsic_gas, gas_params::tempo_gas_params,
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -243,6 +246,7 @@ where
     fn ensure_aa_intrinsic_gas(
         &self,
         transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
     ) -> Result<(), TempoPoolTransactionError> {
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
@@ -269,8 +273,10 @@ where
         };
 
         // Calculate the intrinsic gas for the AA transaction
+        let gas_params = tempo_gas_params(spec);
+
         let mut init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
+            calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
         // Add 2D nonce gas if nonce_key is non-zero
@@ -356,6 +362,12 @@ where
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Get the current hardfork based on tip timestamp
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
             return TransactionValidationOutcome::Error(
@@ -410,7 +422,7 @@ where
         // This ensures the gas limit covers all AA-specific costs (per-call overhead,
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -432,11 +444,6 @@ where
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
-
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
