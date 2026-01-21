@@ -694,7 +694,8 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
     let mint_amount = U256::from(1000e18);
     let reward_amount = U256::from(300e18);
 
-    let gas = 300_000;
+    // TIP-1000 increased state creation costs significantly (SSTORE 250k, new account 250k)
+    let gas = 2_000_000;
     let gas_price = TEMPO_BASE_FEE as u128;
 
     let mut pending = vec![];
@@ -807,7 +808,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     let user_token = ITIP20::new(*token.address(), user_provider.clone());
     let roles = IRolesAuth::new(*token.address(), admin_provider.clone());
 
-    let gas = 300_000u64;
+    let gas = 2_000_000u64;
     let gas_price = TEMPO_BASE_FEE as u128;
 
     // Mint tokens to user

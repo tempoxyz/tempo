@@ -492,8 +492,11 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
+        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
         let adjusted_gas = InitialAndFloorGas::new(
-            init_and_floor_gas.initial_gas + evm.additional_initial_gas,
+            init_and_floor_gas
+                .initial_gas
+                .saturating_add(evm.additional_initial_gas),
             init_and_floor_gas.floor_gas,
         );
 
@@ -1501,8 +1504,11 @@ where
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
         // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
+        // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
         let adjusted_gas = InitialAndFloorGas::new(
-            init_and_floor_gas.initial_gas + evm.additional_initial_gas,
+            init_and_floor_gas
+                .initial_gas
+                .saturating_add(evm.additional_initial_gas),
             init_and_floor_gas.floor_gas,
         );
 
