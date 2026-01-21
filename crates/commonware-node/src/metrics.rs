@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, net::SocketAddr};
 
 use jiff::SignedDuration;
 
@@ -72,80 +72,76 @@ pub struct OtlpConfig {
 ///
 /// This creates an OpenTelemetry MeterProvider with an OTLP exporter and periodically
 /// reads metrics from the commonware context, converting them to OpenTelemetry format.
-pub fn install_otlp(context: Context, config: OtlpConfig) -> Handle<eyre::Result<()>> {
-    context.spawn(move |context| async move {
-        // Build resource attributes from labels
-        let resource_attributes: Vec<KeyValue> = config
-            .labels
-            .iter()
-            .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
-            .chain(std::iter::once(KeyValue::new(
-                "service.name",
-                "tempo-consensus",
-            )))
-            .collect();
+///
+/// Returns the meter provider which must be kept alive for metrics to be exported.
+pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<SdkMeterProvider> {
+    // Build resource attributes from labels
+    let resource_attributes: Vec<KeyValue> = config
+        .labels
+        .iter()
+        .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+        .chain(std::iter::once(KeyValue::new(
+            "service.name",
+            "tempo-consensus",
+        )))
+        .collect();
 
-        let resource = Resource::builder()
-            .with_attributes(resource_attributes)
-            .build();
+    let resource = Resource::builder()
+        .with_attributes(resource_attributes)
+        .build();
 
-        // Configure OTLP exporter
-        let exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_endpoint(&config.endpoint)
-            .build()
-            .wrap_err("failed to build OTLP metrics exporter")?;
+    // Configure OTLP exporter
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(&config.endpoint)
+        .build()
+        .wrap_err("failed to build OTLP metrics exporter")?;
 
-        // Create periodic reader with configured interval
-        let reader = PeriodicReader::builder(exporter)
-            .with_interval(config.interval.unsigned_abs())
-            .build();
+    // Create periodic reader with configured interval
+    let reader = PeriodicReader::builder(exporter)
+        .with_interval(config.interval.unsigned_abs())
+        .build();
 
-        // Build meter provider
-        let meter_provider = SdkMeterProvider::builder()
-            .with_resource(resource)
-            .with_reader(reader)
-            .build();
+    // Build meter provider
+    let meter_provider = SdkMeterProvider::builder()
+        .with_resource(resource)
+        .with_reader(reader)
+        .build();
 
-        let meter = meter_provider.meter("tempo-consensus");
+    let meter = meter_provider.meter("tempo-consensus");
 
-        // Create an observable gauge that reads from the context on each export
-        let _gauge = meter
-            .f64_observable_gauge("consensus_metrics")
-            .with_description("Consensus layer metrics from commonware runtime")
-            .with_callback(move |observer| {
-                let encoded = context.encode();
-                // Parse prometheus format and report individual metrics
-                for line in encoded.lines() {
-                    if line.starts_with('#') || line.is_empty() {
-                        continue;
-                    }
-                    if let Some((name_labels, value_str)) = line.rsplit_once(' ')
-                        && let Ok(value) = value_str.parse::<f64>()
-                    {
-                        // Extract metric name and labels
-                        let (name, labels) = parse_prometheus_metric(name_labels);
-                        let attributes: Vec<KeyValue> = labels
-                            .into_iter()
-                            .map(|(k, v)| KeyValue::new(k, v))
-                            .collect();
-                        observer.observe(value, &attributes);
-
-                        // Also record with the original metric name as an attribute
-                        let mut attrs_with_name = attributes.clone();
-                        attrs_with_name.push(KeyValue::new("metric_name", name));
-                        observer.observe(value, &attrs_with_name);
-                    }
+    // Create an observable gauge that reads from the context on each export
+    let _gauge = meter
+        .f64_observable_gauge("consensus_metrics")
+        .with_description("Consensus layer metrics from commonware runtime")
+        .with_callback(move |observer| {
+            let encoded = context.encode();
+            // Parse prometheus format and report individual metrics
+            for line in encoded.lines() {
+                if line.starts_with('#') || line.is_empty() {
+                    continue;
                 }
-            })
-            .build();
+                if let Some((name_labels, value_str)) = line.rsplit_once(' ')
+                    && let Ok(value) = value_str.parse::<f64>()
+                {
+                    // Extract metric name and labels
+                    let (name, labels) = parse_prometheus_metric(name_labels);
+                    let attributes: Vec<KeyValue> = labels
+                        .into_iter()
+                        .map(|(k, v)| KeyValue::new(k, v))
+                        .collect();
+                    observer.observe(value, &attributes);
 
-        // Keep the meter provider alive
-        // The periodic reader will automatically export metrics at the configured interval
-        loop {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-        }
-    })
+                    // Also record with the original metric name as an attribute
+                    let mut attrs_with_name = attributes.clone();
+                    attrs_with_name.push(KeyValue::new("metric_name", name));
+                    observer.observe(value, &attrs_with_name);
+                }
+            }
+        })
+        .build();
+
+    Ok(meter_provider)
 }
 
 /// Parse a prometheus metric line like `metric_name{label="value"} 123`
