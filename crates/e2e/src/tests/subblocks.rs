@@ -296,12 +296,14 @@ fn subblocks_are_included_with_failing_txs() {
             }
 
             // Send subblock transactions to all nodes.
+            // TIP-1000 charges 250k gas for new account creation, so txs from random signers
+            // need ~300k intrinsic gas. With 600k per-validator budget (5 validators), we fit 2 txs.
             for node in nodes.iter() {
-                for _ in 0..5 {
+                for _ in 0..2 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
                     if rand::random::<bool>() {
                         let tx =
-                            submit_subblock_tx_from(node, &PrivateKeySigner::random(), 100_000)
+                            submit_subblock_tx_from(node, &PrivateKeySigner::random(), 300_000)
                                 .await;
                         failing_transactions.push(tx);
                         expected_transactions.push(tx);
@@ -393,7 +395,7 @@ async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
     ))
     .unwrap();
 
-    submit_subblock_tx_from(node, &wallet, 1_000_000).await
+    submit_subblock_tx_from(node, &wallet, 300_000).await
 }
 
 async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
