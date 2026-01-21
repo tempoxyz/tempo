@@ -175,17 +175,55 @@ jobs:
             > coverage-report/full.lcov 2>/dev/null || true
 
           if [[ -s coverage-report/full.lcov ]]; then
+            # Generate per-crate lcov files
+            mkdir -p coverage-report/crates/precompiles
+            mkdir -p coverage-report/crates/contracts
+
+            # Filter lcov for crates/precompiles
             awk '
-              /^SF:.*(precompiles\/src\/|contracts\/src\/precompiles\/).*\.rs$/ { found=1 }
+              /^SF:.*crates\/precompiles\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
-            ' coverage-report/full.lcov > coverage-report/precompiles.lcov
+            ' coverage-report/full.lcov > coverage-report/crates/precompiles/coverage.lcov
 
-            if [[ -s coverage-report/precompiles.lcov ]]; then
-              genhtml coverage-report/precompiles.lcov \
-                --output-directory coverage-report/html \
-                --title "Tempo Precompiles Coverage" \
+            # Filter lcov for crates/contracts
+            awk '
+              /^SF:.*crates\/contracts\/.*\.rs$/ { found=1 }
+              found { print }
+              /^end_of_record$/ { found=0 }
+            ' coverage-report/full.lcov > coverage-report/crates/contracts/coverage.lcov
+
+            # Generate HTML for crates/precompiles
+            if [[ -s coverage-report/crates/precompiles/coverage.lcov ]]; then
+              genhtml coverage-report/crates/precompiles/coverage.lcov \
+                --output-directory coverage-report/crates/precompiles/html \
+                --title "crates/precompiles Coverage" \
                 --legend 2>/dev/null || true
+              echo "Generated HTML report for crates/precompiles"
+            fi
+
+            # Generate HTML for crates/contracts
+            if [[ -s coverage-report/crates/contracts/coverage.lcov ]]; then
+              genhtml coverage-report/crates/contracts/coverage.lcov \
+                --output-directory coverage-report/crates/contracts/html \
+                --title "crates/contracts Coverage" \
+                --legend 2>/dev/null || true
+              echo "Generated HTML report for crates/contracts"
+            fi
+
+            # Also generate combined report for all precompiles-related code
+            awk '
+              /^SF:.*(crates\/precompiles\/|crates\/contracts\/).*\.rs$/ { found=1 }
+              found { print }
+              /^end_of_record$/ { found=0 }
+            ' coverage-report/full.lcov > coverage-report/combined.lcov
+
+            if [[ -s coverage-report/combined.lcov ]]; then
+              genhtml coverage-report/combined.lcov \
+                --output-directory coverage-report/html \
+                --title "Tempo Precompiles Coverage (Combined)" \
+                --legend 2>/dev/null || true
+              echo "Generated combined HTML report"
             fi
           fi
 
@@ -219,37 +257,77 @@ jobs:
                 const fileLines = lines.filter(l => l.includes('.rs') && !l.startsWith('Filename'));
                 const totalLine = lines.find(l => l.startsWith('TOTAL'));
 
-                if (fileLines.length > 0) {
-                  body += '| File | Lines | Line Coverage |\n';
-                  body += '|------|-------|---------------|\n';
+                // Group files by crate
+                const crates = {
+                  'crates/precompiles': { files: [], covered: 0, total: 0 },
+                  'crates/contracts': { files: [], covered: 0, total: 0 }
+                };
 
-                  for (const line of fileLines) {
-                    const parts = line.trim().split(/\s+/);
-                    if (parts.length >= 7) {
-                      const fullPath = parts[0];
-                      let shortPath = fullPath.includes('precompiles/')
-                        ? fullPath.substring(fullPath.indexOf('precompiles/'))
-                        : fullPath.split('/').slice(-3).join('/');
-                      const linesCoverage = parts[parts.length - 4];
-                      const linesMissed = parseInt(parts[parts.length - 5]) || 0;
-                      const linesTotal = parseInt(parts[parts.length - 6]) || 0;
-                      const linesCovered = linesTotal - linesMissed;
-                      body += `| \`${shortPath}\` | ${linesCovered}/${linesTotal} | ${linesCoverage} |\n`;
+                for (const line of fileLines) {
+                  const parts = line.trim().split(/\s+/);
+                  if (parts.length >= 7) {
+                    const fullPath = parts[0];
+                    const linesCoverage = parts[parts.length - 4];
+                    const linesMissed = parseInt(parts[parts.length - 5]) || 0;
+                    const linesTotal = parseInt(parts[parts.length - 6]) || 0;
+                    const linesCovered = linesTotal - linesMissed;
+                    
+                    // Determine which crate this file belongs to
+                    let crateName = null;
+                    if (fullPath.includes('crates/precompiles/')) {
+                      crateName = 'crates/precompiles';
+                    } else if (fullPath.includes('crates/contracts/')) {
+                      crateName = 'crates/contracts';
+                    }
+                    
+                    if (crateName && crates[crateName]) {
+                      // Extract short path relative to crate
+                      const crateIdx = fullPath.indexOf(crateName);
+                      const shortPath = fullPath.substring(crateIdx + crateName.length + 1);
+                      
+                      crates[crateName].files.push({
+                        path: shortPath,
+                        covered: linesCovered,
+                        total: linesTotal,
+                        percentage: linesCoverage
+                      });
+                      crates[crateName].covered += linesCovered;
+                      crates[crateName].total += linesTotal;
                     }
                   }
+                }
 
-                  if (totalLine) {
-                    const parts = totalLine.trim().split(/\s+/);
-                    if (parts.length >= 7) {
-                      const linesCoverage = parts[parts.length - 4];
-                      const linesMissed = parseInt(parts[parts.length - 5]) || 0;
-                      const linesTotal = parseInt(parts[parts.length - 6]) || 0;
-                      const linesCovered = linesTotal - linesMissed;
-                      body += `| **TOTAL** | **${linesCovered}/${linesTotal}** | **${linesCoverage}** |\n`;
-                    }
+                // Generate report per crate
+                for (const [crateName, data] of Object.entries(crates)) {
+                  if (data.files.length === 0) continue;
+                  
+                  const cratePercentage = data.total > 0 
+                    ? ((data.covered / data.total) * 100).toFixed(2) + '%'
+                    : '0.00%';
+                  
+                  body += `### ${crateName}\n\n`;
+                  body += `**Coverage: ${data.covered}/${data.total} lines (${cratePercentage})**\n\n`;
+                  body += '<details>\n<summary>File details</summary>\n\n';
+                  body += '| File | Lines | Coverage |\n';
+                  body += '|------|-------|----------|\n';
+                  
+                  for (const file of data.files) {
+                    body += `| \`${file.path}\` | ${file.covered}/${file.total} | ${file.percentage} |\n`;
                   }
-                } else {
-                  body += '```\n' + report + '\n```\n';
+                  
+                  body += '\n</details>\n\n';
+                }
+
+                // Add overall total
+                if (totalLine) {
+                  const parts = totalLine.trim().split(/\s+/);
+                  if (parts.length >= 7) {
+                    const linesCoverage = parts[parts.length - 4];
+                    const linesMissed = parseInt(parts[parts.length - 5]) || 0;
+                    const linesTotal = parseInt(parts[parts.length - 6]) || 0;
+                    const linesCovered = linesTotal - linesMissed;
+                    body += `### Overall Total: ${linesCovered}/${linesTotal} lines (${linesCoverage})\n\n`;
+                  }
                 }
               } else {
                 body += 'No coverage data found for precompiles sources.\n';
@@ -258,7 +336,7 @@ jobs:
               body += `Coverage report not available: ${e.message}\n`;
             }
 
-            body += '\n📦 [Download full HTML report](../actions/runs/${{ github.run_id }})\n';
+            body += '📦 [Download full HTML report](../actions/runs/${{ github.run_id }})\n';
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
