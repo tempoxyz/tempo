@@ -1,6 +1,9 @@
 //! Transaction pool maintenance tasks.
 
-use crate::TempoTransactionPool;
+use crate::{
+    TempoTransactionPool,
+    paused::{PausedEntry, PausedFeeTokenPool},
+};
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{Address, TxHash};
 use alloy_sol_types::SolEvent;
@@ -32,6 +35,8 @@ struct TempoPoolState {
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
     tx_to_expiry: HashMap<TxHash, u64>,
+    /// Pool for transactions whose fee token is temporarily paused.
+    paused_pool: PausedFeeTokenPool,
 }
 
 impl TempoPoolState {
@@ -158,10 +163,6 @@ where
                     .map(|event| (event.validator, event.token))
                     .collect();
 
-                if !revoked_keys.is_empty() {
-                    pool.evict_paused_by_revoked_keys(&revoked_keys);
-                }
-
                 // 3. Handle fee token pause/unpause events
                 // Collect PauseStateUpdate events from TIP20 tokens
                 let pause_events: Vec<(Address, bool)> = tip
@@ -180,30 +181,56 @@ where
 
                 for (token, is_paused) in pause_events {
                     if is_paused {
-                        let count = pool.pause_fee_token(token);
-                        if count > 0 {
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                count,
-                                "Moved transactions to paused pool (fee token paused)"
-                            );
-                        }
-                    } else {
-                        // Drain paused transactions and spawn re-validation to avoid
-                        // blocking the maintenance loop
-                        let paused_txs = pool.drain_paused_fee_token(token);
-                        if !paused_txs.is_empty() {
-                            let count = paused_txs.len();
-                            let pool_clone = pool.clone();
-                            tokio::spawn(async move {
-                                // Convert to pooled transactions and batch submit
-                                let txs: Vec<_> = paused_txs
+                        // Pause: remove from main pool and store in paused pool
+                        let hashes_to_pause: Vec<_> = pool
+                            .all_transactions()
+                            .all()
+                            .filter_map(|tx| {
+                                tx.inner().fee_token().filter(|&t| t == token).map(|_| {
+                                    use reth_primitives_traits::transaction::TxHashRef;
+                                    *tx.tx_hash()
+                                })
+                            })
+                            .collect();
+
+                        if !hashes_to_pause.is_empty() {
+                            let removed_txs = pool.remove_transactions(hashes_to_pause);
+                            let count = removed_txs.len();
+
+                            if count > 0 {
+                                let entries: Vec<_> = removed_txs
                                     .into_iter()
-                                    .map(|tx| tx.transaction.clone())
+                                    .map(|tx| {
+                                        let valid_before = tx
+                                            .transaction
+                                            .inner()
+                                            .as_aa()
+                                            .and_then(|aa| aa.tx().valid_before);
+                                        PausedEntry { tx, valid_before }
+                                    })
                                     .collect();
 
-                                // Use batch API for efficiency
+                                state.paused_pool.insert_batch(token, entries);
+                                debug!(
+                                    target: "txpool",
+                                    %token,
+                                    count,
+                                    "Moved transactions to paused pool (fee token paused)"
+                                );
+                            }
+                        }
+                    } else {
+                        // Unpause: drain from paused pool and re-add to main pool
+                        let paused_entries = state.paused_pool.drain_token(&token);
+                        if !paused_entries.is_empty() {
+                            let count = paused_entries.len();
+                            let pool_clone = pool.clone();
+                            tokio::spawn(async move {
+                                let txs: Vec<_> = paused_entries
+                                    .into_iter()
+                                    .map(|e| e.tx.transaction.clone())
+                                    .collect();
+
                                 let results = pool_clone
                                     .add_external_transactions(txs)
                                     .await;
@@ -222,20 +249,27 @@ where
                 }
 
                 // 4. Evict expired transactions from the paused pool
-                let paused_expired = pool.evict_expired_paused(tip_timestamp);
-                if paused_expired > 0 {
+                let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
+                let paused_timed_out = state.paused_pool.evict_timed_out();
+                let total_paused_evicted = paused_expired + paused_timed_out;
+                if total_paused_evicted > 0 {
                     debug!(
                         target: "txpool",
-                        count = paused_expired,
+                        count = total_paused_evicted,
                         tip_timestamp,
                         "Evicted expired transactions from paused pool"
                     );
                 }
 
-                // 5. Update 2D nonce pool
+                // 5. Evict revoked keys from paused pool
+                if !revoked_keys.is_empty() {
+                    state.paused_pool.evict_by_revoked_keys(&revoked_keys);
+                }
+
+                // 6. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 6. Remove included expiring nonce transactions
+                // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
                 // so we need to remove them on inclusion rather than relying on nonce changes.
                 let mined_tx_hashes: Vec<_> = tip
@@ -245,7 +279,7 @@ where
                     .collect();
                 pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
 
-                // 7. Update AMM liquidity cache (must happen before validator token eviction)
+                // 8. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
@@ -253,7 +287,7 @@ where
                     }
                 }
 
-                // 8. Evict invalidated transactions in a single pool scan
+                // 9. Evict invalidated transactions in a single pool scan
                 // This checks both revoked keys and validator token changes together
                 // to avoid scanning all transactions multiple times per block.
                 if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
