@@ -76,14 +76,24 @@ pub const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
-/// Operations in `check_and_mark_expiring_nonce`:
-/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]`
-/// - 3 warm SSTOREs: `seen[old_hash]=0`, `ring[idx]`, `seen[tx_hash]`
+/// See TIP-1009 for full specification.
 ///
-/// Note: ring_ptr SLOAD/SSTORE excluded since it's cached (accessed almost every tx).
-/// Note: `seen[old_hash]` SLOAD excluded - buffer sized so entries are always expired.
-/// After cold SLOADs, slots are warm so SSTOREs use WARM_SSTORE_RESET.
-pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 3 * WARM_SSTORE_RESET;
+/// Operations charged:
+/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
+/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
+/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
+///
+/// Excluded from gas calculation:
+/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
+///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
+///
+/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
+/// - SSTORE_SET cost exists to penalize permanent state growth
+/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
+/// - No permanent state growth, so the 20k penalty doesn't apply
+///
+/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
+pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///

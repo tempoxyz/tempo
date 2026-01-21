@@ -162,17 +162,23 @@ function checkAndMarkExpiringNonce(
 The intrinsic gas cost for expiring nonce transactions includes:
 
 ```
-EXPIRING_NONCE_GAS = 2 * COLD_SLOAD_COST + 3 * WARM_SSTORE_RESET
-                   = 2 * 2100 + 3 * 2900
-                   = 12,900 gas
+EXPIRING_NONCE_GAS = 2 * COLD_SLOAD_COST + WARM_SLOAD_COST + 3 * WARM_SSTORE_RESET
+                   = 2 * 2100 + 100 + 3 * 2900
+                   = 13,000 gas
 ```
 
 **Included operations:**
-- 2 cold SLOADs: `seen[txHash]`, `ring[idx]`
-- 3 warm SSTOREs: `seen[oldHash]=0`, `ring[idx]`, `seen[txHash]`
+- 2 cold SLOADs: `seen[txHash]`, `ring[idx]` (unique slots per tx)
+- 1 warm SLOAD: `seen[oldHash]` (warm because we just read `ring[idx]` which points to it)
+- 3 SSTOREs at RESET price: `seen[oldHash]=0`, `ring[idx]`, `seen[txHash]`
 
-**Excluded operations (cached/amortized):**
-- `ring_ptr` SLOAD/SSTORE: Cached since accessed almost every transaction
+**Excluded operations (amortized):**
+- `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
+
+**Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[txHash]`:**
+- SSTORE_SET cost exists to penalize permanent state growth
+- Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k entries)
+- No permanent state growth, so the 20k penalty doesn't apply
 
 ## Transaction Pool Validation
 
