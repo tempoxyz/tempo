@@ -4332,8 +4332,15 @@ mod tests {
 
             // Alice places $200 flip bid order (buy base at tick 0, flip to sell at tick 100)
             let order_amount = 200_000_000u128;
-            let order_id =
-                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+            let order_id = exchange.place_flip(
+                alice,
+                base_token,
+                order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
             assert_eq!(order_id, 1);
 
             // Bob sells $110 base, leaving $90 remaining (below minimum)
@@ -4350,13 +4357,21 @@ mod tests {
             // A proportional flip order ($110) should have been created
             // The flip order should be order_id = 2
             let flip_order = exchange.orders[2].read()?;
-            assert!(
-                !flip_order.maker().is_zero(),
-                "Flip order should exist"
+            assert!(!flip_order.maker().is_zero(), "Flip order should exist");
+            assert_eq!(
+                flip_order.maker(),
+                alice,
+                "Flip order maker should be Alice"
             );
-            assert_eq!(flip_order.maker(), alice, "Flip order maker should be Alice");
-            assert!(flip_order.is_ask(), "Flip order should be an ask (flipped from bid)");
-            assert_eq!(flip_order.tick(), flip_tick, "Flip order should be at flip_tick");
+            assert!(
+                flip_order.is_ask(),
+                "Flip order should be an ask (flipped from bid)"
+            );
+            assert_eq!(
+                flip_order.tick(),
+                flip_tick,
+                "Flip order should be at flip_tick"
+            );
             assert_eq!(
                 flip_order.amount(),
                 200_000_000,
@@ -4367,7 +4382,10 @@ mod tests {
                 110_000_000,
                 "Flip order remaining should equal filled portion"
             );
-            assert!(flip_order.is_flip(), "Flip order should also be a flip order");
+            assert!(
+                flip_order.is_flip(),
+                "Flip order should also be a flip order"
+            );
 
             // Alice should have $90 quote tokens refunded (bid orders escrow quote)
             let alice_quote_balance = exchange.balance_of(alice, quote_token)?;
@@ -4408,8 +4426,15 @@ mod tests {
 
             // Alice places $150 flip bid order
             let order_amount = 150_000_000u128;
-            let order_id =
-                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+            let order_id = exchange.place_flip(
+                alice,
+                base_token,
+                order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
 
             // Bob sells $60 base, leaving $90 remaining (below minimum)
             // Filled amount = $60, which is also below minimum
@@ -4469,8 +4494,15 @@ mod tests {
 
             // Alice places $190 flip bid order
             let order_amount = 190_000_000u128;
-            let order_id =
-                exchange.place_flip(alice, base_token, order_amount, true, tick, flip_tick, false)?;
+            let order_id = exchange.place_flip(
+                alice,
+                base_token,
+                order_amount,
+                true,
+                tick,
+                flip_tick,
+                false,
+            )?;
 
             // Bob sells $100 base, leaving $90 remaining (below minimum)
             // Filled amount = $100, exactly at minimum
