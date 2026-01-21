@@ -188,12 +188,7 @@ fn main() -> eyre::Result<()> {
 
                     // Add consensus public key as node identifier
                     if let Ok(Some(public_key)) = args.consensus.public_key() {
-                        let pubkey_hex: String = public_key
-                            .as_ref()
-                            .iter()
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        labels.insert("consensus_pubkey".to_string(), pubkey_hex);
+                        labels.insert("consensus_pubkey".to_string(), public_key.to_string());
                     }
 
                     let config = tempo_commonware_node::metrics::OtlpConfig {
