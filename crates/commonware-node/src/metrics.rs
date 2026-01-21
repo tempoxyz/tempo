@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
 use jiff::SignedDuration;
 
@@ -109,18 +109,12 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> Handle<eyre::Result
 
         let meter = meter_provider.meter("tempo-consensus");
 
-        // Create gauges for the metrics we want to export
-        // We'll parse the prometheus text format and update these gauges
-        let metrics_context = Arc::new(context);
-        let meter = Arc::new(meter);
-
         // Create an observable gauge that reads from the context on each export
-        let ctx_clone = metrics_context.clone();
         let _gauge = meter
             .f64_observable_gauge("consensus_metrics")
             .with_description("Consensus layer metrics from commonware runtime")
             .with_callback(move |observer| {
-                let encoded = ctx_clone.encode();
+                let encoded = context.encode();
                 // Parse prometheus format and report individual metrics
                 for line in encoded.lines() {
                     if line.starts_with('#') || line.is_empty() {
