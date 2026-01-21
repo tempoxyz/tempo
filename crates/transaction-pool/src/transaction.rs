@@ -209,6 +209,20 @@ pub enum TempoPoolTransactionError {
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyAuthorizations { count: usize, max_allowed: usize },
+
+    /// Thrown when an AA transaction has too many calls.
+    #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
+    TooManyCalls { count: usize, max_allowed: usize },
+
+    /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
+    #[error(
+        "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
+    )]
+    CallInputTooLarge {
+        call_index: usize,
+        size: usize,
+        max_allowed: usize,
+    },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -225,7 +239,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
-            | Self::TooManyAuthorizations { .. } => true,
+            | Self::TooManyAuthorizations { .. }
+            | Self::TooManyCalls { .. }
+            | Self::CallInputTooLarge { .. } => true,
         }
     }
 
