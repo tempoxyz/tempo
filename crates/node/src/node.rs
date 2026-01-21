@@ -429,12 +429,14 @@ where
         // use the higher fee. If pre-T1, use lower fee - after T1 activates, txs with fees
         // between 10-20 gwei will enter pool but fail at block building (acceptable since
         // pool minimum is just an optimization filter).
-        pool_config.minimal_protocol_basefee =
-            if ctx.chain_spec().is_t1_active_at_timestamp(ctx.head().timestamp) {
-                TEMPO_BASE_FEE_POST_T1
-            } else {
-                TEMPO_BASE_FEE_PRE_T1
-            };
+        pool_config.minimal_protocol_basefee = if ctx
+            .chain_spec()
+            .is_t1_active_at_timestamp(ctx.head().timestamp)
+        {
+            TEMPO_BASE_FEE_POST_T1
+        } else {
+            TEMPO_BASE_FEE_PRE_T1
+        };
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
         // this store is effectively a noop
