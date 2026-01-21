@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
+    sync::Arc,
 };
 
 use alloy_provider::Provider;
@@ -16,6 +17,7 @@ use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
+use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
@@ -138,26 +140,33 @@ struct ValidatorEntry {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
-    /// RPC URL to query (e.g., https://rpc.presto.tempo.xyz)
-    #[arg(long, env = "RPC_URL")]
-    rpc_url: String,
+    /// Chain to query (presto, testnet, moderato, or path to chainspec file)
+    #[arg(long, short, default_value = "presto", value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Arc<TempoChainSpec>,
 
-    /// Epoch length (blocks per epoch). If not provided, will be read from genesis.
-    #[arg(long)]
-    epoch_length: Option<u64>,
+    /// RPC URL to query. Defaults to https://rpc.presto.tempo.xyz
+    #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
+    rpc_url: String,
 }
 
 impl ValidatorsInfo {
     fn run(self) -> eyre::Result<()> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()?
+            .build()
+            .wrap_err("failed constructing async runtime")?
             .block_on(self.run_async())
     }
 
     async fn run_async(self) -> eyre::Result<()> {
         use alloy_consensus::BlockHeader;
         use alloy_provider::ProviderBuilder;
+
+        let epoch_length = self
+            .chain
+            .info
+            .epoch_length()
+            .ok_or_eyre("epoch_length not found in chainspec")?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
@@ -168,27 +177,6 @@ impl ValidatorsInfo {
             .get_block_number()
             .await
             .wrap_err("failed to get latest block number")?;
-
-        let genesis_block = provider
-            .get_block_by_number(BlockNumberOrTag::Number(0))
-            .await
-            .wrap_err("failed to get genesis block")?
-            .ok_or_eyre("genesis block not found")?;
-
-        let epoch_length = if let Some(len) = self.epoch_length {
-            len
-        } else {
-            let genesis_extra: serde_json::Value = serde_json::from_str(
-                &serde_json::to_string(&genesis_block.header.inner.inner)
-                    .wrap_err("failed to serialize genesis header")?,
-            )
-            .wrap_err("failed to parse genesis header")?;
-
-            genesis_extra
-                .get("epochLength")
-                .and_then(|v| v.as_u64())
-                .ok_or_eyre("epoch_length not found in genesis, please provide --epoch-length")?
-        };
 
         let epoch_strategy = FixedEpocher::new(NZU64!(epoch_length));
         let current_height = Height::new(latest_block_number);
