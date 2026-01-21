@@ -89,7 +89,7 @@ impl PausedFeeTokenPool {
         let mut count = 0;
         for entries in self.by_token.values_mut() {
             let before = entries.len();
-            entries.retain(|e| e.valid_before.map_or(true, |vb| vb > tip_timestamp));
+            entries.retain(|e| e.valid_before.is_none_or(|vb| vb > tip_timestamp));
             count += before - entries.len();
         }
         // Clean up empty token entries
