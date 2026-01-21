@@ -190,13 +190,13 @@ impl ValidatorsInfo {
             .map(|epoch| epoch_strategy.last(epoch).expect("valid epoch"))
             .unwrap_or_default();
 
-        let boundary_header = provider
-            .get_header_by_number(boundary_height.get().into())
+        let boundary_block = provider
+            .get_block_by_number(boundary_height.get().into())
             .await
-            .wrap_err_with(|| format!("failed to get header at height {}", boundary_height.get()))?
-            .ok_or_eyre("boundary header not found")?;
+            .wrap_err_with(|| format!("failed to get block at height {}", boundary_height.get()))?
+            .ok_or_eyre("boundary block not found")?;
 
-        let extra_data = boundary_header.extra_data();
+        let extra_data = boundary_block.header.extra_data();
         if extra_data.is_empty() {
             return Err(eyre!(
                 "boundary block at height {} has no DKG outcome in extra_data",
