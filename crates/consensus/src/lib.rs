@@ -221,10 +221,10 @@ mod tests {
         Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
         transaction::TxHashRef,
     };
+    use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use alloy_genesis::Genesis;
     use tempo_chainspec::spec::{ANDANTINO, TempoChainSpec};
 
     fn current_timestamp() -> u64 {
@@ -286,9 +286,9 @@ mod tests {
                 .shared_gas_limit
                 .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
             // Default to pre-T1 divisor-based calculation for ANDANTINO (which doesn't have T1)
-            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
-                (self.gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-            });
+            let general_gas_limit = self
+                .general_gas_limit
+                .unwrap_or_else(|| (self.gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR);
 
             TempoHeader {
                 inner: Header {
