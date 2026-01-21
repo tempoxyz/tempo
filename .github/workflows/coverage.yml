@@ -181,23 +181,26 @@ jobs:
 
           if [[ -s coverage-report/full.lcov ]]; then
             # Generate per-crate lcov files
-            # Paths in lcov are like: SF:precompiles/src/... or SF:contracts/src/...
+            # Paths in lcov are absolute: SF:/home/runner/.../crates/precompiles/src/...
             mkdir -p coverage-report/precompiles
             mkdir -p coverage-report/contracts
 
-            # Filter lcov for precompiles/
+            # Filter lcov for crates/precompiles/
             awk '
-              /^SF:precompiles\/.*\.rs$/ { found=1 }
+              /^SF:.*crates\/precompiles\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
             ' coverage-report/full.lcov > coverage-report/precompiles/coverage.lcov
 
-            # Filter lcov for contracts/
+            # Filter lcov for crates/contracts/
             awk '
-              /^SF:contracts\/.*\.rs$/ { found=1 }
+              /^SF:.*crates\/contracts\/.*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
             ' coverage-report/full.lcov > coverage-report/contracts/coverage.lcov
+
+            echo "precompiles lcov lines: $(wc -l < coverage-report/precompiles/coverage.lcov)"
+            echo "contracts lcov lines: $(wc -l < coverage-report/contracts/coverage.lcov)"
 
             # Generate HTML for precompiles
             if [[ -s coverage-report/precompiles/coverage.lcov ]]; then
@@ -219,7 +222,7 @@ jobs:
 
             # Also generate combined report for all precompiles-related code
             awk '
-              /^SF:(precompiles\/|contracts\/).*\.rs$/ { found=1 }
+              /^SF:.*(crates\/precompiles\/|crates\/contracts\/).*\.rs$/ { found=1 }
               found { print }
               /^end_of_record$/ { found=0 }
             ' coverage-report/full.lcov > coverage-report/combined.lcov
@@ -340,16 +343,15 @@ jobs:
                   body += '\n</details>\n\n';
                 }
 
-                // Add overall total
-                if (totalLine) {
-                  const parts = totalLine.trim().split(/\s+/);
-                  if (parts.length >= 7) {
-                    const linesCoverage = parts[parts.length - 4];
-                    const linesMissed = parseInt(parts[parts.length - 5]) || 0;
-                    const linesTotal = parseInt(parts[parts.length - 6]) || 0;
-                    const linesCovered = linesTotal - linesMissed;
-                    body += `### Overall Total: ${linesCovered}/${linesTotal} lines (${linesCoverage})\n\n`;
-                  }
+                // Add overall total (sum of precompiles + contracts only)
+                const totalCovered = crates['precompiles'].covered + crates['contracts'].covered;
+                const totalLines = crates['precompiles'].total + crates['contracts'].total;
+                const totalPercentage = totalLines > 0 
+                  ? ((totalCovered / totalLines) * 100).toFixed(2) + '%'
+                  : '0.00%';
+                
+                if (totalLines > 0) {
+                  body += `### Total: ${totalCovered}/${totalLines} lines (${totalPercentage})\n\n`;
                 }
               } else {
                 body += 'No coverage data found for precompiles sources.\n';
