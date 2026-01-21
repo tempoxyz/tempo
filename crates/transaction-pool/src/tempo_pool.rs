@@ -6,7 +6,7 @@ use crate::{
     amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, B256, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -117,10 +117,11 @@ where
         let mut revoked_count = 0;
         let mut liquidity_count = 0;
 
-        for tx in self.all_transactions().all() {
+        let all_txs = self.all_transactions();
+        for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
             // Check 1: Revoked keychain keys (only for AA transactions with keychain signatures)
             if !revoked_keys.is_empty()
-                && let Some(aa_tx) = tx.inner().as_aa()
+                && let Some(aa_tx) = tx.transaction.inner().as_aa()
                 && let Some(keychain_sig) = aa_tx.signature().as_keychain()
             {
                 let is_revoked = revoked_keys.iter().any(|&(account, key_id)| {
@@ -130,7 +131,7 @@ where
                             .is_ok_and(|tx_key_id| tx_key_id == key_id)
                 });
                 if is_revoked {
-                    to_remove.push(*tx.tx_hash());
+                    to_remove.push(*tx.hash());
                     revoked_count += 1;
                     continue;
                 }
@@ -139,12 +140,11 @@ where
             // Check 2: Validator token changes (check liquidity for all transactions)
             if let Some(ref provider) = state_provider {
                 let user_token = tx
+                    .transaction
+                    .inner()
                     .fee_token()
                     .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-                let cost = tempo_primitives::transaction::calc_gas_balance_spending(
-                    tx.gas_limit(),
-                    tx.max_fee_per_gas(),
-                );
+                let cost = tx.transaction.fee_token_cost();
 
                 let amount_out = match compute_amount_out(cost) {
                     Ok(amount) => amount,
@@ -164,7 +164,7 @@ where
                     let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
                         Ok(Some(value)) => value,
                         Ok(None) => {
-                            to_remove.push(*tx.tx_hash());
+                            to_remove.push(*tx.hash());
                             liquidity_count += 1;
                             break;
                         }
@@ -176,7 +176,7 @@ where
                     );
 
                     if reserve < amount_out {
-                        to_remove.push(*tx.tx_hash());
+                        to_remove.push(*tx.hash());
                         liquidity_count += 1;
                         break;
                     }
