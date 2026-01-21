@@ -1,11 +1,9 @@
-use std::{
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use alloy_provider::Provider;
 
+use alloy_rpc_types_eth::TransactionRequest;
+use alloy_sol_types::SolCall;
 use clap::Subcommand;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
@@ -16,7 +14,7 @@ use eyre::{Context, OptionExt as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
-use tempo_alloy::{TempoNetwork, rpc::TempoTransactionRequest};
+use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_commonware_node_config::SigningKey;
 use tempo_contracts::precompiles::{IValidatorConfig, VALIDATOR_CONFIG_ADDRESS};
@@ -109,10 +107,10 @@ impl CalculatePublicKey {
 struct ValidatorInfoOutput {
     /// The current epoch (at the time of query)
     current_epoch: u64,
-    /// The epoch from which the DKG outcome was read (always current_epoch - 1, or 0 for genesis)
-    dkg_outcome_epoch: u64,
-    /// Block height of the epoch boundary where the DKG outcome was read
-    boundary_height: u64,
+    /// The current height (at the time of query)
+    current_height: u64,
+    // The boundary height from which the DKG outcome was read
+    last_boundary: u64,
     /// Whether this is a full DKG (new polynomial) or reshare
     is_next_full_dkg: bool,
     /// The epoch at which the next full DKG ceremony will be triggered (from contract)
@@ -132,16 +130,16 @@ struct ValidatorEntry {
     outbound_address: String,
     /// Whether the validator is active in the current contract state
     active: bool,
-    /// Whether this validator was a player (received shares) in the DKG ceremony
-    was_player: bool,
-    /// Whether this validator was a dealer (generated dealings) in the DKG ceremony
-    was_dealer: bool,
+    /// Whether the validator is a player in the current epoch.
+    is_player: bool,
+    // Whether the validator is a dealer in th ecurrent epoch.
+    is_dealer: bool,
 }
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct ValidatorsInfo {
     /// Chain to query (presto, testnet, moderato, or path to chainspec file)
-    #[arg(long, short, default_value = "presto", value_parser = tempo_chainspec::spec::chain_value_parser)]
+    #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
     /// RPC URL to query. Defaults to https://rpc.presto.tempo.xyz
@@ -166,7 +164,7 @@ impl ValidatorsInfo {
             .chain
             .info
             .epoch_length()
-            .ok_or_eyre("epoch_length not found in chainspec")?;
+            .ok_or_eyre("epochLength not found in chainspec")?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.rpc_url)
@@ -192,8 +190,14 @@ impl ValidatorsInfo {
 
         let boundary_block = provider
             .get_block_by_number(boundary_height.get().into())
+            .hashes()
             .await
-            .wrap_err_with(|| format!("failed to get block at height {}", boundary_height.get()))?
+            .wrap_err_with(|| {
+                format!(
+                    "failed to get block header at height {}",
+                    boundary_height.get()
+                )
+            })?
             .ok_or_eyre("boundary block not found")?;
 
         let extra_data = boundary_block.header.extra_data();
@@ -207,47 +211,44 @@ impl ValidatorsInfo {
         let dkg_outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
             .wrap_err("failed to decode DKG outcome from extra_data")?;
 
-        let validators_call = IValidatorConfig::getValidatorsCall {};
-        let validators_calldata = alloy_sol_types::SolCall::abi_encode(&validators_call);
-
-        let next_dkg_call = IValidatorConfig::getNextFullDkgCeremonyCall {};
-        let next_dkg_calldata = alloy_sol_types::SolCall::abi_encode(&next_dkg_call);
-
         let validators_result = provider
             .call(
-                TempoTransactionRequest::default()
+                TransactionRequest::default()
                     .to(VALIDATOR_CONFIG_ADDRESS)
-                    .input(validators_calldata.into()),
+                    .input(IValidatorConfig::getValidatorsCall {}.abi_encode().into())
+                    .into(),
             )
             .await
             .wrap_err("failed to call getValidators")?;
 
+        let decoded_validators =
+            IValidatorConfig::getValidatorsCall::abi_decode_returns(&validators_result)
+                .wrap_err("failed to decode getValidators response")?;
+
         let next_dkg_result = provider
             .call(
-                TempoTransactionRequest::default()
+                TransactionRequest::default()
                     .to(VALIDATOR_CONFIG_ADDRESS)
-                    .input(next_dkg_calldata.into()),
+                    .input(
+                        IValidatorConfig::getNextFullDkgCeremonyCall {}
+                            .abi_encode()
+                            .into(),
+                    )
+                    .into(),
             )
             .await
             .wrap_err("failed to call getNextFullDkgCeremony")?;
-
-        let decoded_validators: IValidatorConfig::getValidatorsReturn =
-            alloy_sol_types::SolCall::abi_decode_returns(&validators_result)
-                .wrap_err("failed to decode getValidators response")?;
-
-        let decoded_next_dkg: IValidatorConfig::getNextFullDkgCeremonyReturn =
-            alloy_sol_types::SolCall::abi_decode_returns(&next_dkg_result)
+        let decoded_next_dkg =
+            IValidatorConfig::getNextFullDkgCeremonyCall::abi_decode_returns(&next_dkg_result)
                 .wrap_err("failed to decode getNextFullDkgCeremony response")?;
 
         let contract_validators: HashMap<[u8; 32], IValidatorConfig::Validator> =
             decoded_validators
-                .validators
                 .into_iter()
                 .map(|v| (v.publicKey.0, v))
                 .collect();
 
         let players = dkg_outcome.players().clone();
-        let dealers: HashSet<_> = dkg_outcome.dealers().clone().into_iter().collect();
 
         let mut validator_entries = Vec::new();
         for player in players.into_iter() {
@@ -269,17 +270,17 @@ impl ValidatorsInfo {
                 inbound_address: inbound,
                 outbound_address: outbound,
                 active,
-                was_player: true,
-                was_dealer: dealers.contains(&player),
+                is_dealer: dkg_outcome.players().position(&player).is_some(),
+                is_player: dkg_outcome.next_players().position(&player).is_some(),
             });
         }
 
         let output = ValidatorInfoOutput {
             current_epoch: current_epoch.get(),
-            dkg_outcome_epoch: dkg_outcome.epoch.get(),
-            boundary_height: boundary_height.get(),
+            current_height: current_height.get(),
+            last_boundary: boundary_height.get(),
             is_next_full_dkg: dkg_outcome.is_next_full_dkg,
-            next_full_dkg_epoch: decoded_next_dkg._0,
+            next_full_dkg_epoch: decoded_next_dkg,
             validators: validator_entries,
         };
 
