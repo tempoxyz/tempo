@@ -912,11 +912,17 @@ mod serde_input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::{
-        KeyAuthorization, TempoSignedAuthorization,
-        tt_signature::{PrimitiveSignature, TempoSignature, derive_p256_address},
+    use crate::{
+        TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, TempoSignedAuthorization,
+            tt_signature::{
+                PrimitiveSignature, SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN, TempoSignature,
+                derive_p256_address,
+            },
+        },
     };
-    use alloy_eips::eip7702::Authorization;
+    use alloy_eips::{Decodable2718, Encodable2718, eip7702::Authorization};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, bytes, hex};
     use alloy_rlp::{Decodable, Encodable};
 
@@ -984,8 +990,6 @@ mod tests {
 
     #[test]
     fn test_signature_type_detection() {
-        use crate::transaction::tt_signature::{SIGNATURE_TYPE_P256, SIGNATURE_TYPE_WEBAUTHN};
-
         // Secp256k1 (detected by 65-byte length, no type identifier)
         let sig1_bytes = vec![0u8; SECP256K1_SIGNATURE_LENGTH];
         let sig1 = TempoSignature::from_bytes(&sig1_bytes).unwrap();
@@ -1115,8 +1119,6 @@ mod tests {
 
     #[test]
     fn test_nonce_system() {
-        use alloy_consensus::Transaction;
-
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1179,8 +1181,6 @@ mod tests {
 
     #[test]
     fn test_transaction_trait_impl() {
-        use alloy_consensus::Transaction;
-
         let call = Call {
             to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
             value: U256::from(1000),
@@ -1207,8 +1207,6 @@ mod tests {
 
     #[test]
     fn test_effective_gas_price() {
-        use alloy_consensus::Transaction;
-
         // Create a dummy call to satisfy validation
         let dummy_call = Call {
             to: TxKind::Create,
@@ -1685,9 +1683,6 @@ mod tests {
     #[test]
     fn test_tempo_transaction_envelope_roundtrip_without_key_auth() {
         // Test that TempoTransaction in envelope works without key_authorization
-        use crate::TempoTxEnvelope;
-        use alloy_eips::eip2718::{Decodable2718, Encodable2718};
-
         let call = Call {
             to: TxKind::Create,
             value: U256::ZERO,

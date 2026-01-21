@@ -469,27 +469,23 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add 2D nonce gas to the initial gas
+        // Add key_authorization and 2D nonce gas to the initial gas
         let adjusted_gas = InitialAndFloorGas::new(
             init_and_floor_gas.initial_gas + evm.additional_initial_gas,
             init_and_floor_gas.floor_gas,
         );
 
-        if evm.ctx().tx().gas_limit() < adjusted_gas.initial_gas {
-            let kind = *evm
-                .ctx()
-                .tx()
+        let tx = evm.tx();
+        if tx.gas_limit() < adjusted_gas.initial_gas {
+            let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            // return 0 as this is case where we can't cover the initial gas.
-            // TODO(rakita) need a test for this!
-            // check both execution and inspect_execution
             return Ok(oog_frame_result(kind, 0));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, &adjusted_gas, calls)
@@ -865,11 +861,18 @@ where
                     if !is_authorizing_this_key {
                         // Validate that user_address has authorized this access key in the keychain
                         let user_address = &keychain_sig.user_address;
+
+                        // Extract the signature type from the inner signature to validate it matches
+                        // the key_type stored in the keychain. This prevents using a signature of one
+                        // type to authenticate as a key registered with a different type.
+                        let sig_type: u8 = keychain_sig.signature.signature_type().into();
+
                         keychain
                             .validate_keychain_authorization(
                                 *user_address,
                                 access_key_addr,
                                 block.timestamp().to::<u64>(),
+                                sig_type,
                             )
                             .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: format!("{e:?}"),
@@ -1113,16 +1116,14 @@ where
                 }
             }
 
+            // TIP-1000: Storage pricing updates for launch
+            // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+            if spec.is_t1() && tx.nonce == 0 {
+                init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+
             init_gas
         };
-
-        // TIP-1000: Storage pricing updates for launch
-        // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-        // TODO(rakita): check if this is needed for `validate_aa_initial_tx_gas` function.
-        if spec.is_t1() && tx.nonce == 0 {
-            // TODO(rakita): make simpler function that give only the value without additional checks.
-            init_gas.initial_gas += gas_params.new_account_cost(true, true);
-        }
 
         if evm.ctx.cfg.is_eip7623_disabled() {
             init_gas.floor_gas = 0u64;
@@ -1326,18 +1327,25 @@ where
     // Calculate batch intrinsic gas using helper
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list())?;
 
+    let mut nonce_2d_gas = 0;
     // Calculate 2D nonce gas if nonce_key is non-zero
     // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    let nonce_2d_gas = if !aa_env.nonce_key.is_zero() {
-        if tx.nonce() == 0 {
+    if spec.is_t1() {
+        // TIP-1000: Storage pricing updates for launch
+        // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+        if tx.nonce == 0 {
+            batch_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
+    } else if let Some(aa_env) = &tx.tempo_tx_env
+        && !aa_env.nonce_key.is_zero()
+    {
+        nonce_2d_gas = if tx.nonce() == 0 {
             // New key - cold SLOAD + SSTORE set (0 -> non-zero)
             NEW_NONCE_KEY_GAS
         } else {
             // Existing key - cold SLOAD + warm SSTORE reset
             EXISTING_NONCE_KEY_GAS
-        }
-    } else {
-        0
+        };
     };
 
     if evm.ctx.cfg.is_eip7623_disabled() {
@@ -1427,34 +1435,29 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add 2D nonce gas to the initial gas (calculated in validate_against_state_and_deduct_caller)
+        // Add key_authorization and 2D nonce gas to the initial gas
         let adjusted_gas = InitialAndFloorGas::new(
             init_and_floor_gas.initial_gas + evm.additional_initial_gas,
             init_and_floor_gas.floor_gas,
         );
 
-        if evm.ctx().tx().gas_limit() < adjusted_gas.initial_gas {
-            let kind = *evm
-                .ctx()
-                .tx()
+        let tx = evm.tx();
+        if tx.gas_limit() < adjusted_gas.initial_gas {
+            let kind = *tx
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            // return 0 as this is case where we can't cover the initial gas.
-            // TODO(rakita) need a test for this!
-            // check both execution and inspect_execution
             return Ok(oog_frame_result(kind, 0));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
-        let evm_ctx = evm.ctx();
-        if let Some(tempo_tx_env) = evm_ctx.tx().tempo_tx_env.as_ref() {
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref() {
             // AA transaction - use batch execution with calls field
             let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, init_and_floor_gas, calls)
+            self.inspect_execute_multi_call(evm, &adjusted_gas, calls)
         } else {
             // Standard transaction - use single-call execution
-            self.inspect_execute_single_call(evm, init_and_floor_gas)
+            self.inspect_execute_single_call(evm, &adjusted_gas)
         }
     }
 }

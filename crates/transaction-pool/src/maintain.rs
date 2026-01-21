@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::TempoTransactionPool;
-use alloy_primitives::TxHash;
+use alloy_primitives::{Address, TxHash};
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
 use reth_chainspec::ChainSpecProvider;
@@ -11,8 +11,8 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::TransactionPool;
 use std::collections::{BTreeMap, HashMap};
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::IAccountKeychain;
-use tempo_precompiles::ACCOUNT_KEYCHAIN_ADDRESS;
+use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager};
+use tempo_precompiles::{ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
@@ -127,10 +127,9 @@ where
                     pool.remove_transactions(to_remove);
                 }
 
-                // 2. Evict transactions with revoked keychain keys
+                // 2. Collect invalidation events from this block
                 // Key revocations are rare, so we scan the pool on-demand rather than
                 // tracking all keychain-signed transactions.
-                // Collect all revocations first, then scan the pool once per block.
                 let revoked_keys: Vec<_> = tip
                     .execution_outcome()
                     .receipts()
@@ -142,24 +141,41 @@ where
                     .map(|event| (event.account, event.publicKey))
                     .collect();
 
-                if !revoked_keys.is_empty() {
-                    debug!(
-                        target: "txpool",
-                        count = revoked_keys.len(),
-                        "Processing keychain key revocations"
-                    );
-                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
-                }
+                // Validator token changes - transactions may fail if there's insufficient
+                // liquidity in the new (user_token, validator_token) AMM pool.
+                let validator_token_changes: Vec<(Address, Address)> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
+                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
+                    .map(|event| (event.validator, event.token))
+                    .collect();
 
                 // 3. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
 
-                // 4. Update AMM liquidity cache
+                // 4. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
                 for block in tip.blocks_iter() {
                     if let Err(err) = amm_cache.on_new_block(block.sealed_header(), pool.client()) {
                         error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                     }
+                }
+
+                // 5. Evict invalidated transactions in a single pool scan
+                // This checks both revoked keys and validator token changes together
+                // to avoid scanning all transactions multiple times per block.
+                if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        revoked_keys = revoked_keys.len(),
+                        validator_token_changes = validator_token_changes.len(),
+                        "Processing transaction invalidation events"
+                    );
+                    pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
                 }
             }
         }

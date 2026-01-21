@@ -28,7 +28,7 @@ pub fn tempo_gas_params(spec: TempoHardfork) -> GasParams {
             // storage set with SSTORE opcode.
             (GasId::sstore_set_without_load_cost(), 250_000),
             // Base cost of Create kind transaction.
-            (GasId::tx_create_cost(), 250_000),
+            (GasId::tx_create_cost(), 500_000),
             // create cost for CREATE/CREATE2 opcodes.
             (GasId::create(), 500_000),
             // new account cost for new accounts.
