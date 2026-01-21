@@ -23,11 +23,12 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
 
     let nonce_before = provider.get_transaction_count(caller).await?;
 
+    // TIP-1000: Higher gas needed for SSTORE operations (250k each)
     let mint_amount = U256::from(1000000u64);
     let pending_tx = token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?;
 

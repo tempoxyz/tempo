@@ -95,20 +95,24 @@ async fn test_bids() -> eyre::Result<()> {
     await_receipts(&mut pending_orders).await?;
 
     for order_id in 1..=num_orders {
-        let order = exchange.getOrder(order_id).call().await?;
+        let order = exchange.getOrder(order_id).gas(300_000).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().gas(300_000).call().await?,
+        num_orders + 1
+    );
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
         .quoteSwapExactAmountIn(*base.address(), *quote.address(), fill_amount)
+        .gas(300_000)
         .call()
         .await?;
 
@@ -126,6 +130,7 @@ async fn test_bids() -> eyre::Result<()> {
     for order_id in 1..num_orders {
         let err = exchange
             .getOrder(order_id)
+            .gas(300_000)
             .call()
             .await
             .expect_err("Expected error");
@@ -137,6 +142,7 @@ async fn test_bids() -> eyre::Result<()> {
     // Assert the last order is partially filled
     let level = exchange
         .getTickLevel(*base.address(), tick, true)
+        .gas(300_000)
         .call()
         .await?;
 
@@ -144,19 +150,24 @@ async fn test_bids() -> eyre::Result<()> {
     assert_eq!(level.tail, num_orders);
     assert!(level.totalLiquidity < order_amount);
 
-    let order = exchange.getOrder(num_orders).call().await?;
+    let order = exchange.getOrder(num_orders).gas(300_000).call().await?;
     assert_eq!(order.next, 0);
     assert_eq!(level.totalLiquidity, order.remaining);
 
     // Assert exchange balance for makers
     for (account, _) in account_data.iter().take(account_data.len() - 1) {
-        let balance = exchange.balanceOf(*account, *base.address()).call().await?;
+        let balance = exchange
+            .balanceOf(*account, *base.address())
+            .gas(300_000)
+            .call()
+            .await?;
         assert_eq!(balance, order_amount);
     }
 
     let (last_account, _) = account_data.last().unwrap();
     let balance = exchange
         .balanceOf(*last_account, *base.address())
+        .gas(300_000)
         .call()
         .await?;
     assert_eq!(balance, order_amount - order.remaining);
@@ -240,20 +251,24 @@ async fn test_asks() -> eyre::Result<()> {
     await_receipts(&mut pending_orders).await?;
 
     for order_id in 1..=num_orders {
-        let order = exchange.getOrder(order_id).call().await?;
+        let order = exchange.getOrder(order_id).gas(300_000).call().await?;
         assert!(!order.maker.is_zero());
         assert!(!order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().gas(300_000).call().await?,
+        num_orders + 1
+    );
 
     // Calculate fill amount to fill all `n-1` orders, partial fill last order
     let fill_amount = (num_orders * order_amount) - (order_amount / 2);
 
     let amount_in = exchange
         .quoteSwapExactAmountOut(*quote.address(), *base.address(), fill_amount)
+        .gas(300_000)
         .call()
         .await?;
 
@@ -278,6 +293,7 @@ async fn test_asks() -> eyre::Result<()> {
     for order_id in 1..num_orders {
         let err = exchange
             .getOrder(order_id)
+            .gas(300_000)
             .call()
             .await
             .expect_err("Expected error");
@@ -289,6 +305,7 @@ async fn test_asks() -> eyre::Result<()> {
     // Assert the last order is partially filled
     let level = exchange
         .getTickLevel(*base.address(), tick, false)
+        .gas(300_000)
         .call()
         .await?;
 
@@ -296,7 +313,7 @@ async fn test_asks() -> eyre::Result<()> {
     assert_eq!(level.tail, num_orders);
     assert!(level.totalLiquidity < order_amount);
 
-    let order = exchange.getOrder(num_orders).call().await?;
+    let order = exchange.getOrder(num_orders).gas(300_000).call().await?;
     assert_eq!(order.next, 0);
     assert_eq!(level.totalLiquidity, order.remaining);
 
@@ -308,6 +325,7 @@ async fn test_asks() -> eyre::Result<()> {
     for (account, _) in account_data.iter().take(account_data.len() - 1) {
         let balance = exchange
             .balanceOf(*account, *quote.address())
+            .gas(300_000)
             .call()
             .await?;
         assert_eq!(balance, expected_quote_per_order);
@@ -316,6 +334,7 @@ async fn test_asks() -> eyre::Result<()> {
     let (last_account, _) = account_data.last().unwrap();
     let balance = exchange
         .balanceOf(*last_account, *quote.address())
+        .gas(300_000)
         .call()
         .await?;
     let filled_amount = order_amount - order.remaining;
@@ -401,14 +420,17 @@ async fn test_cancel_orders() -> eyre::Result<()> {
 
     // Verify orders were created correctly
     for order_id in 1..=num_orders {
-        let order = exchange.getOrder(order_id).call().await?;
+        let order = exchange.getOrder(order_id).gas(300_000).call().await?;
         assert!(!order.maker.is_zero());
         assert!(order.isBid);
         assert_eq!(order.tick, tick);
         assert_eq!(order.amount, order_amount);
         assert_eq!(order.remaining, order_amount);
     }
-    assert_eq!(exchange.nextOrderId().call().await?, num_orders + 1);
+    assert_eq!(
+        exchange.nextOrderId().gas(300_000).call().await?,
+        num_orders + 1
+    );
 
     // Cancel all orders
     for (order_id, (_, signer)) in (1..=num_orders).zip(&account_data) {
@@ -425,6 +447,7 @@ async fn test_cancel_orders() -> eyre::Result<()> {
     for order_id in 1..=num_orders {
         let err = exchange
             .getOrder(order_id)
+            .gas(300_000)
             .call()
             .await
             .expect_err("Expected error");
@@ -543,13 +566,14 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
 
     // Check Bob's balances before swap
     let bob_exchange = IStablecoinDEX::new(STABLECOIN_DEX_ADDRESS, bob_provider.clone());
-    let bob_usdc_before = bob_usdc.balanceOf(bob).call().await?;
+    let bob_usdc_before = bob_usdc.balanceOf(bob).gas(300_000).call().await?;
     let bob_eurc = ITIP20::new(*eurc.address(), bob_provider.clone());
-    let bob_eurc_before = bob_eurc.balanceOf(bob).call().await?;
+    let bob_eurc_before = bob_eurc.balanceOf(bob).gas(300_000).call().await?;
     let bob_linking_usd = ITIP20::new(*linking_usd.address(), bob_provider);
-    let bob_linking_usd_wallet_before = bob_linking_usd.balanceOf(bob).call().await?;
+    let bob_linking_usd_wallet_before = bob_linking_usd.balanceOf(bob).gas(300_000).call().await?;
     let bob_linking_usd_exchange_before = bob_exchange
         .balanceOf(bob, *linking_usd.address())
+        .gas(300_000)
         .call()
         .await?;
 
@@ -557,6 +581,7 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     let amount_in = 1_000_000_000u128;
     let amount_out = bob_exchange
         .quoteSwapExactAmountIn(*usdc.address(), *eurc.address(), amount_in)
+        .gas(300_000)
         .call()
         .await?;
 
@@ -567,11 +592,12 @@ async fn test_multi_hop_swap() -> eyre::Result<()> {
     tx.get_receipt().await?;
 
     // Check Bob's balances after swap
-    let bob_usdc_after = bob_usdc.balanceOf(bob).call().await?;
-    let bob_eurc_after = bob_eurc.balanceOf(bob).call().await?;
-    let bob_linking_usd_wallet_after = bob_linking_usd.balanceOf(bob).call().await?;
+    let bob_usdc_after = bob_usdc.balanceOf(bob).gas(300_000).call().await?;
+    let bob_eurc_after = bob_eurc.balanceOf(bob).gas(300_000).call().await?;
+    let bob_linking_usd_wallet_after = bob_linking_usd.balanceOf(bob).gas(300_000).call().await?;
     let bob_linking_usd_exchange_after = bob_exchange
         .balanceOf(bob, *linking_usd.address())
+        .gas(300_000)
         .call()
         .await?;
 
@@ -664,6 +690,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let below_dust_amount = min_order_amount - 1;
     let result = exchange
         .place(*base.address(), below_dust_amount, true, 0)
+        .gas(300_000)
         .call()
         .await;
 
@@ -677,6 +704,7 @@ async fn test_place_rejects_order_below_dust_limit() -> eyre::Result<()> {
     // Try to place an ask order below dust limit (should also fail)
     let result = exchange
         .place(*base.address(), below_dust_amount, false, 0)
+        .gas(300_000)
         .call()
         .await;
 
@@ -756,6 +784,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     let below_dust_amount = min_order_amount - 1;
     let result = exchange
         .placeFlip(*base.address(), below_dust_amount, true, 0, 10)
+        .gas(300_000)
         .call()
         .await;
 
@@ -769,6 +798,7 @@ async fn test_place_flip_rejects_order_below_dust_limit() -> eyre::Result<()> {
     // Try to place a flip ask order below dust limit (should also fail)
     let result = exchange
         .placeFlip(*base.address(), below_dust_amount, false, 10, 0)
+        .gas(300_000)
         .call()
         .await;
 

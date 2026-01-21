@@ -36,11 +36,11 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
     assert_eq!(balance, U256::ZERO);
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_token_address = fee_manager.userTokens(caller).call().await?;
+    let fee_token_address = fee_manager.userTokens(caller).gas(300_000).call().await?;
 
     // Get the balance of the fee token before the tx
     let fee_token = ITIP20::new(fee_token_address, provider.clone());
-    let initial_balance = fee_token.balanceOf(caller).call().await?;
+    let initial_balance = fee_token.balanceOf(caller).gas(300_000).call().await?;
 
     let tx = TransactionRequest::default().from(caller).to(caller);
 
@@ -51,7 +51,7 @@ async fn test_fee_in_stable() -> eyre::Result<()> {
         .await?;
 
     // Assert that the fee token balance has decreased by gas spent
-    let balance_after = fee_token.balanceOf(caller).call().await?;
+    let balance_after = fee_token.balanceOf(caller).gas(300_000).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
     assert_eq!(balance_after, initial_balance - U256::from(cost));
@@ -105,11 +105,15 @@ async fn test_default_fee_token() -> eyre::Result<()> {
 
     // Ensure the fee token is not set for the user
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_token_address = fee_manager.userTokens(new_address).call().await?;
+    let fee_token_address = fee_manager
+        .userTokens(new_address)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(fee_token_address, Address::ZERO);
 
     // Get the balance of the fee token before the tx
-    let initial_balance = path_usd.balanceOf(new_address).call().await?;
+    let initial_balance = path_usd.balanceOf(new_address).gas(300_000).call().await?;
 
     let tx = TransactionRequest::default().from(new_address).to(caller);
     let pending_tx = new_provider.send_transaction(tx).await?;
@@ -119,7 +123,7 @@ async fn test_default_fee_token() -> eyre::Result<()> {
         .await?;
 
     // Assert that the fee token balance has decreased by gas spent
-    let balance_after = path_usd.balanceOf(new_address).call().await?;
+    let balance_after = path_usd.balanceOf(new_address).gas(300_000).call().await?;
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
     assert_eq!(balance_after, initial_balance - U256::from(cost));
 
@@ -154,16 +158,16 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
     assert_eq!(balance, U256::ZERO);
 
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
-    let fee_token_address = fee_manager.userTokens(caller).call().await?;
+    let fee_token_address = fee_manager.userTokens(caller).gas(300_000).call().await?;
 
     // Get the balance of the fee token before the tx
     let fee_token = ITIP20::new(fee_token_address, provider.clone());
-    let initial_balance = fee_token.balanceOf(caller).call().await?;
+    let initial_balance = fee_token.balanceOf(caller).gas(300_000).call().await?;
 
     let tx = TransactionRequest::default()
         .into_create()
         .input(Bytes::from_static(&[0xef]).into())
-        .gas_limit(100000);
+        .gas_limit(350_000);
     let pending_tx = provider.send_transaction(tx).await?;
     let tx_hash = pending_tx.watch().await?;
     let receipt = provider
@@ -171,7 +175,7 @@ async fn test_fee_transfer_logs() -> eyre::Result<()> {
         .await?;
 
     // Assert that the fee token balance has decreased by gas spent
-    let balance_after = fee_token.balanceOf(caller).call().await?;
+    let balance_after = fee_token.balanceOf(caller).gas(300_000).call().await?;
 
     let cost = calc_gas_balance_spending(receipt.gas_used, receipt.effective_gas_price());
     assert_eq!(balance_after, initial_balance - U256::from(cost));

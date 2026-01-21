@@ -25,10 +25,11 @@ async fn test_createx() -> eyre::Result<()> {
     let createx = CreateX::new(CREATEX_ADDRESS, &provider);
 
     // Get deployed address from simulated call
+    // TIP-1000: CREATE opcode costs 500k gas, plus additional gas for the call
     let deployed_address = createx
         .deployCreate(init_code.clone())
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(500_000)
+        .gas(1_000_000)
         .call()
         .await?
         .0;
@@ -37,7 +38,7 @@ async fn test_createx() -> eyre::Result<()> {
     createx
         .deployCreate(init_code)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(500_000)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()

@@ -44,25 +44,37 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     // Assert initial state
     let pool_key = PoolKey::new(*token_0.address(), *token_1.address());
     let pool_id = pool_key.get_id();
-    let user_token0_balance = token_0.balanceOf(caller).call().await?;
+    let user_token0_balance = token_0.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(user_token0_balance, amount);
 
-    let user_token1_balance = token_1.balanceOf(caller).call().await?;
+    let user_token1_balance = token_1.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(user_token1_balance, amount);
 
-    let fee_manager_token0_balance = token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_token0_balance = token_0
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(fee_manager_token0_balance, U256::ZERO);
 
-    let fee_manager_token1_balance = token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_token1_balance = token_1
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(fee_manager_token1_balance, U256::ZERO);
 
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    let total_supply = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
     assert_eq!(total_supply, U256::ZERO);
 
-    let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
+    let lp_balance = fee_amm
+        .liquidityBalances(pool_id, caller)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(lp_balance, U256::ZERO);
 
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
@@ -81,8 +93,12 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert!(mint_receipt.status());
 
     // Assert state changes
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
-    let lp_balance = fee_amm.liquidityBalances(pool_id, caller).call().await?;
+    let total_supply = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
+    let lp_balance = fee_amm
+        .liquidityBalances(pool_id, caller)
+        .gas(300_000)
+        .call()
+        .await?;
 
     // With mint, liquidity = (amount / 2) - MIN_LIQUIDITY (for first mint)
     // Only validator tokens are transferred, creating a one-sided pool
@@ -93,24 +109,30 @@ async fn test_mint_liquidity() -> eyre::Result<()> {
     assert_eq!(total_supply, expected_total_supply);
 
     // Only validator reserve is updated (user reserve stays 0)
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, amount.to::<u128>());
 
     // User token balance unchanged (not transferred)
-    let final_token0_balance = token_0.balanceOf(caller).call().await?;
+    let final_token0_balance = token_0.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(final_token0_balance, user_token0_balance);
     // Validator token balance decreased
-    let final_token1_balance = token_1.balanceOf(caller).call().await?;
+    let final_token1_balance = token_1.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(final_token1_balance, user_token1_balance - amount);
 
     // User token not transferred to fee manager
-    let final_fee_manager_token0_balance =
-        token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let final_fee_manager_token0_balance = token_0
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(final_fee_manager_token0_balance, fee_manager_token0_balance);
     // Validator token transferred to fee manager
-    let final_fee_manager_token1_balance =
-        token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let final_fee_manager_token1_balance = token_1
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(
         final_fee_manager_token1_balance,
         fee_manager_token1_balance + amount
@@ -162,15 +184,25 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
     assert!(mint_receipt.status());
 
     // Get state before burn
-    let total_supply_before_burn = fee_amm.totalSupply(pool_id).call().await?;
-    let lp_balance_before_burn = fee_amm.liquidityBalances(pool_id, caller).call().await?;
-    let pool_before_burn = fee_amm.pools(pool_id).call().await?;
-    let user_token0_balance_before_burn = token_0.balanceOf(caller).call().await?;
-    let user_token1_balance_before_burn = token_1.balanceOf(caller).call().await?;
-    let fee_manager_token0_balance_before_burn =
-        token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
-    let fee_manager_token1_balance_before_burn =
-        token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let total_supply_before_burn = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
+    let lp_balance_before_burn = fee_amm
+        .liquidityBalances(pool_id, caller)
+        .gas(300_000)
+        .call()
+        .await?;
+    let pool_before_burn = fee_amm.pools(pool_id).gas(300_000).call().await?;
+    let user_token0_balance_before_burn = token_0.balanceOf(caller).gas(300_000).call().await?;
+    let user_token1_balance_before_burn = token_1.balanceOf(caller).gas(300_000).call().await?;
+    let fee_manager_token0_balance_before_burn = token_0
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
+    let fee_manager_token1_balance_before_burn = token_1
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
 
     // Burn half of the liquidity
     let burn_amount = lp_balance_before_burn / U256::from(2);
@@ -196,16 +228,20 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
         / total_supply_before_burn;
 
     // Assert state changes
-    let total_supply_after_burn = fee_amm.totalSupply(pool_id).call().await?;
+    let total_supply_after_burn = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
     assert_eq!(
         total_supply_after_burn,
         total_supply_before_burn - burn_amount
     );
 
-    let lp_balance_after_burn = fee_amm.liquidityBalances(pool_id, caller).call().await?;
+    let lp_balance_after_burn = fee_amm
+        .liquidityBalances(pool_id, caller)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(lp_balance_after_burn, lp_balance_before_burn - burn_amount);
 
-    let pool_after_burn = fee_amm.pools(pool_id).call().await?;
+    let pool_after_burn = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(
         pool_after_burn.reserveUserToken,
         pool_before_burn.reserveUserToken - expected_amount0.to::<u128>()
@@ -215,27 +251,33 @@ async fn test_burn_liquidity() -> eyre::Result<()> {
         pool_before_burn.reserveValidatorToken - expected_amount1.to::<u128>()
     );
 
-    let user_token0_balance_after_burn = token_0.balanceOf(caller).call().await?;
+    let user_token0_balance_after_burn = token_0.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(
         user_token0_balance_after_burn,
         user_token0_balance_before_burn + expected_amount0
     );
 
-    let user_token1_balance_after_burn = token_1.balanceOf(caller).call().await?;
+    let user_token1_balance_after_burn = token_1.balanceOf(caller).gas(300_000).call().await?;
     assert_eq!(
         user_token1_balance_after_burn,
         user_token1_balance_before_burn + expected_amount1
     );
 
-    let fee_manager_token0_balance_after_burn =
-        token_0.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_token0_balance_after_burn = token_0
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(
         fee_manager_token0_balance_after_burn,
         fee_manager_token0_balance_before_burn - expected_amount0
     );
 
-    let fee_manager_token1_balance_after_burn =
-        token_1.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_token1_balance_after_burn = token_1
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(
         fee_manager_token1_balance_after_burn,
         fee_manager_token1_balance_before_burn - expected_amount1
@@ -303,12 +345,12 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Verify liquidity was added
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, liquidity.to::<u128>());
 
     // Check total supply and individual LP balances
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    let total_supply = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
     let expected_initial_liquidity = liquidity / U256::from(2) - MIN_LIQUIDITY;
     assert_eq!(total_supply, expected_initial_liquidity + MIN_LIQUIDITY);
 
@@ -336,7 +378,11 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     await_receipts(&mut pending).await?;
 
     // Verify tokens are set correctly
-    let user_fee_token = fee_manager.userTokens(user_address).call().await?;
+    let user_fee_token = fee_manager
+        .userTokens(user_address)
+        .gas(300_000)
+        .call()
+        .await?;
     let val_fee_token = fee_manager
         .validatorTokens(validator_address)
         .call()
@@ -344,8 +390,16 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     assert_ne!(user_fee_token, val_fee_token);
 
     // Get initial validator token balance
-    let _initial_validator_balance = validator_token.balanceOf(validator_address).call().await?;
-    let initial_user_balance = user_token.balanceOf(user_address).call().await?;
+    let _initial_validator_balance = validator_token
+        .balanceOf(validator_address)
+        .gas(300_000)
+        .call()
+        .await?;
+    let initial_user_balance = user_token
+        .balanceOf(user_address)
+        .gas(300_000)
+        .call()
+        .await?;
 
     // Transfer using predeployed TIP20
     let transfer_token = ITIP20::new(DEFAULT_FEE_TOKEN, provider.clone());
@@ -359,10 +413,18 @@ async fn test_transact_different_fee_tokens() -> eyre::Result<()> {
     assert!(transfer_receipt.status());
 
     // Assert that gas token in was swapped to the validator token
-    let user_balance = user_token.balanceOf(user_address).call().await?;
+    let user_balance = user_token
+        .balanceOf(user_address)
+        .gas(300_000)
+        .call()
+        .await?;
     assert!(user_balance < initial_user_balance);
 
-    let _validator_balance = validator_token.balanceOf(validator_address).call().await?;
+    let _validator_balance = validator_token
+        .balanceOf(validator_address)
+        .gas(300_000)
+        .call()
+        .await?;
     // TODO: uncomment when we can set suggested fee recipient in debug config to non zero value
     // NOTE: currently, we set the suggested_fee_recipient as address(0) when running the node
     // in debug mode. Related, TIP20 transfers do not update the `to` address balance if it is
@@ -415,7 +477,7 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let pool_id = pool_key.get_id();
 
     // Verify pool doesn't exist yet
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, 0);
 
@@ -438,20 +500,28 @@ async fn test_first_liquidity_provider() -> eyre::Result<()> {
     let expected_liquidity = half_amount - MIN_LIQUIDITY;
 
     // Check liquidity minted
-    let lp_balance = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    let lp_balance = fee_amm
+        .liquidityBalances(pool_id, alice)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(lp_balance, expected_liquidity);
 
     // Check total supply
-    let total_supply = fee_amm.totalSupply(pool_id).call().await?;
+    let total_supply = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
     assert_eq!(total_supply, expected_liquidity + MIN_LIQUIDITY);
 
     // Check reserves updated - only validator token is added (single-sided mint)
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(pool.reserveUserToken, 0);
     assert_eq!(pool.reserveValidatorToken, amount0.to::<u128>());
 
     // Verify only validator tokens were transferred to fee manager (single-sided)
-    let fee_manager_balance0 = user_token.balanceOf(TIP_FEE_MANAGER_ADDRESS).call().await?;
+    let fee_manager_balance0 = user_token
+        .balanceOf(TIP_FEE_MANAGER_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(fee_manager_balance0, U256::ZERO);
 
     let fee_manager_balance1 = validator_token
@@ -509,18 +579,22 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     assert!(mint_receipt.status());
 
     // Get liquidity balance
-    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    let liquidity = fee_amm
+        .liquidityBalances(pool_id, alice)
+        .gas(300_000)
+        .call()
+        .await?;
 
     // Record balances before burn
-    let user_balance0_before = user_token.balanceOf(alice).call().await?;
-    let user_balance1_before = validator_token.balanceOf(alice).call().await?;
+    let user_balance0_before = user_token.balanceOf(alice).gas(300_000).call().await?;
+    let user_balance1_before = validator_token.balanceOf(alice).gas(300_000).call().await?;
 
     // Burn half of the liquidity
     let burn_amount = liquidity / U256::from(2);
 
     // Get pool state before burn
-    let pool_before = fee_amm.pools(pool_id).call().await?;
-    let total_supply_before = fee_amm.totalSupply(pool_id).call().await?;
+    let pool_before = fee_amm.pools(pool_id).gas(300_000).call().await?;
+    let total_supply_before = fee_amm.totalSupply(pool_id).gas(300_000).call().await?;
 
     // Burn partial liquidity
     let burn_receipt = fee_amm
@@ -543,8 +617,8 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
         (burn_amount * U256::from(pool_before.reserveValidatorToken)) / total_supply_before;
 
     // Verify we got tokens back
-    let user_balance0_after = user_token.balanceOf(alice).call().await?;
-    let user_balance1_after = validator_token.balanceOf(alice).call().await?;
+    let user_balance0_after = user_token.balanceOf(alice).gas(300_000).call().await?;
+    let user_balance1_after = validator_token.balanceOf(alice).gas(300_000).call().await?;
 
     assert_eq!(
         user_balance0_after,
@@ -558,11 +632,15 @@ async fn test_burn_liquidity_partial() -> eyre::Result<()> {
     );
 
     // Verify LP balance reduced
-    let lp_balance_after = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    let lp_balance_after = fee_amm
+        .liquidityBalances(pool_id, alice)
+        .gas(300_000)
+        .call()
+        .await?;
     assert_eq!(lp_balance_after, liquidity - burn_amount);
 
     // Verify reserves updated correctly
-    let pool_after = fee_amm.pools(pool_id).call().await?;
+    let pool_after = fee_amm.pools(pool_id).gas(300_000).call().await?;
     assert_eq!(
         pool_after.reserveUserToken,
         pool_before.reserveUserToken - expected_amount0.to::<u128>()
@@ -617,7 +695,11 @@ async fn test_cant_burn_required_liquidity() -> eyre::Result<()> {
     assert!(mint_receipt.status());
 
     // Get liquidity balance
-    let liquidity = fee_amm.liquidityBalances(pool_id, alice).call().await?;
+    let liquidity = fee_amm
+        .liquidityBalances(pool_id, alice)
+        .gas(300_000)
+        .call()
+        .await?;
 
     IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
         .setUserToken(*user_token.address())

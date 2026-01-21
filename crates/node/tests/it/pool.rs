@@ -168,7 +168,7 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        gas_limit: 350_000, // TIP-1000: nonce == 0 adds 250k
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,
@@ -268,7 +268,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        gas_limit: 350_000, // TIP-1000: nonce == 0 adds 250k
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,
@@ -305,7 +305,7 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
         chain_id: 1337,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        gas_limit: 350_000, // TIP-1000: nonce == 0 adds 250k
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
             value: U256::ZERO,

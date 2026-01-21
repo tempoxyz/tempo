@@ -39,7 +39,7 @@ async fn test_create_token() -> eyre::Result<()> {
             salt,
         )
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -60,13 +60,16 @@ async fn test_create_token() -> eyre::Result<()> {
     );
 
     let token = ITIP20::new(event.token, provider);
-    assert_eq!(token.name().call().await?, name);
-    assert_eq!(token.symbol().call().await?, symbol);
-    assert_eq!(token.decimals().call().await?, 6);
-    assert_eq!(token.currency().call().await?, currency);
+    assert_eq!(token.name().gas(300_000).call().await?, name);
+    assert_eq!(token.symbol().gas(300_000).call().await?, symbol);
+    assert_eq!(token.decimals().gas(300_000).call().await?, 6);
+    assert_eq!(token.currency().gas(300_000).call().await?, currency);
     // Supply cap is u128::MAX
-    assert_eq!(token.supplyCap().call().await?, U256::from(u128::MAX));
-    assert_eq!(token.transferPolicyId().call().await?, 1);
+    assert_eq!(
+        token.supplyCap().gas(300_000).call().await?,
+        U256::from(u128::MAX)
+    );
+    assert_eq!(token.transferPolicyId().gas(300_000).call().await?, 1);
 
     Ok(())
 }
@@ -98,14 +101,22 @@ async fn test_is_tip20_checks_code_deployment() -> eyre::Result<()> {
     );
 
     // isTIP20 should return false because no code is deployed
-    let is_tip20 = factory.isTIP20(non_existent_tip20_addr).call().await?;
+    let is_tip20 = factory
+        .isTIP20(non_existent_tip20_addr)
+        .gas(300_000)
+        .call()
+        .await?;
     assert!(
         !is_tip20,
         "isTIP20 should return false for address with no deployed code"
     );
 
     // Verify that a valid TIP20 (PATH_USD) returns true
-    let path_usd_is_tip20 = factory.isTIP20(PATH_USD_ADDRESS).call().await?;
+    let path_usd_is_tip20 = factory
+        .isTIP20(PATH_USD_ADDRESS)
+        .gas(300_000)
+        .call()
+        .await?;
     assert!(path_usd_is_tip20, "PATH_USD should be a valid TIP20");
 
     Ok(())

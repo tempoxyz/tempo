@@ -43,6 +43,8 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let salt = B256::random();
+    // TIP-1000: Higher gas needed for CREATE operations (500k), nonce == 0 (250k),
+    // and multiple SSTOREs for token initialization (250k each)
     let receipt = factory
         .createToken(
             "Test".to_string(),
@@ -52,10 +54,12 @@ where
             caller,
             salt,
         )
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()
         .await?;
+    assert!(receipt.status(), "createToken transaction should succeed");
     let event = ITIP20Factory::TokenCreated::decode_log(&receipt.logs()[1].inner).unwrap();
 
     let token_addr = event.token;
@@ -64,6 +68,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()

@@ -84,6 +84,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     let lp_balance = fee_amm
         .liquidityBalances(pool_id, sender_address)
+        .gas(300_000)
         .call()
         .await?;
     println!("User LP balance: {lp_balance}");
@@ -103,7 +104,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     println!("Pool drained. Verifying insufficient liquidity...");
 
-    let pool = fee_amm.pools(pool_id).call().await?;
+    let pool = fee_amm.pools(pool_id).gas(300_000).call().await?;
     println!(
         "Pool reserves - user_token: {}, validator_token: {}",
         pool.reserveUserToken, pool.reserveValidatorToken
@@ -136,7 +137,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         max_fee_per_gas: provider.get_gas_price().await?,
         max_priority_fee_per_gas: provider.get_gas_price().await?,
         nonce: provider.get_transaction_count(sender_address).await?,
-        gas_limit: 100000,
+        gas_limit: 350_000, // TIP-1000: nonce == 0 adds 250k
         ..Default::default()
     };
     let signature = wallet.sign_hash_sync(&tx.signature_hash()).unwrap();

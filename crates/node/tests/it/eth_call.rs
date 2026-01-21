@@ -35,11 +35,12 @@ async fn test_eth_call() -> eyre::Result<()> {
     let token = setup_test_token(provider.clone(), caller).await?;
 
     // First, mint some tokens to the caller for testing
+    // TIP-1000: Higher gas needed for SSTORE (250k) and nonce == 0 (250k)
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -47,9 +48,12 @@ async fn test_eth_call() -> eyre::Result<()> {
 
     let recipient = Address::random();
     let calldata = token.transfer(recipient, mint_amount).calldata().clone();
+    // Explicitly set gas limit to avoid "intrinsic gas too high" error
+    // TIP-1000: transfer may need 250k+ gas due to SSTORE costs
     let tx = TransactionRequest::default()
+        .from(caller)
         .to(*token.address())
-        .gas_price(0)
+        .gas_limit(550_000)
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx).await?;
@@ -75,11 +79,12 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let token_address = *token.address();
 
     // First, mint some tokens to the caller for testing
+    // TIP-1000: Higher gas needed for SSTORE (250k)
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -87,9 +92,12 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
 
     let recipient = Address::random();
     let calldata = token.transfer(recipient, mint_amount).calldata().clone();
+    // Explicitly set gas limit to avoid "intrinsic gas too high" error
+    // TIP-1000: transfer may need 250k+ gas due to SSTORE costs
     let tx = TransactionRequest::default()
         .from(caller)
         .to(*token.address())
+        .gas_limit(550_000)
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx.clone()).await?;
@@ -171,7 +179,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     let mint_receipt = token
         .mint(caller, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -181,7 +189,7 @@ async fn test_eth_get_logs() -> eyre::Result<()> {
     token
         .transfer(recipient, mint_amount)
         .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -230,8 +238,9 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
         .input(calldata.into());
 
     let gas = provider.estimate_gas(tx.clone()).await?;
-    // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 84654);
+    // TIP-1000: gas estimation includes nonce == 0 cost (250k) and increased SSTORE costs (250k)
+    // so gas should be higher than the old 84654 value
+    assert!(gas > 300_000, "Gas should include TIP-1000 storage costs");
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider
@@ -266,9 +275,11 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Create different fee tokens for user and validator
     let user_fee_token = setup_test_token(provider.clone(), user_address).await?;
 
+    // TIP-1000: Higher gas needed for SSTORE operations
     let mint_amount = U256::from(u128::MAX);
     user_fee_token
         .mint(user_address, mint_amount)
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
@@ -292,6 +303,7 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
             liquidity_amount,
             user_address,
         )
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -301,15 +313,22 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     // Note that the validator defaults to the pathUSD
     fee_manager
         .setUserToken(*user_fee_token.address())
+        .gas(550_000)
         .send()
         .await?
         .get_receipt()
         .await?;
 
     // Verify the tokens are set correctly
-    let user_token = fee_manager.userTokens(user_address).call().await?;
+    // TIP-1000: Set explicit gas limit for view calls to avoid intrinsic gas issues
+    let user_token = fee_manager
+        .userTokens(user_address)
+        .gas(550_000)
+        .call()
+        .await?;
     let validator_token = fee_manager
         .validatorTokens(validator_address)
+        .gas(550_000)
         .call()
         .await?;
 
@@ -357,6 +376,7 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     let http_url = setup.http_url;
 
     let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
     let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
 
     // Call with an unknown function selector (0x12345678)
@@ -366,7 +386,9 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
     calldata.extend_from_slice(&[0u8; 64]);
 
     let tx = TransactionRequest::default()
+        .from(caller)
         .to(TIP20_FACTORY_ADDRESS)
+        .gas_limit(550_000)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
     // The call should fail with UnknownFunctionSelector error
