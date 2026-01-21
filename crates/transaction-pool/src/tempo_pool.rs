@@ -7,7 +7,7 @@ use crate::{
     tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, B256, map::HashMap};
+use alloy_primitives::{Address, B256, TxHash, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
@@ -26,7 +26,7 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
-use tempo_chainspec::TempoChainSpec;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -79,6 +79,19 @@ where
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
+    }
+
+    /// Removes expiring nonce transactions that were included in a block.
+    ///
+    /// This is called with the transaction hashes from mined blocks to clean up
+    /// expiring nonce transactions on inclusion, rather than waiting for expiry.
+    pub(crate) fn remove_included_expiring_nonce_txs<'a>(
+        &self,
+        tx_hashes: impl Iterator<Item = &'a TxHash>,
+    ) {
+        self.aa_2d_pool
+            .write()
+            .remove_included_expiring_nonce_txs(tx_hashes);
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -250,10 +263,22 @@ where
                         authority_ids: authorities
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
-                    let added = self
-                        .aa_2d_pool
-                        .write()
-                        .add_transaction(Arc::new(tx), state_nonce)?;
+
+                    // Get the active Tempo hardfork for expiring nonce handling
+                    let tip_timestamp = self
+                        .protocol_pool
+                        .validator()
+                        .validator()
+                        .inner
+                        .fork_tracker()
+                        .tip_timestamp();
+                    let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
+
+                    let added = self.aa_2d_pool.write().add_transaction(
+                        Arc::new(tx),
+                        state_nonce,
+                        hardfork,
+                    )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         self.protocol_pool

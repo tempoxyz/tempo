@@ -21,7 +21,8 @@
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
     "depositContractAddress": "0x00000000219ab540356cbb839cbe05303d7705fa",
-    "t0Time": 0
+    "t0Time": 0,
+    "t1Time": 0
   },
   "nonce": "0x42",
   "timestamp": "0x0",

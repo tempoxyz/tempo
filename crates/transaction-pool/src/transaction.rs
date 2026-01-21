@@ -98,12 +98,21 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0`
+    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
     pub(crate) fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
             .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if this is an expiring nonce transaction.
+    pub(crate) fn is_expiring_nonce(&self) -> bool {
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| tx.tx().is_expiring_nonce_tx())
             .unwrap_or(false)
     }
 
@@ -223,6 +232,24 @@ pub enum TempoPoolTransactionError {
         size: usize,
         max_allowed: usize,
     },
+
+    /// Thrown when an expiring nonce transaction's valid_before is too far in the future.
+    #[error(
+        "Expiring nonce 'valid_before' {valid_before} exceeds max allowed {max_allowed} (must be within 30s)"
+    )]
+    ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
+
+    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
+    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
+    ExpiringNonceReplay,
+
+    /// Thrown when an expiring nonce transaction is missing the required valid_before field.
+    #[error("Expiring nonce transactions must have 'valid_before' set")]
+    ExpiringNonceMissingValidBefore,
+
+    /// Thrown when an expiring nonce transaction has a non-zero nonce.
+    #[error("Expiring nonce transactions must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -234,6 +261,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
+            | Self::ExpiringNonceValidBeforeTooFar { .. }
+            | Self::ExpiringNonceReplay
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_) => false,
             Self::NonZeroValue
@@ -241,7 +270,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::InsufficientGasForAAIntrinsicCost { .. }
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
-            | Self::CallInputTooLarge { .. } => true,
+            | Self::CallInputTooLarge { .. }
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero => true,
         }
     }
 

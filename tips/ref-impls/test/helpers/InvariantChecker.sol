@@ -23,6 +23,7 @@ abstract contract InvariantChecker is HandlerBase {
         _checkReplayProtectionInvariants();
         _checkCreateConstraintInvariants();
         _checkKeyAuthInvariants();
+        _checkExpiringNonceInvariants();
     }
 
     // ============ Nonce Invariants (N1-N8) ============
@@ -280,6 +281,45 @@ abstract contract InvariantChecker is HandlerBase {
 
         // K12: Keys with zero spending limit cannot spend anything
         assertEq(ghost_keyZeroLimitAllowed, 0, "K12: Zero-limit key unexpectedly allowed to spend");
+    }
+
+    // ============ Expiring Nonce Invariants (E1-E5) ============
+
+    /// @notice Verify expiring nonce constraints are enforced (TIP-1009)
+    /// @dev These counters should always be 0 - any non-zero value indicates a protocol bug
+    function _checkExpiringNonceInvariants() internal view {
+        // E1: No replay within validity window
+        assertEq(
+            ghost_expiringNonceReplayAllowed,
+            0,
+            "E1: Expiring nonce replay within window unexpectedly allowed"
+        );
+
+        // E2: Expiry enforcement (validBefore <= now must be rejected)
+        assertEq(
+            ghost_expiringNonceExpiredAllowed, 0, "E2: Expired transaction unexpectedly allowed"
+        );
+
+        // E3: Window bounds (validBefore > now + 30s must be rejected)
+        assertEq(
+            ghost_expiringNonceWindowAllowed,
+            0,
+            "E3: validBefore exceeds max window unexpectedly allowed"
+        );
+
+        // E4: Nonce must be zero
+        assertEq(
+            ghost_expiringNonceNonZeroAllowed,
+            0,
+            "E4: Non-zero nonce for expiring nonce tx unexpectedly allowed"
+        );
+
+        // E5: validBefore required
+        assertEq(
+            ghost_expiringNonceMissingVBAllowed,
+            0,
+            "E5: Missing validBefore for expiring nonce tx unexpectedly allowed"
+        );
     }
 
 }
