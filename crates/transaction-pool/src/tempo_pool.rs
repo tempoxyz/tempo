@@ -81,56 +81,18 @@ where
             .notify_on_transaction_updates(promoted, Vec::new());
     }
 
-    /// Evicts all transactions signed with revoked keychain keys.
+    /// Evicts transactions that are no longer valid due to on-chain events.
     ///
-    /// This scans both pools for AA transactions using any of the specified keychain keys
-    /// and removes them. Called once per block when `KeyRevoked` events are detected.
+    /// This performs a single scan of all pooled transactions and checks for:
+    /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
+    /// 2. **Validator token changes**: Transactions that would fail due to insufficient
+    ///    liquidity in the new (user_token, validator_token) AMM pool
     ///
-    /// Key revocations are expected to be rare, so this on-demand scan is more
-    /// efficient than tracking all keychain-signed transactions in the pool.
-    pub(crate) fn evict_transactions_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
-        let mut to_remove = Vec::new();
-
-        // Scan all transactions in both pools once
-        for tx in self.all_transactions().all() {
-            let Some(aa_tx) = tx.inner().as_aa() else {
-                continue;
-            };
-
-            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
-                continue;
-            };
-
-            // Check if this transaction uses any of the revoked keys
-            for &(account, key_id) in revoked_keys {
-                if keychain_sig.user_address == account
-                    && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
-                    && tx_key_id == key_id
-                {
-                    to_remove.push(*aa_tx.hash());
-                    break;
-                }
-            }
-        }
-
-        if !to_remove.is_empty() {
-            self.remove_transactions(to_remove);
-        }
-    }
-
-    /// Evicts transactions that may fail due to validator token preference changes.
-    ///
-    /// When a validator changes their token preference, transactions paying fees in
-    /// a different token may fail if there's insufficient liquidity in the AMM pool
-    /// for the (user_token, new_validator_token) pair.
-    ///
-    /// This checks each pooled transaction against the new validator tokens:
-    /// - If user_token == new_validator_token, the transaction is fine (no swap needed)
-    /// - Otherwise, checks if pool(user_token, new_validator_token) has sufficient liquidity
-    ///
-    /// Transactions that would fail with ANY of the changed validators are evicted.
-    pub fn evict_transactions_by_validator_token_change(
+    /// Both checks are combined into one scan to avoid iterating the pool multiple times
+    /// per block.
+    pub fn evict_invalidated_transactions(
         &self,
+        revoked_keys: &[(Address, Address)],
         validator_token_changes: &[(Address, Address)],
     ) {
         use tempo_precompiles::{
@@ -138,57 +100,86 @@ where
             tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
         };
 
-        let Ok(state_provider) = self.client().latest() else {
+        if revoked_keys.is_empty() && validator_token_changes.is_empty() {
             return;
+        }
+
+        let state_provider = if !validator_token_changes.is_empty() {
+            match self.client().latest() {
+                Ok(provider) => Some(provider),
+                Err(_) => return,
+            }
+        } else {
+            None
         };
 
         let mut to_remove = Vec::new();
+        let mut revoked_count = 0;
+        let mut liquidity_count = 0;
 
         for tx in self.all_transactions().all() {
-            let user_token = tx
-                .fee_token()
-                .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-            let cost = tempo_primitives::transaction::calc_gas_balance_spending(
-                tx.gas_limit(),
-                tx.max_fee_per_gas(),
-            );
-
-            let amount_out = match compute_amount_out(cost) {
-                Ok(amount) => amount,
-                Err(_) => continue,
-            };
-
-            // Check against each new validator token
-            for &(_validator, new_validator_token) in validator_token_changes {
-                // If user token matches the new validator token, no swap needed
-                if user_token == new_validator_token {
+            // Check 1: Revoked keychain keys (only for AA transactions with keychain signatures)
+            if !revoked_keys.is_empty()
+                && let Some(aa_tx) = tx.inner().as_aa()
+                && let Some(keychain_sig) = aa_tx.signature().as_keychain()
+            {
+                let is_revoked = revoked_keys.iter().any(|&(account, key_id)| {
+                    keychain_sig.user_address == account
+                        && keychain_sig
+                            .key_id(&aa_tx.signature_hash())
+                            .is_ok_and(|tx_key_id| tx_key_id == key_id)
+                });
+                if is_revoked {
+                    to_remove.push(*tx.tx_hash());
+                    revoked_count += 1;
                     continue;
                 }
+            }
 
-                // Check if there's enough liquidity in pool(user_token, new_validator_token)
-                let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
-                let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools[pool_key]
-                    .base_slot();
+            // Check 2: Validator token changes (check liquidity for all transactions)
+            if let Some(ref provider) = state_provider {
+                let user_token = tx
+                    .fee_token()
+                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let cost = tempo_primitives::transaction::calc_gas_balance_spending(
+                    tx.gas_limit(),
+                    tx.max_fee_per_gas(),
+                );
 
-                let pool_value = match state_provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into())
-                {
-                    Ok(Some(value)) => value,
-                    Ok(None) => {
-                        // Pool doesn't exist - transaction would fail
-                        to_remove.push(*tx.tx_hash());
-                        break;
-                    }
+                let amount_out = match compute_amount_out(cost) {
+                    Ok(amount) => amount,
                     Err(_) => continue,
                 };
 
-                let reserve = alloy_primitives::U256::from(
-                    Pool::decode_from_slot(pool_value).reserve_validator_token,
-                );
+                for &(_validator, new_validator_token) in validator_token_changes {
+                    if user_token == new_validator_token {
+                        continue;
+                    }
 
-                if reserve < amount_out {
-                    // Insufficient liquidity - transaction would fail
-                    to_remove.push(*tx.tx_hash());
-                    break;
+                    let pool_key = PoolKey::new(user_token, new_validator_token).get_id();
+                    let slot = tempo_precompiles::tip_fee_manager::TipFeeManager::new().pools
+                        [pool_key]
+                        .base_slot();
+
+                    let pool_value = match provider.storage(TIP_FEE_MANAGER_ADDRESS, slot.into()) {
+                        Ok(Some(value)) => value,
+                        Ok(None) => {
+                            to_remove.push(*tx.tx_hash());
+                            liquidity_count += 1;
+                            break;
+                        }
+                        Err(_) => continue,
+                    };
+
+                    let reserve = alloy_primitives::U256::from(
+                        Pool::decode_from_slot(pool_value).reserve_validator_token,
+                    );
+
+                    if reserve < amount_out {
+                        to_remove.push(*tx.tx_hash());
+                        liquidity_count += 1;
+                        break;
+                    }
                 }
             }
         }
@@ -196,8 +187,10 @@ where
         if !to_remove.is_empty() {
             tracing::debug!(
                 target: "txpool",
-                count = to_remove.len(),
-                "Evicting transactions with insufficient liquidity after validator token change"
+                total = to_remove.len(),
+                revoked_count,
+                liquidity_count,
+                "Evicting invalidated transactions"
             );
             self.remove_transactions(to_remove);
         }

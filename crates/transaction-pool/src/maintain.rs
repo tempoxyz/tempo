@@ -127,10 +127,9 @@ where
                     pool.remove_transactions(to_remove);
                 }
 
-                // 2. Evict transactions with revoked keychain keys
+                // 2. Collect invalidation events from this block
                 // Key revocations are rare, so we scan the pool on-demand rather than
                 // tracking all keychain-signed transactions.
-                // Collect all revocations first, then scan the pool once per block.
                 let revoked_keys: Vec<_> = tip
                     .execution_outcome()
                     .receipts()
@@ -142,14 +141,18 @@ where
                     .map(|event| (event.account, event.publicKey))
                     .collect();
 
-                if !revoked_keys.is_empty() {
-                    debug!(
-                        target: "txpool",
-                        count = revoked_keys.len(),
-                        "Processing keychain key revocations"
-                    );
-                    pool.evict_transactions_by_revoked_keys(&revoked_keys);
-                }
+                // Validator token changes - transactions may fail if there's insufficient
+                // liquidity in the new (user_token, validator_token) AMM pool.
+                let validator_token_changes: Vec<(Address, Address)> = tip
+                    .execution_outcome()
+                    .receipts()
+                    .iter()
+                    .flatten()
+                    .flat_map(|receipt| &receipt.logs)
+                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
+                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
+                    .map(|event| (event.validator, event.token))
+                    .collect();
 
                 // 3. Update 2D nonce pool
                 pool.notify_aa_pool_on_state_updates(bundle_state);
@@ -162,28 +165,17 @@ where
                     }
                 }
 
-                // 5. Evict transactions affected by validator token preference changes
-                // When a validator changes their token preference, transactions that don't have
-                // enough liquidity in the new (user_token, validator_token) pool must be evicted.
-                // This must happen after AMM cache update so we have the new validator tokens.
-                let validator_token_changes: Vec<(Address, Address)> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
-                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
-                    .map(|event| (event.validator, event.token))
-                    .collect();
-
-                if !validator_token_changes.is_empty() {
+                // 5. Evict invalidated transactions in a single pool scan
+                // This checks both revoked keys and validator token changes together
+                // to avoid scanning all transactions multiple times per block.
+                if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
                     debug!(
                         target: "txpool",
-                        count = validator_token_changes.len(),
-                        "Processing validator token preference changes"
+                        revoked_keys = revoked_keys.len(),
+                        validator_token_changes = validator_token_changes.len(),
+                        "Processing transaction invalidation events"
                     );
-                    pool.evict_transactions_by_validator_token_change(&validator_token_changes);
+                    pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
                 }
             }
         }
