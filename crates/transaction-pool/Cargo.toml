@@ -11,18 +11,6 @@ publish.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = []
-test-utils = [
-    "reth-chainspec/test-utils",
-    "reth-ethereum-primitives/test-utils",
-    "reth-evm/test-utils",
-    "reth-primitives-traits/test-utils",
-    "reth-provider/test-utils",
-    "reth-transaction-pool/test-utils",
-    "tempo-precompiles/test-utils",
-]
-
 [dependencies]
 tempo-chainspec.workspace = true
 tempo-contracts.workspace = true
@@ -54,6 +42,18 @@ parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true
+
+[features]
+default = []
+test-utils = [
+  "reth-chainspec/test-utils",
+  "reth-ethereum-primitives/test-utils",
+  "reth-evm/test-utils",
+  "reth-primitives-traits/test-utils",
+  "reth-provider/test-utils",
+  "reth-transaction-pool/test-utils",
+  "tempo-precompiles/test-utils",
+]
 
 [dev-dependencies]
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
