@@ -35,7 +35,10 @@ use reth_rpc_eth_api::{
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
 use std::{default::Default, sync::Arc};
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_chainspec::{
+    hardfork::TempoHardforks,
+    spec::{TEMPO_BASE_FEE_POST_T1, TEMPO_BASE_FEE_PRE_T1, TempoChainSpec},
+};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, evm::TempoEvmFactory};
 use tempo_payload_builder::TempoPayloadBuilder;
@@ -422,7 +425,13 @@ where
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
-        pool_config.minimal_protocol_basefee = TEMPO_BASE_FEE;
+        // Use T1-aware base fee based on current chain tip
+        pool_config.minimal_protocol_basefee =
+            if ctx.chain_spec().is_t1_active_at_timestamp(ctx.head().timestamp) {
+                TEMPO_BASE_FEE_POST_T1
+            } else {
+                TEMPO_BASE_FEE_PRE_T1
+            };
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
         // this store is effectively a noop

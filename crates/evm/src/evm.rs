@@ -525,8 +525,8 @@ mod tests {
         );
         assert_eq!(
             gas_params.get(GasId::tx_create_cost()),
-            250_000,
-            "T1 TX create cost should be 250,000"
+            500_000,
+            "T1 TX create cost should be 500,000"
         );
         assert_eq!(
             gas_params.get(GasId::create()),

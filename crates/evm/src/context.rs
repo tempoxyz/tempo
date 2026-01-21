@@ -53,16 +53,15 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
 
         let shared_gas_limit = parent.gas_limit() / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 
-        // Determine general gas limit based on parent header.
-        // If parent uses T1+ fixed general gas limit, use that; otherwise calculate using pre-T1 divisor.
-        // Note: This is a heuristic since we don't have chainspec access here.
-        // If the parent's general_gas_limit matches T1's fixed value, assume T1 is active.
+        // Determine general gas limit using heuristic based on parent header.
+        // This heuristic has a one-block edge case at the T1 boundary (parent is pre-T1 but child
+        // should be T1), but it doesn't matter because Tempo disables pending block building
+        // entirely (PendingBlockKind::None in TempoEthApi) since we can't build blocks without
+        // consensus data (system transactions).
         let general_gas_limit =
             if parent.general_gas_limit == tempo_consensus::TEMPO_GENERAL_GAS_LIMIT {
-                // T1+: fixed general gas limit
                 tempo_consensus::TEMPO_GENERAL_GAS_LIMIT
             } else {
-                // Pre-T1: calculate using divisor
                 (parent.gas_limit() - shared_gas_limit) / tempo_consensus::TEMPO_GENERAL_GAS_DIVISOR
             };
 
