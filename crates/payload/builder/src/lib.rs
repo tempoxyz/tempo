@@ -42,8 +42,10 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
-use tempo_consensus::{TEMPO_GENERAL_GAS_LIMIT, TEMPO_SHARED_GAS_DIVISOR};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_consensus::{
+    TEMPO_GENERAL_GAS_DIVISOR, TEMPO_GENERAL_GAS_LIMIT, TEMPO_SHARED_GAS_DIVISOR,
+};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_primitives::{
@@ -259,10 +261,17 @@ where
             .provider
             .chain_spec()
             .is_osaka_active_at_timestamp(attributes.timestamp());
+        let is_t1 = chain_spec.is_t1_active_at_timestamp(attributes.timestamp());
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let general_gas_limit = TEMPO_GENERAL_GAS_LIMIT;
+        let general_gas_limit = if is_t1 {
+            // T1+: fixed general gas limit
+            TEMPO_GENERAL_GAS_LIMIT
+        } else {
+            // Pre-T1: calculate using divisor
+            (block_gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        };
 
         let mut cumulative_gas_used = 0;
         let mut non_payment_gas_used = 0;

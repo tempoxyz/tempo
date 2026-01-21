@@ -14,7 +14,10 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec};
+use tempo_chainspec::{
+    hardfork::TempoHardforks,
+    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
+};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
@@ -61,11 +64,24 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             ));
         }
 
-        // Validate the general (non-payment) gas limit is fixed at TEMPO_GENERAL_GAS_LIMIT
-        if header.general_gas_limit != TEMPO_GENERAL_GAS_LIMIT {
+        // Validate the general (non-payment) gas limit
+        let is_t1 = self
+            .inner
+            .chain_spec()
+            .is_t1_active_at_timestamp(header.timestamp());
+
+        let expected_general_gas_limit = if is_t1 {
+            // T1+: fixed at TEMPO_GENERAL_GAS_LIMIT (30M)
+            TEMPO_GENERAL_GAS_LIMIT
+        } else {
+            // Pre-T1: calculated using divisor
+            (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        };
+
+        if header.general_gas_limit != expected_general_gas_limit {
             return Err(ConsensusError::Other(format!(
                 "General gas limit {} does not match expected {}",
-                header.general_gas_limit, TEMPO_GENERAL_GAS_LIMIT
+                header.general_gas_limit, expected_general_gas_limit
             )));
         }
 
@@ -177,12 +193,16 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
     }
 }
 
-/// General (non-payment) gas limit per block: 30M gas
+/// Pre-T1 divisor for calculating general (non-payment) gas limit.
+/// general_gas_limit = (block_gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
+
+/// T1+ general (non-payment) gas limit per block: 30M gas
 /// This caps how much gas general transactions can consume, guaranteeing
 /// at least 470M gas remains available for payment transactions.
 pub const TEMPO_GENERAL_GAS_LIMIT: u64 = 30_000_000;
 
-/// Maximum gas per single transaction: 30M gas
+/// T1+ maximum gas per single transaction: 30M gas
 /// Elevated from 16M to support max-size contract deployments under TIP-1000.
 /// Applications should not rely on >16M gas for normal operations.
 pub const TEMPO_TRANSACTION_GAS_CAP: u64 = 30_000_000;
@@ -204,7 +224,8 @@ mod tests {
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tempo_chainspec::spec::ANDANTINO;
+    use alloy_genesis::Genesis;
+    use tempo_chainspec::spec::{ANDANTINO, TempoChainSpec};
 
     fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -264,7 +285,10 @@ mod tests {
             let shared_gas_limit = self
                 .shared_gas_limit
                 .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
-            let general_gas_limit = self.general_gas_limit.unwrap_or(TEMPO_GENERAL_GAS_LIMIT);
+            // Default to pre-T1 divisor-based calculation for ANDANTINO (which doesn't have T1)
+            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
+                (self.gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+            });
 
             TempoHeader {
                 inner: Header {
@@ -379,12 +403,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_header_general_gas_mismatch() {
+    fn test_validate_header_general_gas_mismatch_pre_t1() {
+        // ANDANTINO doesn't have T1 active, so it uses the divisor-based calculation
         let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let gas_limit = 500_000_000u64;
+        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        // Pre-T1: expected = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        // Let's use a wrong value
         let header = TestHeaderBuilder::default()
-            .gas_limit(500_000_000)
+            .gas_limit(gas_limit)
             .timestamp(current_timestamp())
-            .general_gas_limit(999) // Should be TEMPO_GENERAL_GAS_LIMIT (30M)
+            .general_gas_limit(999)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -395,6 +424,90 @@ mod tests {
             err.to_string().contains("General gas limit"),
             "Expected error about general gas limit, got: {err}",
         );
+
+        // Now verify the correct pre-T1 value works
+        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(expected_general_gas_limit)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    /// Creates a chainspec with T1 active at timestamp 0.
+    fn create_t1_chainspec() -> Arc<TempoChainSpec> {
+        let genesis_json = r#"{
+            "config": {
+                "chainId": 99999,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "epochLength": 21600,
+                "t0Time": 0,
+                "t1Time": 0
+            },
+            "nonce": "0x42",
+            "timestamp": "0x0",
+            "extraData": "0x",
+            "gasLimit": "0x1dcd6500",
+            "difficulty": "0x0",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {}
+        }"#;
+        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
+        Arc::new(TempoChainSpec::from_genesis(genesis))
+    }
+
+    #[test]
+    fn test_validate_header_general_gas_limit_t1() {
+        // Create a chainspec with T1 active at timestamp 0
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+        let gas_limit = 500_000_000u64;
+
+        // T1+: general gas limit must be fixed at TEMPO_GENERAL_GAS_LIMIT (30M)
+        // Test with wrong value
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(999)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConsensusError::Other(_)));
+        assert!(
+            err.to_string().contains("General gas limit"),
+            "Expected error about general gas limit, got: {err}",
+        );
+
+        // Now verify the correct T1 value works (fixed 30M)
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        assert!(consensus.validate_header(&sealed).is_ok());
     }
 
     #[test]
