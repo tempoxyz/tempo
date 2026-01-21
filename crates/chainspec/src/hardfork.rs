@@ -42,15 +42,22 @@ hardfork!(
         /// Genesis hardfork
         Genesis,
         #[default]
-        /// T0 hardfork (default)
+        /// T0 hardfork (default until T1 activates on mainnet)
         T0,
+        /// T1 hardfork
+        T1,
     }
 );
 
 impl TempoHardfork {
     /// Returns true if this hardfork is T0 or later.
     pub fn is_t0(&self) -> bool {
-        matches!(self, Self::T0)
+        *self >= Self::T0
+    }
+
+    /// Returns true if this hardfork is T1 or later.
+    pub fn is_t1(&self) -> bool {
+        *self >= Self::T1
     }
 }
 
@@ -61,6 +68,9 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t1_active_at_timestamp(timestamp) {
+            return TempoHardfork::T1;
+        }
         if self.is_t0_active_at_timestamp(timestamp) {
             return TempoHardfork::T0;
         }
@@ -70,6 +80,12 @@ pub trait TempoHardforks: EthereumHardforks {
     /// Returns true if T0 is active at the given timestamp.
     fn is_t0_active_at_timestamp(&self, timestamp: u64) -> bool {
         self.tempo_fork_activation(TempoHardfork::T0)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns true if T1 is active at the given timestamp.
+    fn is_t1_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T1)
             .active_at_timestamp(timestamp)
     }
 }
@@ -88,7 +104,9 @@ impl From<&TempoHardfork> for SpecId {
 
 impl From<SpecId> for TempoHardfork {
     fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::T0)) {
+        if spec.is_enabled_in(SpecId::from(Self::T1)) {
+            Self::T1
+        } else if spec.is_enabled_in(SpecId::from(Self::T0)) {
             Self::T0
         } else {
             Self::Genesis
@@ -102,21 +120,24 @@ mod tests {
     use reth_chainspec::Hardfork;
 
     #[test]
-    fn test_genesis_hardfork_name() {
-        let fork = TempoHardfork::Genesis;
-        assert_eq!(fork.name(), "Genesis");
-    }
-
-    #[test]
-    fn test_t0_hardfork_name() {
-        let fork = TempoHardfork::T0;
-        assert_eq!(fork.name(), "T0");
+    fn test_hardfork_name() {
+        assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
+        assert_eq!(TempoHardfork::T0.name(), "T0");
+        assert_eq!(TempoHardfork::T1.name(), "T1");
     }
 
     #[test]
     fn test_is_t0() {
         assert!(!TempoHardfork::Genesis.is_t0());
         assert!(TempoHardfork::T0.is_t0());
+        assert!(TempoHardfork::T1.is_t0());
+    }
+
+    #[test]
+    fn test_is_t1() {
+        assert!(!TempoHardfork::Genesis.is_t1());
+        assert!(!TempoHardfork::T0.is_t1());
+        assert!(TempoHardfork::T1.is_t1());
     }
 
     #[test]

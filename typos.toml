@@ -11,7 +11,7 @@ extend-exclude = [
     "**/test/**",
     "**/*_test.*",
     "**/*_tests.*",
-    "docs/specs/lib/**",
+    "tips/ref-impls/lib/**",
 ]
 
 [default.extend-words]
