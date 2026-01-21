@@ -154,7 +154,7 @@ where
         let mut tx_request = transfer_tx.into_transaction_request();
         tx_request.nonce = Some(current_nonce + i as u64);
         tx_request.chain_id = Some(chain_id);
-        tx_request.gas = Some(100_000);
+        tx_request.gas = Some(1_000_000);
         tx_request.max_fee_per_gas = Some(TEMPO_BASE_FEE as u128);
         tx_request.max_priority_fee_per_gas = Some(TEMPO_BASE_FEE as u128);
 

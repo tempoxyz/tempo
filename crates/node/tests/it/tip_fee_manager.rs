@@ -252,7 +252,7 @@ async fn test_fee_token_tx() -> eyre::Result<()> {
             fee_token: Some(*user_token.address()),
             max_priority_fee_per_gas: fees.max_priority_fee_per_gas,
             max_fee_per_gas: fees.max_fee_per_gas,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: Address::ZERO.into(),
                 value: U256::ZERO,
@@ -331,7 +331,7 @@ async fn test_fee_payer_tx() -> eyre::Result<()> {
         nonce: provider.get_transaction_count(user.address()).await?,
         max_priority_fee_per_gas: fees.max_fee_per_gas,
         max_fee_per_gas: fees.max_fee_per_gas,
-        gas_limit: 100_000,
+        gas_limit: 1_000_000,
         calls: vec![Call {
             to: Address::ZERO.into(),
             value: U256::ZERO,

@@ -393,7 +393,7 @@ async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
     ))
     .unwrap();
 
-    submit_subblock_tx_from(node, &wallet, 100_000).await
+    submit_subblock_tx_from(node, &wallet, 1_000_000).await
 }
 
 async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
