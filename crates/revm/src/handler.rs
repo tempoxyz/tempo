@@ -211,16 +211,17 @@ where
         ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>,
     {
         // Use checked_sub to prevent panic when initial_gas > gas_limit.
-        // This can happen on pre-T0 when 2D nonce gas is added after validation but before execution.
         let gas_limit = evm
             .ctx()
             .tx()
             .gas_limit()
             .checked_sub(init_and_floor_gas.initial_gas)
-            .ok_or_else(|| TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit: evm.ctx().tx().gas_limit(),
-                intrinsic_gas: init_and_floor_gas.initial_gas,
-            })?;
+            .ok_or_else(
+                || TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit: evm.ctx().tx().gas_limit(),
+                    intrinsic_gas: init_and_floor_gas.initial_gas,
+                },
+            )?;
 
         // Create first frame action
         let first_frame_input = self.first_frame_input(evm, gas_limit)?;
@@ -279,13 +280,14 @@ where
 
         let gas_limit = evm.ctx().tx().gas_limit();
         // Use checked_sub to prevent panic when initial_gas > gas_limit.
-        // This can happen on pre-T0 when 2D nonce gas is added after validation but before execution.
         let mut remaining_gas = gas_limit
             .checked_sub(init_and_floor_gas.initial_gas)
-            .ok_or_else(|| TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
-                gas_limit,
-                intrinsic_gas: init_and_floor_gas.initial_gas,
-            })?;
+            .ok_or_else(
+                || TempoInvalidTransaction::InsufficientGasForIntrinsicCost {
+                    gas_limit,
+                    intrinsic_gas: init_and_floor_gas.initial_gas,
+                },
+            )?;
         let mut accumulated_gas_refund = 0i64;
 
         // Store original TxEnv values to restore after batch execution
@@ -2846,7 +2848,10 @@ mod tests {
                 intrinsic_gas,
             }) => {
                 assert_eq!(*gl, gas_limit);
-                assert!(*intrinsic_gas > gas_limit, "intrinsic_gas should exceed gas_limit");
+                assert!(
+                    *intrinsic_gas > gas_limit,
+                    "intrinsic_gas should exceed gas_limit"
+                );
             }
             _ => panic!("Expected InsufficientGasForIntrinsicCost, got: {err:?}"),
         }
