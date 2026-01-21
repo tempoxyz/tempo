@@ -5,19 +5,20 @@
 //! When the token is unpaused, transactions are moved back to the main pool
 //! and re-validated.
 
+use crate::transaction::TempoPooledTransaction;
 use alloy_primitives::{Address, TxHash, map::HashMap};
-use reth_primitives_traits::{Recovered, transaction::TxHashRef};
-use reth_transaction_pool::TransactionOrigin;
-use std::time::Instant;
-use tempo_primitives::TempoTxEnvelope;
+use reth_transaction_pool::ValidPoolTransaction;
+use std::{sync::Arc, time::Instant};
+
+/// Duration after which paused transactions are expired and removed.
+/// If a token isn't unpaused within this time, we clear all pending transactions.
+pub const PAUSED_TX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60); // 30 minutes
 
 /// Entry in the paused pool.
 #[derive(Debug, Clone)]
 pub struct PausedEntry {
-    /// The recovered transaction that was paused.
-    pub tx: Recovered<TempoTxEnvelope>,
-    /// The origin of the transaction (local, external, etc.).
-    pub origin: TransactionOrigin,
+    /// The valid pool transaction that was paused (Arc to avoid expensive clones).
+    pub tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
     /// When the transaction was moved to the paused pool.
     pub paused_at: Instant,
     /// The `valid_before` timestamp, if any (for expiry tracking).
@@ -26,14 +27,13 @@ pub struct PausedEntry {
 
 /// Pool for transactions whose fee token is temporarily paused.
 ///
-/// Transactions are indexed by both fee token address and transaction hash
-/// for efficient lookup in both directions.
+/// Transactions are indexed by fee token address for efficient batch operations.
+/// Since all transactions for a token are paused/unpaused together, we only need
+/// the token-level grouping.
 #[derive(Debug, Default)]
 pub struct PausedFeeTokenPool {
-    /// Fee token -> (tx_hash -> entry)
-    by_token: HashMap<Address, HashMap<TxHash, PausedEntry>>,
-    /// tx_hash -> fee token (for O(1) removal by hash)
-    by_hash: HashMap<TxHash, Address>,
+    /// Fee token -> list of paused entries
+    by_token: HashMap<Address, Vec<PausedEntry>>,
 }
 
 impl PausedFeeTokenPool {
@@ -42,156 +42,143 @@ impl PausedFeeTokenPool {
         Self::default()
     }
 
-    /// Returns the number of paused transactions.
+    /// Returns the total number of paused transactions across all tokens.
     pub fn len(&self) -> usize {
-        self.by_hash.len()
+        self.by_token.values().map(|v| v.len()).sum()
     }
 
     /// Returns true if there are no paused transactions.
     pub fn is_empty(&self) -> bool {
-        self.by_hash.is_empty()
+        self.by_token.is_empty()
     }
 
-    /// Inserts a transaction into the paused pool.
+    /// Inserts transactions for a fee token into the paused pool.
     ///
-    /// If the transaction is already paused (by hash), this is a no-op.
-    pub fn insert(&mut self, fee_token: Address, entry: PausedEntry) {
-        let tx_hash = *entry.tx.tx_hash();
-
-        if self.by_hash.contains_key(&tx_hash) {
+    /// Takes the full batch at once since all transactions for a token
+    /// are paused together.
+    pub fn insert_batch(&mut self, fee_token: Address, entries: Vec<PausedEntry>) {
+        if entries.is_empty() {
             return;
         }
-
-        self.by_hash.insert(tx_hash, fee_token);
-        self.by_token
-            .entry(fee_token)
-            .or_default()
-            .insert(tx_hash, entry);
-    }
-
-    /// Removes a transaction by hash from the paused pool.
-    ///
-    /// Returns the entry if it was present.
-    pub fn remove(&mut self, tx_hash: &TxHash) -> Option<PausedEntry> {
-        let fee_token = self.by_hash.remove(tx_hash)?;
-        let entry = self
-            .by_token
-            .get_mut(&fee_token)
-            .and_then(|txs| txs.remove(tx_hash));
-
-        if let Some(txs) = self.by_token.get(&fee_token)
-            && txs.is_empty()
-        {
-            self.by_token.remove(&fee_token);
-        }
-
-        entry
+        self.by_token.entry(fee_token).or_default().extend(entries);
     }
 
     /// Drains all transactions for a given fee token.
     ///
-    /// Returns an iterator over the paused entries for that token.
+    /// Returns the list of paused entries for that token.
     pub fn drain_token(&mut self, fee_token: &Address) -> Vec<PausedEntry> {
-        let Some(txs) = self.by_token.remove(fee_token) else {
-            return Vec::new();
-        };
-
-        for tx_hash in txs.keys() {
-            self.by_hash.remove(tx_hash);
-        }
-
-        txs.into_values().collect()
-    }
-
-    /// Returns true if a transaction with the given hash is in the paused pool.
-    pub fn contains(&self, tx_hash: &TxHash) -> bool {
-        self.by_hash.contains_key(tx_hash)
+        self.by_token.remove(fee_token).unwrap_or_default()
     }
 
     /// Returns the number of transactions paused for a given fee token.
     pub fn count_for_token(&self, fee_token: &Address) -> usize {
-        self.by_token.get(fee_token).map_or(0, HashMap::len)
+        self.by_token.get(fee_token).map_or(0, Vec::len)
     }
 
-    /// Returns an iterator over all transaction hashes that have expired
-    /// (valid_before <= tip_timestamp).
-    ///
-    /// This does not remove the transactions; caller should use `remove()`.
-    pub fn expired_hashes(&self, tip_timestamp: u64) -> Vec<TxHash> {
+    /// Returns true if a transaction with the given hash is in the paused pool.
+    pub fn contains(&self, tx_hash: &TxHash) -> bool {
         self.by_token
             .values()
-            .flat_map(|txs| txs.iter())
-            .filter_map(|(hash, entry)| {
-                entry
-                    .valid_before
-                    .filter(|&vb| vb <= tip_timestamp)
-                    .map(|_| *hash)
-            })
-            .collect()
+            .any(|entries| entries.iter().any(|e| e.tx.hash() == tx_hash))
     }
 
-    /// Returns an iterator over all paused entries for scanning (e.g., key revocations).
-    pub fn all_entries(&self) -> impl Iterator<Item = (&TxHash, &PausedEntry)> {
-        self.by_token.values().flat_map(|txs| txs.iter())
+    /// Evicts expired transactions based on `valid_before` timestamp.
+    ///
+    /// Returns the number of transactions removed.
+    pub fn evict_expired(&mut self, tip_timestamp: u64) -> usize {
+        let mut count = 0;
+        for entries in self.by_token.values_mut() {
+            let before = entries.len();
+            entries.retain(|e| {
+                e.valid_before
+                    .map_or(true, |vb| vb > tip_timestamp)
+            });
+            count += before - entries.len();
+        }
+        // Clean up empty token entries
+        self.by_token.retain(|_, v| !v.is_empty());
+        count
+    }
+
+    /// Evicts transactions that have been paused for too long (timeout).
+    ///
+    /// Returns the number of transactions removed.
+    pub fn evict_timed_out(&mut self) -> usize {
+        let now = Instant::now();
+        let mut count = 0;
+        for entries in self.by_token.values_mut() {
+            let before = entries.len();
+            entries.retain(|e| now.duration_since(e.paused_at) < PAUSED_TX_TIMEOUT);
+            count += before - entries.len();
+        }
+        // Clean up empty token entries
+        self.by_token.retain(|_, v| !v.is_empty());
+        count
+    }
+
+    /// Removes transactions with revoked keychain keys from the paused pool.
+    ///
+    /// Returns the number of transactions removed.
+    pub fn evict_by_revoked_keys(&mut self, revoked_keys: &[(Address, Address)]) -> usize {
+        if revoked_keys.is_empty() {
+            return 0;
+        }
+
+        let mut count = 0;
+        for entries in self.by_token.values_mut() {
+            let before = entries.len();
+            entries.retain(|entry| {
+                let Some(aa_tx) = entry.tx.transaction.inner().as_aa() else {
+                    return true;
+                };
+                let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+                    return true;
+                };
+                let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
+                    return true;
+                };
+                let account = keychain_sig.user_address;
+                !revoked_keys.contains(&(account, key_id))
+            });
+            count += before - entries.len();
+        }
+        // Clean up empty token entries
+        self.by_token.retain(|_, v| !v.is_empty());
+        count
+    }
+
+    /// Returns an iterator over all paused entries across all tokens.
+    pub fn all_entries(&self) -> impl Iterator<Item = &PausedEntry> {
+        self.by_token.values().flatten()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TxBuilder;
-    use reth_primitives_traits::transaction::TxHashRef;
-    use reth_transaction_pool::PoolTransaction;
+    use crate::test_utils::{TxBuilder, wrap_valid_tx};
 
-    fn create_recovered_tx(sender: Address) -> Recovered<TempoTxEnvelope> {
-        let tx = TxBuilder::aa(sender).build();
-        tx.clone_into_consensus()
+    fn create_valid_tx(sender: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        use reth_transaction_pool::TransactionOrigin;
+        let pooled = TxBuilder::aa(sender).build();
+        Arc::new(wrap_valid_tx(pooled, TransactionOrigin::External))
     }
 
     #[test]
-    fn test_insert_and_remove() {
-        let mut pool = PausedFeeTokenPool::new();
-        let fee_token = Address::random();
-        let sender = Address::random();
-
-        let tx = create_recovered_tx(sender);
-        let tx_hash = *tx.tx_hash();
-
-        let entry = PausedEntry {
-            tx,
-            origin: TransactionOrigin::External,
-            paused_at: Instant::now(),
-            valid_before: None,
-        };
-
-        assert!(pool.is_empty());
-        pool.insert(fee_token, entry);
-
-        assert_eq!(pool.len(), 1);
-        assert!(pool.contains(&tx_hash));
-        assert_eq!(pool.count_for_token(&fee_token), 1);
-
-        let removed = pool.remove(&tx_hash);
-        assert!(removed.is_some());
-        assert!(pool.is_empty());
-        assert!(!pool.contains(&tx_hash));
-    }
-
-    #[test]
-    fn test_drain_token() {
+    fn test_insert_and_drain() {
         let mut pool = PausedFeeTokenPool::new();
         let fee_token = Address::random();
 
-        for _ in 0..3 {
-            let tx = create_recovered_tx(Address::random());
-            let entry = PausedEntry {
-                tx,
-                origin: TransactionOrigin::External,
+        let entries: Vec<_> = (0..3)
+            .map(|_| PausedEntry {
+                tx: create_valid_tx(Address::random()),
                 paused_at: Instant::now(),
                 valid_before: None,
-            };
-            pool.insert(fee_token, entry);
-        }
+            })
+            .collect();
+
+        assert!(pool.is_empty());
+        pool.insert_batch(fee_token, entries);
 
         assert_eq!(pool.len(), 3);
         assert_eq!(pool.count_for_token(&fee_token), 3);
@@ -199,72 +186,55 @@ mod tests {
         let drained = pool.drain_token(&fee_token);
         assert_eq!(drained.len(), 3);
         assert!(pool.is_empty());
-        assert_eq!(pool.count_for_token(&fee_token), 0);
     }
 
     #[test]
-    fn test_expired_hashes() {
+    fn test_evict_expired() {
         let mut pool = PausedFeeTokenPool::new();
         let fee_token = Address::random();
 
-        let tx1 = create_recovered_tx(Address::random());
-        let tx1_hash = *tx1.tx_hash();
-        pool.insert(
-            fee_token,
+        let entries = vec![
             PausedEntry {
-                tx: tx1,
-                origin: TransactionOrigin::External,
+                tx: create_valid_tx(Address::random()),
                 paused_at: Instant::now(),
-                valid_before: Some(100),
+                valid_before: Some(100), // Will expire
             },
-        );
-
-        let tx2 = create_recovered_tx(Address::random());
-        pool.insert(
-            fee_token,
             PausedEntry {
-                tx: tx2,
-                origin: TransactionOrigin::External,
+                tx: create_valid_tx(Address::random()),
                 paused_at: Instant::now(),
-                valid_before: Some(200),
+                valid_before: Some(200), // Won't expire
             },
-        );
-
-        let tx3 = create_recovered_tx(Address::random());
-        pool.insert(
-            fee_token,
             PausedEntry {
-                tx: tx3,
-                origin: TransactionOrigin::External,
+                tx: create_valid_tx(Address::random()),
                 paused_at: Instant::now(),
-                valid_before: None,
+                valid_before: None, // No expiry
             },
-        );
+        ];
 
-        let expired = pool.expired_hashes(100);
-        assert_eq!(expired.len(), 1);
-        assert!(expired.contains(&tx1_hash));
+        pool.insert_batch(fee_token, entries);
+        assert_eq!(pool.len(), 3);
 
-        let expired = pool.expired_hashes(200);
-        assert_eq!(expired.len(), 2);
+        let evicted = pool.evict_expired(150);
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.len(), 2);
     }
 
     #[test]
-    fn test_idempotent_insert() {
+    fn test_contains() {
         let mut pool = PausedFeeTokenPool::new();
         let fee_token = Address::random();
 
-        let tx = create_recovered_tx(Address::random());
+        let tx = create_valid_tx(Address::random());
+        let tx_hash = *tx.hash();
+
         let entry = PausedEntry {
             tx,
-            origin: TransactionOrigin::External,
             paused_at: Instant::now(),
             valid_before: None,
         };
 
-        pool.insert(fee_token, entry.clone());
-        pool.insert(fee_token, entry);
-
-        assert_eq!(pool.len(), 1);
+        assert!(!pool.contains(&tx_hash));
+        pool.insert_batch(fee_token, vec![entry]);
+        assert!(pool.contains(&tx_hash));
     }
 }

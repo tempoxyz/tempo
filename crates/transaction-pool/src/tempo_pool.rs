@@ -218,122 +218,98 @@ where
         }
     }
 
-    /// Evicts transactions with revoked keychain keys from the paused pool.
-    ///
-    /// Called by the maintenance task when `KeyRevoked` events are detected.
-    pub(crate) fn evict_paused_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
-        let mut paused_pool = self.paused_fee_token_pool.write();
-        let mut to_remove = Vec::new();
-
-        for (tx_hash, entry) in paused_pool.all_entries() {
-            let Some(aa_tx) = entry.tx.as_aa() else {
-                continue;
-            };
-
-            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
-                continue;
-            };
-
-            for &(account, key_id) in revoked_keys {
-                if keychain_sig.user_address == account
-                    && let Ok(tx_key_id) = keychain_sig.key_id(&aa_tx.signature_hash())
-                    && tx_key_id == key_id
-                {
-                    to_remove.push(*tx_hash);
-                    break;
-                }
-            }
-        }
-
-        for tx_hash in to_remove {
-            paused_pool.remove(&tx_hash);
-        }
-    }
-
     /// Moves transactions using the specified fee token to the paused pool.
     ///
     /// Called when a `PauseStateUpdate(isPaused=true)` event is detected.
-    /// Transactions are scanned on-demand (pauses are rare).
+    /// Uses `remove_transactions` to get `Arc<ValidPoolTransaction>` directly,
+    /// avoiding expensive clones.
     ///
     /// Returns the number of transactions moved to the paused pool.
     pub(crate) fn pause_fee_token(&self, fee_token: Address) -> usize {
-        use reth_primitives_traits::transaction::TxHashRef;
+        // First, collect hashes of transactions using this fee token
+        let hashes_to_pause: Vec<_> = self
+            .all_transactions()
+            .all()
+            .filter_map(|tx| {
+tx.inner()
+                    .fee_token()
+                    .filter(|&t| t == fee_token)
+                    .map(|_| {
+                        use reth_primitives_traits::transaction::TxHashRef;
+                        *tx.tx_hash()
+                    })
+            })
+            .collect();
 
-        let mut to_pause = Vec::new();
-
-        for tx in self.all_transactions().all() {
-            if let Some(tx_fee_token) = tx.inner().fee_token()
-                && tx_fee_token == fee_token
-            {
-                to_pause.push(tx);
-            }
-        }
-
-        if to_pause.is_empty() {
+        if hashes_to_pause.is_empty() {
             return 0;
         }
 
-        let count = to_pause.len();
-        let hashes: Vec<_> = to_pause.iter().map(|tx| *tx.tx_hash()).collect();
-        self.remove_transactions(hashes);
+        // Remove returns Arc<ValidPoolTransaction>, avoiding expensive clones
+        let removed_txs = self.remove_transactions(hashes_to_pause);
+        let count = removed_txs.len();
 
-        let mut paused_pool = self.paused_fee_token_pool.write();
-        for tx in to_pause {
-            let valid_before = tx.inner().as_aa().and_then(|aa| aa.tx().valid_before);
-            let entry = PausedEntry {
-                tx,
-                // Note: Original origin is not preserved because `all_transactions().all()` returns
-                // `Recovered<TempoTxEnvelope>` rather than `ValidPoolTransaction` which tracks origin.
-                // Using `External` is conservative (won't bypass validation on re-add).
-                origin: TransactionOrigin::External,
-                paused_at: Instant::now(),
-                valid_before,
-            };
-            paused_pool.insert(fee_token, entry);
+        if count == 0 {
+            return 0;
         }
+
+        // Build entries from the removed transactions
+        let now = Instant::now();
+        let entries: Vec<_> = removed_txs
+            .into_iter()
+            .map(|tx| {
+                let valid_before = tx
+                    .transaction
+                    .inner()
+                    .as_aa()
+                    .and_then(|aa| aa.tx().valid_before);
+                PausedEntry {
+                    tx,
+                    paused_at: now,
+                    valid_before,
+                }
+            })
+            .collect();
+
+        self.paused_fee_token_pool
+            .write()
+            .insert_batch(fee_token, entries);
 
         count
     }
 
-    /// Moves transactions for the specified fee token back from the paused pool.
+    /// Drains transactions for the specified fee token from the paused pool.
     ///
-    /// Called when a `PauseStateUpdate(isPaused=false)` event is detected.
-    /// Transactions are re-added via the normal validation path, so they will
-    /// be dropped if they have become invalid for other reasons.
-    ///
-    /// Returns the number of transactions that were re-added successfully.
-    pub(crate) async fn unpause_fee_token(&self, fee_token: Address) -> usize {
-        let entries = self.paused_fee_token_pool.write().drain_token(&fee_token);
-        if entries.is_empty() {
-            return 0;
-        }
-
-        let mut success_count = 0;
-        for entry in entries {
-            let tx = TempoPooledTransaction::new(entry.tx);
-            match self.add_transaction(entry.origin, tx).await {
-                Ok(_) => success_count += 1,
-                Err(_) => {
-                    // Transaction is no longer valid (e.g., nonce advanced, expired, etc.)
-                    // Just drop it.
-                }
-            }
-        }
-
-        success_count
+    /// Returns the entries that were paused. The caller is responsible for
+    /// re-adding these to the pool (typically via a spawned task).
+    pub(crate) fn drain_paused_fee_token(
+        &self,
+        fee_token: Address,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        self.paused_fee_token_pool
+            .write()
+            .drain_token(&fee_token)
+            .into_iter()
+            .map(|e| e.tx)
+            .collect()
     }
 
     /// Removes expired transactions from the paused pool.
     ///
     /// Called by the maintenance task during regular expiry checks.
+    /// Also evicts transactions that have been paused for too long (30 min timeout).
     pub(crate) fn evict_expired_paused(&self, tip_timestamp: u64) -> usize {
         let mut paused_pool = self.paused_fee_token_pool.write();
-        let expired = paused_pool.expired_hashes(tip_timestamp);
-        let count = expired.len();
-        for tx_hash in expired {
-            paused_pool.remove(&tx_hash);
-        }
-        count
+        let expired = paused_pool.evict_expired(tip_timestamp);
+        let timed_out = paused_pool.evict_timed_out();
+        expired + timed_out
+    }
+
+    /// Removes transactions with revoked keychain keys from the paused pool.
+    pub(crate) fn evict_paused_by_revoked_keys(&self, revoked_keys: &[(Address, Address)]) {
+        self.paused_fee_token_pool
+            .write()
+            .evict_by_revoked_keys(revoked_keys);
     }
 
     /// Returns the number of transactions in the paused pool.

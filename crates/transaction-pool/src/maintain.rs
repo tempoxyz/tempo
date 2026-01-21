@@ -190,14 +190,33 @@ where
                             );
                         }
                     } else {
-                        let count = pool.unpause_fee_token(token).await;
-                        if count > 0 {
-                            debug!(
-                                target: "txpool",
-                                %token,
-                                count,
-                                "Restored transactions from paused pool (fee token unpaused)"
-                            );
+                        // Drain paused transactions and spawn re-validation to avoid
+                        // blocking the maintenance loop
+                        let paused_txs = pool.drain_paused_fee_token(token);
+                        if !paused_txs.is_empty() {
+                            let count = paused_txs.len();
+                            let pool_clone = pool.clone();
+                            tokio::spawn(async move {
+                                // Convert to pooled transactions and batch submit
+                                let txs: Vec<_> = paused_txs
+                                    .into_iter()
+                                    .map(|tx| tx.transaction.clone())
+                                    .collect();
+
+                                // Use batch API for efficiency
+                                let results = pool_clone
+                                    .add_external_transactions(txs)
+                                    .await;
+
+                                let success = results.iter().filter(|r| r.is_ok()).count();
+                                debug!(
+                                    target: "txpool",
+                                    %token,
+                                    total = count,
+                                    success,
+                                    "Restored transactions from paused pool (fee token unpaused)"
+                                );
+                            });
                         }
                     }
                 }
