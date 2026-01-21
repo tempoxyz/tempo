@@ -601,7 +601,10 @@ where
                             }
                         };
 
-                        // If expiry is non-zero and in the future, tx hash is still valid (replay)
+                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // Note: This is also enforced at the protocol level in handler.rs via
+                        // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
+                        // (e.g., injected directly into a block), execution will still reject it.
                         if seen_expiry != 0 && seen_expiry > current_time {
                             return TransactionValidationOutcome::Invalid(
                                 transaction.into_transaction(),
