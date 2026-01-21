@@ -14,7 +14,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
+use tempo_chainspec::spec::{TEMPO_BASE_FEE_POST_T1, TEMPO_BASE_FEE_PRE_T1};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, account_keychain::IAccountKeychain::revokeKeyCall,
 };
@@ -5933,8 +5933,8 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
 
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
         gas_limit: 100_000,
         calls: vec![Call {
             to: recipient.into(),
@@ -6025,8 +6025,8 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
 
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
         gas_limit: 100_000,
         calls: vec![Call {
             to: recipient.into(),
@@ -6113,8 +6113,8 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
 
         let tx = TempoTransaction {
             chain_id,
-            max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+            max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
             gas_limit: 100_000,
             calls: vec![Call {
                 to: recipient.into(),
@@ -6171,8 +6171,8 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
 
         let tx = TempoTransaction {
             chain_id,
-            max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+            max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
             gas_limit: 100_000,
             calls: vec![Call {
                 to: recipient.into(),
@@ -6223,8 +6223,8 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
 
         let tx = TempoTransaction {
             chain_id,
-            max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-            max_fee_per_gas: TEMPO_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+            max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
             gas_limit: 100_000,
             calls: vec![Call {
                 to: recipient.into(),
@@ -6303,8 +6303,8 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 
     let expiring_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
         gas_limit: 100_000,
         calls: vec![Call {
             to: Address::random().into(),
@@ -6353,8 +6353,8 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
     println!("\nStep 2: Submit protocol nonce transaction...");
     let protocol_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
+        max_fee_per_gas: TEMPO_BASE_FEE_PRE_T1 as u128,
         gas_limit: 100_000,
         calls: vec![Call {
             to: Address::random().into(),
