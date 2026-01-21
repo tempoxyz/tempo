@@ -31,6 +31,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T0 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t0_time: Option<u64>,
+    /// Activation timestamp for T1 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t1_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -49,6 +52,10 @@ impl TempoGenesisInfo {
 
     pub fn t0_time(&self) -> Option<u64> {
         self.t0_time
+    }
+
+    pub fn t1_time(&self) -> Option<u64> {
+        self.t1_time
     }
 }
 
@@ -137,7 +144,9 @@ impl TempoChainSpec {
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
     pub fn from_genesis(genesis: Genesis) -> Self {
         // Extract Tempo genesis info from extra_fields
-        let info @ TempoGenesisInfo { t0_time, .. } = TempoGenesisInfo::extract_from(&genesis);
+        let info @ TempoGenesisInfo {
+            t0_time, t1_time, ..
+        } = TempoGenesisInfo::extract_from(&genesis);
 
         // Create base chainspec from genesis (already has ordered Ethereum hardforks)
         let mut base_spec = ChainSpec::from_genesis(genesis);
@@ -145,6 +154,7 @@ impl TempoChainSpec {
         let tempo_forks = vec![
             (TempoHardfork::Genesis, Some(0)),
             (TempoHardfork::T0, t0_time),
+            (TempoHardfork::T1, t1_time),
         ]
         .into_iter()
         .filter_map(|(fork, time)| time.map(|time| (fork, ForkCondition::Timestamp(time))));
