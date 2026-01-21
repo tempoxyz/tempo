@@ -178,7 +178,7 @@ pub(crate) fn expand_telemetry_args(args: Vec<String>) -> eyre::Result<Vec<Strin
         "--metrics.prometheus.push.url={prometheus_push_url}"
     ));
 
-    // Push consensus metrics via OTLP to the same base URL
+    // Also push consensus metrics via OTLP to the same base URL
     expanded.push(format!(
         "--consensus.metrics-otlp={base_url_no_creds}/opentelemetry/v1/metrics"
     ));
