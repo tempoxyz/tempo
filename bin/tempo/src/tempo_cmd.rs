@@ -144,7 +144,7 @@ pub(crate) struct ValidatorsInfo {
     #[arg(long, short, default_value = "mainnet", value_parser = tempo_chainspec::spec::chain_value_parser)]
     chain: Arc<TempoChainSpec>,
 
-    /// RPC URL to query. Defaults to https://rpc.presto.tempo.xyz
+    /// RPC URL to query. Defaults to <https://rpc.presto.tempo.xyz>
     #[arg(long, default_value = "https://rpc.presto.tempo.xyz")]
     rpc_url: String,
 }
