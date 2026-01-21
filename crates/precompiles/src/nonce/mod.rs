@@ -135,9 +135,9 @@ impl NonceManager {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
-        // 3. Get current pointer and the entry we're about to overwrite
+        // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr % EXPIRING_NONCE_SET_CAPACITY;
+        let idx = ptr;
         let old_hash = self.expiring_nonce_ring[idx].read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
@@ -157,8 +157,9 @@ impl NonceManager {
         self.expiring_nonce_ring[idx].write(tx_hash)?;
         self.expiring_nonce_seen[tx_hash].write(valid_before)?;
 
-        // 6. Advance pointer (wraps automatically via modulo on next read)
-        self.expiring_nonce_ring_ptr.write(ptr.wrapping_add(1))?;
+        // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
+        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY { 0 } else { ptr + 1 };
+        self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
     }
@@ -396,6 +397,38 @@ mod tests {
             // Different hashes should have different slots
             let other_hash = B256::repeat_byte(0x66);
             assert_ne!(slot, mgr.expiring_seen_slot(other_hash));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_ring_buffer_pointer_wraps_at_capacity() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            // Manually set pointer to just before capacity to test wrap
+            mgr.expiring_nonce_ring_ptr
+                .write(EXPIRING_NONCE_SET_CAPACITY - 1)?;
+
+            // Insert a tx - pointer should wrap to 0
+            let tx_hash = B256::repeat_byte(0x77);
+            let valid_before = now + 20;
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+
+            // Pointer should now be 0 (wrapped at capacity)
+            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
+            assert_eq!(ptr, 0, "Pointer should wrap to 0 at capacity");
+
+            // Insert another tx - pointer should be 1
+            let tx_hash2 = B256::repeat_byte(0x88);
+            mgr.check_and_mark_expiring_nonce(tx_hash2, valid_before)?;
+
+            let ptr = mgr.expiring_nonce_ring_ptr.read()?;
+            assert_eq!(ptr, 1, "Pointer should increment to 1 after wrap");
 
             Ok(())
         })
