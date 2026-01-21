@@ -6067,22 +6067,15 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
     // Second submission with SAME encoded tx (same hash) should fail
     println!("\nSecond submission - attempting replay with same tx hash...");
 
-    // Try to inject the same transaction again
+    // Try to inject the same transaction again - should be rejected at pool level
     let replay_result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
 
-    // The replay should be rejected either at pool validation or block building
-    if replay_result.is_err() {
-        println!("✓ Replay rejected at transaction pool level");
-    } else {
-        // If it was accepted to pool, mine a block and check it wasn't included
-        setup.node.advance_block().await?;
-
-        // The tx hash is the same, so we can't distinguish - but if we check
-        // that trying to query it again doesn't show a new block number, we're good
-        println!("✓ Replay may have been rejected at block building level");
-    }
-
-    println!("✓ Replay protection working");
+    // The replay MUST be rejected at pool validation (we check seen[tx_hash] in validator)
+    assert!(
+        replay_result.is_err(),
+        "Replay should be rejected at transaction pool level"
+    );
+    println!("✓ Replay rejected at transaction pool level");
 
     Ok(())
 }
