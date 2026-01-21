@@ -75,7 +75,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         targetContract(address(this));
 
         // Define which handlers the fuzzer should call
-        bytes4[] memory selectors = new bytes4[](60);
+        bytes4[] memory selectors = new bytes4[](68);
         // Legacy transaction handlers (core)
         selectors[0] = this.handler_transfer.selector;
         selectors[1] = this.handler_sequentialTransfers.selector;
@@ -152,6 +152,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         selectors[57] = this.handler_gasTrackingCreate.selector;
         selectors[58] = this.handler_gasTrackingSignatureTypes.selector;
         selectors[59] = this.handler_gasTrackingKeyAuth.selector;
+        // Expiring nonce handlers (E1-E7)
+        selectors[60] = this.handler_expiringNonceBasic.selector;
+        selectors[61] = this.handler_expiringNonceReplay.selector;
+        selectors[62] = this.handler_expiringNonceExpired.selector;
+        selectors[63] = this.handler_expiringNonceWindowTooFar.selector;
+        selectors[64] = this.handler_expiringNonceNonZeroNonce.selector;
+        selectors[65] = this.handler_expiringNonceMissingValidBefore.selector;
+        selectors[66] = this.handler_expiringNonceNoNonceMutation.selector;
+        selectors[67] = this.handler_expiringNonceConcurrent.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         // Initialize previous nonce tracking for secp256k1 actors
@@ -3883,6 +3892,462 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _authorizeKey(owner, keyId, expiry, numLimits > 0, tokens, amounts);
             _recordGasTrackingKeyAuth();
         } catch { }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    EXPIRING NONCE INVARIANTS (E1-E8)
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Expiring nonce key constant (TIP-1009)
+    uint256 private constant EXPIRING_NONCE_KEY = type(uint256).max;
+    /// @dev Maximum expiry window in seconds (TIP-1009)
+    uint64 private constant MAX_EXPIRY_SECS = 30;
+
+    /// @notice Build an expiring nonce transaction
+    /// @dev Sets nonceKey = uint256.max, nonce = 0, and validBefore within window
+    function _buildExpiringNonceTx(
+        uint256 actorIndex,
+        address to,
+        uint256 amount,
+        uint64 validBefore
+    ) internal view returns (bytes memory signedTx, bytes32 txHash) {
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
+        });
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(TxBuilder.DEFAULT_GAS_LIMIT).withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY).withNonce(0).withValidBefore(validBefore);
+
+        signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIndex],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+
+        txHash = keccak256(signedTx);
+    }
+
+    /// @notice Build an expiring nonce tx with custom nonce (for testing E4)
+    function _buildExpiringNonceTxWithNonce(
+        uint256 actorIndex,
+        address to,
+        uint256 amount,
+        uint64 validBefore,
+        uint64 txNonce
+    ) internal view returns (bytes memory signedTx) {
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
+        });
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(TxBuilder.DEFAULT_GAS_LIMIT).withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY).withNonce(txNonce).withValidBefore(validBefore);
+
+        signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIndex],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+    }
+
+    /// @notice Build an expiring nonce tx without validBefore (for testing E5)
+    function _buildExpiringNonceTxNoValidBefore(uint256 actorIndex, address to, uint256 amount)
+        internal
+        view
+        returns (bytes memory signedTx)
+    {
+        TempoCall[] memory calls = new TempoCall[](1);
+        calls[0] = TempoCall({
+            to: address(feeToken), value: 0, data: abi.encodeCall(ITIP20.transfer, (to, amount))
+        });
+
+        TempoTransaction memory tx_ = TempoTransactionLib.create()
+            .withChainId(uint64(block.chainid)).withMaxFeePerGas(TxBuilder.DEFAULT_GAS_PRICE)
+            .withGasLimit(TxBuilder.DEFAULT_GAS_LIMIT).withCalls(calls)
+            .withNonceKey(EXPIRING_NONCE_KEY).withNonce(0);
+        // Note: NOT setting validBefore
+
+        signedTx = TxBuilder.signTempo(
+            vmRlp,
+            vm,
+            tx_,
+            TxBuilder.SigningParams({
+                strategy: TxBuilder.SigningStrategy.Secp256k1,
+                privateKey: actorKeys[actorIndex],
+                pubKeyX: bytes32(0),
+                pubKeyY: bytes32(0),
+                userAddress: address(0)
+            })
+        );
+    }
+
+    /// @notice Handler: Execute a basic expiring nonce transaction
+    /// @dev Tests basic flow - submit tx with valid expiring nonce, should succeed
+    function handler_expiringNonceBasic(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+        external
+    {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        (bytes memory signedTx, bytes32 txHash) =
+            _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            ghost_expiringNonceExecuted[txHash] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+        } catch {
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E1: Attempt to replay an expiring nonce tx within validity window
+    /// @dev The same tx hash should be rejected while validBefore > now
+    function handler_expiringNonceReplay(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+        external
+    {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount * 2) return;
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        (bytes memory signedTx, bytes32 txHash) =
+            _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+
+        // First execution should succeed
+        try vmExec.executeTransaction(signedTx) {
+            ghost_expiringNonceExecuted[txHash] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+        } catch {
+            ghost_totalTxReverted++;
+            return;
+        }
+
+        // Replay attempt - should fail
+        ghost_expiringNonceReplayAttempted++;
+        try vmExec.executeTransaction(signedTx) {
+            // E1 VIOLATION: Replay within validity window succeeded!
+            ghost_expiringNonceReplayAllowed++;
+        } catch {
+            // Expected: replay rejected
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E2: Attempt to execute an expired transaction
+    /// @dev Tx with validBefore <= block.timestamp should be rejected
+    function handler_expiringNonceExpired(uint256 actorSeed, uint256 recipientSeed, uint256 amount)
+        external
+    {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        // Set validBefore to current timestamp (expired)
+        uint64 validBefore = uint64(block.timestamp);
+
+        (bytes memory signedTx,) = _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+        ghost_expiringNonceExpiredAttempted++;
+
+        try vmExec.executeTransaction(signedTx) {
+            // E2 VIOLATION: Expired tx was allowed!
+            ghost_expiringNonceExpiredAllowed++;
+        } catch {
+            // Expected: expired tx rejected
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E3: Attempt tx with validBefore too far in future
+    /// @dev Tx with validBefore > now + 30s should be rejected
+    function handler_expiringNonceWindowTooFar(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        uint256 extraOffset
+    ) external {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        // Set validBefore beyond the max window
+        extraOffset = bound(extraOffset, 1, 1 hours);
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS + extraOffset);
+
+        (bytes memory signedTx,) = _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+        ghost_expiringNonceWindowAttempted++;
+
+        try vmExec.executeTransaction(signedTx) {
+            // E3 VIOLATION: validBefore exceeds max window but was allowed!
+            ghost_expiringNonceWindowAllowed++;
+        } catch {
+            // Expected: out-of-window tx rejected
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E4: Attempt expiring nonce tx with non-zero nonce
+    /// @dev Expiring nonce txs must have nonce = 0
+    function handler_expiringNonceNonZeroNonce(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        uint256 nonceSeed
+    ) external {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+        uint64 wrongNonce = uint64(bound(nonceSeed, 1, 100));
+
+        bytes memory signedTx =
+            _buildExpiringNonceTxWithNonce(senderIdx, recipient, amount, validBefore, wrongNonce);
+
+        vm.coinbase(validator);
+        ghost_expiringNonceNonZeroAttempted++;
+
+        try vmExec.executeTransaction(signedTx) {
+            // E4 VIOLATION: Non-zero nonce was allowed!
+            ghost_expiringNonceNonZeroAllowed++;
+        } catch {
+            // Expected: non-zero nonce rejected
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E5: Attempt expiring nonce tx without validBefore
+    /// @dev Expiring nonce txs must have validBefore set
+    function handler_expiringNonceMissingValidBefore(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    ) external {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        bytes memory signedTx = _buildExpiringNonceTxNoValidBefore(senderIdx, recipient, amount);
+
+        vm.coinbase(validator);
+        ghost_expiringNonceMissingVBAttempted++;
+
+        try vmExec.executeTransaction(signedTx) {
+            // E5 VIOLATION: Missing validBefore was allowed!
+            ghost_expiringNonceMissingVBAllowed++;
+        } catch {
+            // Expected: missing validBefore rejected
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E6: Verify expiring nonce txs don't mutate any nonces
+    /// @dev Protocol nonce and 2D nonces should remain unchanged after expiring nonce tx
+    function handler_expiringNonceNoNonceMutation(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount
+    ) external {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount) return;
+
+        // Record nonces before execution
+        uint256 protocolNonceBefore = vm.getNonce(sender);
+        uint64 nonce2dBefore = nonce.getNonce(sender, 1); // Check a 2D nonce key
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        (bytes memory signedTx, bytes32 txHash) =
+            _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(signedTx) {
+            ghost_expiringNonceExecuted[txHash] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+
+            // E6: Verify nonces unchanged
+            uint256 protocolNonceAfter = vm.getNonce(sender);
+            uint64 nonce2dAfter = nonce.getNonce(sender, 1);
+
+            // Protocol nonce should NOT have incremented
+            assertEq(
+                protocolNonceAfter,
+                protocolNonceBefore,
+                "E6: Protocol nonce should not change for expiring nonce tx"
+            );
+
+            // 2D nonce should NOT have incremented
+            assertEq(
+                nonce2dAfter, nonce2dBefore, "E6: 2D nonce should not change for expiring nonce tx"
+            );
+        } catch {
+            ghost_totalTxReverted++;
+        }
+    }
+
+    /// @notice Handler E7: Multiple concurrent expiring nonce txs from same sender
+    /// @dev Expiring nonces allow parallel submissions (no sequential dependency)
+    function handler_expiringNonceConcurrent(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amount1,
+        uint256 amount2
+    ) external {
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address sender = actors[senderIdx];
+        address recipient = actors[recipientIdx];
+
+        amount1 = bound(amount1, 1e6, 5e6);
+        amount2 = bound(amount2, 1e6, 5e6);
+        uint256 balance = feeToken.balanceOf(sender);
+        if (balance < amount1 + amount2) return;
+
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS);
+
+        // Build two different transactions (different amounts = different hashes)
+        (bytes memory signedTx1, bytes32 txHash1) =
+            _buildExpiringNonceTx(senderIdx, recipient, amount1, validBefore);
+        (bytes memory signedTx2, bytes32 txHash2) =
+            _buildExpiringNonceTx(senderIdx, recipient, amount2, validBefore);
+
+        // Ensure they have different hashes
+        if (txHash1 == txHash2) return;
+
+        vm.coinbase(validator);
+
+        uint256 successCount = 0;
+
+        // Execute first tx
+        try vmExec.executeTransaction(signedTx1) {
+            ghost_expiringNonceExecuted[txHash1] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+            successCount++;
+        } catch {
+            ghost_totalTxReverted++;
+        }
+
+        // Execute second tx (should also succeed - no nonce dependency)
+        try vmExec.executeTransaction(signedTx2) {
+            ghost_expiringNonceExecuted[txHash2] = true;
+            ghost_expiringNonceTxsExecuted++;
+            ghost_totalTxExecuted++;
+            ghost_totalCallsExecuted++;
+            successCount++;
+        } catch {
+            ghost_totalTxReverted++;
+        }
+
+        if (successCount == 2) {
+            ghost_expiringNonceConcurrentExecuted++;
+        }
     }
 
 }

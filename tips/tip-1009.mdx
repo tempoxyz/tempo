@@ -11,7 +11,7 @@ This document specifies expiring nonces for Tempo transactions, providing time-b
 - **Authors/Owners**: Tempo Team
 - **Status**: Approved
 - **Related Specs/TIPs**: [TIP-20](/protocol/tip20/spec), [Transactions](/protocol/transactions/spec)
-- **Protocol Version**: TBD
+- **Protocol Version**: T1
 
 ---
 
@@ -162,17 +162,23 @@ function checkAndMarkExpiringNonce(
 The intrinsic gas cost for expiring nonce transactions includes:
 
 ```
-EXPIRING_NONCE_GAS = 2 * COLD_SLOAD_COST + 3 * WARM_SSTORE_RESET
-                   = 2 * 2100 + 3 * 2900
-                   = 12,900 gas
+EXPIRING_NONCE_GAS = 2 * COLD_SLOAD_COST + WARM_SLOAD_COST + 3 * WARM_SSTORE_RESET
+                   = 2 * 2100 + 100 + 3 * 2900
+                   = 13,000 gas
 ```
 
 **Included operations:**
-- 2 cold SLOADs: `seen[txHash]`, `ring[idx]`
-- 3 warm SSTOREs: `seen[oldHash]=0`, `ring[idx]`, `seen[txHash]`
+- 2 cold SLOADs: `seen[txHash]`, `ring[idx]` (unique slots per tx)
+- 1 warm SLOAD: `seen[oldHash]` (warm because we just read `ring[idx]` which points to it)
+- 3 SSTOREs at RESET price: `seen[oldHash]=0`, `ring[idx]`, `seen[txHash]`
 
-**Excluded operations (cached/amortized):**
-- `ring_ptr` SLOAD/SSTORE: Cached since accessed almost every transaction
+**Excluded operations (amortized):**
+- `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
+
+**Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[txHash]`:**
+- SSTORE_SET cost exists to penalize permanent state growth
+- Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k entries)
+- No permanent state growth, so the 20k penalty doesn't apply
 
 ## Transaction Pool Validation
 
@@ -210,15 +216,30 @@ Expiring nonce transactions pay fees in TIP-20 fee tokens like any other Tempo t
 
 ## Must Hold
 
-1. **No replay within validity window**: A transaction hash cannot be executed twice while `validBefore > now`
+| ID | Invariant | Description |
+|----|-----------|-------------|
+| **E1** | No replay | A transaction hash can never be executed twice (changing `validBefore` produces a different hash) |
+| **E2** | Expiry enforcement | Transactions with `validBefore <= now` must be rejected |
+| **E3** | Window bounds | Transactions with `validBefore > now + MAX_EXPIRY_SECS` must be rejected |
+| **E4** | Nonce must be zero | Expiring nonce transactions must have `nonce == 0` |
+| **E5** | Valid before required | Expiring nonce transactions must have `validBefore` set |
+| **E6** | No nonce mutation | Expiring nonce txs do not increment protocol nonce or any 2D nonce |
+| **E7** | Concurrent independence | Multiple expiring nonce txs from same sender can execute in same block |
 
-2. **Expiry enforcement**: Transactions with `validBefore <= now` must be rejected
+## Invariant Tests
 
-3. **Window bounds**: Transactions with `validBefore > now + MAX_EXPIRY_SECS` must be rejected
+These invariants are tested in the Foundry invariant test suite (`TempoTransactionInvariant.t.sol`):
 
-4. **Buffer integrity**: The circular buffer maintains exactly `CAPACITY` slots
-
-5. **Seen set consistency**: An entry in `expiringNonceSeen` implies the hash exists in `expiringNonceRing`
+| Handler | Tests | Description |
+|---------|-------|-------------|
+| `handler_expiringNonceBasic` | Basic flow | Execute valid expiring nonce tx |
+| `handler_expiringNonceReplay` | E1 | Replay must be rejected |
+| `handler_expiringNonceExpired` | E2 | Tx with `validBefore <= now` must be rejected |
+| `handler_expiringNonceWindowTooFar` | E3 | Tx with `validBefore > now + 30s` must be rejected |
+| `handler_expiringNonceNonZeroNonce` | E4 | Tx with `nonce != 0` must be rejected |
+| `handler_expiringNonceMissingValidBefore` | E5 | Tx without `validBefore` must be rejected |
+| `handler_expiringNonceNoNonceMutation` | E6 | Protocol and 2D nonces unchanged after execution |
+| `handler_expiringNonceConcurrent` | E7 | Multiple concurrent txs from same sender succeed |
 
 ## Test Cases
 
@@ -230,11 +251,19 @@ Expiring nonce transactions pay fees in TIP-20 fee tokens like any other Tempo t
    - `validBefore = now + 31` → reject
    - `validBefore = now + 30` → accept
 
-3. **Post-expiry replay**: Submit tx, wait for expiry, submit same tx with new `validBefore` (should succeed)
+3. **Nonce validation**:
+   - `nonce = 0` → accept
+   - `nonce > 0` → reject
 
-4. **Buffer eviction**: Fill buffer, verify old entries are evicted when expired
+4. **Required fields**:
+   - `validBefore` missing → reject
+   - `nonceKey != uint256.max` → not expiring nonce (uses 2D nonce rules)
 
-5. **Concurrent transactions**: Submit multiple transactions with same `validBefore`, verify all succeed
+5. **Post-expiry replay**: Submit tx, wait for expiry, submit same tx with new `validBefore` (should succeed)
+
+6. **Buffer eviction**: Fill buffer, verify old entries are evicted when expired
+
+7. **Concurrent transactions**: Submit multiple transactions with same `validBefore`, verify all succeed
 
 ---
 

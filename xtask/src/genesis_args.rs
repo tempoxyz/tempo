@@ -152,6 +152,10 @@ pub(crate) struct GenesisArgs {
     /// Disable minting pairwise FeeAMM liquidity.
     #[arg(long)]
     no_pairwise_liquidity: bool,
+
+    /// Timestamp for T0 hardfork activation (0 = genesis).
+    #[arg(long, default_value = "0")]
+    t0_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -486,7 +490,7 @@ impl GenesisArgs {
             .insert_value("epochLength".to_string(), self.epoch_length)?;
         chain_config
             .extra_fields
-            .insert_value("t0Time".to_string(), 0u64)?;
+            .insert_value("t0Time".to_string(), self.t0_time)?;
         if let Some(t1_time) = self.t1_time {
             chain_config
                 .extra_fields

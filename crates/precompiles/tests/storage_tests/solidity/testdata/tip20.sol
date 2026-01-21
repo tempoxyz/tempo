@@ -33,6 +33,7 @@ contract TIP20 {
     string public name;
     string public symbol;
     string public currency;
+    // Unused slot, kept for storage layout compatibility
     bytes32 public domainSeparator;
     address public quoteToken;
     address public nextQuoteToken;
@@ -43,9 +44,11 @@ contract TIP20 {
     uint256 public totalSupply;
     mapping(address => uint256) public balances;
     mapping(address => mapping(address => uint256)) public allowances;
+    // Unused slot, kept for storage layout compatibility
     mapping(address => uint256) public nonces;
     bool public paused;
     uint256 public supplyCap;
+    // Unused slot, kept for storage layout compatibility
     mapping(bytes32 => bool) public salts;
 
     // ========== Rewards Storage ==========
