@@ -13,7 +13,7 @@
 //! consensus engine backing the epoch stored in the message. The message also
 //! contains the public polynomial, share of the private key for this node,
 //! and the participants in the next epoch - all determined by the DKG ceremony.
-//! The engine receives a subchannel of the recovered, pending, and resolver
+//! The engine receives a subchannel of the recovered, vote, and resolver
 //! p2p channels, multiplexed by the epoch.
 //!
 //! When the actor receives an `Exit` message, it exists the engine backing the
@@ -26,7 +26,7 @@
 //! then this engine will have a subchannel registered on the multiplexer for
 //! epoch 0.
 //!
-//! If the actor now receives a vote in epoch 5 over its pending mux backup
+//! If the actor now receives a vote in epoch 5 over its vote mux backup
 //! channel (since there are no subchannels registered with the muxer on
 //! epochs 1 through 5), it will request the finalization certificate for the
 //! boundary height of epoch 0 from the voter. This request is done over the
