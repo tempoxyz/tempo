@@ -154,8 +154,8 @@ pub(crate) struct GenesisArgs {
     t0_time: u64,
 
     /// T1 hardfork activation time.
-    #[arg(long)]
-    t1_time: Option<u64>,
+    #[arg(long, default_value = "0")]
+    t1_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -491,11 +491,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t0Time".to_string(), self.t0_time)?;
-        if let Some(t1_time) = self.t1_time {
-            chain_config
-                .extra_fields
-                .insert_value("t1Time".to_string(), t1_time)?;
-        }
+        chain_config
+            .extra_fields
+            .insert_value("t1Time".to_string(), self.t1_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
