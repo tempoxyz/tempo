@@ -340,6 +340,7 @@ impl<Client> std::fmt::Debug for TempoTransactionPool<Client> {
         f.debug_struct("TempoTransactionPool")
             .field("protocol_pool", &"Pool<...>")
             .field("aa_2d_nonce_pool", &"AA2dPool<...>")
+            .field("paused_fee_token_pool", &"PausedFeeTokenPool<...>")
             .finish_non_exhaustive()
     }
 }

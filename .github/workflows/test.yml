@@ -51,19 +51,45 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
         with:
           tool: nextest@0.9.123-b.2
-      - name: Build and compile tests
+      - name: Build and compile tests with coverage
         run: cargo nextest run --no-run -j num-cpus
-      - name: Run tests
+        env:
+          RUSTFLAGS: -C instrument-coverage
+      - name: Run tests with coverage
         run: |
+          mkdir -p coverage
           cargo nextest run \
             --no-fail-fast \
             -j num-cpus \
             --retries 2
+        env:
+          RUSTFLAGS: -C instrument-coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
+      - name: Generate precompiles coverage profdata
+        if: always()
+        run: |
+          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
+          "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
+          mkdir -p coverage/precompiles-bin
+          # Copy precompiles and contracts test binaries
+          find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+          find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+      - name: Upload precompiles coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-coverage
+          path: |
+            coverage/cargo-test.profdata
+            coverage/precompiles-bin/
+          retention-days: 1
 
   msrv:
     name: MSRV

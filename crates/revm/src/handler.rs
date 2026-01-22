@@ -491,7 +491,7 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization and 2D nonce gas to the initial gas
+        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
         // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
         let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
 
@@ -1499,7 +1499,7 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        // Add key_authorization and 2D nonce gas to the initial gas
+        // Add key_authorization gas to the initial gas (calculated in validate_aa_initial_tx_gas)
         // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
         let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
 

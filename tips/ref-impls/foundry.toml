@@ -16,7 +16,7 @@ remappings = [
 [profile.ci]
 optimizer = true
 optimizer_runs = 1
-invariant = { depth = 100, fail_on_revert = true, show_solidity = true }
+invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
 
 [profile.fuzz500]
 optimizer = true

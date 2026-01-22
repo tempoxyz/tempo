@@ -167,6 +167,11 @@ pub enum TempoPoolTransactionError {
     )]
     InvalidFeeToken(Address),
 
+    #[error(
+        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
+    )]
+    PausedFeeToken(Address),
+
     #[error("No fee token preference configured")]
     MissingFeeToken,
 
@@ -257,6 +262,7 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::ExceedsNonPaymentLimit
             | Self::InvalidFeeToken(_)
+            | Self::PausedFeeToken(_)
             | Self::MissingFeeToken
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }

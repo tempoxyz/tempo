@@ -43,7 +43,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     for _ in 0..500 {
         let pending_tx = token
             .transfer(Address::random(), U256::ONE)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(TEMPO_BASE_FEE as u128)
             .gas(1_000_000)
             .send()
             .await?;
