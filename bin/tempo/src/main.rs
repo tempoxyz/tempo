@@ -27,6 +27,7 @@ use eyre::WrapErr as _;
 use futures::{FutureExt as _, future::FusedFuture as _};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
+use reth_node_core::{args::DatadirArgs, dirs::DataDirPath};
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::{sync::Arc, thread};
@@ -45,6 +46,67 @@ use tempo_node::{
 };
 use tokio::sync::oneshot;
 use tracing::{info, info_span};
+
+/// Best-effort extraction of a `--flag value` or `--flag=value` from process args.
+///
+/// We do this because the upstream `download` command keeps its parsed `DatadirArgs` private, but
+/// we still want to enforce an exclusive storage lock *before* any snapshot extraction begins.
+fn extract_arg_value(flag: &str) -> Option<std::ffi::OsString> {
+    let mut it = std::env::args_os();
+    // skip argv[0]
+    let _ = it.next();
+
+    while let Some(arg) = it.next() {
+        if arg == flag {
+            return it.next();
+        }
+        // --flag=value
+        if let Some(s) = arg.to_str() &&
+            let Some(rest) = s.strip_prefix(flag) &&
+            let Some(value) = rest.strip_prefix('=')
+        {
+            return Some(std::ffi::OsString::from(value));
+        }
+    }
+    None
+}
+
+/// Acquire exclusive storage locks for `tempo download` to prevent concurrent writes/corruption
+/// when a node (or any other process) is using the same `--datadir`.
+fn acquire_download_locks(chain: reth_chainspec::Chain) -> eyre::Result<DownloadLocks> {
+    use std::str::FromStr as _;
+
+    // Match upstream behavior: if `--datadir` is not provided, use OS default.
+    let mut datadir_args = DatadirArgs::default();
+    if let Some(val) = extract_arg_value("--datadir") {
+        let s = val.to_string_lossy();
+        datadir_args.datadir = reth_node_core::dirs::MaybePlatformPath::<DataDirPath>::from_str(&s)
+            .wrap_err_with(|| format!("invalid --datadir value: {s}"))?;
+    }
+
+    let data_dir = datadir_args.resolve_datadir(chain);
+    let db_path = data_dir.db();
+    let static_files_path = data_dir.static_files();
+    let rocksdb_path = data_dir.rocksdb();
+
+    // Acquire the same style of PID/start_time lock that the RW database uses, so `download` will
+    // fail fast if anything else is using the storage.
+    let db_lock = reth_db::lockfile::StorageLock::try_acquire(&db_path)
+        .wrap_err_with(|| format!("failed to acquire db lock at {}", db_path.display()))?;
+    let static_files_lock = reth_db::lockfile::StorageLock::try_acquire(&static_files_path)
+        .wrap_err_with(|| format!("failed to acquire static-files lock at {}", static_files_path.display()))?;
+    let rocksdb_lock = reth_db::lockfile::StorageLock::try_acquire(&rocksdb_path)
+        .wrap_err_with(|| format!("failed to acquire rocksdb lock at {}", rocksdb_path.display()))?;
+
+    Ok(DownloadLocks { _db_lock: db_lock, _static_files_lock: static_files_lock, _rocksdb_lock: rocksdb_lock })
+}
+
+#[derive(Debug)]
+struct DownloadLocks {
+    _db_lock: reth_db::lockfile::StorageLock,
+    _static_files_lock: reth_db::lockfile::StorageLock,
+    _rocksdb_lock: reth_db::lockfile::StorageLock,
+}
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
@@ -116,6 +178,21 @@ fn main() -> eyre::Result<()> {
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
     >::parse();
+
+    // Safety: ensure `tempo download` cannot extract into a datadir that is concurrently in use.
+    // This prevents silent DB corruption due to concurrent writes.
+    let _download_locks = match &cli.command {
+        Commands::Download(_) => {
+            let chain = cli
+                .command
+                .chain_spec()
+                .expect("download command always has a chain spec")
+                .chain();
+            Some(acquire_download_locks(chain)?)
+        }
+        _ => None,
+    };
+
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
