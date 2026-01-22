@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t1_wrong_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T0_BASE_FEE};
+        use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
 
         let chainspec = create_t1_chainspec();
         let consensus = TempoConsensus::new(chainspec);
