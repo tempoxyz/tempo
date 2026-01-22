@@ -334,7 +334,7 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
             "Payment tx should pay base fee, not elevated prices"
         );
     }
-    println!("Payment transactions paid base fee ({TEMPO_BASE_FEE})");
+    println!("Payment transactions paid base fee ({TEMPO_BASE_FEE_PRE_T1})");
 
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();

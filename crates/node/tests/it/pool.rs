@@ -23,7 +23,7 @@ use reth_transaction_pool::{
     pool::AddedTransactionState,
 };
 use std::sync::Arc;
-use tempo_chainspec::spec::{TEMPO_BASE_FEE, TempoChainSpec};
+use tempo_chainspec::spec::{TEMPO_BASE_FEE_PRE_T1, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{

@@ -4575,8 +4575,8 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     let second_unlimited_tx = TempoTransaction {
         chain_id,
         // Use higher gas price to replace the rejected no-spending tx still in pool
-        max_priority_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
-        max_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
+        max_priority_fee_per_gas: (TEMPO_BASE_FEE_PRE_T1 * 2) as u128,
+        max_fee_per_gas: (TEMPO_BASE_FEE_PRE_T1 * 2) as u128,
         gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
