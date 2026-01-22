@@ -50,7 +50,6 @@ async fn test_eth_call() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .to(*token.address())
         .gas_price(0)
-        .gas_limit(1_000_000)
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx).await?;
@@ -91,7 +90,6 @@ async fn test_eth_trace_call() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(caller)
         .to(*token.address())
-        .gas_limit(1_000_000)
         .input(TransactionInput::new(calldata));
 
     let res = provider.call(tx.clone()).await?;
@@ -229,7 +227,6 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
     let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
     let tx = TransactionRequest::default()
         .to(*token.address())
-        .gas_limit(1_000_000)
         .input(calldata.into());
 
     let gas = provider.estimate_gas(tx.clone()).await?;
@@ -311,14 +308,9 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
         .await?;
 
     // Verify the tokens are set correctly
-    let user_token = fee_manager
-        .userTokens(user_address)
-        .gas(1_000_000)
-        .call()
-        .await?;
+    let user_token = fee_manager.userTokens(user_address).call().await?;
     let validator_token = fee_manager
         .validatorTokens(validator_address)
-        .gas(1_000_000)
         .call()
         .await?;
 
@@ -335,7 +327,6 @@ async fn test_eth_estimate_gas_different_fee_tokens() -> eyre::Result<()> {
     let tx = TransactionRequest::default()
         .from(user_address)
         .to(*user_fee_token.address())
-        .gas_limit(1_000_000)
         .input(TransactionInput::new(calldata));
 
     // Estimate gas when user fee token differs from validator fee token
@@ -377,7 +368,6 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
 
     let tx = TransactionRequest::default()
         .to(TIP20_FACTORY_ADDRESS)
-        .gas_limit(1_000_000)
         .input(TransactionInput::new(Bytes::from(calldata)));
 
     // The call should fail with UnknownFunctionSelector error
