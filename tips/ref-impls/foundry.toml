@@ -8,6 +8,7 @@ extra_output = ["storageLayout"]
 invariant = { fail_on_revert = true, show_solidity = true }
 fs_permissions = [{ access = "read-write", path = "./"}]
 via_ir = true
+evm_version = "osaka"
 remappings = [
     "tempo-std/=lib/tempo-std/src/",
     "forge-std/=lib/forge-std/src/"
