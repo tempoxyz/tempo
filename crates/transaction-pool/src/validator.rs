@@ -18,10 +18,14 @@ use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
+    nonce::NonceManager,
 };
 use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix,
-    transaction::{RecoveredTempoAuthorization, TempoTransaction},
+    transaction::{
+        RecoveredTempoAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TempoTransaction,
+    },
 };
 use tempo_revm::{
     EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
@@ -33,6 +37,12 @@ const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
 /// Default maximum number of authorizations allowed in an AA transaction's authorization list.
 pub const DEFAULT_MAX_TEMPO_AUTHORIZATIONS: usize = 16;
+
+/// Maximum number of calls allowed per AA transaction (DoS protection).
+pub const MAX_AA_CALLS: usize = 32;
+
+/// Maximum size of input data per call in bytes (128KB, DoS protection).
+pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -189,16 +199,42 @@ where
         &self,
         tx: &TempoTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
+        let current_time = self.inner.fork_tracker().tip_timestamp();
+
+        // Check if T1 is active for expiring nonce specific validations
+        let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
+        let is_expiring_nonce = tx.is_expiring_nonce_tx() && spec.is_t1();
+
+        // Expiring nonce transactions MUST have valid_before set
+        if is_expiring_nonce && tx.valid_before.is_none() {
+            return Err(TempoPoolTransactionError::ExpiringNonceMissingValidBefore);
+        }
+
+        // Expiring nonce transactions MUST have nonce == 0
+        if is_expiring_nonce && tx.nonce != 0 {
+            return Err(TempoPoolTransactionError::ExpiringNonceNonceNotZero);
+        }
+
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
-            let current_time = self.inner.fork_tracker().tip_timestamp();
             let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if valid_before <= min_allowed {
                 return Err(TempoPoolTransactionError::InvalidValidBefore {
                     valid_before,
                     min_allowed,
                 });
+            }
+
+            // For expiring nonce transactions, valid_before must also be within the max expiry window
+            if is_expiring_nonce {
+                let max_allowed = current_time.saturating_add(TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                if valid_before > max_allowed {
+                    return Err(TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar {
+                        valid_before,
+                        max_allowed,
+                    });
+                }
             }
         }
 
@@ -259,6 +295,7 @@ where
             subblock_transaction: tx.subblock_proposer().is_some(),
             key_authorization: tx.key_authorization.clone(),
             signature_hash: aa_tx.signature_hash(),
+            tx_hash: *aa_tx.hash(),
             override_key_id: None,
         };
 
@@ -299,6 +336,46 @@ where
                     intrinsic_gas: init_and_floor_gas.floor_gas,
                 },
             );
+        }
+
+        Ok(())
+    }
+
+    /// Validates the size of calls in an AA transaction.
+    ///
+    /// This prevents DoS attacks where attackers send transactions with:
+    /// - Too many calls (exceeding `MAX_AA_CALLS`)
+    /// - Calls with oversized input data (exceeding `MAX_CALL_INPUT_SIZE`)
+    ///
+    /// These limits are enforced at the pool level rather than RLP decoding to keep
+    /// the core transaction format flexible while still protecting validators.
+    fn ensure_aa_call_limits(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(aa_tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        let calls = &aa_tx.tx().calls;
+
+        // Check number of calls
+        if calls.len() > MAX_AA_CALLS {
+            return Err(TempoPoolTransactionError::TooManyCalls {
+                count: calls.len(),
+                max_allowed: MAX_AA_CALLS,
+            });
+        }
+
+        // Check each call's input size
+        for (idx, call) in calls.iter().enumerate() {
+            if call.input.len() > MAX_CALL_INPUT_SIZE {
+                return Err(TempoPoolTransactionError::CallInputTooLarge {
+                    call_index: idx,
+                    size: call.input.len(),
+                    max_allowed: MAX_CALL_INPUT_SIZE,
+                });
+            }
         }
 
         Ok(())
@@ -365,6 +442,15 @@ where
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
         if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate AA transaction call limits (number of calls and input sizes).
+        // This prevents DoS attacks via oversized transactions.
+        if let Err(err) = self.ensure_aa_call_limits(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -480,8 +566,7 @@ where
                 propagate,
                 authorities,
             } => {
-                // Additional 2D nonce validations
-                // Check for 2D nonce validation (nonce_key > 0)
+                // Additional nonce validations for non-protocol nonce keys
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
                 {
@@ -495,29 +580,64 @@ where
                         );
                     }
 
-                    // This is a 2D nonce transaction - validate against 2D nonce
-                    state_nonce = match state_provider.storage(
-                        NONCE_PRECOMPILE_ADDRESS,
-                        transaction.transaction().nonce_key_slot().unwrap().into(),
-                    ) {
-                        Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
-                        Err(err) => {
-                            return TransactionValidationOutcome::Error(
-                                *transaction.hash(),
-                                Box::new(err),
+                    // Check if T1 hardfork is active for expiring nonce handling
+                    let current_time = self.inner.fork_tracker().tip_timestamp();
+                    let is_t1_active = self
+                        .inner
+                        .chain_spec()
+                        .is_t1_active_at_timestamp(current_time);
+
+                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                        // Expiring nonce transaction - check if tx hash is already seen
+                        let tx_hash = *transaction.hash();
+                        let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
+
+                        let seen_expiry: u64 = match state_provider
+                            .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot.into())
+                        {
+                            Ok(val) => val.unwrap_or_default().saturating_to(),
+                            Err(err) => {
+                                return TransactionValidationOutcome::Error(tx_hash, Box::new(err));
+                            }
+                        };
+
+                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // Note: This is also enforced at the protocol level in handler.rs via
+                        // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
+                        // (e.g., injected directly into a block), execution will still reject it.
+                        if seen_expiry != 0 && seen_expiry > current_time {
+                            return TransactionValidationOutcome::Invalid(
+                                transaction.into_transaction(),
+                                InvalidPoolTransactionError::other(
+                                    TempoPoolTransactionError::ExpiringNonceReplay,
+                                ),
                             );
                         }
-                    };
-                    let tx_nonce = transaction.nonce();
-                    if tx_nonce < state_nonce {
-                        return TransactionValidationOutcome::Invalid(
-                            transaction.into_transaction(),
-                            InvalidTransactionError::NonceNotConsistent {
-                                tx: tx_nonce,
-                                state: state_nonce,
+                    } else {
+                        // This is a 2D nonce transaction - validate against 2D nonce
+                        state_nonce = match state_provider.storage(
+                            NONCE_PRECOMPILE_ADDRESS,
+                            transaction.transaction().nonce_key_slot().unwrap().into(),
+                        ) {
+                            Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
+                            Err(err) => {
+                                return TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err),
+                                );
                             }
-                            .into(),
-                        );
+                        };
+                        let tx_nonce = transaction.nonce();
+                        if tx_nonce < state_nonce {
+                            return TransactionValidationOutcome::Invalid(
+                                transaction.into_transaction(),
+                                InvalidTransactionError::NonceNotConsistent {
+                                    tx: tx_nonce,
+                                    state: state_nonce,
+                                }
+                                .into(),
+                            );
+                        }
                     }
                 }
 

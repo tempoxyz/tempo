@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT OR Apache-2.0
+pragma solidity >=0.8.13 <0.9.0;
 
 import { FeeManager } from "../src/FeeManager.sol";
 import { TIP20 } from "../src/TIP20.sol";
