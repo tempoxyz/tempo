@@ -244,11 +244,13 @@ ownership of the public key:
 
 ```
 message = keccak256(abi.encodePacked(
-    chainId,           // uint64: Prevents cross-chain replay
-    contractAddress,   // address: Prevents cross-contract replay
-    validatorAddress,  // address: Binds to specific validator address
-    inboundAddress,    // string: Binds network configuration
-    outboundAddress    // string: Binds network configuration
+    b"TEMPO",                             // bytes: global namespace prefix 
+    b"_VALIDATOR_CONFIG_V2_ADD_VALIDATOR" // bytes: contract specific namespace
+    chainId,                              // uint64: Prevents cross-chain replay
+    contractAddress,                      // address: Prevents cross-contract replay
+    validatorAddress,                     // address: Binds to specific validator address
+    inboundAddress,                       // string: Binds network configuration
+    outboundAddress                       // string: Binds network configuration
 ))
 ```
 
