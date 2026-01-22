@@ -461,18 +461,23 @@ mod tests {
         );
     }
 
-    /// Test that TempoEvm sets 30M gas limit cap as per TIP-1000.
+    /// Test that TempoEvm respects the gas limit cap passed in via EvmEnv.
+    /// Note: The 30M TIP-1000 gas cap is set in ConfigureEvm::evm_env(), not here.
+    /// This test verifies that TempoEvm::new() preserves the cap from the input.
     #[test]
-    fn test_tempo_evm_30m_gas_cap() {
+    fn test_tempo_evm_respects_gas_cap() {
         use tempo_chainspec::hardfork::TempoHardfork;
 
-        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
+        let mut env = evm_env_with_spec(TempoHardfork::T1);
+        env.cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
 
-        // Verify 30M gas limit cap
+        let evm = TempoEvm::new(EmptyDB::default(), env);
+
+        // Verify gas limit cap is preserved
         assert_eq!(
             evm.ctx().cfg.tx_gas_limit_cap,
             Some(TIP1000_GAS_LIMIT_CAP),
-            "TIP-1000 requires 30M gas limit cap"
+            "TempoEvm should preserve the gas limit cap from input"
         );
     }
 
