@@ -53,7 +53,6 @@ pub(crate) struct GeneratePrivateKey {
 
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
-        // 👇 FIX: Extract both 'output' and 'force' from the struct
         let Self { output, force } = self;
         // Safety check: Prevent accidental overwrite of existing key files.
         // If the file exists and the user did not explicitly provide the --force flag,
