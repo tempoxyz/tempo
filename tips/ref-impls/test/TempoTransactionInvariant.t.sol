@@ -236,6 +236,51 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     }
 
     /*//////////////////////////////////////////////////////////////
+                        REPRO TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Repro test for E3 invariant failure - validBefore too far in future should be rejected
+    /// @dev This reproduces the counterexample from CI failure
+    function test_repro_E3_expiringNonceWindowTooFar() public {
+        // Counterexample parameters (shrunk to minimal form)
+        uint256 actorSeed = 23203150671946371973052279058128223995455138008172157;
+        uint256 recipientSeed = 80168099265617208832252192288785735794293412420329280112139450787910417844;
+        uint256 amount = 1014939366398513864327459799412681561048;
+        uint256 extraOffset = 16872248669215900637927064056;
+
+        // Simulate the handler
+        uint256 senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        address recipient = actors[recipientIdx];
+
+        amount = bound(amount, 1e6, 10e6);
+        uint256 balance = feeToken.balanceOf(actors[senderIdx]);
+        require(balance >= amount, "Insufficient balance for test");
+
+        // Set validBefore beyond the max window (this should cause rejection)
+        extraOffset = bound(extraOffset, 1, 1 hours);
+        uint64 validBefore = uint64(block.timestamp + MAX_EXPIRY_SECS + extraOffset);
+
+        console.log("block.timestamp:", block.timestamp);
+        console.log("MAX_EXPIRY_SECS:", MAX_EXPIRY_SECS);
+        console.log("extraOffset:", extraOffset);
+        console.log("validBefore:", validBefore);
+        console.log("max allowed validBefore:", block.timestamp + MAX_EXPIRY_SECS);
+
+        (bytes memory signedTx,) = _buildExpiringNonceTx(senderIdx, recipient, amount, validBefore);
+
+        vm.coinbase(validator);
+
+        // This should revert - if it doesn't, the E3 invariant is violated
+        vm.expectRevert();
+        vmExec.executeTransaction(signedTx);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                         SIGNING PARAMS HELPER
     //////////////////////////////////////////////////////////////*/
 

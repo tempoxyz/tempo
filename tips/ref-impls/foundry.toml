@@ -8,8 +8,9 @@ extra_output = ["storageLayout"]
 invariant = { fail_on_revert = true, show_solidity = true }
 fs_permissions = [{ access = "read-write", path = "./"}]
 via_ir = true
-# Use T1 hardfork to enable expiring nonce transactions (TIP-1009)
-hardfork = { Tempo = "T1" }
+# Use Osaka EVM version to enable T1 hardfork features (expiring nonces per TIP-1009)
+# SpecId::OSAKA maps to TempoHardfork::T1 via From<SpecId> for TempoHardfork
+evm_version = "osaka"
 remappings = [
     "tempo-std/=lib/tempo-std/src/",
     "forge-std/=lib/forge-std/src/"
