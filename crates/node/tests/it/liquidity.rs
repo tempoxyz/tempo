@@ -5,13 +5,19 @@ use alloy::{
     sol_types::SolCall,
 };
 use alloy_eips::Encodable2718;
-use tempo_contracts::precompiles::{IFeeManager::setUserTokenCall, ITIP20};
-use tempo_precompiles::DEFAULT_FEE_TOKEN;
+use tempo_contracts::precompiles::{ITIP20, ITIPFeeAMM};
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS, tip_fee_manager::amm::PoolKey,
+};
 use tempo_primitives::{TempoTransaction, TempoTxEnvelope, transaction::tempo_transaction::Call};
 
 use crate::utils::setup_test_token;
 
-/// Test block building when FeeAMM pool has insufficient liquidity for payment transactions
+/// Test that AMM liquidity validation correctly rejects transactions with insufficient liquidity.
+///
+/// This test verifies that when a pool exists between payment_token and validator_token,
+/// transactions can use that payment token as long as there's sufficient liquidity.
+/// When liquidity is drained, transactions should be rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -33,11 +39,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     let payment_token = setup_test_token(provider.clone(), sender_address).await?;
     let payment_token_addr = *payment_token.address();
 
-    // Get validator token address (default fee token from genesis)
-    use tempo_contracts::precompiles::ITIPFeeAMM;
-    use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
     let validator_token_addr = DEFAULT_FEE_TOKEN;
-
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, provider.clone());
     let validator_token = ITIP20::new(validator_token_addr, provider.clone());
 
@@ -45,7 +47,7 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
 
     println!("Setting up FeeAMM pool with initial liquidity...");
 
-    // Mint validator tokens for liquidity
+    // Mint tokens for liquidity
     validator_token
         .mint(sender_address, liquidity_amount)
         .send()
@@ -53,16 +55,14 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    // Mint payment tokens for liquidity
     payment_token
-        .mint(sender_address, liquidity_amount)
+        .mint(sender_address, liquidity_amount * U256::from(2))
         .send()
         .await?
         .get_receipt()
         .await?;
 
-    // Create pool by minting liquidity with both tokens (balanced pool)
-    // Use mint_pairwise instead of deprecated mint function
+    // Create pool with liquidity
     fee_amm
         .mint(
             payment_token_addr,
@@ -75,59 +75,19 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
         .get_receipt()
         .await?;
 
-    println!("FeeAMM pool created. Now draining liquidity...");
+    println!("FeeAMM pool created with liquidity.");
 
-    // Get user's LP token balance
-    use tempo_precompiles::tip_fee_manager::amm::PoolKey;
-    let pool_key = PoolKey::new(payment_token_addr, validator_token_addr);
-    let pool_id = pool_key.get_id();
+    // First, verify transactions work WITH liquidity
+    println!("Testing transaction with sufficient liquidity (should succeed)...");
 
-    let lp_balance = fee_amm
-        .liquidityBalances(pool_id, sender_address)
-        .call()
-        .await?;
-    println!("User LP balance: {lp_balance}");
-
-    // Burn all liquidity to drain the pool
-    fee_amm
-        .burn(
-            payment_token_addr,
-            validator_token_addr,
-            lp_balance,
-            sender_address,
-        )
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    println!("Pool drained. Verifying insufficient liquidity...");
-
-    let pool = fee_amm.pools(pool_id).call().await?;
-    println!(
-        "Pool reserves - user_token: {}, validator_token: {}",
-        pool.reserveUserToken, pool.reserveValidatorToken
-    );
-
-    // Mint payment tokens for transaction fees (while still using USDC for fees)
-    let additional_tokens = U256::from(100_000_000_000_000u64);
-    payment_token
-        .mint(sender_address, additional_tokens)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    // Now set the user's fee token to our custom payment token (not USDC)
-    // This ensures subsequent transactions will require a swap through the drained FeeAMM
-    println!("Setting user's fee token preference...");
     let tx = TempoTransaction {
-        fee_token: Some(DEFAULT_FEE_TOKEN),
+        fee_token: Some(payment_token_addr),
         calls: vec![Call {
-            to: TIP_FEE_MANAGER_ADDRESS.into(),
+            to: payment_token_addr.into(),
             value: U256::ZERO,
-            input: setUserTokenCall {
-                token: payment_token_addr,
+            input: ITIP20::transferCall {
+                to: sender_address,
+                amount: U256::from(1),
             }
             .abi_encode()
             .into(),
@@ -141,44 +101,92 @@ async fn test_block_building_insufficient_fee_amm_liquidity() -> eyre::Result<()
     };
     let signature = wallet.sign_hash_sync(&tx.signature_hash()).unwrap();
     let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+
     provider
         .send_raw_transaction(&envelope.encoded_2718())
         .await?
         .watch()
         .await?;
 
-    // Now try to send payment transactions that require fee swaps
-    // With insufficient liquidity, these should be excluded from blocks
-    let num_payment_txs = 5;
-    println!("Sending {num_payment_txs} payment transactions that require fee swaps...");
+    println!("Transaction with liquidity succeeded as expected.");
 
-    let mut transactions_included = 0;
-    let mut transactions_rejected = 0;
+    // Now drain the pool
+    println!("Draining pool liquidity...");
 
-    let mut nonce = provider.get_transaction_count(sender_address).await?;
+    let pool_key = PoolKey::new(payment_token_addr, validator_token_addr);
+    let pool_id = pool_key.get_id();
 
-    for i in 0..num_payment_txs {
-        let transfer = payment_token.transfer(sender_address, U256::from((i + 1) as u64));
-        match transfer.nonce(nonce).send().await {
-            Ok(pending_tx) => {
-                let tx_num = i + 1;
-                println!("Transaction {tx_num} sent, waiting for receipt...");
-                pending_tx.get_receipt().await.unwrap();
-                transactions_included += 1;
-                nonce += 1;
+    let lp_balance = fee_amm
+        .liquidityBalances(pool_id, sender_address)
+        .call()
+        .await?;
+
+    // Use explicit nonce to avoid stale nonce issues
+    let burn_nonce = provider.get_transaction_count(sender_address).await?;
+    fee_amm
+        .burn(
+            payment_token_addr,
+            validator_token_addr,
+            lp_balance,
+            sender_address,
+        )
+        .nonce(burn_nonce)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+
+    let pool = fee_amm.pools(pool_id).call().await?;
+    println!(
+        "Pool drained. Reserves - user_token: {}, validator_token: {}",
+        pool.reserveUserToken, pool.reserveValidatorToken
+    );
+
+    // Now try again - should fail due to insufficient liquidity
+    println!("Testing transaction with insufficient liquidity (should fail)...");
+
+    // Use high gas to ensure the amount_out exceeds remaining reserves
+    let tx = TempoTransaction {
+        fee_token: Some(payment_token_addr),
+        calls: vec![Call {
+            to: payment_token_addr.into(),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: sender_address,
+                amount: U256::from(1),
             }
-            Err(err) => {
-                if err.to_string().contains("Insufficient liquidity") {
-                    transactions_rejected += 1;
-                } else {
-                    panic!("Transaction {i} rejected with unexpected error: {err}");
-                }
-            }
+            .abi_encode()
+            .into(),
+        }],
+        chain_id: provider.get_chain_id().await?,
+        max_fee_per_gas: 1_000_000_000_000u128, // Very high gas price
+        max_priority_fee_per_gas: 1_000_000_000_000u128,
+        nonce: provider.get_transaction_count(sender_address).await?,
+        gas_limit: 1_000_000, // High gas limit
+        ..Default::default()
+    };
+    let signature = wallet.sign_hash_sync(&tx.signature_hash()).unwrap();
+    let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
+
+    let result = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await;
+
+    match result {
+        Ok(_) => {
+            panic!("Transaction should have been rejected due to insufficient AMM liquidity");
+        }
+        Err(err) => {
+            let err_str = err.to_string();
+            assert!(
+                err_str.contains("Insufficient liquidity"),
+                "Expected 'Insufficient liquidity' error, got: {err}"
+            );
+            println!("Transaction correctly rejected: {err}");
         }
     }
 
-    println!("Transactions included: {transactions_included}, rejected: {transactions_rejected}");
-    println!("Test completed: block building continued without stalling");
+    println!("Test completed: AMM liquidity validation verified");
 
     Ok(())
 }
