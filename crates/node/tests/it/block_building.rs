@@ -37,7 +37,9 @@ where
             tx_req.nonce = Some(nonce);
             tx_req.chain_id = Some(chain_id);
             tx_req.gas = tx_req.gas.or(Some(5_000_000));
-            tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(TEMPO_BASE_FEE_PRE_T1 as u128));
+            tx_req.max_fee_per_gas = tx_req
+                .max_fee_per_gas
+                .or(Some(TEMPO_BASE_FEE_PRE_T1 as u128));
             tx_req.max_priority_fee_per_gas = tx_req
                 .max_priority_fee_per_gas
                 .or(Some(TEMPO_BASE_FEE_PRE_T1 as u128));
