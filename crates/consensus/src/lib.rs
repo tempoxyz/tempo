@@ -25,20 +25,6 @@ use tempo_primitives::{
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
 
-/// Pre-T1 divisor for calculating general (non-payment) gas limit.
-/// general_gas_limit = (block_gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
-
-/// T1+ general (non-payment) gas limit per block: 30M gas
-/// This caps how much gas general transactions can consume, guaranteeing
-/// at least 470M gas remains available for payment transactions.
-pub const TEMPO_GENERAL_GAS_LIMIT: u64 = 30_000_000;
-
-/// T1+ maximum gas per single transaction: 30M gas
-/// Elevated from 16M to support max-size contract deployments under TIP-1000.
-/// Applications should not rely on >16M gas for normal operations.
-pub const TEMPO_TRANSACTION_GAS_CAP: u64 = 30_000_000;
-
 /// Divisor for calculating shared gas limit (payment lane capacity).
 /// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
 pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
@@ -218,7 +204,10 @@ mod tests {
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tempo_chainspec::spec::{ANDANTINO, TempoChainSpec};
+    use tempo_chainspec::{
+        hardfork::TempoHardfork,
+        spec::{ANDANTINO, TempoChainSpec},
+    };
 
     fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -287,7 +276,7 @@ mod tests {
             // Default to pre-T1 divisor-based calculation for ANDANTINO (which doesn't have T1)
             let general_gas_limit = self
                 .general_gas_limit
-                .unwrap_or_else(|| (self.gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR);
+                .unwrap_or_else(|| (self.gas_limit - shared_gas_limit) / 2);
 
             TempoHeader {
                 inner: Header {
@@ -410,7 +399,7 @@ mod tests {
         let consensus = TempoConsensus::new(ANDANTINO.clone());
         let gas_limit = 500_000_000u64;
         let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        // Pre-T1: expected = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+        // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
         // Let's use a wrong value
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
@@ -428,7 +417,7 @@ mod tests {
         );
 
         // Now verify the correct pre-T1 value works
-        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR;
+        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp(current_timestamp())
@@ -485,7 +474,7 @@ mod tests {
         let consensus = TempoConsensus::new(chainspec);
         let gas_limit = 500_000_000u64;
 
-        // T1+: general gas limit must be fixed at TEMPO_GENERAL_GAS_LIMIT (30M)
+        // T1+: general gas limit must be fixed at 30M
         // Test with wrong value
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
@@ -506,7 +495,7 @@ mod tests {
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp(current_timestamp())
-            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
             .build();
         let sealed = SealedHeader::seal_slow(header);
         assert!(consensus.validate_header(&sealed).is_ok());
@@ -613,7 +602,7 @@ mod tests {
             .timestamp(parent_ts)
             .number(1)
             .timestamp_millis_part(500)
-            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
             .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
@@ -624,7 +613,7 @@ mod tests {
             .timestamp_millis_part(600)
             .number(2)
             .parent_hash(parent_sealed.hash())
-            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
             .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
@@ -646,7 +635,7 @@ mod tests {
             .timestamp(parent_ts)
             .number(1)
             .timestamp_millis_part(500)
-            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
             .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
@@ -658,7 +647,7 @@ mod tests {
             .timestamp_millis_part(600)
             .number(2)
             .parent_hash(parent_sealed.hash())
-            .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
             .base_fee(TEMPO_T0_BASE_FEE)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
