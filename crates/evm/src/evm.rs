@@ -438,10 +438,10 @@ mod tests {
     fn evm_env_with_spec(
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
-        let mut env = EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::default();
-        env.cfg_env = CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec));
-        env.cfg_env.spec = spec;
-        env
+        EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
+            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            TempoBlockEnv::default(),
+        )
     }
 
     /// Test that TempoEvm applies custom gas params via `tempo_gas_params()`.
