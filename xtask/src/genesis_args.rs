@@ -92,10 +92,6 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
 
-    /// T1 hardfork activation time (unix timestamp). If set, T1 is active from this time.
-    #[arg(long)]
-    t1_time: Option<u64>,
-
     /// The hard-coded length of an epoch in blocks.
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
@@ -156,6 +152,10 @@ pub(crate) struct GenesisArgs {
     /// Timestamp for T0 hardfork activation (0 = genesis).
     #[arg(long, default_value = "0")]
     t0_time: u64,
+
+    /// T1 hardfork activation time.
+    #[arg(long)]
+    t1_time: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
