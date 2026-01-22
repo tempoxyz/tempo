@@ -65,18 +65,11 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
         }
 
         // Validate the general (non-payment) gas limit
-        let is_t1 = self
-            .inner
-            .chain_spec()
-            .is_t1_active_at_timestamp(header.timestamp());
-
-        let expected_general_gas_limit = if is_t1 {
-            // T1+: fixed at TEMPO_GENERAL_GAS_LIMIT (30M)
-            TEMPO_GENERAL_GAS_LIMIT
-        } else {
-            // Pre-T1: calculated using divisor
-            (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-        };
+        let expected_general_gas_limit = self.inner.chain_spec().general_gas_limit_at(
+            header.timestamp(),
+            header.gas_limit(),
+            header.shared_gas_limit,
+        );
 
         if header.general_gas_limit != expected_general_gas_limit {
             return Err(ConsensusError::Other(format!(

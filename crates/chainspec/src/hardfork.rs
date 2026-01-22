@@ -108,6 +108,20 @@ pub trait TempoHardforks: EthereumHardforks {
         self.tempo_fork_activation(TempoHardfork::T1)
             .active_at_timestamp(timestamp)
     }
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and block parameters.
+    /// - T1+: fixed at 30M gas (TEMPO_GENERAL_GAS_LIMIT)
+    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+    fn general_gas_limit_at(
+        &self,
+        timestamp: u64,
+        gas_limit: u64,
+        shared_gas_limit: u64,
+    ) -> u64 {
+        self.tempo_hardfork_at(timestamp)
+            .general_gas_limit()
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+    }
 }
 
 impl From<TempoHardfork> for SpecId {
