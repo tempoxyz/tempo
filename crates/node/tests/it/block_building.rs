@@ -10,7 +10,7 @@ use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T0_BASE_FEE;
 use tempo_contracts::precompiles::{IRolesAuth, ITIP20, ITIP20Factory};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
@@ -39,10 +39,10 @@ where
             tx_req.gas = tx_req.gas.or(Some(5_000_000));
             tx_req.max_fee_per_gas = tx_req
                 .max_fee_per_gas
-                .or(Some(TEMPO_T1_BASE_FEE as u128));
+                .or(Some(TEMPO_T0_BASE_FEE as u128));
             tx_req.max_priority_fee_per_gas = tx_req
                 .max_priority_fee_per_gas
-                .or(Some(TEMPO_T1_BASE_FEE as u128));
+                .or(Some(TEMPO_T0_BASE_FEE as u128));
 
             let signed =
                 <TransactionRequest as TransactionBuilder<Ethereum>>::build(tx_req, &signer_clone)
@@ -119,8 +119,8 @@ async fn inject_non_payment_txs(
             chain_id,
             gas_limit: 2_000_000,
             to: Address::ZERO.into(),
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
+            max_priority_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
             ..Default::default()
         };
         let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
@@ -157,8 +157,8 @@ where
         tx_request.nonce = Some(current_nonce + i as u64);
         tx_request.chain_id = Some(chain_id);
         tx_request.gas = Some(1_000_000);
-        tx_request.max_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
-        tx_request.max_priority_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
+        tx_request.max_fee_per_gas = Some(TEMPO_T0_BASE_FEE as u128);
+        tx_request.max_priority_fee_per_gas = Some(TEMPO_T0_BASE_FEE as u128);
 
         let signed_tx =
             <TransactionRequest as TransactionBuilder<Ethereum>>::build(tx_request, &signer)
@@ -358,8 +358,8 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
                 chain_id,
                 gas_limit: 2_000_000,
                 to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+                max_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
+                max_priority_fee_per_gas: TEMPO_T0_BASE_FEE as u128,
                 ..Default::default()
             };
             let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
