@@ -111,12 +111,9 @@ jobs:
           echo "Updated Cargo.toml:"
           grep "tempo-" Cargo.toml | head -20
 
-          # Update Cargo.lock to resolve version conflicts
-          cargo update
-
       - name: Build tempo-foundry forge
         working-directory: tempo-foundry
-        run: cargo build -p forge --profile release
+        run: cargo build -p forge --profile release || (cargo update && cargo build -p forge --profile release)
 
       - name: Run Forge tests with Rust precompiles
         working-directory: tempo/tips/ref-impls
