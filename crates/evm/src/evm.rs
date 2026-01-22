@@ -1,19 +1,19 @@
 use alloy_evm::{
+    Database, Evm, EvmEnv, EvmFactory,
     precompiles::PrecompilesMap,
     revm::{
+        Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::result::{EVMError, ResultAndState},
         inspector::NoOpInspector,
-        Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     },
-    Database, Evm, EvmEnv, EvmFactory,
 };
 use alloy_primitives::{Address, Bytes, Log, TxKind};
-use reth_revm::{context::result::ExecutionResult, InspectSystemCallEvm, MainContext};
+use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
-    evm::TempoContext, gas_params::tempo_gas_params, TempoHaltReason, TempoInvalidTransaction,
-    TempoTxEnv,
+    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext,
+    gas_params::tempo_gas_params,
 };
 
 use crate::TempoBlockEnv;
