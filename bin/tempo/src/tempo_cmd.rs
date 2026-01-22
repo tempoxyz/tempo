@@ -7,6 +7,7 @@ use eyre::Context;
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use tempo_commonware_node_config::SigningKey;
+use std::fs::OpenOptions;
 
 /// Tempo-specific subcommands that extend the reth CLI.
 #[derive(Debug, Subcommand)]
@@ -54,22 +55,33 @@ pub(crate) struct GeneratePrivateKey {
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
         let Self { output, force } = self;
-        // Safety check: Prevent accidental overwrite of existing key files.
-        // If the file exists and the user did not explicitly provide the --force flag,
-        // we abort the operation to protect the user's funds/identity.
-        if output.exists() && !force {
-            eyre::bail!(
-                "File `{}` already exists. Use --force to overwrite it.",
-                output.display()
-            );
+
+        // Configure file options to ensure atomic safety (prevent TOCTOU bugs)
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if force {
+            options.create(true).truncate(true);
+        } else {
+            options.create_new(true);
         }
+
+        let mut file = match options.open(&output) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                eyre::bail!("File `{}` already exists. Use --force to overwrite it.", output.display());
+            }
+            Err(e) => return Err(e).wrap_err_with(|| format!("failed opening file `{}`", output.display())),
+        };
 
         let signing_key = PrivateKey::random(&mut rand::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
+
+        // Use the new to_writer method directly
         signing_key
-            .write_to_file(&output)
+            .to_writer(&mut file)
             .wrap_err_with(|| format!("failed writing private key to `{}`", output.display()))?;
+
         println!(
             "wrote private key to: {}\npublic key: {public_key}",
             output.display()

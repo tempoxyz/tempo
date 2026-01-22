@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-use std::{fmt::Display, path::Path};
+use std::{fmt::Display, io::Write, path::Path};
 
 use commonware_codec::{DecodeExt as _, Encode as _};
 use commonware_cryptography::{
@@ -35,6 +35,11 @@ impl SigningKey {
         let bytes = const_hex::decode(hex).map_err(SigningKeyErrorKind::Hex)?;
         let inner = PrivateKey::decode(&bytes[..]).map_err(SigningKeyErrorKind::Parse)?;
         Ok(Self { inner })
+    }
+
+    pub fn to_writer<W: Write>(&self, mut writer: W) -> Result<(), SigningKeyError> {
+        writer.write_all(self.to_string().as_bytes()).map_err(SigningKeyErrorKind::Write)?;
+        Ok(())
     }
 
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
