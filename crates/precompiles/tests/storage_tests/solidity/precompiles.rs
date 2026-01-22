@@ -127,7 +127,8 @@ fn test_tip20_layout() {
         name,
         symbol,
         currency,
-        domain_separator,
+        // Unused slot, kept for storage layout compatibility
+        _domain_separator,
         quote_token,
         next_quote_token,
         transfer_policy_id,
@@ -135,10 +136,12 @@ fn test_tip20_layout() {
         total_supply,
         balances,
         allowances,
-        nonces,
+        // Unused slot, kept for storage layout compatibility
+        _nonces,
         paused,
         supply_cap,
-        salts,
+        // Unused slot, kept for storage layout compatibility
+        _salts,
         // TIP20 Rewards
         global_reward_per_token,
         opted_in_supply,
@@ -294,7 +297,8 @@ fn export_all_storage_constants() {
             name,
             symbol,
             currency,
-            domain_separator,
+            // Unused slot, kept for storage layout compatibility
+            _domain_separator,
             quote_token,
             next_quote_token,
             transfer_policy_id,
@@ -302,10 +306,12 @@ fn export_all_storage_constants() {
             total_supply,
             balances,
             allowances,
-            nonces,
+            // Unused slot, kept for storage layout compatibility
+            _nonces,
             paused,
             supply_cap,
-            salts,
+            // Unused slot, kept for storage layout compatibility
+            _salts,
             // TIP20 Rewards
             global_reward_per_token,
             opted_in_supply,

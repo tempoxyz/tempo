@@ -84,7 +84,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: tempoxyz/tempo-foundry
-          ref: staging-revm
+          ref: tempo
           path: tempo-foundry
 
       - name: Setup Rust
@@ -122,7 +122,7 @@ jobs:
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with tempo-foundry (isTempo=true)"
-          ../../tempo-foundry/target/release/forge test -vvv
+          ../../../tempo-foundry/target/release/forge test -vvv
 
   docs-specs-success:
     name: docs-specs success
