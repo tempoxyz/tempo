@@ -817,27 +817,26 @@ impl AA2dPool {
         (promoted, mined)
     }
 
-    /// Removes excess transactions if the pool is above capacity.
-    /// Evicts queued transactions first, then pending if needed.
+    /// Removes lowest-priority transactions if the pool is above capacity.
+    ///
+    /// This evicts transactions with the lowest priority (based on [`CoinbaseTipOrdering`])
+    /// to prevent DoS attacks where adversaries use vanity addresses with many leading zeroes
+    /// to avoid eviction.
+    ///
+    /// Evicts queued transactions first (up to queued_limit), then pending if needed.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
-        // Evict queued transactions if over queued limit
-        while self.queued_count > self.config.queued_limit.max_txs {
-            if let Some(tx) = self.evict_one(false) {
-                removed.push(tx);
-            } else {
-                break;
-            }
+        // Evict queued transactions if over queued limit (lowest priority first)
+        if self.queued_count > self.config.queued_limit.max_txs {
+            let queued_excess = self.queued_count - self.config.queued_limit.max_txs;
+            removed.extend(self.evict_lowest_priority(queued_excess, false));
         }
 
-        // Evict pending if over pending limit
-        while self.pending_count > self.config.pending_limit.max_txs {
-            if let Some(tx) = self.evict_one(true) {
-                removed.push(tx);
-            } else {
-                break;
-            }
+        // Evict pending transactions if over pending limit (lowest priority first)
+        if self.pending_count > self.config.pending_limit.max_txs {
+            let pending_excess = self.pending_count - self.config.pending_limit.max_txs;
+            removed.extend(self.evict_lowest_priority(pending_excess, true));
         }
 
         if !removed.is_empty() {
@@ -847,20 +846,41 @@ impl AA2dPool {
         removed
     }
 
-    /// Attempts to evict one (pending or queued) transaction from the pool.
-    fn evict_one(
+    /// Evicts the lowest-priority transactions from the pool.
+    ///
+    /// Collects transactions matching `is_pending`, sorts by priority ascending,
+    /// and removes up to `count` of the lowest-priority ones.
+    fn evict_lowest_priority(
         &mut self,
+        count: usize,
         is_pending: bool,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        // Reverse-iterate `by_id`, filtering by `is_pending`
-        let id_to_remove = self
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if count == 0 {
+            return vec![];
+        }
+
+        // Collect transactions matching is_pending with their IDs
+        let mut txs_by_priority: Vec<_> = self
             .by_id
             .iter()
-            .rev()
-            .find(|(_, tx)| tx.is_pending == is_pending)
-            .map(|(id, _)| *id)?;
+            .filter(|(_, tx)| tx.is_pending == is_pending)
+            .map(|(id, tx)| (*id, tx.inner.clone()))
+            .collect();
 
-        self.remove_transaction_by_id(&id_to_remove)
+        // Sort by priority ascending (lowest priority first for eviction)
+        // PendingTransaction::Ord orders highest priority first, so we use natural order
+        txs_by_priority.sort_by(|a, b| a.1.cmp(&b.1));
+
+        // Take the lowest priority transactions to remove
+        let to_remove: Vec<_> = txs_by_priority.into_iter().take(count).collect();
+
+        let mut removed = Vec::with_capacity(to_remove.len());
+        for (id, _) in to_remove {
+            if let Some(tx) = self.remove_transaction_by_id(&id) {
+                removed.push(tx);
+            }
+        }
+        removed
     }
 
     /// Returns a reference to the metrics for this pool
@@ -3588,7 +3608,7 @@ mod tests {
     }
 
     #[test]
-    fn test_discard_removes_from_back() {
+    fn test_discard_removes_lowest_priority_same_priority_uses_submission_order() {
         let config = AA2dPoolConfig {
             price_bump_config: PriceBumpConfig::default(),
             pending_limit: SubPoolLimit {
@@ -3603,6 +3623,8 @@ mod tests {
         let mut pool = AA2dPool::new(config);
         let sender = Address::random();
 
+        // All transactions have the same priority, so the tiebreaker is submission order.
+        // The most recently submitted (tx2) should be evicted first.
         let tx0 = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
         let tx1 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(1).build();
         let tx2 = TxBuilder::aa(sender).nonce_key(U256::ZERO).nonce(2).build();
@@ -3638,7 +3660,7 @@ mod tests {
             assert_eq!(
                 pending.discarded[0].hash(),
                 &tx2_hash,
-                "tx2 (highest nonce) should be discarded"
+                "tx2 (last submitted, lowest priority tiebreaker) should be discarded"
             );
         } else {
             panic!("Expected Pending result");
@@ -3816,6 +3838,109 @@ mod tests {
         let (pending, queued) = pool.pending_and_queued_txn_count();
         assert_eq!(pending, 3, "All 3 pending should remain");
         assert_eq!(queued, 2, "Queued capped at 2");
+        pool.assert_invariants();
+    }
+
+    /// Tests that eviction is based on priority, not address ordering.
+    /// This prevents DoS attacks where adversaries use vanity addresses with leading zeroes.
+    #[test]
+    fn test_discard_evicts_low_priority_over_vanity_address() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        // Vanity address with leading zeroes (would sort first lexicographically)
+        let vanity_sender = Address::from_word(B256::from_slice(&[0u8; 32])); // 0x0000...0000
+        // Normal address (would sort later lexicographically)
+        let normal_sender = Address::from_word(B256::from_slice(&[0xff; 32])); // 0xffff...ffff
+
+        // max_fee must be > TEMPO_T1_BASE_FEE (20 gwei) for priority calculation to work
+        // effective_tip = min(max_fee - base_fee, max_priority_fee)
+        let high_max_fee = 30_000_000_000u128; // 30 gwei, above 20 gwei base fee
+
+        // Add vanity address tx with HIGH priority (should be kept despite sorting first lexicographically)
+        // effective_tip = min(30 gwei - 20 gwei, 5 gwei) = 5 gwei
+        let high_priority_tx = TxBuilder::aa(vanity_sender)
+            .nonce_key(U256::ZERO)
+            .max_fee(high_max_fee)
+            .max_priority_fee(5_000_000_000) // 5 gwei priority
+            .build();
+        let high_priority_hash = *high_priority_tx.hash();
+
+        // Add normal address tx with LOW priority (should be evicted)
+        // effective_tip = min(30 gwei - 20 gwei, 1 wei) = 1 wei
+        let low_priority_tx = TxBuilder::aa(normal_sender)
+            .nonce_key(U256::ZERO)
+            .max_fee(high_max_fee)
+            .max_priority_fee(1) // Very low priority
+            .build();
+        let low_priority_hash = *low_priority_tx.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(high_priority_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(low_priority_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Add a third tx that triggers eviction
+        // effective_tip = min(30 gwei - 20 gwei, 3 gwei) = 3 gwei (medium)
+        let trigger_tx = TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(1))
+            .max_fee(high_max_fee)
+            .max_priority_fee(3_000_000_000) // 3 gwei - medium priority
+            .build();
+        let trigger_hash = *trigger_tx.hash();
+
+        let result = pool.add_transaction(
+            Arc::new(wrap_valid_tx(trigger_tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        );
+        assert!(result.is_ok());
+
+        let added = result.unwrap();
+        if let AddedTransaction::Pending(pending) = added {
+            assert!(
+                !pending.discarded.is_empty(),
+                "Should have discarded transactions"
+            );
+            // The low priority tx (normal address) should be evicted, NOT the high priority vanity address
+            assert_eq!(
+                pending.discarded[0].hash(),
+                &low_priority_hash,
+                "Low priority tx should be evicted, not the high-priority vanity address tx"
+            );
+        } else {
+            panic!("Expected Pending result");
+        }
+
+        // Verify: high priority vanity address tx should be kept, low priority normal address tx should be evicted
+        assert!(
+            pool.contains(&high_priority_hash),
+            "High priority vanity address tx should be kept"
+        );
+        assert!(
+            !pool.contains(&low_priority_hash),
+            "Low priority tx should be evicted"
+        );
+        assert!(pool.contains(&trigger_hash), "Trigger tx should be kept");
+
         pool.assert_invariants();
     }
 
