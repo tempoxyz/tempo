@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use alloy_primitives::Address;
 use alloy_provider::Provider;
 
 use alloy_rpc_types_eth::TransactionRequest;
@@ -124,6 +125,8 @@ struct ValidatorInfoOutput {
 /// Individual validator entry
 #[derive(Debug, Serialize)]
 struct ValidatorEntry {
+    /// onchain address of the validator
+    onchain_address: Address,
     /// ed25519 public key (hex)
     public_key: String,
     /// Inbound IP address for p2p connections
@@ -256,18 +259,20 @@ impl ValidatorsInfo {
         for player in players.into_iter() {
             let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
 
-            let (active, inbound, outbound) =
+            let (onchain_address, active, inbound, outbound) =
                 if let Some(v) = contract_validators.get(&pubkey_bytes) {
                     (
+                        v.validatorAddress,
                         v.active,
                         v.inboundAddress.clone(),
                         v.outboundAddress.clone(),
                     )
                 } else {
-                    (false, String::new(), String::new())
+                    (Address::ZERO, false, String::new(), String::new())
                 };
 
             validator_entries.push(ValidatorEntry {
+                onchain_address,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
                 inbound_address: inbound,
                 outbound_address: outbound,
