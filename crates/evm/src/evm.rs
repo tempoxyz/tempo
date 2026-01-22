@@ -70,11 +70,6 @@ impl<DB: Database> TempoEvm<DB> {
     pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
-        // TIP-1010: Transaction gas cap is 30M to support max-size contract deployments
-        if input.cfg_env.spec.is_t1() {
-            input.cfg_env.tx_gas_limit_cap = Some(tempo_consensus::TEMPO_TRANSACTION_GAS_CAP);
-        }
-
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
