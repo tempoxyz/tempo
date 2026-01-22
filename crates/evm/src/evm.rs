@@ -19,7 +19,7 @@ use tempo_revm::{
 use crate::TempoBlockEnv;
 
 /// TIP-1000 gas limit cap (30 million gas).
-const TIP1000_GAS_LIMIT_CAP: u64 = 30_000_000;
+pub const TIP1000_GAS_LIMIT_CAP: u64 = 30_000_000;
 
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -70,11 +70,6 @@ impl<DB: Database> TempoEvm<DB> {
     pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         // override the gas params for tempo use case.
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
-
-        // In TIP-1000 we bumped gas to 30M.
-        if input.cfg_env.spec.is_t1() {
-            input.cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
-        }
 
         let ctx = Context::mainnet()
             .with_db(db)

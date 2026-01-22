@@ -33,7 +33,10 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 
-use crate::{block::TempoBlockExecutor, evm::TempoEvm};
+use crate::{
+    block::TempoBlockExecutor,
+    evm::{TIP1000_GAS_LIMIT_CAP, TempoEvm},
+};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
@@ -128,8 +131,15 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
+        // Set TIP-1000 gas limit cap (30M) for T1 hardfork.
+        // This is set here so RPC layer can override it before constructing the EVM.
+        let mut cfg_env = cfg_env.with_spec_and_mainnet_gas_params(spec);
+        if spec.is_t1() {
+            cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
+        }
+
         Ok(EvmEnv {
-            cfg_env: cfg_env.with_spec_and_mainnet_gas_params(spec),
+            cfg_env,
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
@@ -161,8 +171,15 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
+        // Set TIP-1000 gas limit cap (30M) for T1 hardfork.
+        // This is set here so RPC layer can override it before constructing the EVM.
+        let mut cfg_env = cfg_env.with_spec_and_mainnet_gas_params(spec);
+        if spec.is_t1() {
+            cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
+        }
+
         Ok(EvmEnv {
-            cfg_env: cfg_env.with_spec_and_mainnet_gas_params(spec),
+            cfg_env,
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
