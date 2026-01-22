@@ -25,6 +25,27 @@ use tempo_primitives::{
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
 
+/// Pre-T1 divisor for calculating general (non-payment) gas limit.
+/// general_gas_limit = (block_gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
+pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
+
+/// T1+ general (non-payment) gas limit per block: 30M gas
+/// This caps how much gas general transactions can consume, guaranteeing
+/// at least 470M gas remains available for payment transactions.
+pub const TEMPO_GENERAL_GAS_LIMIT: u64 = 30_000_000;
+
+/// T1+ maximum gas per single transaction: 30M gas
+/// Elevated from 16M to support max-size contract deployments under TIP-1000.
+/// Applications should not rely on >16M gas for normal operations.
+pub const TEMPO_TRANSACTION_GAS_CAP: u64 = 30_000_000;
+
+/// Divisor for calculating shared gas limit (payment lane capacity).
+/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
+pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
+
+/// Maximum extra data size for Tempo blocks.
+pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
+
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
 pub struct TempoConsensus {
@@ -185,27 +206,6 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         FullConsensus::<TempoPrimitives>::validate_block_post_execution(&self.inner, block, result)
     }
 }
-
-/// Pre-T1 divisor for calculating general (non-payment) gas limit.
-/// general_gas_limit = (block_gas_limit - shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
-
-/// T1+ general (non-payment) gas limit per block: 30M gas
-/// This caps how much gas general transactions can consume, guaranteeing
-/// at least 470M gas remains available for payment transactions.
-pub const TEMPO_GENERAL_GAS_LIMIT: u64 = 30_000_000;
-
-/// T1+ maximum gas per single transaction: 30M gas
-/// Elevated from 16M to support max-size contract deployments under TIP-1000.
-/// Applications should not rely on >16M gas for normal operations.
-pub const TEMPO_TRANSACTION_GAS_CAP: u64 = 30_000_000;
-
-/// Divisor for calculating shared gas limit (payment lane capacity).
-/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
-pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
-
-/// Maximum extra data size for Tempo blocks.
-pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
 #[cfg(test)]
 mod tests {
