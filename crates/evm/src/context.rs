@@ -49,26 +49,12 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
     for TempoNextBlockEnvAttributes
 {
     fn build_pending_env(parent: &crate::SealedHeader<tempo_primitives::TempoHeader>) -> Self {
-        use alloy_consensus::BlockHeader as _;
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        let shared_gas_limit = parent.gas_limit() / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-
-        // Determine general gas limit using heuristic based on parent header.
-        // This has a one-block edge case at T1 boundary (parent is pre-T1 but child should be T1).
-        // However, pending block building is disabled for Tempo (PendingBlockKind::None) since
-        // blocks require consensus data (system transactions) that RPC doesn't have.
-        let t1_general_gas_limit = TempoHardfork::T1.general_gas_limit().unwrap();
-        let general_gas_limit = if parent.general_gas_limit == t1_general_gas_limit {
-            t1_general_gas_limit
-        } else {
-            (parent.gas_limit() - shared_gas_limit) / 2
-        };
-
+        // Use parent's values directly since pending block building is disabled for Tempo
+        // (PendingBlockKind::None) - blocks require consensus data that RPC doesn't have.
         Self {
             inner: NextBlockEnvAttributes::build_pending_env(parent),
-            general_gas_limit,
-            shared_gas_limit,
+            general_gas_limit: parent.general_gas_limit,
+            shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
             subblock_fee_recipients: Default::default(),
         }
@@ -83,13 +69,12 @@ mod tests {
     use tempo_primitives::TempoHeader;
 
     #[test]
-    fn test_build_pending_env_t1() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
-        // Test with parent that has T1's fixed general_gas_limit
+    fn test_build_pending_env_uses_parent_values() {
+        // Pending env uses parent's values directly since pending blocks are disabled
         let gas_limit = 500_000_000u64;
         let timestamp_millis_part = 500u64;
-        let t1_general_gas_limit = TempoHardfork::T1.general_gas_limit().unwrap();
+        let general_gas_limit = 30_000_000u64;
+        let shared_gas_limit = 250_000_000u64;
 
         let parent_header = TempoHeader {
             inner: alloy_consensus::Header {
@@ -98,51 +83,17 @@ mod tests {
                 gas_limit,
                 ..Default::default()
             },
-            general_gas_limit: t1_general_gas_limit,
-            timestamp_millis_part,
-            shared_gas_limit: gas_limit / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
-        };
-        let parent = SealedHeader::seal_slow(parent_header);
-        let pending_env = TempoNextBlockEnvAttributes::build_pending_env(&parent);
-
-        // Verify gas limits are computed correctly
-        let expected_shared_gas_limit = gas_limit / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-        assert_eq!(pending_env.shared_gas_limit, expected_shared_gas_limit);
-
-        // Parent has T1 fixed value, so pending should also use T1 fixed value
-        assert_eq!(pending_env.general_gas_limit, t1_general_gas_limit);
-
-        // Verify timestamp_millis_part is carried from parent
-        assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
-
-        // Verify subblock_fee_recipients is empty by default
-        assert!(pending_env.subblock_fee_recipients.is_empty());
-    }
-
-    #[test]
-    fn test_build_pending_env_pre_t1() {
-        // Test with parent that uses pre-T1 divisor-based general_gas_limit
-        let gas_limit = 500_000_000u64;
-        let timestamp_millis_part = 500u64;
-        let shared_gas_limit = gas_limit / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
-        // Pre-T1 value uses divisor
-        let pre_t1_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
-
-        let parent_header = TempoHeader {
-            inner: alloy_consensus::Header {
-                number: 10,
-                timestamp: 1000,
-                gas_limit,
-                ..Default::default()
-            },
-            general_gas_limit: pre_t1_general_gas_limit,
+            general_gas_limit,
             timestamp_millis_part,
             shared_gas_limit,
         };
         let parent = SealedHeader::seal_slow(parent_header);
         let pending_env = TempoNextBlockEnvAttributes::build_pending_env(&parent);
 
-        // Parent has pre-T1 value (not equal to T1 constant), so pending should also use pre-T1
-        assert_eq!(pending_env.general_gas_limit, pre_t1_general_gas_limit);
+        // Verify values are copied directly from parent
+        assert_eq!(pending_env.general_gas_limit, general_gas_limit);
+        assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
+        assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
+        assert!(pending_env.subblock_fee_recipients.is_empty());
     }
 }

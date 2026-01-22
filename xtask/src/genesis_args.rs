@@ -82,12 +82,6 @@ pub(crate) struct GenesisArgs {
     #[arg(long, short, default_value = "1337")]
     chain_id: u64,
 
-    /// Base fee. If not specified, defaults based on T1 activation:
-    /// - With --t1-time: uses post-T1 fee (20 gwei)
-    /// - Without --t1-time: uses pre-T1 fee (10 gwei)
-    #[arg(long)]
-    base_fee_per_gas: Option<u128>,
-
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
     gas_limit: u64,
@@ -508,14 +502,12 @@ impl GenesisArgs {
             }
         }
 
-        // Determine base fee: explicit value, or default based on T1 activation
-        let base_fee = self.base_fee_per_gas.unwrap_or_else(|| {
-            if self.t1_time == 0 {
-                TempoHardfork::T1.base_fee().into()
-            } else {
-                TempoHardfork::T0.base_fee().into()
-            }
-        });
+        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
+        let base_fee: u128 = if self.t1_time == 0 {
+            TempoHardfork::T1.base_fee().into()
+        } else {
+            TempoHardfork::T0.base_fee().into()
+        };
 
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
