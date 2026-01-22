@@ -689,10 +689,10 @@ impl Transaction for TempoTransaction {
 
     #[inline]
     fn value(&self) -> U256 {
-        // Return sum of all call values
+        // Return sum of all call values, saturating to U256::MAX on overflow
         self.calls
             .iter()
-            .fold(U256::ZERO, |acc, call| acc + call.value)
+            .fold(U256::ZERO, |acc, call| acc.saturating_add(call.value))
     }
 
     #[inline]
@@ -1951,5 +1951,26 @@ mod tests {
             ..Default::default()
         };
         assert!(tx.validate().is_ok());
+    }
+
+    #[test]
+    fn test_value_saturates_on_overflow() {
+        let call1 = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::MAX,
+            input: Bytes::new(),
+        };
+        let call2 = Call {
+            to: TxKind::Call(Address::ZERO),
+            value: U256::from(1),
+            input: Bytes::new(),
+        };
+
+        let tx = TempoTransaction {
+            calls: vec![call1, call2],
+            ..Default::default()
+        };
+
+        assert_eq!(tx.value(), U256::MAX);
     }
 }
