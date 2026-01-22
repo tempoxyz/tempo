@@ -655,7 +655,17 @@ impl AA2dPool {
             let Some(id) = self.by_id.last_key_value().map(|(id, _)| *id) else {
                 return removed;
             };
-            removed.push(self.remove_transaction_by_id(&id).unwrap());
+
+            // FIX: Handle removal safely instead of panicking with unwrap()
+            if let Some(tx) = self.remove_transaction_by_id(&id) {
+                removed.push(tx);
+            } else {
+                // Safety valve: If we found an ID but couldn't remove it properly via the helper,
+                // we explicitly remove it from the map to prevent an infinite loop.
+                // This prevents a potential crash or hang.
+                self.by_id.remove(&id);
+                tracing::warn!(?id, "forced removal of inconsistent transaction from 2d pool");
+            }
         }
 
         if !removed.is_empty() {
