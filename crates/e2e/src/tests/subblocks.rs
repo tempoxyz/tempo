@@ -19,7 +19,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::ConsensusEngineEvent;
 use reth_node_core::primitives::transaction::TxHashRef;
-use tempo_chainspec::spec::{SYSTEM_TX_COUNT, TEMPO_BASE_FEE_POST_T1};
+use tempo_chainspec::spec::{SYSTEM_TX_COUNT, TEMPO_T1_BASE_FEE};
 use tempo_node::primitives::{
     SubBlockMetadata, TempoTransaction, TempoTxEnvelope,
     subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -242,7 +242,7 @@ fn subblocks_are_included_with_failing_txs() {
                 *expected_fees.entry(fee_recipient).or_insert(U256::ZERO) +=
                     calc_gas_balance_spending(
                         receipt.cumulative_gas_used - cumulative_gas_used,
-                        TEMPO_BASE_FEE_POST_T1 as u128,
+                        TEMPO_T1_BASE_FEE as u128,
                     );
                 cumulative_gas_used = receipt.cumulative_gas_used;
 
@@ -409,7 +409,7 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
 
     let provider = node.execution_provider();
 
-    let gas_price = TEMPO_BASE_FEE_POST_T1 as u128;
+    let gas_price = TEMPO_T1_BASE_FEE as u128;
 
     let mut tx = TempoTransaction {
         chain_id: provider.chain_spec().chain_id(),

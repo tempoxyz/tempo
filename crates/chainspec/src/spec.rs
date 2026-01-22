@@ -15,14 +15,14 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-/// Pre-T1 base fee: 10 gwei (1×10^10 wei)
+/// T0 base fee: 10 gwei (1×10^10 wei)
 /// Convenience constant derived from [`TempoHardfork::T0.base_fee()`]
-pub const TEMPO_BASE_FEE_PRE_T1: u64 = TempoHardfork::T0.base_fee();
+pub const TEMPO_T0_BASE_FEE: u64 = TempoHardfork::T0.base_fee();
 
-/// Post-T1 base fee: 20 gwei (2×10^10 wei)
+/// T1 base fee: 20 gwei (2×10^10 wei)
 /// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
 /// Convenience constant derived from [`TempoHardfork::T1.base_fee()`]
-pub const TEMPO_BASE_FEE_POST_T1: u64 = TempoHardfork::T1.base_fee();
+pub const TEMPO_T1_BASE_FEE: u64 = TempoHardfork::T1.base_fee();
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;

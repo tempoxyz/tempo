@@ -23,7 +23,7 @@ use reth_transaction_pool::{
     pool::AddedTransactionState,
 };
 use std::sync::Arc;
-use tempo_chainspec::spec::{TEMPO_BASE_FEE_POST_T1, TempoChainSpec};
+use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TempoChainSpec};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, tip_fee_manager::TipFeeManager};
 use tempo_primitives::{
@@ -166,8 +166,8 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
     // Create an AA transaction with `valid_before = current_time + 1` second
     let tx_aa = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
@@ -266,8 +266,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 
     let tx_aa = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
@@ -303,8 +303,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 
     let tx_default = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),

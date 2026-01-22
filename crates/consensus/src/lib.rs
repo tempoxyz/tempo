@@ -297,7 +297,7 @@ mod tests {
                     parent_hash: self.parent_hash,
                     base_fee_per_gas: Some(
                         self.base_fee
-                            .unwrap_or(tempo_chainspec::spec::TEMPO_BASE_FEE_PRE_T1),
+                            .unwrap_or(tempo_chainspec::spec::TEMPO_T0_BASE_FEE),
                     ),
                     withdrawals_root: Some(EMPTY_ROOT_HASH),
                     blob_gas_used: Some(0),
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t1() {
-        use tempo_chainspec::spec::TEMPO_BASE_FEE_POST_T1;
+        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
         let chainspec = create_t1_chainspec();
         let consensus = TempoConsensus::new(chainspec);
@@ -614,7 +614,7 @@ mod tests {
             .number(1)
             .timestamp_millis_part(500)
             .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
-            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
@@ -625,7 +625,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
-            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_validate_header_against_parent_t1_wrong_base_fee() {
-        use tempo_chainspec::spec::{TEMPO_BASE_FEE_POST_T1, TEMPO_BASE_FEE_PRE_T1};
+        use tempo_chainspec::spec::{TEMPO_T1_BASE_FEE, TEMPO_T0_BASE_FEE};
 
         let chainspec = create_t1_chainspec();
         let consensus = TempoConsensus::new(chainspec);
@@ -647,7 +647,7 @@ mod tests {
             .number(1)
             .timestamp_millis_part(500)
             .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
-            .base_fee(TEMPO_BASE_FEE_POST_T1)
+            .base_fee(TEMPO_T1_BASE_FEE)
             .build();
         let parent_sealed = SealedHeader::seal_slow(parent);
 
@@ -659,7 +659,7 @@ mod tests {
             .number(2)
             .parent_hash(parent_sealed.hash())
             .general_gas_limit(TEMPO_GENERAL_GAS_LIMIT)
-            .base_fee(TEMPO_BASE_FEE_PRE_T1)
+            .base_fee(TEMPO_T0_BASE_FEE)
             .build();
         let child_sealed = SealedHeader::seal_slow(child);
 
