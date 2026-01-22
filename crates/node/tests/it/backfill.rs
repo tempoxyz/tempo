@@ -72,7 +72,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         let raw_tx = {
             let mut tx = TxEip1559 {
                 chain_id,
-                gas_limit: 21000,
+                gas_limit: 300_000,
                 to: Address::ZERO.into(),
                 max_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,
                 max_priority_fee_per_gas: TEMPO_BASE_FEE_POST_T1 as u128,

@@ -231,7 +231,8 @@ async fn test_eth_estimate_gas() -> eyre::Result<()> {
 
     let gas = provider.estimate_gas(tx.clone()).await?;
     // gas estimation is calldata dependent, but should be consistent with same calldata
-    assert_eq!(gas, 84654);
+    // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
+    assert_eq!(gas, 549423);
 
     // ensure we can successfully send the tx with that gas
     let receipt = provider

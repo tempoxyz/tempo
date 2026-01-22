@@ -18,6 +18,9 @@ use tempo_revm::{
 
 use crate::TempoBlockEnv;
 
+/// TIP-1000 gas limit cap (30 million gas).
+pub const TIP1000_GAS_LIMIT_CAP: u64 = 30_000_000;
+
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoEvmFactory;
@@ -65,7 +68,6 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        // override the gas params for tempo use case.
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
         // TIP-1010: Transaction gas cap is 30M to support max-size contract deployments
@@ -250,6 +252,7 @@ mod tests {
         context::TxEnv,
         database::{EmptyDB, in_memory_db::CacheDB},
     };
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     use super::*;
 
@@ -373,7 +376,7 @@ mod tests {
             inner: TxEnv {
                 caller: Address::ZERO,
                 gas_price: 0,
-                gas_limit: 100000,
+                gas_limit: 1_000_000,
                 kind: TxKind::Call(contract_addr),
                 ..Default::default()
             },
@@ -448,8 +451,6 @@ mod tests {
     /// This verifies the TIP-1000 gas parameter override mechanism.
     #[test]
     fn test_tempo_evm_applies_gas_params() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
         // Create EVM with T1 hardfork to get TIP-1000 gas params
         let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
 
@@ -463,26 +464,27 @@ mod tests {
         );
     }
 
-    /// Test that TempoEvm sets 30M gas limit cap as per TIP-1000.
+    /// Test that TempoEvm respects the gas limit cap passed in via EvmEnv.
+    /// Note: The 30M TIP-1000 gas cap is set in ConfigureEvm::evm_env(), not here.
+    /// This test verifies that TempoEvm::new() preserves the cap from the input.
     #[test]
-    fn test_tempo_evm_30m_gas_cap() {
-        use tempo_chainspec::hardfork::TempoHardfork;
+    fn test_tempo_evm_respects_gas_cap() {
+        let mut env = evm_env_with_spec(TempoHardfork::T1);
+        env.cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
 
-        let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
+        let evm = TempoEvm::new(EmptyDB::default(), env);
 
-        // Verify 30M gas limit cap
+        // Verify gas limit cap is preserved
         assert_eq!(
             evm.ctx().cfg.tx_gas_limit_cap,
-            Some(30_000_000),
-            "TIP-1000 requires 30M gas limit cap"
+            Some(TIP1000_GAS_LIMIT_CAP),
+            "TempoEvm should preserve the gas limit cap from input"
         );
     }
 
     /// Test that gas params differ between T0 and T1 hardforks.
     #[test]
     fn test_tempo_evm_gas_params_differ_t0_vs_t1() {
-        use tempo_chainspec::hardfork::TempoHardfork;
-
         // Create T0 and T1 EVMs
         let t0_evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T0));
         let t1_evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
@@ -512,7 +514,6 @@ mod tests {
     #[test]
     fn test_tempo_evm_t1_state_creation_costs() {
         use revm::context_interface::cfg::GasId;
-        use tempo_chainspec::hardfork::TempoHardfork;
 
         let evm = TempoEvm::new(EmptyDB::default(), evm_env_with_spec(TempoHardfork::T1));
         let gas_params = &evm.ctx().cfg.gas_params;

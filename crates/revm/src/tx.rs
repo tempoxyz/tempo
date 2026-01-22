@@ -496,8 +496,8 @@ mod tests {
         tx_env.set_gas_limit(21000);
         assert_eq!(tx_env.inner.gas_limit, 21000);
 
-        tx_env.set_gas_limit(100_000);
-        assert_eq!(tx_env.inner.gas_limit, 100_000);
+        tx_env.set_gas_limit(1_000_000);
+        assert_eq!(tx_env.inner.gas_limit, 1_000_000);
     }
 
     #[test]

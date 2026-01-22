@@ -510,14 +510,14 @@ mod tests {
         let sender = Address::random();
         let value = U256::from(1000);
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(value)
             .build();
 
         // fee_token_cost = cost - value = gas spending
-        // gas spending = calc_gas_balance_spending(100_000, 2_000_000_000)
-        //              = (100_000 * 2_000_000_000) / 1_000_000_000_000 = 200
-        let expected_fee_cost = U256::from(200);
+        // gas spending = calc_gas_balance_spending(1_000_000, 2_000_000_000)
+        //              = (1_000_000 * 2_000_000_000) / 1_000_000_000_000 = 2000
+        let expected_fee_cost = U256::from(2000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
@@ -768,7 +768,7 @@ mod tests {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -794,14 +794,14 @@ mod tests {
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(500))
             .build();
 
         // Test various Transaction trait methods
         assert_eq!(tx.chain_id(), Some(1));
         assert_eq!(tx.nonce(), 0);
-        assert_eq!(tx.gas_limit(), 100_000);
+        assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn test_cost_returns_zero() {
         let tx = TxBuilder::aa(Address::random())
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(1000))
             .build();
 
