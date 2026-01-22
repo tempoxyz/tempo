@@ -15,8 +15,8 @@ use governor::Quota;
 
 // Hardcoded values to configure commonware's alto toy chain. These could be made into
 // configuration variables at some point.
-pub const PENDING_CHANNEL_IDENT: commonware_p2p::Channel = 0;
-pub const RECOVERED_CHANNEL_IDENT: commonware_p2p::Channel = 1;
+pub const VOTES_CHANNEL_IDENT: commonware_p2p::Channel = 0;
+pub const CERTIFICATES_CHANNEL_IDENT: commonware_p2p::Channel = 1;
 pub const RESOLVER_CHANNEL_IDENT: commonware_p2p::Channel = 2;
 pub const BROADCASTER_CHANNEL_IDENT: commonware_p2p::Channel = 3;
 pub const MARSHAL_CHANNEL_IDENT: commonware_p2p::Channel = 4;
@@ -31,9 +31,8 @@ pub const BROADCASTER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
 pub const DKG_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub const MARSHAL_LIMIT: Quota = Quota::per_second(NonZeroU32::new(8).expect("value is not zero"));
-pub const PENDING_LIMIT: Quota =
-    Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
-pub const RECOVERED_LIMIT: Quota =
+pub const VOTES_LIMIT: Quota = Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
+pub const CERTIFICATES_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));
 pub const RESOLVER_LIMIT: Quota =
     Quota::per_second(NonZeroU32::new(128).expect("value is not zero"));

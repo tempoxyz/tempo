@@ -67,9 +67,10 @@ fn joins_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator.
+        // First, remove the last actual validator (index 3 = last of 4 signers).
+        let receiver_index = 3u64;
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver.chain_address, false)
+            .change_validator_status(http_url.clone(), receiver_index, false)
             .await
             .unwrap();
 
@@ -240,9 +241,10 @@ fn can_restart_after_joining_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator.
+        // First, remove the last actual validator (index 3 = last of 4 signers).
+        let receiver_index = 3u64;
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver.chain_address, false)
+            .change_validator_status(http_url.clone(), receiver_index, false)
             .await
             .unwrap();
 

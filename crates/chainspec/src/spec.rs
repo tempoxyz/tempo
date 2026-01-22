@@ -404,5 +404,11 @@ mod tests {
             testnet_chainspec.tempo_hardfork_at(u64::MAX),
             TempoHardfork::Genesis
         );
+
+        // Dev chainspec should return T1 (all hardforks active at 0)
+        let dev_chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
     }
 }

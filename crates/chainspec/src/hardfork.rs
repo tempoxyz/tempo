@@ -44,7 +44,7 @@ hardfork!(
         #[default]
         /// T0 hardfork (default until T1 activates on mainnet)
         T0,
-        /// T1 hardfork
+        /// T1 hardfork - adds expiring nonce transactions
         T1,
     }
 );
@@ -138,6 +138,12 @@ mod tests {
         assert!(!TempoHardfork::Genesis.is_t1());
         assert!(!TempoHardfork::T0.is_t1());
         assert!(TempoHardfork::T1.is_t1());
+    }
+
+    #[test]
+    fn test_t1_hardfork_name() {
+        let fork = TempoHardfork::T1;
+        assert_eq!(fork.name(), "T1");
     }
 
     #[test]
