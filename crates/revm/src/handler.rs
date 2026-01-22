@@ -493,12 +493,7 @@ where
     ) -> Result<FrameResult, Self::Error> {
         // Add key_authorization and 2D nonce gas to the initial gas
         // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(
-            init_and_floor_gas
-                .initial_gas
-                .saturating_add(evm.additional_initial_gas),
-            init_and_floor_gas.floor_gas,
-        );
+        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
 
         let tx = evm.tx();
         if tx.gas_limit() < adjusted_gas.initial_gas {
@@ -506,7 +501,7 @@ where
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            return Ok(oog_frame_result(kind, 0));
+            return Ok(oog_frame_result(kind, tx.gas_limit()));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
@@ -865,12 +860,14 @@ where
                 }
             })?;
 
-            // get how much gas was spent by the precompile
-            evm.additional_initial_gas = if out_of_gas {
-                u64::MAX
-            } else {
-                provider.gas_used()
-            };
+            if spec.is_t1() {
+                // Add additional gas that was spent by the precompile
+                if out_of_gas {
+                    evm.initial_gas = u64::MAX
+                } else {
+                    evm.initial_gas += provider.gas_used()
+                };
+            }
 
             drop(provider);
         }
@@ -953,7 +950,6 @@ where
         // Short-circuit if there is no spending for this transaction and `collectFeePreTx`
         // call will not collect any fees.
         if gas_balance_spending.is_zero() {
-            evm.additional_initial_gas = 0;
             return Ok(());
         }
 
@@ -1178,7 +1174,7 @@ where
             }
 
             // TIP-1000: Storage pricing updates for launch
-            // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+            // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
             if spec.is_t1() && tx.nonce == 0 {
                 init_gas.initial_gas += gas_params.get(GasId::new_account_cost());
             }
@@ -1505,12 +1501,7 @@ where
     ) -> Result<FrameResult, Self::Error> {
         // Add key_authorization and 2D nonce gas to the initial gas
         // Use saturating_add to avoid overflow when additional_initial_gas is u64::MAX (OOG case)
-        let adjusted_gas = InitialAndFloorGas::new(
-            init_and_floor_gas
-                .initial_gas
-                .saturating_add(evm.additional_initial_gas),
-            init_and_floor_gas.floor_gas,
-        );
+        let adjusted_gas = InitialAndFloorGas::new(evm.initial_gas, init_and_floor_gas.floor_gas);
 
         let tx = evm.tx();
         if tx.gas_limit() < adjusted_gas.initial_gas {
@@ -1518,7 +1509,7 @@ where
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            return Ok(oog_frame_result(kind, 0));
+            return Ok(oog_frame_result(kind, tx.gas_limit()));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
