@@ -35,9 +35,9 @@ pub struct TempoEvm<DB: Database, I> {
     pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
-    /// Additional initial gas cost is needed for authorization_key setting in pre execution.
-    pub(crate) additional_initial_gas: u64,
     /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
+    ///
+    /// Additional initial gas cost is added for authorization_key setting in pre execution.
     pub(crate) initial_gas: u64,
 }
 
@@ -72,7 +72,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             logs: Vec::new(),
             collected_fee: U256::ZERO,
-            additional_initial_gas: 0,
             initial_gas: 0,
         }
     }
@@ -1463,10 +1462,6 @@ mod tests {
         let evm_with_inspector = evm.with_inspector(CountInspector::new());
 
         // Verify fields are still initialized correctly
-        assert_eq!(
-            evm_with_inspector.additional_initial_gas, 0,
-            "additional_initial_gas should be 0 after with_inspector"
-        );
         assert_eq!(
             evm_with_inspector.initial_gas, 0,
             "initial_gas should be 0 after with_inspector"

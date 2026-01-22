@@ -11,15 +11,14 @@ use alloy_primitives::{Address, Bytes, Log, TxKind};
 use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_revm::{
-    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext,
-    gas_params::tempo_gas_params,
-};
+use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext};
 
 use crate::TempoBlockEnv;
 
 /// TIP-1000 sets transaction gas limit cap to 30 million gas.
 ///
+/// Increase of tx gas limit cap to 30M gas is to allow for maximum-sized
+/// contract deployments under TIP-1000 state creation costs.
 pub const TIP1000_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -68,9 +67,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
-
+    pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -249,6 +246,7 @@ mod tests {
         database::{EmptyDB, in_memory_db::CacheDB},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_revm::gas_params::tempo_gas_params;
 
     use super::*;
 

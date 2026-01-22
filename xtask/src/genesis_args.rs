@@ -492,7 +492,6 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t1Time".to_string(), self.t1_time)?;
-
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
