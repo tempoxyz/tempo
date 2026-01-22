@@ -16,12 +16,10 @@ use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
 /// T0 base fee: 10 gwei (1×10^10 wei)
-/// Convenience constant derived from [`TempoHardfork::T0.base_fee()`]
 pub const TEMPO_T0_BASE_FEE: u64 = TempoHardfork::T0.base_fee();
 
 /// T1 base fee: 20 gwei (2×10^10 wei)
 /// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
-/// Convenience constant derived from [`TempoHardfork::T1.base_fee()`]
 pub const TEMPO_T1_BASE_FEE: u64 = TempoHardfork::T1.base_fee();
 
 // End-of-block system transactions
