@@ -4,6 +4,7 @@
 //! - `consensus_getFinalization(query)` - Get finalization by height from marshal archive
 //! - `consensus_getLatest()` - Get the current consensus state snapshot
 //! - `consensus_subscribe()` - Subscribe to consensus events stream
+//! - `consensus_epochNumber()` - Get the current consensus epoch number
 
 pub mod types;
 
@@ -51,6 +52,13 @@ pub trait TempoConsensusApi {
         from_epoch: Option<u64>,
         full: Option<bool>,
     ) -> RpcResult<IdentityTransitionResponse>;
+
+    /// Get the current consensus epoch number.
+    ///
+    /// Returns the epoch number based on the latest finalized block height.
+    /// The epoch number is calculated as `block_height / epoch_length`.
+    #[method(name = "epochNumber")]
+    async fn epoch_number(&self) -> RpcResult<Option<u64>>;
 }
 
 /// Tempo consensus RPC implementation.
@@ -117,5 +125,9 @@ impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
             .get_identity_transition_proof(from_epoch, full.unwrap_or(false))
             .await
             .map_err(|e| ErrorObject::owned(INTERNAL_ERROR_CODE, e.to_string(), None::<()>))
+    }
+
+    async fn epoch_number(&self) -> RpcResult<Option<u64>> {
+        Ok(self.consensus_feed.epoch_number().await)
     }
 }

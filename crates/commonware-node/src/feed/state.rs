@@ -451,6 +451,13 @@ impl ConsensusFeed for FeedStateHandle {
             transitions,
         })
     }
+
+    async fn epoch_number(&self) -> Option<u64> {
+        let epocher = self.epocher()?;
+        let state = self.state.read();
+        let height = state.latest_finalized.as_ref()?.height?;
+        epocher.containing(height).map(|info| info.epoch().get())
+    }
 }
 
 /// Fetch last block of epoch and decode DKG outcome.

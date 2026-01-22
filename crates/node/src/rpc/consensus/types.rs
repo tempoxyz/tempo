@@ -148,4 +148,7 @@ pub trait ConsensusFeed: Send + Sync + 'static {
         from_epoch: Option<u64>,
         full: bool,
     ) -> impl Future<Output = Result<IdentityTransitionResponse, IdentityProofError>> + Send;
+
+    /// Get the current consensus epoch number based on the latest finalized block height.
+    fn epoch_number(&self) -> impl Future<Output = Option<u64>> + Send;
 }
