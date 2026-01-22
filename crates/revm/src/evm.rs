@@ -37,7 +37,7 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) collected_fee: U256,
     /// Additional initial gas cost is needed for authorization_key setting in pre execution.
     pub(crate) additional_initial_gas: u64,
-    /// Initial gas cost function. Used for key_authorization validation in collectFeePreTx.
+    /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
     pub(crate) initial_gas: u64,
 }
 

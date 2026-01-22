@@ -684,8 +684,6 @@ where
 }
 
 /// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
-///
-/// Caution: This only checks past the Merge hardfork.
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
     spec: TempoHardfork,
