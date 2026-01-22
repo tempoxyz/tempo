@@ -41,7 +41,8 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, is_tip20_prefix},
 };
 use tempo_primitives::transaction::{
-    PrimitiveSignature, SignatureType, TempoSignature, calc_gas_balance_spending, validate_calls,
+    PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+    calc_gas_balance_spending, validate_calls,
 };
 
 use crate::{
@@ -72,6 +73,27 @@ pub const EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
 /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero)
 pub const NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD_COST + SSTORE_SET;
+
+/// Gas cost for expiring nonce transactions (replay check + insert).
+///
+/// See TIP-1009 for full specification.
+///
+/// Operations charged:
+/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
+/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
+/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
+///
+/// Excluded from gas calculation:
+/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
+///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
+///
+/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
+/// - SSTORE_SET cost exists to penalize permanent state growth
+/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
+/// - No permanent state growth, so the 20k penalty doesn't apply
+///
+/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
+pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -576,19 +598,54 @@ where
             .map(|aa| aa.nonce_key)
             .unwrap_or_default();
 
+        let spec = cfg.spec();
+
+        // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
+        let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
             &caller_account.account().info,
             tx.nonce(),
             cfg.is_eip3607_disabled(),
-            // skip nonce check if 2D nonce is used
+            // skip nonce check if 2D nonce or expiring nonce is used
             cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
         )?;
 
         // modify account nonce and touch the account.
         caller_account.touch();
 
-        if !nonce_key.is_zero() {
+        if is_expiring_nonce {
+            // Expiring nonce transaction - use tx hash for replay protection
+            let tempo_tx_env = tx
+                .tempo_tx_env
+                .as_ref()
+                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
+
+            // Expiring nonce txs must have nonce == 0
+            if tx.nonce() != 0 {
+                return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
+            }
+
+            let tx_hash = tempo_tx_env.tx_hash;
+            let valid_before = tempo_tx_env
+                .valid_before
+                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
+
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                let mut nonce_manager = NonceManager::new();
+
+                nonce_manager
+                    .check_and_mark_expiring_nonce(tx_hash, valid_before)
+                    .map_err(|err| match err {
+                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                    })?;
+
+                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+            })?;
+        } else if !nonce_key.is_zero() {
+            // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
@@ -636,6 +693,7 @@ where
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
         } else {
+            // Protocol nonce (nonce_key == 0)
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
             // This applies uniformly to both standard and AA transactions - we only bump here
             // for CALLs, letting make_create_frame handle the nonce for CREATE operations.
@@ -1197,7 +1255,6 @@ where
     DB: alloy_evm::Database,
 {
     let tx = evm.ctx_ref().tx();
-    let spec = *evm.ctx_ref().cfg().spec();
 
     // This function should only be called for AA transactions
     let aa_env = tx
@@ -1219,9 +1276,19 @@ where
     // Calculate batch intrinsic gas using helper
     let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, tx.access_list())?;
 
-    // Calculate 2D nonce gas if nonce_key is non-zero
-    // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    let nonce_2d_gas = if !aa_env.nonce_key.is_zero() {
+    let spec = evm.ctx_ref().cfg().spec();
+
+    // Only treat as expiring nonce if T1 is active
+    let is_expiring_nonce = aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+
+    // Calculate nonce gas based on nonce type:
+    // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+    // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
+    // - Regular nonce (nonce_key == 0): no additional gas
+    let nonce_2d_gas = if is_expiring_nonce {
+        // Expiring nonce - 2 cold SLOADs + 3 warm SSTOREs for ring buffer ops
+        EXPIRING_NONCE_GAS
+    } else if !aa_env.nonce_key.is_zero() {
         if tx.nonce() == 0 {
             // New key - cold SLOAD + SSTORE set (0 -> non-zero)
             NEW_NONCE_KEY_GAS
@@ -2761,5 +2828,46 @@ mod tests {
                 "Key auth gas should be at least {} (base + ecrecover), got {}",
                 min_gas, gas);
         }
+    }
+
+    #[test]
+    fn test_nonce_gas_selection_logic() {
+        use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+
+        // Helper to compute nonce gas based on the logic in validate_aa_initial_tx_gas
+        fn compute_nonce_gas(nonce_key: U256, tx_nonce: u64) -> u64 {
+            if nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                EXPIRING_NONCE_GAS
+            } else if !nonce_key.is_zero() {
+                if tx_nonce == 0 {
+                    NEW_NONCE_KEY_GAS
+                } else {
+                    EXISTING_NONCE_KEY_GAS
+                }
+            } else {
+                0
+            }
+        }
+
+        // Regular nonce (nonce_key == 0) should have no additional gas
+        assert_eq!(compute_nonce_gas(U256::ZERO, 0), 0);
+        assert_eq!(compute_nonce_gas(U256::ZERO, 5), 0);
+
+        // 2D nonce with new key (tx_nonce == 0) should use NEW_NONCE_KEY_GAS
+        assert_eq!(compute_nonce_gas(U256::from(1), 0), NEW_NONCE_KEY_GAS);
+        assert_eq!(compute_nonce_gas(U256::from(42), 0), NEW_NONCE_KEY_GAS);
+
+        // 2D nonce with existing key (tx_nonce > 0) should use EXISTING_NONCE_KEY_GAS
+        assert_eq!(compute_nonce_gas(U256::from(1), 1), EXISTING_NONCE_KEY_GAS);
+        assert_eq!(
+            compute_nonce_gas(U256::from(42), 100),
+            EXISTING_NONCE_KEY_GAS
+        );
+
+        // Expiring nonce (nonce_key == MAX) should use EXPIRING_NONCE_GAS
+        assert_eq!(
+            compute_nonce_gas(TEMPO_EXPIRING_NONCE_KEY, 0),
+            EXPIRING_NONCE_GAS
+        );
     }
 }

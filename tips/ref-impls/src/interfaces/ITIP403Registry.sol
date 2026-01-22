@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT OR Apache-2.0
+pragma solidity >=0.8.13 <0.9.0;
 
 /// @title The interface for TIP-403 transfer policy registry
 /// @notice Registry for managing transfer policies that control which addresses can send or receive tokens

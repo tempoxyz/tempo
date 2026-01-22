@@ -21,6 +21,12 @@ pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
 pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 
+/// Nonce key marking an expiring nonce transaction (uses tx hash for replay protection).
+pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
+
+/// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
+pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
+
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -270,10 +276,31 @@ impl TempoTransaction {
         TEMPO_TX_TYPE_ID
     }
 
+    /// Returns true if this is an expiring nonce transaction.
+    ///
+    /// Expiring nonce transactions use the tx hash for replay protection instead of
+    /// sequential nonces. They are identified by `nonce_key == U256::MAX`.
+    #[inline]
+    pub fn is_expiring_nonce_tx(&self) -> bool {
+        self.nonce_key == TEMPO_EXPIRING_NONCE_KEY
+    }
+
     /// Validates the transaction according to the spec rules
     pub fn validate(&self) -> Result<(), &'static str> {
         // Validate calls list structure using the shared function
         validate_calls(&self.calls, !self.tempo_authorization_list.is_empty())?;
+
+        // Validate expiring nonce transaction constraints
+        if self.is_expiring_nonce_tx() {
+            // Expiring nonce txs must have nonce == 0
+            if self.nonce != 0 {
+                return Err("expiring nonce transactions must have nonce == 0");
+            }
+            // Expiring nonce txs must have valid_before set
+            if self.valid_before.is_none() {
+                return Err("expiring nonce transactions must have valid_before set");
+            }
+        }
 
         // validBefore must be greater than validAfter if both are set
         if let Some(valid_after) = self.valid_after
