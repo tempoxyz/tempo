@@ -1,19 +1,19 @@
 use alloy_evm::{
-    Database, Evm, EvmEnv, EvmFactory,
     precompiles::PrecompilesMap,
     revm::{
-        Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
         context::result::{EVMError, ResultAndState},
         inspector::NoOpInspector,
+        Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
     },
+    Database, Evm, EvmEnv, EvmFactory,
 };
 use alloy_primitives::{Address, Bytes, Log, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use reth_revm::{context::result::ExecutionResult, InspectSystemCallEvm, MainContext};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
-    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, evm::TempoContext,
-    gas_params::tempo_gas_params,
+    evm::TempoContext, gas_params::tempo_gas_params, TempoHaltReason, TempoInvalidTransaction,
+    TempoTxEnv,
 };
 
 use crate::TempoBlockEnv;
@@ -68,7 +68,6 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
-        // override the gas params for tempo use case.
         input.cfg_env.gas_params = tempo_gas_params(input.cfg_env.spec);
 
         let ctx = Context::mainnet()
@@ -247,7 +246,7 @@ mod tests {
     use revm::{
         context::TxEnv,
         database::{EmptyDB, in_memory_db::CacheDB},
-    };
+    };, EmptyDB
 
     use super::*;
 
