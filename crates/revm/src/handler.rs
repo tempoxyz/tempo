@@ -506,7 +506,7 @@ where
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            return Ok(oog_frame_result(kind, 0));
+            return Ok(oog_frame_result(kind, tx.gas_limit()));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
@@ -1518,7 +1518,7 @@ where
                 .first_call()
                 .expect("we already checked that there is at least one call in aa tx")
                 .0;
-            return Ok(oog_frame_result(kind, 0));
+            return Ok(oog_frame_result(kind, tx.gas_limit()));
         }
 
         // Check if this is an AA transaction by checking for tempo_tx_env
