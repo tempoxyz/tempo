@@ -33,7 +33,10 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 
-use crate::{block::TempoBlockExecutor, evm::TempoEvm};
+use crate::{
+    block::TempoBlockExecutor,
+    evm::{TIP1000_GAS_LIMIT_CAP, TempoEvm},
+};
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::evm::TempoContext;
@@ -128,8 +131,15 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
+        // Set TIP-1000 gas limit cap (30M) for T1 hardfork.
+        // This is set here so RPC layer can override it before constructing the EVM.
+        let mut cfg_env = cfg_env.with_spec_and_mainnet_gas_params(spec);
+        if spec.is_t1() {
+            cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
+        }
+
         Ok(EvmEnv {
-            cfg_env: cfg_env.with_spec_and_mainnet_gas_params(spec),
+            cfg_env,
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: header.timestamp_millis_part,
@@ -161,8 +171,15 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
+        // Set TIP-1000 gas limit cap (30M) for T1 hardfork.
+        // This is set here so RPC layer can override it before constructing the EVM.
+        let mut cfg_env = cfg_env.with_spec_and_mainnet_gas_params(spec);
+        if spec.is_t1() {
+            cfg_env.tx_gas_limit_cap = Some(TIP1000_GAS_LIMIT_CAP);
+        }
+
         Ok(EvmEnv {
-            cfg_env: cfg_env.with_spec_and_mainnet_gas_params(spec),
+            cfg_env,
             block_env: TempoBlockEnv {
                 inner: block_env,
                 timestamp_millis_part: attributes.timestamp_millis_part,
@@ -293,6 +310,41 @@ mod tests {
 
         // Verify Tempo-specific field
         assert_eq!(evm_env.block_env.timestamp_millis_part, 500);
+    }
+
+    /// Test that evm_env sets 30M gas limit cap for T1 hardfork as per TIP-1000.
+    #[test]
+    fn test_evm_env_t1_gas_cap() {
+        use tempo_chainspec::spec::DEV;
+
+        // DEV chainspec has T1 activated at timestamp 0
+        let chainspec = DEV.clone();
+        let evm_config = TempoEvmConfig::new_with_default_factory(chainspec.clone());
+
+        let header = TempoHeader {
+            inner: alloy_consensus::Header {
+                number: 100,
+                timestamp: 1000, // After T1 activation
+                gas_limit: 30_000_000,
+                base_fee_per_gas: Some(1000),
+                ..Default::default()
+            },
+            general_gas_limit: 10_000_000,
+            timestamp_millis_part: 0,
+            shared_gas_limit: 3_000_000,
+        };
+
+        // Verify we're in T1
+        assert!(chainspec.tempo_hardfork_at(header.timestamp()).is_t1());
+
+        let evm_env = evm_config.evm_env(&header).unwrap();
+
+        // Verify TIP-1000 gas limit cap is set
+        assert_eq!(
+            evm_env.cfg_env.tx_gas_limit_cap,
+            Some(TIP1000_GAS_LIMIT_CAP),
+            "TIP-1000 requires 30M gas limit cap for T1 hardfork"
+        );
     }
 
     #[test]

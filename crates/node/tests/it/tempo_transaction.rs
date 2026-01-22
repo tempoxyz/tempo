@@ -65,7 +65,7 @@ async fn fund_address_with_fee_tokens(
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -872,7 +872,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
 
     println!("Created AA transaction with secp256k1 signature");
@@ -944,7 +944,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
 
     // Sign and encode transaction
@@ -983,7 +983,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
     tx_parallel.nonce_key = U256::from(1); // Parallel nonce - should be rejected
 
@@ -1062,7 +1062,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             chain_id,
             max_priority_fee_per_gas: priority_fee,
             max_fee_per_gas: TEMPO_BASE_FEE as u128 + priority_fee,
-            gas_limit: 1_000_000,
+            gas_limit: 2_000_000,
             calls: vec![Call {
                 to: recipient.into(),
                 value: U256::ZERO,
@@ -1474,7 +1474,7 @@ async fn send_tx(
         chain_id,
         max_priority_fee_per_gas: priority_fee,
         max_fee_per_gas: TEMPO_BASE_FEE as u128 + priority_fee,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -1697,7 +1697,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        200_000, // Higher gas limit for WebAuthn verification
+        2_000_000, // Higher gas limit for WebAuthn verification
     );
     // Use the correct fee token that was used for funding
     tx.fee_token = Some(fee_token);
@@ -1832,7 +1832,7 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -2199,7 +2199,7 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000, // Higher gas limit for multiple calls
+        gas_limit: 2_000_000, // Higher gas limit for multiple calls
         calls,
         nonce_key: U256::ZERO,
         nonce: 0, // First transaction from P256 signer
@@ -2422,7 +2422,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
     tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false)); // Placeholder
 
@@ -2540,7 +2540,7 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
         chain_id: provider.get_chain_id().await?,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![], // EMPTY call batch - properly encoded but fails validation
         nonce_key: U256::ZERO,
         nonce,
@@ -2975,7 +2975,7 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
             from: Some(sender_addr),
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
-            gas: Some(300_000), // Higher gas for authorization list processing
+            gas: Some(2_000_000), // Higher gas for authorization list processing
             max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
             max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
             nonce: Some(provider.get_transaction_count(sender_addr).await?),
@@ -3170,7 +3170,7 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
             from: Some(sender_addr),
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
-            gas: Some(300_000),
+            gas: Some(2_000_000),
             max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
             max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
             nonce: Some(provider.get_transaction_count(sender_addr).await?),
@@ -3257,7 +3257,7 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
         chain_id: provider.get_chain_id().await?,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: TxKind::Create,
             value: U256::ZERO,
@@ -3439,7 +3439,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
-        300_000, // Higher gas for key authorization verification
+        2_000_000, // Higher gas for key authorization verification
     );
     // Use pathUSD (DEFAULT_FEE_TOKEN) as fee token
     // and our spending limit is set for pathUSD
@@ -3803,7 +3803,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
@@ -3860,7 +3860,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -3893,7 +3893,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -3984,7 +3984,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4033,7 +4033,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4137,7 +4137,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 400_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4169,7 +4169,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
@@ -4232,7 +4232,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4294,7 +4294,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4405,7 +4405,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_unlimited_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4427,7 +4427,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient1, large_transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4490,7 +4490,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_no_spending_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4512,7 +4512,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient2, small_transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     no_spending_transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4577,7 +4577,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         // Use higher gas price to replace the rejected no-spending tx still in pool
         max_priority_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
         max_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4686,7 +4686,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4706,7 +4706,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient1, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4773,7 +4773,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_short_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4794,7 +4794,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient2, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     before_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4849,7 +4849,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient3, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     after_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4931,7 +4931,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     past_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -5053,7 +5053,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5114,7 +5114,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5187,7 +5187,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5298,7 +5298,7 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5374,7 +5374,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
         chain_id: 1337,
         max_priority_fee_per_gas: 1_000_000_000u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: Address::random().into(),
             value: U256::ZERO,
@@ -5489,7 +5489,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5546,7 +5546,7 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5605,7 +5605,7 @@ async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: TxKind::Create,
             value: U256::ZERO,
@@ -5719,7 +5719,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_tx.key_authorization = Some(key_auth);
@@ -5758,7 +5758,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     delayed_tx.valid_after = Some(valid_after_time);
@@ -5811,7 +5811,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
             value: U256::ZERO,
             input: revoke_call.abi_encode().into(),
         }],
-        200_000,
+        2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
@@ -5935,7 +5935,7 @@ async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -6027,7 +6027,7 @@ async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -6115,7 +6115,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
             chain_id,
             max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
             max_fee_per_gas: TEMPO_BASE_FEE as u128,
-            gas_limit: 1_000_000,
+            gas_limit: 2_000_000,
             calls: vec![Call {
                 to: recipient.into(),
                 value: U256::ZERO,
@@ -6173,7 +6173,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
             chain_id,
             max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
             max_fee_per_gas: TEMPO_BASE_FEE as u128,
-            gas_limit: 1_000_000,
+            gas_limit: 2_000_000,
             calls: vec![Call {
                 to: recipient.into(),
                 value: U256::ZERO,
@@ -6225,7 +6225,7 @@ async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
             chain_id,
             max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
             max_fee_per_gas: TEMPO_BASE_FEE as u128,
-            gas_limit: 1_000_000,
+            gas_limit: 2_000_000,
             calls: vec![Call {
                 to: recipient.into(),
                 value: U256::ZERO,
@@ -6305,7 +6305,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: Address::random().into(),
             value: U256::ZERO,
@@ -6355,7 +6355,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
         chain_id,
         max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 1_000_000,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: Address::random().into(),
             value: U256::ZERO,
