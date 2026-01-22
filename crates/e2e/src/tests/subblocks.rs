@@ -299,7 +299,7 @@ fn subblocks_are_included_with_failing_txs() {
             // TIP-1000 charges 250k gas for new account creation, so txs from random signers
             // need ~300k intrinsic gas. With 600k per-validator budget (5 validators), we fit 2 txs.
             for node in nodes.iter() {
-                for _ in 0..2 {
+                for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
                     if rand::random::<bool>() {
                         let tx =
