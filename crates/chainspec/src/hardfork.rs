@@ -70,13 +70,13 @@ impl TempoHardfork {
         }
     }
 
-    /// Returns the general (non-payment) gas limit for this hardfork.
-    /// - T1+: fixed at 30M gas
-    /// - Pre-T1: calculated as (block_gas_limit - shared_gas_limit) / 2
-    pub const fn general_gas_limit(&self, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+    /// Returns the fixed general gas limit for T1+, or None for pre-T1.
+    /// - T1+: 30M gas (fixed)
+    /// - Pre-T1: None (caller calculates as (gas_limit - shared_gas_limit) / 2)
+    pub const fn general_gas_limit(&self) -> Option<u64> {
         match self {
-            Self::T1 => 30_000_000, // 30M fixed
-            Self::T0 | Self::Genesis => (gas_limit - shared_gas_limit) / 2,
+            Self::T1 => Some(30_000_000),
+            Self::T0 | Self::Genesis => None,
         }
     }
 }
@@ -119,7 +119,8 @@ pub trait TempoHardforks: EthereumHardforks {
         shared_gas_limit: u64,
     ) -> u64 {
         self.tempo_hardfork_at(timestamp)
-            .general_gas_limit(gas_limit, shared_gas_limit)
+            .general_gas_limit()
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
     }
 }
 

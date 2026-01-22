@@ -510,7 +510,7 @@ impl GenesisArgs {
 
         // Determine base fee: explicit value, or default based on T1 activation
         let base_fee = self.base_fee_per_gas.unwrap_or_else(|| {
-            if self.t1_time.is_some() {
+            if self.t1_time == 0 {
                 TempoHardfork::T1.base_fee().into()
             } else {
                 TempoHardfork::T0.base_fee().into()
