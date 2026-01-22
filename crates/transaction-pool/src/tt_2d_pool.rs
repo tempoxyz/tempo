@@ -158,7 +158,7 @@ impl AA2dPool {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
                 priority: CoinbaseTipOrdering::default()
-                    .priority(&transaction.transaction, TempoHardfork::T1.base_fee()),
+                    .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
             is_pending: inserted_as_pending,
