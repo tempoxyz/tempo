@@ -72,6 +72,12 @@ impl AmmLiquidityCache {
             return Ok(true);
         }
 
+        // DEFAULT_FEE_TOKEN (PATH_USD) is always accepted by all validators without
+        // requiring an AMM swap. Skip liquidity check for the base token.
+        if user_token == DEFAULT_FEE_TOKEN {
+            return Ok(true);
+        }
+
         let amount_out = compute_amount_out(fee).map_err(ProviderError::other)?;
 
         let mut missing_in_cache = Vec::new();
