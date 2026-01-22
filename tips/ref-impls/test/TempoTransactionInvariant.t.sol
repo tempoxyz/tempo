@@ -4350,4 +4350,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
     }
 
+    function testReproE5() external {
+        vm.prank(0x0000000000000000000000000000000000007a14);
+        TempoTransactionInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496).handler_expiringNonceMissingValidBefore(3951163256, 17825037299970611419357768961972048946, 589360554163491822552160569322370672325423);
+        this.invariant_tempoTransaction();
+    }
+
+    function testReproE3() external {
+		vm.prank(0x57a53Dd0Aa4c63e6040592f255a9C75824d6848d);
+		TempoTransactionInvariantTest(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496).handler_expiringNonceWindowTooFar(6200, 267, 3, 6862740467);
+        this.invariant_tempoTransaction();
+    }
+
 }
