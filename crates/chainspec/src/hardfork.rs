@@ -65,8 +65,8 @@ impl TempoHardfork {
     /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
     pub const fn base_fee(&self) -> u64 {
         match self {
-            Self::T1 => 20_000_000_000,                 // 20 gwei
-            Self::T0 | Self::Genesis => 10_000_000_000, // 10 gwei
+            Self::T1 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
         }
     }
 
