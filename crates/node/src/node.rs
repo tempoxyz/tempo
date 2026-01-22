@@ -422,14 +422,6 @@ where
 
     async fn build_pool(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Pool> {
         let mut pool_config = ctx.pool_config();
-        // Set pool minimum base fee based on T1 status at startup. If node starts post-T1,
-        // use the higher fee. If pre-T1, use lower fee - after T1 activates, txs with fees
-        // between 10-20 gwei will enter pool but fail at block building (acceptable since
-        // pool minimum is just an optimization filter).
-        pool_config.minimal_protocol_basefee = ctx
-            .chain_spec()
-            .tempo_hardfork_at(ctx.head().timestamp)
-            .base_fee();
         pool_config.max_inflight_delegated_slot_limit = pool_config.max_account_slots;
 
         // this store is effectively a noop
