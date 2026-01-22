@@ -58,9 +58,8 @@ impl AssertValidatorIsAdded {
         let cfg = Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
 
-        executor.start(|context| async move {
-            let (mut validators, execution_runtime) =
-                setup_validators(context.clone(), setup).await;
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
             let mut new_validator = {
                 let idx = validators
@@ -77,7 +76,7 @@ impl AssertValidatorIsAdded {
                 "must have removed the one non-signer node; must be left with only signers",
             );
 
-            join_all(validators.iter_mut().map(|v| v.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
@@ -105,7 +104,7 @@ impl AssertValidatorIsAdded {
                 "addValidator call returned receipt"
             );
 
-            let _new_validator = new_validator.start().await;
+            let _new_validator = new_validator.start(&context).await;
             tracing::info!("new validator was started");
 
             // First, all initial validator nodes must observe a ceremony with
@@ -206,11 +205,10 @@ impl AssertValidatorIsRemoved {
         let cfg = Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);
 
-        executor.start(|context| async move {
-            let (mut validators, execution_runtime) =
-                setup_validators(context.clone(), setup).await;
+        executor.start(|mut context| async move {
+            let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
 
-            join_all(validators.iter_mut().map(|v| v.start())).await;
+            join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
             // We will send an arbitrary node of the initial validator set the smart
             // contract call.
@@ -222,11 +220,11 @@ impl AssertValidatorIsRemoved {
                 .parse::<Url>()
                 .unwrap();
 
+            // The addValidator calls during genesis add validators 0..validators.len().
+            // So the last validator has index `validators.len() - 1`.
+            let last_validator_index = (validators.len() - 1) as u64;
             let receipt = execution_runtime
-                // XXX: The addValidator call above adding the initial set
-                // adds validators 0..validators.len(). So this is the last of
-                // the validators
-                .change_validator_status(http_url, validators.last().unwrap().chain_address, false)
+                .change_validator_status(http_url, last_validator_index, false)
                 .await
                 .unwrap();
 

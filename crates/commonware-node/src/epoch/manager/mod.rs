@@ -9,7 +9,7 @@ pub(crate) use ingress::Mailbox;
 
 use commonware_consensus::{
     marshal,
-    simplex::scheme::bls12381_threshold::Scheme,
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{FixedEpocher, ViewDelta},
 };
 use commonware_p2p::Blocker;
@@ -38,8 +38,8 @@ pub(crate) struct Config<TBlocker> {
 }
 
 pub(crate) fn init<TBlocker, TContext>(
-    config: Config<TBlocker>,
     context: TContext,
+    config: Config<TBlocker>,
 ) -> (Actor<TBlocker, TContext>, Mailbox)
 where
     TBlocker: Blocker<PublicKey = PublicKey>,

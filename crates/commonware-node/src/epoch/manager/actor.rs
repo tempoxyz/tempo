@@ -13,7 +13,7 @@
 //! consensus engine backing the epoch stored in the message. The message also
 //! contains the public polynomial, share of the private key for this node,
 //! and the participants in the next epoch - all determined by the DKG ceremony.
-//! The engine receives a subchannel of the recovered, pending, and resolver
+//! The engine receives a subchannel of the vote, certificate, and resolver
 //! p2p channels, multiplexed by the epoch.
 //!
 //! When the actor receives an `Exit` message, it exists the engine backing the
@@ -26,21 +26,18 @@
 //! then this engine will have a subchannel registered on the multiplexer for
 //! epoch 0.
 //!
-//! If the actor now receives a vote in epoch 5 over its pending mux backup
+//! If the actor now receives a vote in epoch 5 over its vote mux backup
 //! channel (since there are no subchannels registered with the muxer on
-//! epochs 1 through 5), it will request the finalization certificate for the
-//! boundary height of epoch 0 from the voter. This request is done over the
-//! boundary certificates p2p network.
+//! epochs 1 through 5), it hints to the marshal actor that a finalization
+//! certificate for the node's *current* epoch's boundary height must exist.
 //!
-//! Upon receipt of the request for epoch 0 over the boundary certificates p2p
-//! network, the voter will send the finalization certificate to the *recovered*
-//! p2p network, tagged by epoch 0.
-//!
-//! Finally, this certificate is received by the running simplex engine
-//! (since remember, it's active for epoch 0), and subsequently forwarded to
-//! the marshal actor, which finally is able to fetch all finalizations up to
-//! the boundary height, which will eventually trigger the node to transition to
-//! epoch 1.
+//! If such a finalization certificate exists, the marshal actor will fetch
+//! and verify it, and move the network finalized tip there. If that happens,
+//! the epoch manager actor will read the DKG outcome from the finalized tip
+//! and move on to the next epoch. It will not start a full simplex engine
+//! (the DKG manager is responsible for driving that), but it will "soft-enter"
+//! the new epoch by registering the new public polynomial on the scheme
+//! provider.
 //!
 //! This process is repeated until the node catches up to the current network
 //! epoch.
@@ -51,7 +48,7 @@ use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     Reporters,
     marshal::Update,
-    simplex::{self, elector, scheme::bls12381_threshold::Scheme},
+    simplex::{self, elector, scheme::bls12381_threshold::vrf::Scheme},
     types::{Epoch, Epocher as _, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
@@ -63,6 +60,7 @@ use commonware_p2p::{
 use commonware_parallel::Sequential;
 use commonware_runtime::{
     Clock, ContextCell, Handle, Metrics as _, Network, Spawner, Storage, spawn_cell,
+    telemetry::metrics::status::GaugeExt as _,
 };
 use commonware_utils::{Acknowledgement as _, vec::NonEmptyVec};
 use eyre::{ensure, eyre};
@@ -313,22 +311,18 @@ where
         let is_signer = matches!(share, Some(..));
         let scheme = if let Some(share) = share {
             info!("we have a share for this epoch, participating as a signer",);
-            Scheme::signer(
-                crate::config::NAMESPACE,
-                participants,
-                public,
-                share,
-                Sequential,
-            )
-            .expect("our private share must match our slice of the public key")
+            Scheme::signer(crate::config::NAMESPACE, participants, public, share)
+                .expect("our private share must match our slice of the public key")
         } else {
             info!("we don't have a share for this epoch, participating as a verifier",);
-            Scheme::verifier(crate::config::NAMESPACE, participants, public, Sequential)
+            Scheme::verifier(crate::config::NAMESPACE, participants, public)
         };
         self.config.scheme_provider.register(epoch, scheme.clone());
 
         let engine = simplex::Engine::new(
-            self.context.with_label("consensus_engine"),
+            self.context
+                .with_label("simplex")
+                .with_attribute("epoch", epoch),
             simplex::Config {
                 scheme,
                 elector: elector::Random,
@@ -358,6 +352,8 @@ where
                 skip_timeout: self.config.views_until_leader_skip,
 
                 fetch_concurrent: crate::config::NUMBER_CONCURRENT_FETCHES,
+
+                strategy: Sequential,
             },
         );
 
@@ -380,7 +376,7 @@ where
 
         self.metrics.latest_participants.set(n_participants as i64);
         self.metrics.active_epochs.inc();
-        self.metrics.latest_epoch.set(epoch.get() as i64);
+        let _ = self.metrics.latest_epoch.try_set(epoch.get());
         self.metrics.how_often_signer.inc_by(is_signer as u64);
         self.metrics.how_often_verifier.inc_by(!is_signer as u64);
 
@@ -460,7 +456,6 @@ where
                     crate::config::NAMESPACE,
                     onchain_outcome.players().clone(),
                     onchain_outcome.sharing().clone(),
-                    Sequential,
                 ),
             );
             self.confirmed_latest_network_epoch
@@ -504,10 +499,6 @@ where
         };
 
         if reference_epoch >= their_epoch {
-            debug!(
-                %reference_epoch,
-                "message is for current or past epoch; no action necessary",
-            );
             return;
         }
 

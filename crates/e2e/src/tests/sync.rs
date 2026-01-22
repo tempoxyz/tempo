@@ -33,9 +33,9 @@ fn joins_from_snapshot() {
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
-    executor.start(|context| async move {
+    executor.start(|mut context| async move {
         let (mut validators, execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+            setup_validators(&mut context, setup.clone()).await;
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
@@ -53,7 +53,7 @@ fn joins_from_snapshot() {
                 .all(|node| node.consensus_config().share.is_some()),
             "must have removed the one non-signer node; must be left with only signers",
         );
-        join_all(validators.iter_mut().map(|v| v.start())).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.
@@ -67,9 +67,10 @@ fn joins_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator.
+        // First, remove the last actual validator (index 3 = last of 4 signers).
+        let receiver_index = 3u64;
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver.chain_address, false)
+            .change_validator_status(http_url.clone(), receiver_index, false)
             .await
             .unwrap();
 
@@ -146,7 +147,7 @@ fn joins_from_snapshot() {
         receiver.consensus_config = donor.consensus_config;
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
-        receiver.start().await;
+        receiver.start(&context).await;
 
         info!(
             uid = %receiver.uid,
@@ -206,9 +207,9 @@ fn can_restart_after_joining_from_snapshot() {
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
-    executor.start(|context| async move {
+    executor.start(|mut context| async move {
         let (mut validators, execution_runtime) =
-            setup_validators(context.clone(), setup.clone()).await;
+            setup_validators(&mut context, setup.clone()).await;
 
         // The validator that will donate its address to the snapshot syncing
         // validator.
@@ -226,7 +227,7 @@ fn can_restart_after_joining_from_snapshot() {
                 .all(|node| node.consensus_config().share.is_some()),
             "must have removed the one non-signer node; must be left with only signers",
         );
-        join_all(validators.iter_mut().map(|v| v.start())).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.
@@ -240,9 +241,10 @@ fn can_restart_after_joining_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator.
+        // First, remove the last actual validator (index 3 = last of 4 signers).
+        let receiver_index = 3u64;
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver.chain_address, false)
+            .change_validator_status(http_url.clone(), receiver_index, false)
             .await
             .unwrap();
 
@@ -319,7 +321,7 @@ fn can_restart_after_joining_from_snapshot() {
         receiver.consensus_config = donor.consensus_config;
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
-        receiver.start().await;
+        receiver.start(&context).await;
 
         info!(
             uid = %receiver.uid,
@@ -372,7 +374,7 @@ fn can_restart_after_joining_from_snapshot() {
             .best_block_number()
             .unwrap();
 
-        receiver.start().await;
+        receiver.start(&context).await;
 
         info!(
             network_head,

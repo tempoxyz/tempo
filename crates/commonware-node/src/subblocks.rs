@@ -7,7 +7,7 @@ use commonware_consensus::{
     Epochable, Reporter, Viewable,
     simplex::{
         elector::Random,
-        scheme::bls12381_threshold::{self, Scheme},
+        scheme::bls12381_threshold::vrf::{Scheme, Signature},
         types::Activity,
     },
     types::{Epocher as _, FixedEpocher, Height, Round, View},
@@ -16,7 +16,8 @@ use commonware_cryptography::{
     Signer, Verifier,
     bls12381::primitives::variant::MinSig,
     certificate::Provider,
-    ed25519::{PrivateKey, PublicKey, Signature},
+    ed25519,
+    ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{Receiver, Recipients, Sender};
 use commonware_runtime::{Handle, Metrics, Pacer, Spawner};
@@ -99,7 +100,7 @@ pub(crate) struct Actor<TContext> {
     epoch_strategy: FixedEpocher,
 
     /// Current consensus tip. Includes highest observed round, digest and certificate.
-    consensus_tip: Option<(Round, BlockHash, bls12381_threshold::Signature<MinSig>)>,
+    consensus_tip: Option<(Round, BlockHash, Signature<MinSig>)>,
 
     /// Collected subblocks keyed by validator public key.
     subblocks: IndexMap<B256, RecoveredSubBlock>,
@@ -323,10 +324,10 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
 
         let next_proposer = Random::select_leader::<MinSig>(
             next_round,
-            scheme.participants().len(),
+            scheme.participants().len() as u32,
             seed_signature,
         );
-        let next_proposer = scheme.participants()[next_proposer as usize].clone();
+        let next_proposer = scheme.participants()[next_proposer.get() as usize].clone();
 
         debug!(?next_proposer, ?next_round, "determined next proposer");
 
@@ -801,7 +802,7 @@ async fn validate_subblock(
     epoch_strategy: FixedEpocher,
 ) -> eyre::Result<()> {
     let Ok(signature) =
-        Signature::decode(&mut subblock.signature.as_ref()).wrap_err("invalid signature")
+        ed25519::Signature::decode(&mut subblock.signature.as_ref()).wrap_err("invalid signature")
     else {
         return Err(eyre::eyre!("invalid signature"));
     };

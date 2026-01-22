@@ -445,6 +445,7 @@ pub(crate) fn gen_collision_check_fn(
     let check_fn = quote! {
         #[cfg(debug_assertions)]
         #[inline(always)]
+        #[allow(non_snake_case)]
         fn #check_fn_name() {
             #checks
         }

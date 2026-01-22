@@ -230,11 +230,11 @@ impl PrimitiveSignature {
 
     /// Get the in-memory size of the signature
     pub fn size(&self) -> usize {
-        match self {
-            Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
-            Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
-            Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
-        }
+        size_of::<Self>()
+            + match self {
+                Self::Secp256k1(_) | Self::P256(_) => 0,
+                Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
+            }
     }
 
     /// Recover the signer address from the signature
@@ -593,6 +593,10 @@ impl TempoSignature {
     ///
     /// For Keychain signatures, this performs full validation of the inner signature.
     /// The access key address is cached in the KeychainSignature for later use.
+    /// Note: This pattern has a big footgun, that someone using recover_signer, cannot assume
+    /// that the signature is valid for the keychain. They also need to check the access key is authorized
+    /// in the keychain precompile.
+    /// We cannot check this here, as we don't have access to the keychain precompile.
     pub fn recover_signer(
         &self,
         sig_hash: &B256,
@@ -727,10 +731,18 @@ fn verify_p256_signature_internal(
         .map_err(|_| "P256 signature verification failed")
 }
 
-/// Parses and validates WebAuthn data, returning the message hash for P256 verification
+/// Minimal struct to deserialize only the fields we need from clientDataJSON.
+/// serde_json will ignore unknown fields and only parse `type` and `challenge`.
+#[derive(serde::Deserialize)]
+struct ClientDataJson<'a> {
+    #[serde(rename = "type")]
+    type_field: &'a str,
+    challenge: &'a str,
+}
+
+/// Parses and validates WebAuthn data, returning the message hash for P256 verification.
 /// ref: <https://www.w3.org/TR/webauthn-2/#sctn-authenticator-data>
 ///
-/// According to the spec, this:
 /// 1. Parses authenticatorData and clientDataJSON
 /// 2. Validates authenticatorData (min 37 bytes, UP flag set)
 /// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
@@ -771,24 +783,18 @@ fn verify_webauthn_data_internal(
     let authenticator_data = &webauthn_data[..auth_data_len];
     let client_data_json = &webauthn_data[auth_data_len..];
 
-    // Validate clientDataJSON
-    let json_str =
-        core::str::from_utf8(client_data_json).map_err(|_| "clientDataJSON is not valid UTF-8")?;
+    // Parse clientDataJSON (only extracts type and challenge fields)
+    // NOTE: Size is already bounded by MAX_WEBAUTHN_SIGNATURE_LENGTH (2KB) at signature parsing
+    let client_data: ClientDataJson<'_> =
+        serde_json::from_slice(client_data_json).map_err(|_| "clientDataJSON is not valid JSON")?;
 
-    // Basic JSON structure validation
-    if !json_str.starts_with('{') || !json_str.ends_with('}') {
-        return Err("clientDataJSON is not valid JSON");
+    // Validate type field
+    if client_data.type_field != "webauthn.get" {
+        return Err("clientDataJSON type must be webauthn.get");
     }
 
-    // Check for required type field
-    if !json_str.contains("\"type\":\"webauthn.get\"") {
-        return Err("clientDataJSON missing required type field");
-    }
-
-    // Verify challenge matches tx_hash (Base64URL encoded)
-    let challenge_b64url = URL_SAFE_NO_PAD.encode(tx_hash.as_slice());
-    let challenge_property = format!("\"challenge\":\"{challenge_b64url}\"");
-    if !json_str.contains(&challenge_property) {
+    // Validate challenge matches tx_hash (Base64URL encoded)
+    if client_data.challenge != URL_SAFE_NO_PAD.encode(tx_hash.as_slice()) {
         return Err("clientDataJSON challenge does not match transaction hash");
     }
 
@@ -1054,7 +1060,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "clientDataJSON missing required type field"
+            "clientDataJSON type must be webauthn.get"
         );
     }
 
@@ -1501,5 +1507,48 @@ mod tests {
             key_id, access_key_address,
             "key_id should return access key address"
         );
+    }
+
+    #[test]
+    fn test_webauthn_rejects_challenge_injection() {
+        let (tx_hash, attack_hash) = (B256::from([0xAA; 32]), B256::from([0xFF; 32]));
+        let (challenge, attack_challenge) = (
+            URL_SAFE_NO_PAD.encode(tx_hash.as_slice()),
+            URL_SAFE_NO_PAD.encode(attack_hash.as_slice()),
+        );
+
+        // Ensure that the happy path works
+        let valid_payload = format!(r#"{{"type":"webauthn.get","challenge":"{challenge}"}}"#);
+
+        let mut auth_data = vec![0u8; 37];
+        auth_data[32] = 0x01;
+        let mut webauthn_data = auth_data;
+        webauthn_data.extend_from_slice(valid_payload.as_bytes());
+
+        let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
+        assert!(result.is_ok());
+
+        // Ensure that malicious payloads cannot pass validation
+        let attack_variants = [
+            format!(
+                r#"{{"type":"webauthn.get","challenge":"{attack_challenge}","extra":{{"challenge":"{challenge}"}}}}"#
+            ),
+            format!(
+                r#"{{"type":"webauthn.get","data":[{{"challenge":"{challenge}"}}],"challenge":"{attack_challenge}"}}"#
+            ),
+        ];
+
+        for (i, attack_json) in attack_variants.iter().enumerate() {
+            let mut auth_data = vec![0u8; 37];
+            auth_data[32] = 0x01;
+            let mut webauthn_data = auth_data;
+            webauthn_data.extend_from_slice(attack_json.as_bytes());
+
+            let result = verify_webauthn_data_internal(&webauthn_data, &tx_hash);
+            assert!(
+                result.is_err(),
+                "Attack variant {i} should be rejected: {attack_json}"
+            );
+        }
     }
 }

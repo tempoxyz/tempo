@@ -27,10 +27,9 @@ use tempo_node::TempoFullNode;
 
 use crate::config::PEERSETS_TO_TRACK;
 pub use crate::config::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
-    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
-    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
-    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
 pub use args::Args;
@@ -72,8 +71,12 @@ pub async fn run_consensus_stack(
     .wrap_err("failed to start network")?;
 
     let message_backlog = config.message_backlog;
-    let pending = network.register(PENDING_CHANNEL_IDENT, PENDING_LIMIT, message_backlog);
-    let recovered = network.register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, message_backlog);
+    let votes = network.register(VOTES_CHANNEL_IDENT, VOTES_LIMIT, message_backlog);
+    let certificates = network.register(
+        CERTIFICATES_CHANNEL_IDENT,
+        CERTIFICATES_LIMIT,
+        message_backlog,
+    );
     let resolver = network.register(RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT, message_backlog);
     let broadcaster = network.register(
         BROADCASTER_CHANNEL_IDENT,
@@ -89,8 +92,6 @@ pub async fn run_consensus_stack(
         .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
 
     let consensus_engine = crate::consensus::engine::Builder {
-        context: context.with_label("engine"),
-
         fee_recipient,
 
         execution_node: Some(execution_node),
@@ -134,18 +135,22 @@ pub async fn run_consensus_stack(
             "failed converting argument subblock-broadcast-interval to regular \
             duration; was it negative or chosen too large",
         )?,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.try_into().wrap_err(
+            "failed converting argument fcu-heartbeat-interval to regular \
+            duration; was it negative or chosen too large",
+        )?,
 
         feed_state,
     }
-    .try_init()
+    .try_init(context.with_label("engine"))
     .await
     .wrap_err("failed initializing consensus engine")?;
 
     let (network, consensus_engine) = (
         network.start(),
         consensus_engine.start(
-            pending,
-            recovered,
+            votes,
+            certificates,
             resolver,
             broadcaster,
             marshal,

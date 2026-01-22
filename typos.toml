@@ -6,11 +6,12 @@ extend-exclude = [
     "Cargo.toml",
     "Cargo.lock",
     "*.json",
+    "**/ph.js",
     "**/tests/**",
     "**/test/**",
     "**/*_test.*",
     "**/*_tests.*",
-    "docs/specs/lib/**",
+    "tips/ref-impls/lib/**",
 ]
 
 [default.extend-words]

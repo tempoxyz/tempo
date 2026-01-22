@@ -19,7 +19,7 @@ use commonware_codec::Encode;
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
-use futures::StreamExt;
+use futures::{StreamExt, future::BoxFuture};
 use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
     evm::{
@@ -133,7 +133,7 @@ impl Builder {
 
         {
             let cx = evm.ctx_mut();
-            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, || {
+            StorageCtx::enter_evm(&mut cx.journaled_state, &cx.block, &cx.cfg, &cx.tx, || {
                 // TODO(janis): figure out the owner of the test-genesis.json
                 let mut validator_config = ValidatorConfig::new();
                 validator_config
@@ -370,7 +370,7 @@ impl ExecutionRuntime {
                             let ChangeValidatorStatus {
                                 http_url,
                                 active,
-                                address,
+                                index,
                                 response,
                             } = *change_validator_status;
                             let provider = ProviderBuilder::new()
@@ -379,7 +379,7 @@ impl ExecutionRuntime {
                             let validator_config =
                                 IValidatorConfig::new(VALIDATOR_CONFIG_ADDRESS, provider);
                             let receipt = validator_config
-                                .changeValidatorStatus(address, active)
+                                .changeValidatorStatusByIndex(index, active)
                                 .send()
                                 .await
                                 .unwrap()
@@ -428,6 +428,9 @@ impl ExecutionRuntime {
                                 "receiver must hold the return channel until the node is returned",
                             );
                         }
+                        Message::RunAsync(fut) => {
+                            fut.await;
+                        }
                         Message::Stop => {
                             break;
                         }
@@ -472,7 +475,7 @@ impl ExecutionRuntime {
                 }
                 .into(),
             )
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
@@ -480,21 +483,21 @@ impl ExecutionRuntime {
     pub async fn change_validator_status(
         &self,
         http_url: Url,
-        address: Address,
+        index: u64,
         active: bool,
     ) -> eyre::Result<TransactionReceipt> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.to_runtime
             .send(
                 ChangeValidatorStatus {
-                    address,
+                    index,
                     active,
                     http_url,
                     response: tx,
                 }
                 .into(),
             )
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
@@ -514,7 +517,7 @@ impl ExecutionRuntime {
                 }
                 .into(),
             )
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
     }
@@ -538,16 +541,36 @@ impl ExecutionRuntime {
                 }
                 .into(),
             )
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await
             .wrap_err("the execution runtime dropped the response channel before sending a receipt")
+    }
+
+    /// Run an async task on the execution runtime's tokio runtime.
+    ///
+    /// This is useful for running code that requires a tokio runtime (like jsonrpsee clients)
+    /// from within the deterministic executor context.
+    pub async fn run_async<Fut, T>(&self, fut: Fut) -> eyre::Result<T>
+    where
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.to_runtime
+            .send(Message::RunAsync(Box::pin(async move {
+                let result = fut.await;
+                let _ = tx.send(result);
+            })))
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
+        rx.await
+            .wrap_err("the execution runtime dropped the response channel")
     }
 
     /// Instructs the runtime to stop and exit.
     pub fn stop(self) -> eyre::Result<()> {
         self.to_runtime
             .send(Message::Stop)
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         match self.rt.join() {
             Ok(()) => Ok(()),
             Err(e) => std::panic::resume_unwind(e),
@@ -585,7 +608,7 @@ impl ExecutionRuntimeHandle {
                 database,
                 response: tx,
             })
-            .wrap_err("the execution runtime went away")?;
+            .map_err(|_| eyre::eyre!("the execution runtime went away"))?;
         rx.await.wrap_err(
             "the execution runtime dropped the response channel before sending an execution node",
         )
@@ -745,7 +768,6 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
     })
 }
 
-#[derive(Debug)]
 enum Message {
     AddValidator(Box<AddValidator>),
     ChangeValidatorStatus(Box<ChangeValidatorStatus>),
@@ -756,6 +778,7 @@ enum Message {
         database: Arc<DatabaseEnv>,
         response: tokio::sync::oneshot::Sender<ExecutionNode>,
     },
+    RunAsync(BoxFuture<'static, ()>),
     Stop,
 }
 
@@ -791,7 +814,7 @@ struct AddValidator {
 struct ChangeValidatorStatus {
     /// URL of the node to send this to.
     http_url: Url,
-    address: Address,
+    index: u64,
     active: bool,
     response: tokio::sync::oneshot::Sender<TransactionReceipt>,
 }

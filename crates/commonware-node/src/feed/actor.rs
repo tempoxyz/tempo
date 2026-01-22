@@ -9,7 +9,8 @@ use alloy_primitives::hex;
 use commonware_codec::Encode;
 use commonware_consensus::{
     Heightable as _,
-    simplex::{scheme::bls12381_threshold::Scheme, types::Activity},
+    simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Activity},
+    types::FixedEpocher,
 };
 use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_macros::select;
@@ -46,10 +47,12 @@ impl<TContext: Spawner> Actor<TContext> {
     pub(crate) fn new(
         context: TContext,
         marshal: marshal::Mailbox,
+        epocher: FixedEpocher,
         receiver: Receiver,
         state: FeedStateHandle,
     ) -> Self {
         state.set_marshal(marshal.clone());
+        state.set_epocher(epocher);
 
         Self {
             context: ContextCell::new(context),
@@ -79,7 +82,7 @@ impl<TContext: Spawner> Actor<TContext> {
         }
     }
 
-    /// Create a [`CertifiedBlock`] from a proposal and certificate.
+    /// Create a [`CertifiedBlock`] from the notarization or finalization.
     async fn create_certified_block(
         &mut self,
         view: u64,
@@ -115,7 +118,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         notarization.proposal.round.epoch().get(),
                         notarization.proposal.payload,
-                        &notarization.certificate,
+                        &notarization,
                     )
                     .await;
 
@@ -148,7 +151,7 @@ impl<TContext: Spawner> Actor<TContext> {
                         view,
                         finalization.proposal.round.epoch().get(),
                         finalization.proposal.payload,
-                        &finalization.certificate,
+                        &finalization,
                     )
                     .await;
 

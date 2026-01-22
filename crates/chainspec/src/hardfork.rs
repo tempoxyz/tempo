@@ -39,11 +39,27 @@ hardfork!(
     #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
     #[derive(Default)]
     TempoHardfork {
-        /// The current Tempo hardfork (genesis).
-        #[default]
+        /// Genesis hardfork
         Genesis,
+        #[default]
+        /// T0 hardfork (default until T1 activates on mainnet)
+        T0,
+        /// T1 hardfork - adds expiring nonce transactions
+        T1,
     }
 );
+
+impl TempoHardfork {
+    /// Returns true if this hardfork is T0 or later.
+    pub fn is_t0(&self) -> bool {
+        *self >= Self::T0
+    }
+
+    /// Returns true if this hardfork is T1 or later.
+    pub fn is_t1(&self) -> bool {
+        *self >= Self::T1
+    }
+}
 
 /// Trait for querying Tempo-specific hardfork activations.
 pub trait TempoHardforks: EthereumHardforks {
@@ -51,8 +67,26 @@ pub trait TempoHardforks: EthereumHardforks {
     fn tempo_fork_activation(&self, fork: TempoHardfork) -> ForkCondition;
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
-    fn tempo_hardfork_at(&self, _timestamp: u64) -> TempoHardfork {
+    fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t1_active_at_timestamp(timestamp) {
+            return TempoHardfork::T1;
+        }
+        if self.is_t0_active_at_timestamp(timestamp) {
+            return TempoHardfork::T0;
+        }
         TempoHardfork::Genesis
+    }
+
+    /// Returns true if T0 is active at the given timestamp.
+    fn is_t0_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T0)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns true if T1 is active at the given timestamp.
+    fn is_t1_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T1)
+            .active_at_timestamp(timestamp)
     }
 }
 
@@ -62,9 +96,21 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
+    }
+}
+
 impl From<SpecId> for TempoHardfork {
-    fn from(_spec: SpecId) -> Self {
-        Self::Genesis
+    fn from(spec: SpecId) -> Self {
+        if spec.is_enabled_in(SpecId::from(Self::T1)) {
+            Self::T1
+        } else if spec.is_enabled_in(SpecId::from(Self::T0)) {
+            Self::T0
+        } else {
+            Self::Genesis
+        }
     }
 }
 
@@ -74,9 +120,30 @@ mod tests {
     use reth_chainspec::Hardfork;
 
     #[test]
-    fn test_genesis_hardfork_name() {
-        let fork = TempoHardfork::Genesis;
-        assert_eq!(fork.name(), "Genesis");
+    fn test_hardfork_name() {
+        assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
+        assert_eq!(TempoHardfork::T0.name(), "T0");
+        assert_eq!(TempoHardfork::T1.name(), "T1");
+    }
+
+    #[test]
+    fn test_is_t0() {
+        assert!(!TempoHardfork::Genesis.is_t0());
+        assert!(TempoHardfork::T0.is_t0());
+        assert!(TempoHardfork::T1.is_t0());
+    }
+
+    #[test]
+    fn test_is_t1() {
+        assert!(!TempoHardfork::Genesis.is_t1());
+        assert!(!TempoHardfork::T0.is_t1());
+        assert!(TempoHardfork::T1.is_t1());
+    }
+
+    #[test]
+    fn test_t1_hardfork_name() {
+        let fork = TempoHardfork::T1;
+        assert_eq!(fork.name(), "T1");
     }
 
     #[test]

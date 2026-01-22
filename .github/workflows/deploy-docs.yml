@@ -1,0 +1,18 @@
+name: Deploy TIPs to Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tips/**"
+      - ".github/workflows/deploy-docs.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Trigger Vercel Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Vercel
+        run: |
+          curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"

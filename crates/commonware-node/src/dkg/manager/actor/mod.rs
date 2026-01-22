@@ -6,7 +6,7 @@ use commonware_codec::{Encode as _, EncodeSize, Read, ReadExt as _, Write};
 use commonware_consensus::{
     Heightable as _,
     marshal::{self, Update},
-    simplex::scheme::bls12381_threshold::Scheme,
+    simplex::scheme::bls12381_threshold::vrf::Scheme,
     types::{Epoch, EpochPhase, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
@@ -25,7 +25,7 @@ use commonware_p2p::{
 };
 use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics as _, Spawner, spawn_cell};
-use commonware_utils::{Acknowledgement, NZU32, ordered};
+use commonware_utils::{Acknowledgement, N3f1, NZU32, ordered};
 
 use eyre::{OptionExt as _, WrapErr as _, bail, ensure, eyre};
 use futures::{
@@ -741,7 +741,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, &Sequential) {
+                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("local DKG ceremony was a success");
                         (output, None)
@@ -1117,7 +1117,7 @@ where
                     }
                 }
             } else {
-                match observe(round.info().clone(), logs, &Sequential) {
+                match observe::<_, _, N3f1>(round.info().clone(), logs, &Sequential) {
                     Ok(output) => {
                         info!("DKG ceremony was a success");
                         (output, None)

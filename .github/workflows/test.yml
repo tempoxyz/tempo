@@ -6,6 +6,7 @@ on:
   pull_request:
   merge_group:
 
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,10 +22,10 @@ jobs:
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Generate genesis
         run: |
           cargo xtask generate-genesis \
@@ -48,78 +49,63 @@ jobs:
     runs-on: depot-ubuntu-latest-16
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: taiki-e/install-action@nextest
-      - name: Run tests
-        run: cargo nextest run --no-fail-fast -j num-cpus --retries 2
+        with:
+          components: llvm-tools-preview
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - uses: taiki-e/install-action@2e9d707ef49c9b094d45955b60c7e5c0dfedeb14 # v2.66.5
+        with:
+          tool: nextest@0.9.123-b.2
+      - name: Build and compile tests with coverage
+        run: cargo nextest run --no-run -j num-cpus
+        env:
+          RUSTFLAGS: -C instrument-coverage
+      - name: Run tests with coverage
+        run: |
+          mkdir -p coverage
+          cargo nextest run \
+            --no-fail-fast \
+            -j num-cpus \
+            --retries 2
+        env:
+          RUSTFLAGS: -C instrument-coverage
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
+      - name: Generate precompiles coverage profdata
+        if: always()
+        run: |
+          LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
+          "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
+          mkdir -p coverage/precompiles-bin
+          # Copy precompiles and contracts test binaries
+          find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+          find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+      - name: Upload precompiles coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-test-coverage
+          path: |
+            coverage/cargo-test.profdata
+            coverage/precompiles-bin/
+          retention-days: 1
 
   msrv:
     name: MSRV
     runs-on: depot-ubuntu-latest-4
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.91" # MSRV
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Build with MSRV
         run: cargo build --bin tempo
         env:
           RUSTFLAGS: -D warnings
-
-  snapshot-re-execute:
-    name: Snapshot re-execution
-    runs-on: depot-ubuntu-latest-16
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: rui314/setup-mold@v1
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Get latest filename from API
-        id: latest
-        run: |
-          FILENAME=$(curl -s https://snapshots.tempoxyz.dev/42431/latest.txt)
-          echo "Latest filename: $FILENAME"
-          echo "filename=$FILENAME" >> "$GITHUB_OUTPUT"
-
-      - name: Restore cached file
-        id: cache-file
-        uses: actions/cache@v4
-        with:
-          path: .cache/snapshots
-          key: snapshots-${{ steps.latest.outputs.filename }}
-
-      - name: Download file if cache miss
-        if: steps.cache-file.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p .cache/snapshots
-
-          FILE_NAME='${{ steps.latest.outputs.filename }}'
-          curl -L "https://snapshots.tempoxyz.dev/42431/$FILE_NAME" \
-            -o ".cache/snapshots/$FILE_NAME"
-
-          ls -l .cache/snapshots
-
-      - name: Use the file
-        run: |
-          FILE_NAME='${{ steps.latest.outputs.filename }}'
-          FILE_PATH=".cache/snapshots/$FILE_NAME"
-
-          if [ ! -f "$FILE_PATH" ]; then
-            echo "File not found: $FILE_PATH"
-            exit 1
-          fi
-
-          mkdir snap-rexec
-          lz4 -d -c "$FILE_PATH" | tar -C snap-rexec -xvf -
-      - name: Re-execute snapshot
-        run: cargo run --release --bin tempo re-execute --datadir snap-rexec --num-tasks $(nproc) --to 4500000
 
   test-success:
     name: test success
@@ -132,6 +118,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed
-        uses: re-actors/alls-green@release/v1
+        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           jobs: ${{ toJSON(needs) }}
