@@ -780,10 +780,16 @@ impl AA2dPool {
 
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
-                    // Gap detected - remaining transactions should not be pending
+                    // Gap detected - mark this and all remaining transactions as non-pending
                     existing_tx.is_pending = false;
-                    break;
                 }
+            }
+
+            // If no transaction was found at the on-chain nonce (next_nonce unchanged),
+            // remove any stale independent transaction entry for this seq_id.
+            // This handles reorgs where the on-chain nonce decreases.
+            if next_nonce == on_chain_nonce {
+                self.independent_transactions.remove(&sender_id);
             }
         }
 
@@ -1235,14 +1241,16 @@ impl BestTransactions for BestAA2dTransactions {
 ///
 /// This combines the sender address with its nonce key, which
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AASequenceId {
-    pub(crate) address: Address,
-    pub(crate) nonce_key: U256,
+pub struct AASequenceId {
+    /// The sender address.
+    pub address: Address,
+    /// The nonce key for 2D nonce transactions.
+    pub nonce_key: U256,
 }
 
 impl AASequenceId {
     /// Creates a new instance with the address and nonce key.
-    pub(crate) const fn new(address: Address, nonce_key: U256) -> Self {
+    pub const fn new(address: Address, nonce_key: U256) -> Self {
         Self { address, nonce_key }
     }
 
@@ -4186,6 +4194,185 @@ mod tests {
         assert_eq!(queued, 0);
 
         assert_eq!(pool.independent_transactions.len(), 2);
+
+        pool.assert_invariants();
+    }
+
+    /// Test reorg handling when on-chain nonce decreases.
+    ///
+    /// When a reorg occurs, the canonical nonce can decrease. If no transaction
+    /// exists at the new on-chain nonce, `independent_transactions` must be cleared.
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn reorg_nonce_decrease_clears_stale_independent_transaction(nonce_key: U256) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Step 1: Add txs with nonces [3, 4, 5], starting with on_chain_nonce=3
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx4 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(4).build();
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx5_hash = *tx5.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Verify initial state: all 3 txs pending, tx3 is independent
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "All transactions should be pending");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .nonce(),
+            3,
+            "tx3 should be independent initially"
+        );
+        pool.assert_invariants();
+
+        // Step 2: Simulate mining of tx3 and tx4, on_chain_nonce becomes 5
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 5u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        assert_eq!(mined.len(), 2, "tx3 and tx4 should be mined");
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // Now tx5 should be the only tx in pool and be independent
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1, "Only tx5 should remain pending");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .hash(),
+            &tx5_hash,
+            "tx5 should be independent after mining"
+        );
+        pool.assert_invariants();
+
+        // Step 3: Simulate reorg - nonce decreases back to 3
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 3u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        // No transactions should be mined (tx5.nonce=5 >= on_chain_nonce=3)
+        assert!(mined.is_empty(), "No transactions should be mined");
+        // No promotions expected
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // tx5 should still be in the pool but is now QUEUED (gap at nonces 3, 4)
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 0, "tx5 should not be pending (nonce gap)");
+        assert_eq!(queued, 1, "tx5 should be queued");
+
+        // No tx at on_chain_nonce=3, so independent_transactions should be cleared
+        assert!(
+            !pool.independent_transactions.contains_key(&seq_id),
+            "independent_transactions should not contain stale entry after reorg"
+        );
+
+        pool.assert_invariants();
+    }
+
+    /// Test that gap demotion marks ALL subsequent transactions as non-pending.
+    ///
+    /// When a transaction is removed creating a gap, all transactions after the gap
+    /// should be marked as queued (is_pending=false), not just the first one.
+    #[test_case::test_case(U256::ZERO)]
+    #[test_case::test_case(U256::random())]
+    fn gap_demotion_marks_all_subsequent_transactions_as_queued(nonce_key: U256) {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        // Step 1: Add txs with nonces [5, 6, 7, 8], on_chain_nonce=5
+        let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
+        let tx6 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(6).build();
+        let tx7 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(7).build();
+        let tx8 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(8).build();
+        let tx6_hash = *tx6.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx6, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx7, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx8, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        // Verify initial state: all 4 txs pending
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 4, "All transactions should be pending initially");
+        assert_eq!(queued, 0);
+        assert_eq!(pool.independent_transactions.len(), 1);
+        pool.assert_invariants();
+
+        // Step 2: Remove tx6 to create a gap at nonce 6
+        // Pool now has: [5, _, 7, 8] where _ is the gap
+        let removed = pool.remove_transactions(std::iter::once(&tx6_hash));
+        assert_eq!(removed.len(), 1, "Should remove exactly tx6");
+
+        // Step 3: Trigger nonce change processing to re-evaluate pending status
+        // The on-chain nonce is still 5
+        let mut on_chain_ids = HashMap::default();
+        on_chain_ids.insert(seq_id, 5u64);
+        let (promoted, mined) = pool.on_nonce_changes(on_chain_ids);
+
+        assert!(mined.is_empty(), "No transactions should be mined");
+        assert!(promoted.is_empty(), "No promotions expected");
+
+        // Step 4: Verify that tx7 AND tx8 are both queued (not pending)
+        // BUG: Current code only marks tx7 as non-pending, tx8 incorrectly stays pending
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(
+            pending, 1,
+            "Only tx5 should be pending (tx7 and tx8 are after the gap)"
+        );
+        assert_eq!(
+            queued, 2,
+            "tx7 and tx8 should both be queued due to gap at nonce 6"
+        );
 
         pool.assert_invariants();
     }
