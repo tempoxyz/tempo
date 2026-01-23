@@ -310,6 +310,13 @@ where
                 #[cfg(feature = "test-utils")]
                 let tip_number = tip.tip().header().number();
 
+                debug!(
+                    target: "txpool",
+                    tip_number,
+                    receipts_count = tip.execution_outcome().receipts().iter().flatten().count(),
+                    "Processing chain commit event"
+                );
+
                 let bundle_state = tip.execution_outcome().state().state();
 
                 // 1. Evict expired AA transactions
@@ -362,15 +369,49 @@ where
                 for receipts in tip.execution_outcome().receipts().iter() {
                     for receipt in receipts {
                         for log in &receipt.logs {
+                            debug!(
+                                target: "txpool",
+                                log_address = ?log.address,
+                                expected_address = ?TIP403_REGISTRY_ADDRESS,
+                                matches = (log.address == TIP403_REGISTRY_ADDRESS),
+                                "Checking log address"
+                            );
                             if log.address != TIP403_REGISTRY_ADDRESS {
                                 continue;
                             }
 
-                            if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
-                                && event.restricted
-                                && let Some(tx_hashes) = state.txs_for_fee_payer(event.account)
-                            {
-                                blacklisted_txs.extend(tx_hashes.iter().copied());
+                            debug!(
+                                target: "txpool",
+                                address = ?log.address,
+                                topics = ?log.topics(),
+                                "Found TIP403 Registry log"
+                            );
+
+                            if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log) {
+                                debug!(
+                                    target: "txpool",
+                                    account = ?event.account,
+                                    restricted = event.restricted,
+                                    policy_id = event.policyId,
+                                    "Decoded BlacklistUpdated event"
+                                );
+                                if event.restricted {
+                                    if let Some(tx_hashes) = state.txs_for_fee_payer(event.account) {
+                                        debug!(
+                                            target: "txpool",
+                                            count = tx_hashes.len(),
+                                            account = ?event.account,
+                                            "Found transactions to evict for blacklisted fee payer"
+                                        );
+                                        blacklisted_txs.extend(tx_hashes.iter().copied());
+                                    } else {
+                                        debug!(
+                                            target: "txpool",
+                                            account = ?event.account,
+                                            "No transactions found for blacklisted fee payer"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

@@ -6405,6 +6405,7 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 /// This tests the fix for CHAIN-443 - DoS via TIP403 blacklist TOCTOU vulnerability.
 #[tokio::test]
 async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<()> {
+    use alloy::sol_types::SolEvent;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
@@ -6427,20 +6428,19 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // ========================================
     println!("\n=== STEP 1: Create a blacklist policy ===");
 
-    // Build and submit the createPolicy transaction as an AA transaction
-    // (using manual block advancement instead of waiting for auto-mining)
-    let nonce = provider.get_transaction_count(root_addr).await?;
-
+    // Build createPolicy call using Alloy bindings
     let create_policy_call = ITIP403Registry::createPolicyCall {
         admin: root_addr,
         policyType: ITIP403Registry::PolicyType::BLACKLIST,
     };
 
+    // Build and sign an AA transaction for createPolicy
+    let nonce = provider.get_transaction_count(root_addr).await?;
     let create_policy_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 300_000,
+        gas_limit: 1_000_000,
         calls: vec![Call {
             to: TIP403_REGISTRY_ADDRESS.into(),
             value: U256::ZERO,
@@ -6452,9 +6452,10 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         ..Default::default()
     };
 
-    let signature = root_signer.sign_hash_sync(&create_policy_tx.signature_hash())?;
+    let signature = sign_aa_tx_secp256k1(&create_policy_tx, &root_signer)?;
     let create_policy_envelope: TempoTxEnvelope =
-        create_policy_tx.into_signed(signature.into()).into();
+        create_policy_tx.into_signed(signature).into();
+    let create_policy_hash = *create_policy_envelope.tx_hash();
 
     setup
         .node
@@ -6465,9 +6466,43 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // Advance block to mine the createPolicy transaction
     setup.node.advance_block().await?;
 
-    // Policy ID is 1 for the first user-created policy (genesis has policy 0)
-    let policy_id = 1u64;
+    // Verify createPolicy succeeded and extract policy ID from event
+    let policy_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [create_policy_hash])
+        .await?;
+    let receipt_obj = policy_receipt.expect("createPolicy tx should be mined");
+    let status = receipt_obj
+        .get("status")
+        .and_then(|s| s.as_str())
+        .expect("Receipt should have status");
+    assert_eq!(status, "0x1", "createPolicy should succeed");
 
+    // Extract policy ID from PolicyCreated event in logs
+    let logs = receipt_obj
+        .get("logs")
+        .and_then(|l| l.as_array())
+        .expect("Receipt should have logs");
+
+    let policy_id = logs
+        .iter()
+        .find_map(|log| {
+            let topics = log.get("topics")?.as_array()?;
+            let _data = log.get("data")?.as_str()?;
+            // PolicyCreated event signature
+            let event_sig = ITIP403Registry::PolicyCreated::SIGNATURE_HASH;
+            let topic0 = topics.first()?.as_str()?;
+            if topic0 == format!("{event_sig:?}") {
+                // policyId is in topic[1]
+                let policy_id_hex = topics.get(1)?.as_str()?;
+                let policy_id = u64::from_str_radix(&policy_id_hex[2..], 16).ok()?;
+                Some(policy_id)
+            } else {
+                None
+            }
+        })
+        .expect("PolicyCreated event should be emitted");
+
+    assert_eq!(policy_id, 2, "First user-created policy should have ID 2");
     println!("Created blacklist policy with ID: {policy_id}");
 
     // Get current block timestamp for valid_after
@@ -6489,6 +6524,9 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     let recipient = Address::random();
     let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token
 
+    // Get current nonce (after createPolicy transaction was mined)
+    let delayed_nonce = provider.get_transaction_count(root_addr).await?;
+
     // Use protocol nonce (nonce_key=0) so the maintenance task tracks this transaction.
     // The blacklist transaction will use a 2D nonce to bypass the nonce ordering.
     let delayed_tx = TempoTransaction {
@@ -6506,8 +6544,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::ZERO, // Protocol nonce - gets tracked by maintenance task
-        nonce: nonce + 1,      // Next nonce after createPolicy
+        nonce_key: U256::ZERO,      // Protocol nonce - gets tracked by maintenance task
+        nonce: delayed_nonce,       // Current nonce after createPolicy
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),
@@ -6516,8 +6554,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     };
 
     // Sign the transaction
-    let signature = root_signer.sign_hash_sync(&delayed_tx.signature_hash())?;
-    let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(signature.into()).into();
+    let delayed_sig = sign_aa_tx_secp256k1(&delayed_tx, &root_signer)?;
+    let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(delayed_sig).into();
     let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
 
     setup
@@ -6574,7 +6612,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        gas_limit: 300_000,
+        gas_limit: 1_000_000,
         calls: vec![Call {
             to: TIP403_REGISTRY_ADDRESS.into(),
             value: U256::ZERO,
@@ -6583,12 +6621,13 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         nonce_key: U256::from(1), // 2D nonce - bypasses protocol nonce ordering
         nonce: 0,                 // First nonce for this nonce_key
         fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(u64::MAX),
         ..Default::default()
     };
 
-    let blacklist_signature = root_signer.sign_hash_sync(&blacklist_tx.signature_hash())?;
-    let blacklist_envelope: TempoTxEnvelope =
-        blacklist_tx.into_signed(blacklist_signature.into()).into();
+    let blacklist_sig = sign_aa_tx_secp256k1(&blacklist_tx, &root_signer)?;
+    let blacklist_envelope: TempoTxEnvelope = blacklist_tx.into_signed(blacklist_sig).into();
+    let blacklist_tx_hash = *blacklist_envelope.tx_hash();
 
     setup
         .node
@@ -6599,6 +6638,22 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // Advance block to mine the blacklist transaction and trigger commit notification
     let payload = setup.node.advance_block().await?;
     let new_tip = payload.block().inner.number;
+
+    // Verify the blacklist transaction was mined and succeeded
+    let blacklist_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [blacklist_tx_hash])
+        .await?;
+    let receipt_obj = blacklist_receipt.as_ref().expect("Blacklist tx should be mined");
+    let status = receipt_obj.get("status").and_then(|s| s.as_str()).expect("Receipt should have status");
+    assert_eq!(status, "0x1", "Blacklist transaction should have succeeded, but got status: {}", status);
+
+    // Check how many logs the blacklist transaction emitted
+    let logs = receipt_obj.get("logs").and_then(|l| l.as_array()).expect("Receipt should have logs");
+    println!("Blacklist transaction emitted {} logs:", logs.len());
+    for (i, log) in logs.iter().enumerate() {
+        let addr = log.get("address").and_then(|a| a.as_str()).unwrap_or("unknown");
+        println!("  Log {}: address = {}", i, addr);
+    }
 
     println!("Fee payer blacklisted in block {new_tip}");
 
