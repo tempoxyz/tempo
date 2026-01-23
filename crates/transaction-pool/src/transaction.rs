@@ -281,6 +281,14 @@ pub enum TempoPoolTransactionError {
     /// Thrown when an expiring nonce transaction has a non-zero nonce.
     #[error("Expiring nonce transactions must have nonce == 0")]
     ExpiringNonceNonceNotZero,
+
+    /// Thrown when an access key has expired.
+    #[error("Access key expired: expiry {expiry} <= current time {current_time}")]
+    AccessKeyExpired { expiry: u64, current_time: u64 },
+
+    /// Thrown when a KeyAuthorization has expired.
+    #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
+    KeyAuthorizationExpired { expiry: u64, current_time: u64 },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -308,7 +316,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyTotalStorageKeys { .. }
             | Self::TooManyTokenLimits { .. }
             | Self::ExpiringNonceMissingValidBefore
-            | Self::ExpiringNonceNonceNotZero => true,
+            | Self::ExpiringNonceNonceNotZero
+            | Self::AccessKeyExpired { .. }
+            | Self::KeyAuthorizationExpired { .. } => true,
         }
     }
 
