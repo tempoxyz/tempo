@@ -262,6 +262,9 @@ where
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
+        // The remaining `shared_gas_limit` is reserved for validator subblocks.
+        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
         let general_gas_limit = chain_spec.general_gas_limit_at(
             attributes.timestamp(),
             block_gas_limit,
@@ -366,15 +369,17 @@ where
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
-            // ensure we still have capacity for this transaction (shared 500M pool)
-            if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
+            // Ensure we still have capacity for this transaction within the non-shared gas limit.
+            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+            // be consumed by proposer's pool transactions.
+            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        block_gas_limit - cumulative_gas_used,
+                        non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;
