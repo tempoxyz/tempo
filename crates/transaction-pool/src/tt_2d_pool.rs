@@ -781,7 +781,11 @@ impl AA2dPool {
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
-                    existing_tx.is_pending = false;
+                    // Update counters if tx was previously pending
+                    if std::mem::replace(&mut existing_tx.is_pending, false) {
+                        self.pending_count -= 1;
+                        self.queued_count += 1;
+                    }
                 }
             }
 
