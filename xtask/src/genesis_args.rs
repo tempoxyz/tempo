@@ -172,6 +172,7 @@ pub(crate) struct Validator {
     pub(crate) addr: SocketAddr,
     pub(crate) signing_key: SigningKey,
     pub(crate) signing_share: SigningShare,
+    pub(crate) fee_recipient: Address,
 }
 
 impl Validator {
@@ -313,10 +314,6 @@ impl GenesisArgs {
             "generating consensus config for validators: {:?}",
             self.validators
         );
-        let consensus_config =
-            generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis);
-
-        println!("Initializing validator config");
 
         let validator_onchain_addresses = if self.validator_addresses.is_empty() {
             if addresses.len() < self.validators.len() + 1 {
@@ -331,6 +328,12 @@ impl GenesisArgs {
 
             &self.validator_addresses[0..self.validators.len()]
         };
+
+        let consensus_config =
+            generate_consensus_config(&self.validators, self.seed, self.no_dkg_in_genesis, validator_onchain_addresses);
+
+        println!("Initializing validator config");
+        
         initialize_validator_config(
             validator_admin,
             &mut evm,
@@ -900,6 +903,7 @@ fn generate_consensus_config(
     validators: &[SocketAddr],
     seed: Option<u64>,
     no_dkg_in_genesis: bool,
+    fee_recipients: &[Address],
 ) -> Option<ConsensusConfig> {
     use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 
@@ -935,12 +939,14 @@ fn generate_consensus_config(
         .copied()
         .zip_eq(signer_keys)
         .zip_eq(shares)
-        .map(|((addr, signing_key), (verifying_key, signing_share))| {
+        .zip_eq(fee_recipients)
+        .map(|(((addr, signing_key), (verifying_key, signing_share)), fee_recipient)| {
             assert_eq!(signing_key.public_key(), verifying_key);
             Validator {
                 addr,
                 signing_key: SigningKey::from(signing_key),
                 signing_share: SigningShare::from(signing_share),
+                fee_recipient: *fee_recipient, 
             }
         })
         .collect();
