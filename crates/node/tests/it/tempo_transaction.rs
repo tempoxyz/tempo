@@ -6535,6 +6535,24 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     );
     println!("Transaction is in the mempool");
 
+    // Advance a block to ensure the maintenance task processes the new transaction event
+    // and updates fee payer tracking before we submit the blacklist transaction.
+    // The delayed tx won't be mined because valid_after is in the future.
+    let sync_payload = setup.node.advance_block().await?;
+    let sync_tip = sync_payload.block().inner.number;
+    setup
+        .node
+        .inner
+        .pool
+        .wait_for_maintenance_processed_tip(sync_tip, POOL_PROCESS_TIMEOUT)
+        .await?;
+
+    // Verify transaction is still in the pool (not mined because valid_after is future)
+    assert!(
+        setup.node.inner.pool.contains(&delayed_tx_hash),
+        "Delayed transaction should still be in the pool after sync block"
+    );
+
     // ========================================
     // STEP 3: Blacklist the root address (fee payer)
     // ========================================
