@@ -3940,12 +3940,24 @@ mod tests {
         let tx5 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(5).build();
         let tx5_hash = *tx5.hash();
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)), 3, TempoHardfork::T1)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)), 3, TempoHardfork::T1)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 3, TempoHardfork::T1)
-            .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx4, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
 
         // Verify initial state: all 3 txs pending, tx3 is independent
         let (pending, queued) = pool.pending_and_queued_txn_count();
@@ -4029,14 +4041,30 @@ mod tests {
         let tx8 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(8).build();
         let tx6_hash = *tx6.hash();
 
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)), 5, TempoHardfork::T1)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx6, TransactionOrigin::Local)), 5, TempoHardfork::T1)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx7, TransactionOrigin::Local)), 5, TempoHardfork::T1)
-            .unwrap();
-        pool.add_transaction(Arc::new(wrap_valid_tx(tx8, TransactionOrigin::Local)), 5, TempoHardfork::T1)
-            .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx5, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx6, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx7, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx8, TransactionOrigin::Local)),
+            5,
+            TempoHardfork::T1,
+        )
+        .unwrap();
 
         // Verify initial state: all 4 txs pending
         let (pending, queued) = pool.pending_and_queued_txn_count();
