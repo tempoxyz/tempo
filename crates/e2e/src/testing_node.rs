@@ -16,10 +16,10 @@ use reth_ethereum::{
 use reth_node_builder::NodeTypesWithDBAdapter;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tempo_commonware_node::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
-    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, PENDING_CHANNEL_IDENT, PENDING_LIMIT,
-    RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
-    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, consensus,
+    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
+    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
+    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+    consensus,
 };
 use tempo_node::node::TempoNode;
 use tracing::{debug, instrument};
@@ -223,16 +223,16 @@ where
             .await
             .expect("must be able to start the engine");
 
-        let pending = self
+        let votes = self
             .oracle
             .control(self.public_key.clone())
-            .register(PENDING_CHANNEL_IDENT, PENDING_LIMIT)
+            .register(VOTES_CHANNEL_IDENT, VOTES_LIMIT)
             .await
             .unwrap();
-        let recovered = self
+        let certificates = self
             .oracle
             .control(self.public_key.clone())
-            .register(RECOVERED_CHANNEL_IDENT, RECOVERED_LIMIT)
+            .register(CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT)
             .await
             .unwrap();
         let resolver = self
@@ -267,7 +267,13 @@ where
             .unwrap();
 
         let consensus_handle = engine.start(
-            pending, recovered, resolver, broadcast, marshal, dkg, subblocks,
+            votes,
+            certificates,
+            resolver,
+            broadcast,
+            marshal,
+            dkg,
+            subblocks,
         );
 
         self.consensus_handle = Some(consensus_handle);

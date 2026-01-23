@@ -42,15 +42,42 @@ hardfork!(
         /// Genesis hardfork
         Genesis,
         #[default]
-        /// T0 hardfork (default)
+        /// T0 hardfork (default until T1 activates on mainnet)
         T0,
+        /// T1 hardfork - adds expiring nonce transactions
+        T1,
     }
 );
 
 impl TempoHardfork {
     /// Returns true if this hardfork is T0 or later.
     pub fn is_t0(&self) -> bool {
-        matches!(self, Self::T0)
+        *self >= Self::T0
+    }
+
+    /// Returns true if this hardfork is T1 or later.
+    pub fn is_t1(&self) -> bool {
+        *self >= Self::T1
+    }
+
+    /// Returns the base fee for this hardfork.
+    /// - Pre-T1: 10 gwei
+    /// - T1+: 20 gwei (targets ~0.1 cent per TIP-20 transfer)
+    pub const fn base_fee(&self) -> u64 {
+        match self {
+            Self::T1 => crate::spec::TEMPO_T1_BASE_FEE,
+            Self::T0 | Self::Genesis => crate::spec::TEMPO_T0_BASE_FEE,
+        }
+    }
+
+    /// Returns the fixed general gas limit for T1+, or None for pre-T1.
+    /// - T1+: 30M gas (fixed)
+    /// - Pre-T1: None
+    pub const fn general_gas_limit(&self) -> Option<u64> {
+        match self {
+            Self::T1 => Some(30_000_000),
+            Self::T0 | Self::Genesis => None,
+        }
     }
 }
 
@@ -61,6 +88,9 @@ pub trait TempoHardforks: EthereumHardforks {
 
     /// Retrieves the Tempo hardfork active at a given timestamp.
     fn tempo_hardfork_at(&self, timestamp: u64) -> TempoHardfork {
+        if self.is_t1_active_at_timestamp(timestamp) {
+            return TempoHardfork::T1;
+        }
         if self.is_t0_active_at_timestamp(timestamp) {
             return TempoHardfork::T0;
         }
@@ -72,6 +102,21 @@ pub trait TempoHardforks: EthereumHardforks {
         self.tempo_fork_activation(TempoHardfork::T0)
             .active_at_timestamp(timestamp)
     }
+
+    /// Returns true if T1 is active at the given timestamp.
+    fn is_t1_active_at_timestamp(&self, timestamp: u64) -> bool {
+        self.tempo_fork_activation(TempoHardfork::T1)
+            .active_at_timestamp(timestamp)
+    }
+
+    /// Returns the general (non-payment) gas limit for the given timestamp and block parameters.
+    /// - T1+: fixed at 30M gas
+    /// - Pre-T1: calculated as (gas_limit - shared_gas_limit) / 2
+    fn general_gas_limit_at(&self, timestamp: u64, gas_limit: u64, shared_gas_limit: u64) -> u64 {
+        self.tempo_hardfork_at(timestamp)
+            .general_gas_limit()
+            .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
+    }
 }
 
 impl From<TempoHardfork> for SpecId {
@@ -80,9 +125,17 @@ impl From<TempoHardfork> for SpecId {
     }
 }
 
+impl From<&TempoHardfork> for SpecId {
+    fn from(value: &TempoHardfork) -> Self {
+        Self::from(*value)
+    }
+}
+
 impl From<SpecId> for TempoHardfork {
     fn from(spec: SpecId) -> Self {
-        if spec.is_enabled_in(SpecId::from(Self::T0)) {
+        if spec.is_enabled_in(SpecId::from(Self::T1)) {
+            Self::T1
+        } else if spec.is_enabled_in(SpecId::from(Self::T0)) {
             Self::T0
         } else {
             Self::Genesis
@@ -96,21 +149,30 @@ mod tests {
     use reth_chainspec::Hardfork;
 
     #[test]
-    fn test_genesis_hardfork_name() {
-        let fork = TempoHardfork::Genesis;
-        assert_eq!(fork.name(), "Genesis");
-    }
-
-    #[test]
-    fn test_t0_hardfork_name() {
-        let fork = TempoHardfork::T0;
-        assert_eq!(fork.name(), "T0");
+    fn test_hardfork_name() {
+        assert_eq!(TempoHardfork::Genesis.name(), "Genesis");
+        assert_eq!(TempoHardfork::T0.name(), "T0");
+        assert_eq!(TempoHardfork::T1.name(), "T1");
     }
 
     #[test]
     fn test_is_t0() {
         assert!(!TempoHardfork::Genesis.is_t0());
         assert!(TempoHardfork::T0.is_t0());
+        assert!(TempoHardfork::T1.is_t0());
+    }
+
+    #[test]
+    fn test_is_t1() {
+        assert!(!TempoHardfork::Genesis.is_t1());
+        assert!(!TempoHardfork::T0.is_t1());
+        assert!(TempoHardfork::T1.is_t1());
+    }
+
+    #[test]
+    fn test_t1_hardfork_name() {
+        let fork = TempoHardfork::T1;
+        assert_eq!(fork.name(), "T1");
     }
 
     #[test]

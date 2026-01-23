@@ -2,7 +2,8 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::{EvmInternals, EvmInternalsError};
 use revm::{
     context::{Block, CfgEnv},
-    primitives::hardfork::SpecId,
+    context_interface::cfg::{GasParams, gas},
+    interpreter::instructions::WARM_STORAGE_READ_COST,
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -11,12 +12,12 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 
 pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
-    chain_id: u64,
     gas_remaining: u64,
     gas_refunded: i64,
     gas_limit: u64,
     spec: TempoHardfork,
     is_static: bool,
+    gas_params: GasParams,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -24,37 +25,45 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
-        chain_id: u64,
         spec: TempoHardfork,
         is_static: bool,
+        gas_params: GasParams,
     ) -> Self {
         Self {
             internals,
-            chain_id,
             gas_remaining: gas_limit,
             gas_refunded: 0,
             gas_limit,
             spec,
             is_static,
+            gas_params,
         }
     }
 
     /// Create a new storage provider with maximum gas limit and non static context
     pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
-        Self::new(internals, u64::MAX, cfg.chain_id, cfg.spec, false)
+        Self::new(internals, u64::MAX, cfg.spec, false, cfg.gas_params.clone())
     }
 
-    /// Ensures that an account is loaded.
-    pub fn ensure_loaded_account(&mut self, account: Address) -> Result<(), EvmInternalsError> {
-        self.internals.load_account(account)?;
-        self.internals.touch_account(account);
-        Ok(())
+    /// Create a new storage provider with a specific gas limit.
+    pub fn new_with_gas_limit(
+        internals: EvmInternals<'a>,
+        cfg: &CfgEnv<TempoHardfork>,
+        gas_limit: u64,
+    ) -> Self {
+        Self::new(
+            internals,
+            gas_limit,
+            cfg.spec,
+            false,
+            cfg.gas_params.clone(),
+        )
     }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     fn chain_id(&self) -> u64 {
-        self.chain_id
+        self.internals.chain_id()
     }
 
     fn timestamp(&self) -> U256 {
@@ -67,10 +76,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
-        self.deduct_gas(code.len() as u64 * revm::interpreter::gas::CODEDEPOSIT)?;
+        self.deduct_gas(self.gas_params.code_deposit_cost(code.len()))?;
 
-        self.internals.set_code(address, code);
+        self.internals
+            .load_account_mut(address)?
+            .set_code_and_hash_slow(code);
 
         Ok(())
     }
@@ -81,15 +91,23 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let account = self.internals.load_account_code(address)?.map(|a| &a.info);
+        let additional_cost = self.gas_params.cold_account_additional_cost();
 
-        // deduct gas
-        self.gas_remaining = self
-            .gas_remaining
-            .checked_sub(revm::interpreter::gas::warm_cold_cost(account.is_cold))
-            .ok_or(TempoPrecompileError::OutOfGas)?;
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, false)?;
 
-        f(account.data);
+        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
+        deduct_gas(&mut self.gas_remaining, WARM_STORAGE_READ_COST)?;
+
+        // dynamic gas
+        if account.is_cold {
+            deduct_gas(&mut self.gas_remaining, additional_cost)?;
+        }
+
+        account.load_code()?;
+
+        f(&account.data.account().info);
         Ok(())
     }
 
@@ -100,20 +118,22 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
-        let result = self.internals.sstore(address, key, value)?;
+        let result = self
+            .internals
+            .load_account_mut(address)?
+            .sstore(key, value, false)?;
 
-        self.deduct_gas(revm::interpreter::gas::sstore_cost(
-            SpecId::AMSTERDAM,
-            &result.data,
-            result.is_cold,
-        ))?;
+        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
+        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+
+        // dynamic gas
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
 
         // refund gas.
-        self.refund_gas(revm::interpreter::gas::sstore_refund(
-            SpecId::AMSTERDAM,
-            &result.data,
-        ));
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
 
         Ok(())
     }
@@ -125,8 +145,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
-
+        // Static gas is not part of gas_params yet.
+        self.deduct_gas(WARM_STORAGE_READ_COST)?;
         self.internals.tstore(address, key, value);
         Ok(())
     }
@@ -134,8 +154,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
-            revm::interpreter::gas::log_cost(event.topics().len() as u8, event.data.len() as u64)
-                .unwrap_or(u64::MAX),
+            gas::LOG
+                + self
+                    .gas_params
+                    .log_cost(event.topics().len() as u8, event.data.len() as u64),
         )?;
 
         self.internals.log(Log {
@@ -148,20 +170,31 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.ensure_loaded_account(address)?;
-        let val = self.internals.sload(address, key)?;
+        let additional_cost = self.gas_params.cold_storage_additional_cost();
 
-        self.deduct_gas(revm::interpreter::gas::sload_cost(
-            SpecId::AMSTERDAM,
-            val.is_cold,
-        ))?;
+        let value;
+        let is_cold;
+        {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, false)?;
 
-        Ok(val.data)
+            value = val.present_value;
+            is_cold = val.is_cold;
+        };
+
+        // TODO(rakita) can be moved to the beginning of the function. Requires fork.
+        self.deduct_gas(WARM_STORAGE_READ_COST)?;
+
+        if is_cold {
+            self.deduct_gas(additional_cost)?;
+        }
+
+        Ok(value)
     }
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(revm::interpreter::gas::WARM_STORAGE_READ_COST)?;
+        self.deduct_gas(WARM_STORAGE_READ_COST)?;
 
         Ok(self.internals.tload(address, key))
     }
@@ -207,6 +240,14 @@ impl From<EvmInternalsError> for TempoPrecompileError {
     }
 }
 
+/// Deducts gas from the remaining gas and returns an error if insufficient.
+#[inline]
+pub fn deduct_gas(gas: &mut u64, additional_cost: u64) -> Result<(), TempoPrecompileError> {
+    *gas = gas
+        .checked_sub(additional_cost)
+        .ok_or(TempoPrecompileError::OutOfGas)?;
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +264,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let addr = Address::random();
@@ -243,7 +285,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let addr = Address::random();
@@ -264,7 +307,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("3000000000000000000000000000000000000003");
@@ -288,7 +332,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("4000000000000000000000000000000000000004");
@@ -310,7 +355,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("5000000000000000000000000000000000000005");
@@ -338,7 +384,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("6000000000000000000000000000000000000006");
@@ -362,7 +409,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address1 = address!("7000000000000000000000000000000000000001");
@@ -388,7 +436,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("8000000000000000000000000000000000000001");
@@ -416,7 +465,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("9000000000000000000000000000000000000001");
@@ -440,7 +490,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address1 = address!("a000000000000000000000000000000000000001");
@@ -466,7 +517,8 @@ mod tests {
         let db = CacheDB::new(EmptyDB::new());
         let mut evm = TempoEvmFactory::default().create_evm(db, EvmEnv::default());
         let ctx = evm.ctx_mut();
-        let evm_internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block);
+        let evm_internals =
+            EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
         let mut provider = EvmPrecompileStorageProvider::new_max_gas(evm_internals, &ctx.cfg);
 
         let address = address!("b000000000000000000000000000000000000001");

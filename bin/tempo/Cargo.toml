@@ -22,11 +22,24 @@ tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-faucet.workspace = true
 
+alloy-consensus.workspace = true
+alloy-primitives.workspace = true
+alloy-provider = { workspace = true, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-rpc-types-eth.workspace = true
+alloy-sol-types.workspace = true
+commonware-codec.workspace = true
+commonware-consensus.workspace = true
 commonware-cryptography.workspace = true
 commonware-math.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+commonware-utils.workspace = true
 futures = { workspace = true, features = ["executor"] }
 rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempo-alloy.workspace = true
+tempo-contracts.workspace = true
+tempo-dkg-onchain-artifacts.workspace = true
 reth-cli-commands.workspace = true
 reth-cli-runner.workspace = true
 reth-cli-util.workspace = true
@@ -50,6 +63,8 @@ path = "src/main.rs"
 default = ["asm-keccak", "jemalloc"]
 
 asm-keccak = [
+	"alloy-primitives/asm-keccak",
+	"tempo-alloy/asm-keccak",
 	"tempo-node/asm-keccak",
 	"reth-ethereum-cli/asm-keccak"
 ]

@@ -42,8 +42,8 @@ use std::{
     },
     time::Instant,
 };
-use tempo_chainspec::TempoChainSpec;
-use tempo_consensus::{TEMPO_GENERAL_GAS_DIVISOR, TEMPO_SHARED_GAS_DIVISOR};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes};
 use tempo_payload_types::TempoPayloadBuilderAttributes;
 use tempo_primitives::{
@@ -262,8 +262,11 @@ where
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
-        let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
-        let general_gas_limit = non_shared_gas_limit / TEMPO_GENERAL_GAS_DIVISOR;
+        let general_gas_limit = chain_spec.general_gas_limit_at(
+            attributes.timestamp(),
+            block_gas_limit,
+            shared_gas_limit,
+        );
 
         let mut cumulative_gas_used = 0;
         let mut non_payment_gas_used = 0;
@@ -363,15 +366,15 @@ where
 
         let execution_start = Instant::now();
         while let Some(pool_tx) = best_txs.next() {
-            // ensure we still have capacity for this transaction
-            if cumulative_gas_used + pool_tx.gas_limit() > non_shared_gas_limit {
+            // ensure we still have capacity for this transaction (shared 500M pool)
+            if cumulative_gas_used + pool_tx.gas_limit() > block_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
                     &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
+                        block_gas_limit - cumulative_gas_used,
                     ),
                 );
                 continue;

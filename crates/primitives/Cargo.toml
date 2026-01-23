@@ -18,6 +18,9 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-codecs = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 
+# revm
+revm.workspace = true
+
 # Alloy
 alloy-consensus = { workspace = true, features = ["secp256k1", "k256"] }
 alloy-eips.workspace = true
@@ -53,10 +56,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = ["reth", "serde", "reth-codec", "serde-bincode-compat", "rpc"]
-reth = [
-	"dep:reth-ethereum-primitives",
-	"dep:reth-primitives-traits",
-]
+reth = ["dep:reth-ethereum-primitives", "dep:reth-primitives-traits"]
 serde = [
 	"dep:alloy-serde",
 	"alloy-consensus/serde",
@@ -67,7 +67,8 @@ serde = [
 	"reth-codecs?/serde",
 	"rand/serde",
 	"p256/serde",
-	"tracing-subscriber/serde"
+	"tracing-subscriber/serde",
+	"revm/serde",
 ]
 reth-codec = [
 	"reth",
@@ -100,6 +101,7 @@ arbitrary = [
 	"reth-primitives-traits?/arbitrary",
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
+	"revm/arbitrary",
 ]
 rpc = [
 	"reth",

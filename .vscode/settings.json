@@ -36,5 +36,8 @@
     "**/ph.js": "plaintext",
     "**/.env": "dotenv",
     "**/.env.*": "dotenv"
+	},
+	"[rust]": {
+		"editor.defaultFormatter": "rust-lang.rust-analyzer"
 	}
 }

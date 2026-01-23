@@ -37,8 +37,11 @@ impl SigningKey {
         Ok(Self { inner })
     }
 
-    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), SigningKeyError> {
-        std::fs::write(path, self.to_string()).map_err(SigningKeyErrorKind::Write)?;
+    /// Writes the signing key to `writer`.
+    pub fn to_writer<W: std::io::Write>(&self, mut writer: W) -> Result<(), SigningKeyError> {
+        writer
+            .write_all(self.to_string().as_bytes())
+            .map_err(SigningKeyErrorKind::Write)?;
         Ok(())
     }
 

@@ -87,6 +87,18 @@ pub enum TempoInvalidTransaction {
     #[error("nonce manager error: {0}")]
     NonceManagerError(String),
 
+    /// Expiring nonce transaction missing tempo_tx_env.
+    #[error("expiring nonce transaction requires tempo_tx_env")]
+    ExpiringNonceMissingTxEnv,
+
+    /// Expiring nonce transaction missing valid_before.
+    #[error("expiring nonce transaction requires valid_before to be set")]
+    ExpiringNonceMissingValidBefore,
+
+    /// Expiring nonce transaction must have nonce == 0.
+    #[error("expiring nonce transaction must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
+
     /// Subblock transaction must have zero fee.
     #[error("subblock transaction must have zero fee")]
     SubblockTransactionMustHaveZeroFee,

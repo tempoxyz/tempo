@@ -14,18 +14,28 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use revm::context_interface::cfg::GasId;
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
+    nonce::NonceManager,
 };
 use tempo_primitives::{
     subblock::has_sub_block_nonce_key_prefix,
-    transaction::{RecoveredTempoAuthorization, TempoTransaction},
+    transaction::{
+        RecoveredTempoAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TempoTransaction,
+    },
 };
 use tempo_revm::{
     EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
     calculate_aa_batch_intrinsic_gas,
+    gas_params::{TempoGasParams, tempo_gas_params},
+    handler::EXPIRING_NONCE_GAS,
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -33,6 +43,24 @@ const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
 
 /// Default maximum number of authorizations allowed in an AA transaction's authorization list.
 pub const DEFAULT_MAX_TEMPO_AUTHORIZATIONS: usize = 16;
+
+/// Maximum number of calls allowed per AA transaction (DoS protection).
+pub const MAX_AA_CALLS: usize = 32;
+
+/// Maximum size of input data per call in bytes (128KB, DoS protection).
+pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
+
+/// Maximum number of accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_ACCOUNTS: usize = 256;
+
+/// Maximum number of storage keys per account in the access list (DoS protection).
+pub const MAX_STORAGE_KEYS_PER_ACCOUNT: usize = 256;
+
+/// Maximum total number of storage keys across all accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
+
+/// Maximum number of token limits in a KeyAuthorization (DoS protection).
+pub const MAX_TOKEN_LIMITS: usize = 256;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -189,16 +217,42 @@ where
         &self,
         tx: &TempoTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
+        let current_time = self.inner.fork_tracker().tip_timestamp();
+
+        // Check if T1 is active for expiring nonce specific validations
+        let spec = self.inner.chain_spec().tempo_hardfork_at(current_time);
+        let is_expiring_nonce = tx.is_expiring_nonce_tx() && spec.is_t1();
+
+        // Expiring nonce transactions MUST have valid_before set
+        if is_expiring_nonce && tx.valid_before.is_none() {
+            return Err(TempoPoolTransactionError::ExpiringNonceMissingValidBefore);
+        }
+
+        // Expiring nonce transactions MUST have nonce == 0
+        if is_expiring_nonce && tx.nonce != 0 {
+            return Err(TempoPoolTransactionError::ExpiringNonceNonceNotZero);
+        }
+
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         if let Some(valid_before) = tx.valid_before {
             // Uses tip_timestamp, as if the node is lagging lagging, the maintenance task will evict expired txs.
-            let current_time = self.inner.fork_tracker().tip_timestamp();
             let min_allowed = current_time.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if valid_before <= min_allowed {
                 return Err(TempoPoolTransactionError::InvalidValidBefore {
                     valid_before,
                     min_allowed,
                 });
+            }
+
+            // For expiring nonce transactions, valid_before must also be within the max expiry window
+            if is_expiring_nonce {
+                let max_allowed = current_time.saturating_add(TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                if valid_before > max_allowed {
+                    return Err(TempoPoolTransactionError::ExpiringNonceValidBeforeTooFar {
+                        valid_before,
+                        max_allowed,
+                    });
+                }
             }
         }
 
@@ -237,6 +291,7 @@ where
     fn ensure_aa_intrinsic_gas(
         &self,
         transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
     ) -> Result<(), TempoPoolTransactionError> {
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
@@ -259,17 +314,30 @@ where
             subblock_transaction: tx.subblock_proposer().is_some(),
             key_authorization: tx.key_authorization.clone(),
             signature_hash: aa_tx.signature_hash(),
+            tx_hash: *aa_tx.hash(),
             override_key_id: None,
         };
 
         // Calculate the intrinsic gas for the AA transaction
+        let gas_params = tempo_gas_params(spec);
+
         let mut init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
+            calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
-        // Add 2D nonce gas if nonce_key is non-zero
+        // Add nonce gas based on hardfork
         // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-        if !tx.nonce_key.is_zero() {
+        if spec.is_t1() {
+            // Expiring nonce transactions
+            if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;
+            } else if tx.nonce == 0 {
+                // TIP-1000: Storage pricing updates for launch
+                // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+        } else if !tx.nonce_key.is_zero() {
+            // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
             if tx.nonce == 0 {
                 // New key - cold SLOAD + SSTORE set (0 -> non-zero)
                 init_and_floor_gas.initial_gas += NEW_NONCE_KEY_GAS;
@@ -304,12 +372,94 @@ where
         Ok(())
     }
 
+    /// Validates AA transaction field limits (calls, access list, token limits).
+    ///
+    /// These limits are enforced at the pool level rather than RLP decoding to:
+    /// - Keep the core transaction format flexible
+    /// - Allow peer penalization for sending bad transactions
+    fn ensure_aa_field_limits(
+        &self,
+        transaction: &TempoPooledTransaction,
+    ) -> Result<(), TempoPoolTransactionError> {
+        let Some(aa_tx) = transaction.inner().as_aa() else {
+            return Ok(());
+        };
+
+        let tx = aa_tx.tx();
+
+        // Check number of calls
+        if tx.calls.len() > MAX_AA_CALLS {
+            return Err(TempoPoolTransactionError::TooManyCalls {
+                count: tx.calls.len(),
+                max_allowed: MAX_AA_CALLS,
+            });
+        }
+
+        // Check each call's input size
+        for (idx, call) in tx.calls.iter().enumerate() {
+            if call.input.len() > MAX_CALL_INPUT_SIZE {
+                return Err(TempoPoolTransactionError::CallInputTooLarge {
+                    call_index: idx,
+                    size: call.input.len(),
+                    max_allowed: MAX_CALL_INPUT_SIZE,
+                });
+            }
+        }
+
+        // Check access list accounts
+        if tx.access_list.len() > MAX_ACCESS_LIST_ACCOUNTS {
+            return Err(TempoPoolTransactionError::TooManyAccessListAccounts {
+                count: tx.access_list.len(),
+                max_allowed: MAX_ACCESS_LIST_ACCOUNTS,
+            });
+        }
+
+        // Check storage keys per account and total
+        let mut total_storage_keys = 0usize;
+        for (idx, entry) in tx.access_list.iter().enumerate() {
+            if entry.storage_keys.len() > MAX_STORAGE_KEYS_PER_ACCOUNT {
+                return Err(TempoPoolTransactionError::TooManyStorageKeysPerAccount {
+                    account_index: idx,
+                    count: entry.storage_keys.len(),
+                    max_allowed: MAX_STORAGE_KEYS_PER_ACCOUNT,
+                });
+            }
+            total_storage_keys = total_storage_keys.saturating_add(entry.storage_keys.len());
+        }
+
+        if total_storage_keys > MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL {
+            return Err(TempoPoolTransactionError::TooManyTotalStorageKeys {
+                count: total_storage_keys,
+                max_allowed: MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL,
+            });
+        }
+
+        // Check token limits in key_authorization
+        if let Some(ref key_auth) = tx.key_authorization
+            && let Some(ref limits) = key_auth.limits
+            && limits.len() > MAX_TOKEN_LIMITS
+        {
+            return Err(TempoPoolTransactionError::TooManyTokenLimits {
+                count: limits.len(),
+                max_allowed: MAX_TOKEN_LIMITS,
+            });
+        }
+
+        Ok(())
+    }
+
     fn validate_one(
         &self,
         origin: TransactionOrigin,
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Get the current hardfork based on tip timestamp
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
             return TransactionValidationOutcome::Error(
@@ -364,7 +514,16 @@ where
         // This ensures the gas limit covers all AA-specific costs (per-call overhead,
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
+            return TransactionValidationOutcome::Invalid(
+                transaction,
+                InvalidPoolTransactionError::other(err),
+            );
+        }
+
+        // Validate AA transaction field limits (calls, access list, token limits).
+        // This prevents DoS attacks via oversized transactions.
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -377,11 +536,6 @@ where
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
-
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
@@ -398,6 +552,23 @@ where
                         transaction,
                         InvalidPoolTransactionError::other(
                             TempoPoolTransactionError::InvalidFeeToken(fee_token),
+                        ),
+                    );
+                }
+            }
+            Err(err) => {
+                return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+            }
+        }
+
+        // Ensure that fee token is not paused.
+        match state_provider.is_fee_token_paused(spec, fee_token) {
+            Ok(paused) => {
+                if paused {
+                    return TransactionValidationOutcome::Invalid(
+                        transaction,
+                        InvalidPoolTransactionError::other(
+                            TempoPoolTransactionError::PausedFeeToken(fee_token),
                         ),
                     );
                 }
@@ -468,6 +639,11 @@ where
             }
         }
 
+        // validate intrinsic gas with additional TIP-1000 and T1 checks
+        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        }
+
         match self
             .inner
             .validate_one_with_state_provider(origin, transaction, &state_provider)
@@ -480,8 +656,7 @@ where
                 propagate,
                 authorities,
             } => {
-                // Additional 2D nonce validations
-                // Check for 2D nonce validation (nonce_key > 0)
+                // Additional nonce validations for non-protocol nonce keys
                 if let Some(nonce_key) = transaction.transaction().nonce_key()
                     && !nonce_key.is_zero()
                 {
@@ -495,29 +670,64 @@ where
                         );
                     }
 
-                    // This is a 2D nonce transaction - validate against 2D nonce
-                    state_nonce = match state_provider.storage(
-                        NONCE_PRECOMPILE_ADDRESS,
-                        transaction.transaction().nonce_key_slot().unwrap().into(),
-                    ) {
-                        Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
-                        Err(err) => {
-                            return TransactionValidationOutcome::Error(
-                                *transaction.hash(),
-                                Box::new(err),
+                    // Check if T1 hardfork is active for expiring nonce handling
+                    let current_time = self.inner.fork_tracker().tip_timestamp();
+                    let is_t1_active = self
+                        .inner
+                        .chain_spec()
+                        .is_t1_active_at_timestamp(current_time);
+
+                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                        // Expiring nonce transaction - check if tx hash is already seen
+                        let tx_hash = *transaction.hash();
+                        let seen_slot = NonceManager::new().expiring_seen_slot(tx_hash);
+
+                        let seen_expiry: u64 = match state_provider
+                            .storage(NONCE_PRECOMPILE_ADDRESS, seen_slot.into())
+                        {
+                            Ok(val) => val.unwrap_or_default().saturating_to(),
+                            Err(err) => {
+                                return TransactionValidationOutcome::Error(tx_hash, Box::new(err));
+                            }
+                        };
+
+                        // If expiry is non-zero and in the future, tx hash is still valid (replay).
+                        // Note: This is also enforced at the protocol level in handler.rs via
+                        // `check_and_mark_expiring_nonce`, so even if a tx bypasses pool validation
+                        // (e.g., injected directly into a block), execution will still reject it.
+                        if seen_expiry != 0 && seen_expiry > current_time {
+                            return TransactionValidationOutcome::Invalid(
+                                transaction.into_transaction(),
+                                InvalidPoolTransactionError::other(
+                                    TempoPoolTransactionError::ExpiringNonceReplay,
+                                ),
                             );
                         }
-                    };
-                    let tx_nonce = transaction.nonce();
-                    if tx_nonce < state_nonce {
-                        return TransactionValidationOutcome::Invalid(
-                            transaction.into_transaction(),
-                            InvalidTransactionError::NonceNotConsistent {
-                                tx: tx_nonce,
-                                state: state_nonce,
+                    } else {
+                        // This is a 2D nonce transaction - validate against 2D nonce
+                        state_nonce = match state_provider.storage(
+                            NONCE_PRECOMPILE_ADDRESS,
+                            transaction.transaction().nonce_key_slot().unwrap().into(),
+                        ) {
+                            Ok(nonce) => nonce.unwrap_or_default().saturating_to(),
+                            Err(err) => {
+                                return TransactionValidationOutcome::Error(
+                                    *transaction.hash(),
+                                    Box::new(err),
+                                );
                             }
-                            .into(),
-                        );
+                        };
+                        let tx_nonce = transaction.nonce();
+                        if tx_nonce < state_nonce {
+                            return TransactionValidationOutcome::Invalid(
+                                transaction.into_transaction(),
+                                InvalidTransactionError::NonceNotConsistent {
+                                    tx: tx_nonce,
+                                    state: state_nonce,
+                                }
+                                .into(),
+                            );
+                        }
                     }
                 }
 
@@ -535,6 +745,46 @@ where
             }
             outcome => outcome,
         }
+    }
+}
+
+/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+pub fn ensure_intrinsic_gas_tempo_tx(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+) -> Result<(), InvalidPoolTransactionError> {
+    let gas_params = tempo_gas_params(spec);
+
+    let mut gas = gas_params.initial_tx_gas(
+        tx.input(),
+        tx.is_create(),
+        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+        tx.access_list()
+            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+            .unwrap_or_default() as u64,
+        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
+    );
+
+    // TIP-1000: Storage pricing updates for launch
+    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // no need for v1 fork check as gas_params would be zero
+    for auth in tx.authorization_list().unwrap_or_default() {
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
+    }
+
+    // TIP-1000: Storage pricing updates for launch
+    // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+    if spec.is_t1() && tx.nonce() == 0 {
+        gas.initial_gas += gas_params.get(GasId::new_account_cost());
+    }
+
+    let gas_limit = tx.gas_limit();
+    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+    } else {
+        Ok(())
     }
 }
 
@@ -631,6 +881,7 @@ mod tests {
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
     use tempo_primitives::TempoTxEnvelope;
+    use tempo_revm::TempoStateAccess;
 
     /// Helper to create a mock sealed block with the given timestamp.
     fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
@@ -1013,8 +1264,8 @@ mod tests {
             ),
         }
 
-        // Test 2: 100k gas should pass intrinsic gas check
-        let tx_high_gas = create_aa_tx(100_000);
+        // Test 2: 1M gas should pass intrinsic gas check
+        let tx_high_gas = create_aa_tx(1_000_000);
         let validator = setup_validator(&tx_high_gas, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_high_gas)
@@ -1165,7 +1416,7 @@ mod tests {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 2_000_000_000,
-                gas_limit: 100_000,
+                gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                     value: U256::ZERO,
@@ -1627,7 +1878,7 @@ mod tests {
                 chain_id: 42431,
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 2_000_000_000,
-                gas_limit: 100_000,
+                gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                     value: U256::ZERO,
@@ -1736,7 +1987,7 @@ mod tests {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                 value: U256::ZERO,
@@ -1814,5 +2065,90 @@ mod tests {
                 "Should not fail with TooManyAuthorizations at the limit, got: {error_msg}"
             );
         }
+    }
+
+    /// Paused tokens should be rejected as invalid fee tokens.
+    #[test]
+    fn test_paused_token_is_invalid_fee_token() {
+        let fee_token = address!("20C0000000000000000000000000000000000001");
+
+        // "USD" = 0x555344, stored in high bytes with length 6 (3*2) in LSB
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+
+        let provider =
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(
+            fee_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (tip20_slots::PAUSED.into(), U256::from(1)),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let spec = provider.chain_spec().tempo_hardfork_at(0);
+
+        // Test that is_fee_token_paused returns true for paused tokens
+        let result = state.is_fee_token_paused(spec, fee_token);
+        assert!(result.is_ok());
+        assert!(
+            result.unwrap(),
+            "Paused tokens should be detected as paused"
+        );
+    }
+
+    /// Paused validator tokens should be rejected even though they would bypass the liquidity check.
+    #[test]
+    fn test_paused_validator_token_rejected_before_liquidity_bypass() {
+        // Use a TIP20-prefixed address for the fee token
+        let paused_validator_token = address!("20C0000000000000000000000000000000000001");
+
+        // "USD" = 0x555344, stored in high bytes with length 6 (3*2) in LSB
+        let usd_currency_value =
+            uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
+
+        let provider =
+            MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+
+        // Set up the token as a valid USD token but PAUSED
+        provider.add_account(
+            paused_validator_token,
+            ExtendedAccount::new(0, U256::ZERO).extend_storage([
+                (tip20_slots::CURRENCY.into(), usd_currency_value),
+                (tip20_slots::PAUSED.into(), U256::from(1)),
+            ]),
+        );
+
+        let mut state = provider.latest().unwrap();
+        let spec = provider.chain_spec().tempo_hardfork_at(0);
+
+        // Create AMM cache with the paused token in unique_tokens (simulating a validator's
+        // preferred token). This would normally cause has_enough_liquidity() to return true
+        // immediately at the bypass check.
+        let amm_cache = AmmLiquidityCache::with_unique_tokens(vec![paused_validator_token]);
+
+        // Verify the bypass would apply: the token IS in unique_tokens
+        assert!(
+            amm_cache.contains_unique_token(&paused_validator_token),
+            "Token should be in unique_tokens for this test"
+        );
+
+        // Verify has_enough_liquidity would bypass (return true) for this token
+        // because it matches a validator token. This confirms the vulnerability we're testing.
+        let liquidity_result =
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
+        assert!(
+            liquidity_result.is_ok() && liquidity_result.unwrap(),
+            "Token in unique_tokens should bypass liquidity check and return true"
+        );
+
+        // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
+        let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
+        assert!(is_paused.is_ok());
+        assert!(
+            is_paused.unwrap(),
+            "Paused validator token should be detected by is_fee_token_paused BEFORE reaching has_enough_liquidity"
+        );
     }
 }
