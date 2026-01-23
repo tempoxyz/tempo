@@ -6651,8 +6651,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         .expect("Receipt should have status");
     assert_eq!(
         status, "0x1",
-        "Blacklist transaction should have succeeded, but got status: {}",
-        status
+        "Blacklist transaction should have succeeded, but got status: {status}"
     );
 
     // Check how many logs the blacklist transaction emitted
@@ -6666,7 +6665,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .get("address")
             .and_then(|a| a.as_str())
             .unwrap_or("unknown");
-        println!("  Log {}: address = {}", i, addr);
+        println!("  Log {i}: address = {addr}");
     }
 
     println!("Fee payer blacklisted in block {new_tip}");
