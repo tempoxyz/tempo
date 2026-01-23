@@ -307,7 +307,6 @@ where
                 };
 
                 let tip = &new;
-                #[cfg(feature = "test-utils")]
                 let tip_number = tip.tip().header().number();
 
                 debug!(
