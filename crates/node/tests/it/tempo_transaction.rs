@@ -6535,27 +6535,26 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     );
     println!("Transaction is in the mempool");
 
-    // Yield to the tokio runtime to allow the maintenance task to process the new
-    // transaction event before we proceed. This helps avoid race conditions where
-    // the chain event is processed before the transaction is tracked.
-    tokio::task::yield_now().await;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // Advance a block to ensure the maintenance task processes pending events.
-    // The delayed tx won't be mined because valid_after is in the future.
-    let sync_payload = setup.node.advance_block().await?;
-    let sync_tip = sync_payload.block().inner.number;
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(sync_tip, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Advance multiple blocks to give the maintenance task time to process
+    // the new transaction event. The tokio::select! in the maintenance loop
+    // may process chain events before new_tx events, so we need to ensure
+    // multiple iterations have occurred to guarantee the transaction is tracked.
+    for i in 1..=3 {
+        let sync_payload = setup.node.advance_block().await?;
+        let sync_tip = sync_payload.block().inner.number;
+        setup
+            .node
+            .inner
+            .pool
+            .wait_for_maintenance_processed_tip(sync_tip, POOL_PROCESS_TIMEOUT)
+            .await?;
+        println!("Sync block {i} processed (tip: {sync_tip})");
+    }
 
     // Verify transaction is still in the pool (not mined because valid_after is future)
     assert!(
         setup.node.inner.pool.contains(&delayed_tx_hash),
-        "Delayed transaction should still be in the pool after sync block"
+        "Delayed transaction should still be in the pool after sync blocks"
     );
 
     // ========================================
