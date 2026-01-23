@@ -6405,7 +6405,6 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 /// This tests the fix for CHAIN-443 - DoS via TIP403 blacklist TOCTOU vulnerability.
 #[tokio::test]
 async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<()> {
-    use alloy::sol_types::SolEvent;
     use tempo_contracts::precompiles::ITIP403Registry;
     use tempo_precompiles::TIP403_REGISTRY_ADDRESS;
 
@@ -6428,24 +6427,46 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // ========================================
     println!("\n=== STEP 1: Create a blacklist policy ===");
 
-    let registry = ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, &provider);
+    // Build and submit the createPolicy transaction as an AA transaction
+    // (using manual block advancement instead of waiting for auto-mining)
+    let nonce = provider.get_transaction_count(root_addr).await?;
 
-    let policy_receipt = registry
-        .createPolicy(root_addr, ITIP403Registry::PolicyType::BLACKLIST)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(300_000)
-        .send()
-        .await?
-        .get_receipt()
+    let create_policy_call = ITIP403Registry::createPolicyCall {
+        admin: root_addr,
+        policyType: ITIP403Registry::PolicyType::BLACKLIST,
+    };
+
+    let create_policy_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: TIP403_REGISTRY_ADDRESS.into(),
+            value: U256::ZERO,
+            input: create_policy_call.abi_encode().into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+
+    let signature = root_signer.sign_hash_sync(&create_policy_tx.signature_hash())?;
+    let create_policy_envelope: TempoTxEnvelope =
+        create_policy_tx.into_signed(signature.into()).into();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(create_policy_envelope.encoded_2718().into())
         .await?;
 
-    let policy_id = policy_receipt
-        .logs()
-        .iter()
-        .filter_map(|log| ITIP403Registry::PolicyCreated::decode_log(&log.inner).ok())
-        .next()
-        .expect("PolicyCreated event should be emitted")
-        .policyId;
+    // Advance block to mine the createPolicy transaction
+    setup.node.advance_block().await?;
+
+    // Policy ID is 1 for the first user-created policy (genesis has policy 0)
+    let policy_id = 1u64;
 
     println!("Created blacklist policy with ID: {policy_id}");
 
@@ -6520,23 +6541,47 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // ========================================
     println!("\n=== STEP 3: Blacklist the fee payer ===");
 
-    let blacklist_receipt = registry
-        .modifyPolicyBlacklist(policy_id, root_addr, true)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
-        .gas(300_000)
-        .send()
-        .await?
-        .get_receipt()
+    // Build and submit the modifyPolicyBlacklist transaction
+    // Use nonce+1 since createPolicy used nonce
+    let blacklist_nonce = nonce + 1;
+
+    let blacklist_call = ITIP403Registry::modifyPolicyBlacklistCall {
+        policyId: policy_id,
+        account: root_addr,
+        restricted: true,
+    };
+
+    let blacklist_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 300_000,
+        calls: vec![Call {
+            to: TIP403_REGISTRY_ADDRESS.into(),
+            value: U256::ZERO,
+            input: blacklist_call.abi_encode().into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce: blacklist_nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+
+    let blacklist_signature = root_signer.sign_hash_sync(&blacklist_tx.signature_hash())?;
+    let blacklist_envelope: TempoTxEnvelope =
+        blacklist_tx.into_signed(blacklist_signature.into()).into();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(blacklist_envelope.encoded_2718().into())
         .await?;
 
-    println!(
-        "Fee payer blacklisted in block {}",
-        blacklist_receipt.block_number.unwrap()
-    );
-
-    // Advance a block to trigger the commit notification
+    // Advance block to mine the blacklist transaction and trigger commit notification
     let payload = setup.node.advance_block().await?;
     let new_tip = payload.block().inner.number;
+
+    println!("Fee payer blacklisted in block {new_tip}");
 
     // Wait for the maintenance task to process the block
     setup
