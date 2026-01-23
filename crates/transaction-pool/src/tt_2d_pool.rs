@@ -3664,8 +3664,11 @@ mod tests {
                 .nonce_key(U256::from(i))
                 .nonce(1000)
                 .build();
-            let result =
-                pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
             assert!(result.is_ok(), "Transaction {i} should be added");
         }
 
@@ -3704,7 +3707,11 @@ mod tests {
                 .nonce_key(U256::from(i))
                 .nonce(1000)
                 .build();
-            let _ = pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
         }
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
@@ -3733,7 +3740,11 @@ mod tests {
         for i in 0..5usize {
             let sender = Address::from_word(B256::from(U256::from(i)));
             let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
-            let _ = pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
         }
 
         let (pending, queued) = pool.pending_and_queued_txn_count();
@@ -3765,7 +3776,11 @@ mod tests {
             let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
             let hash = *tx.hash();
             pending_hashes.push(hash);
-            let _ = pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
         }
 
         // Now flood with 10 queued transactions
@@ -3775,7 +3790,11 @@ mod tests {
                 .nonce_key(U256::from(i))
                 .nonce(1000)
                 .build();
-            let _ = pool.add_transaction(Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)), 0);
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
         }
 
         // All pending should still be there
