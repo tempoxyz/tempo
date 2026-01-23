@@ -6489,9 +6489,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     let recipient = Address::random();
     let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token
 
-    // Use nonce_key=1 (2D nonce) so this transaction doesn't block the protocol nonce.
-    // This allows the blacklist transaction to be mined independently while this tx
-    // waits in the pool for valid_after to be reached.
+    // Use protocol nonce (nonce_key=0) so the maintenance task tracks this transaction.
+    // The blacklist transaction will use a 2D nonce to bypass the nonce ordering.
     let delayed_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -6507,8 +6506,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::from(1), // Use 2D nonce so blacklist tx can be mined independently
-        nonce: 0,                 // First nonce for this nonce_key
+        nonce_key: U256::ZERO,   // Protocol nonce - gets tracked by maintenance task
+        nonce: nonce + 1,        // Next nonce after createPolicy
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),
@@ -6542,9 +6541,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     println!("\n=== STEP 3: Blacklist the fee payer ===");
 
     // Build and submit the modifyPolicyBlacklist transaction
-    // Use nonce+1 since createPolicy used nonce
-    let blacklist_nonce = nonce + 1;
-
+    // Use 2D nonce (nonce_key=1) so this can be mined independently of the delayed tx
     let blacklist_call = ITIP403Registry::modifyPolicyBlacklistCall {
         policyId: policy_id,
         account: root_addr,
@@ -6561,8 +6558,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             value: U256::ZERO,
             input: blacklist_call.abi_encode().into(),
         }],
-        nonce_key: U256::ZERO,
-        nonce: blacklist_nonce,
+        nonce_key: U256::from(1), // 2D nonce - bypasses protocol nonce ordering
+        nonce: 0,                 // First nonce for this nonce_key
         fee_token: Some(DEFAULT_FEE_TOKEN),
         ..Default::default()
     };
