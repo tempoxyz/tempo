@@ -66,6 +66,10 @@ pub struct AA2dPool {
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
     metrics: AA2dPoolMetrics,
+    /// Number of pending (executable) transactions
+    pending_count: usize,
+    /// Number of queued (non-executable) transactions
+    queued_count: usize,
 }
 
 impl Default for AA2dPool {
@@ -87,6 +91,8 @@ impl AA2dPool {
             seq_id_to_slot: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
+            pending_count: 0,
+            queued_count: 0,
         }
     }
 
@@ -180,7 +186,14 @@ impl AA2dPool {
                     ));
                 }
 
-                Some(entry.insert(tx.clone()))
+                let old_tx = entry.insert(tx.clone());
+                // counters always mirror actual tx count, so underflow is impossible
+                if old_tx.is_pending {
+                    self.pending_count -= 1;
+                } else {
+                    self.queued_count -= 1;
+                }
+                Some(old_tx)
             }
             Entry::Vacant(entry) => {
                 entry.insert(tx.clone());
@@ -234,12 +247,22 @@ impl AA2dPool {
             }
         }
 
+        // Update counters for promoted transactions
+        let promoted_count = promoted.len();
+        if !promoted.is_empty() {
+            self.queued_count -= promoted_count;
+            self.pending_count += promoted_count;
+        }
+
         // Record metrics
         self.metrics.inc_inserted();
 
         if inserted_as_pending {
+            // Increment pending counter for the newly inserted transaction
+            self.pending_count += 1;
+
             if !promoted.is_empty() {
-                self.metrics.inc_promoted(promoted.len());
+                self.metrics.inc_promoted(promoted_count);
             }
             // if this is the next nonce in line we can mark it as independent
             if tx_id.nonce == on_chain_nonce {
@@ -253,6 +276,12 @@ impl AA2dPool {
                 discarded: self.discard(),
             }));
         }
+
+        // Increment queued counter for the newly inserted transaction
+        self.queued_count += 1;
+
+        // Call discard for queued transactions too
+        let _ = self.discard();
 
         Ok(AddedTransaction::Parked {
             transaction,
@@ -316,6 +345,12 @@ impl AA2dPool {
         // Expiring nonce txs are always pending
         let expiring_pending = self.expiring_nonce_txs.len();
         (pending_2d + expiring_pending, queued_2d)
+    }
+
+    /// Returns the current pending and queued counts
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (self.pending_count, self.queued_count)
     }
 
     /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
@@ -530,6 +565,13 @@ impl AA2dPool {
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
 
+        // Update counters based on the removed transaction's pending status
+        if tx.is_pending {
+            self.pending_count -= 1;
+        } else {
+            self.queued_count -= 1;
+        }
+
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
             && let Some(slot) = self.seq_id_to_slot.remove(&id.seq_id)
@@ -724,6 +766,9 @@ impl AA2dPool {
                 if existing_id.nonce == next_nonce {
                     // Promote if transaction was previously queued (not pending)
                     if !std::mem::replace(&mut existing_tx.is_pending, true) {
+                        // Update counters for txs promoted from queued to pending
+                        self.queued_count -= 1;
+                        self.pending_count += 1;
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -736,7 +781,11 @@ impl AA2dPool {
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
-                    existing_tx.is_pending = false;
+                    // Update counters if tx was previously pending
+                    if std::mem::replace(&mut existing_tx.is_pending, false) {
+                        self.pending_count -= 1;
+                        self.queued_count += 1;
+                    }
                 }
             }
 
@@ -768,16 +817,27 @@ impl AA2dPool {
         (promoted, mined)
     }
 
-    /// Removes stale transactions if the pool is above capacity.
+    /// Removes excess transactions if the pool is above capacity.
+    /// Evicts queued transactions first, then pending if needed.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
-        while self.by_id.len() > self.config.aa_2d_limit.max_txs {
-            // TODO: this needs a more sophisticated approach for now simply pop any non pending
-            let Some(id) = self.by_id.last_key_value().map(|(id, _)| *id) else {
-                return removed;
-            };
-            removed.push(self.remove_transaction_by_id(&id).unwrap());
+        // Evict queued transactions if over queued limit
+        while self.queued_count > self.config.queued_limit.max_txs {
+            if let Some(tx) = self.evict_one(false) {
+                removed.push(tx);
+            } else {
+                break;
+            }
+        }
+
+        // Evict pending if over pending limit
+        while self.pending_count > self.config.pending_limit.max_txs {
+            if let Some(tx) = self.evict_one(true) {
+                removed.push(tx);
+            } else {
+                break;
+            }
         }
 
         if !removed.is_empty() {
@@ -785,6 +845,22 @@ impl AA2dPool {
         }
 
         removed
+    }
+
+    /// Attempts to evict one (pending or queued) transaction from the pool.
+    fn evict_one(
+        &mut self,
+        is_pending: bool,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        // Reverse-iterate `by_id`, filtering by `is_pending`
+        let id_to_remove = self
+            .by_id
+            .iter()
+            .rev()
+            .find(|(_, tx)| tx.is_pending == is_pending)
+            .map(|(id, _)| *id)?;
+
+        self.remove_transaction_by_id(&id_to_remove)
     }
 
     /// Returns a reference to the metrics for this pool
@@ -1031,6 +1107,31 @@ impl AA2dPool {
             self.expiring_nonce_txs.len()
         );
 
+        // Verify counters match the computed values
+        let (counted_pending, counted_queued) = self.counts();
+        assert_eq!(
+            counted_pending, pending_count,
+            "pending_count ({counted_pending}) != computed pending count ({pending_count})",
+        );
+        assert_eq!(
+            counted_queued, queued_count,
+            "queued_count ({counted_queued}) != computed queued count ({queued_count})",
+        );
+
+        // Verify quota compliance - counts don't exceed limits
+        assert!(
+            self.pending_count <= self.config.pending_limit.max_txs,
+            "pending_count {} exceeds limit {}",
+            self.pending_count,
+            self.config.pending_limit.max_txs
+        );
+        assert!(
+            self.queued_count <= self.config.queued_limit.max_txs,
+            "queued_count {} exceeds limit {}",
+            self.queued_count,
+            self.config.queued_limit.max_txs
+        );
+
         // Verify expiring nonce txs integrity
         for (hash, pending_tx) in &self.expiring_nonce_txs {
             assert!(
@@ -1050,8 +1151,10 @@ impl AA2dPool {
 pub struct AA2dPoolConfig {
     /// Price bump (in %) for the transaction pool underpriced check.
     pub price_bump_config: PriceBumpConfig,
-    /// How many transactions
-    pub aa_2d_limit: SubPoolLimit,
+    /// Maximum number of pending (executable) transactions
+    pub pending_limit: SubPoolLimit,
+    /// Maximum number of queued (non-executable) transactions
+    pub queued_limit: SubPoolLimit,
 }
 
 #[derive(Debug, Clone)]
@@ -3455,8 +3558,12 @@ mod tests {
     fn test_discard_at_max_txs_limit() {
         let config = AA2dPoolConfig {
             price_bump_config: PriceBumpConfig::default(),
-            aa_2d_limit: SubPoolLimit {
+            pending_limit: SubPoolLimit {
                 max_txs: 3,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10000,
                 max_size: usize::MAX,
             },
         };
@@ -3484,8 +3591,12 @@ mod tests {
     fn test_discard_removes_from_back() {
         let config = AA2dPoolConfig {
             price_bump_config: PriceBumpConfig::default(),
-            aa_2d_limit: SubPoolLimit {
+            pending_limit: SubPoolLimit {
                 max_txs: 2,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10000,
                 max_size: usize::MAX,
             },
         };
@@ -3537,6 +3648,174 @@ mod tests {
         assert!(pool.contains(&tx1_hash));
         assert!(!pool.contains(&tx2_hash));
 
+        pool.assert_invariants();
+    }
+
+    /// Tests that queued transactions (with nonce gaps) also respect the max_txs limit.
+    #[test]
+    fn test_discard_enforced_for_queued_transactions() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        // Add 5 transactions each with a LARGE nonce gap so they are all queued
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(i))
+                .nonce(1000)
+                .build();
+            let result = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+            assert!(result.is_ok(), "Transaction {i} should be added");
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(
+            pending + queued,
+            2,
+            "Pool should be capped at max_txs=2, but has {pending} pending + {queued} queued",
+        );
+
+        pool.assert_invariants();
+    }
+
+    /// Verifies queued transactions respect their own limit independently
+    #[test]
+    fn test_queued_limit_enforced_separately() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 3,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        // Add 5 queued transactions (far-future nonces)
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(i))
+                .nonce(1000)
+                .build();
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(queued, 3, "Queued should be capped at 3");
+        assert_eq!(pending, 0, "No pending transactions");
+        pool.assert_invariants();
+    }
+
+    /// Verifies pending transactions respect their own limit independently
+    #[test]
+    fn test_pending_limit_enforced_separately() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 3,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 10,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        // Add 5 pending transactions (nonce=0, different senders)
+        for i in 0..5usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "Pending should be capped at 3");
+        assert_eq!(queued, 0, "No queued transactions");
+        pool.assert_invariants();
+    }
+
+    /// Verifies queued spam cannot evict pending transactions
+    #[test]
+    fn test_queued_eviction_does_not_affect_pending() {
+        let config = AA2dPoolConfig {
+            price_bump_config: PriceBumpConfig::default(),
+            pending_limit: SubPoolLimit {
+                max_txs: 5,
+                max_size: usize::MAX,
+            },
+            queued_limit: SubPoolLimit {
+                max_txs: 2,
+                max_size: usize::MAX,
+            },
+        };
+        let mut pool = AA2dPool::new(config);
+
+        // First add 3 pending transactions
+        let mut pending_hashes = Vec::new();
+        for i in 0..3usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = TxBuilder::aa(sender).nonce_key(U256::from(i)).build();
+            let hash = *tx.hash();
+            pending_hashes.push(hash);
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+        }
+
+        // Now flood with 10 queued transactions
+        for i in 100..110usize {
+            let sender = Address::from_word(B256::from(U256::from(i)));
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::from(i))
+                .nonce(1000)
+                .build();
+            let _ = pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            );
+        }
+
+        // All pending should still be there
+        for hash in &pending_hashes {
+            assert!(
+                pool.contains(hash),
+                "Pending tx should not be evicted by queued spam"
+            );
+        }
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 3, "All 3 pending should remain");
+        assert_eq!(queued, 2, "Queued capped at 2");
         pool.assert_invariants();
     }
 
