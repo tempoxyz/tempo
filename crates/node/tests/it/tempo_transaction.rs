@@ -6453,8 +6453,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     };
 
     let signature = sign_aa_tx_secp256k1(&create_policy_tx, &root_signer)?;
-    let create_policy_envelope: TempoTxEnvelope =
-        create_policy_tx.into_signed(signature).into();
+    let create_policy_envelope: TempoTxEnvelope = create_policy_tx.into_signed(signature).into();
     let create_policy_hash = *create_policy_envelope.tx_hash();
 
     setup
@@ -6544,8 +6543,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::ZERO,      // Protocol nonce - gets tracked by maintenance task
-        nonce: delayed_nonce,       // Current nonce after createPolicy
+        nonce_key: U256::ZERO, // Protocol nonce - gets tracked by maintenance task
+        nonce: delayed_nonce,  // Current nonce after createPolicy
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),
@@ -6643,15 +6642,30 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     let blacklist_receipt: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [blacklist_tx_hash])
         .await?;
-    let receipt_obj = blacklist_receipt.as_ref().expect("Blacklist tx should be mined");
-    let status = receipt_obj.get("status").and_then(|s| s.as_str()).expect("Receipt should have status");
-    assert_eq!(status, "0x1", "Blacklist transaction should have succeeded, but got status: {}", status);
+    let receipt_obj = blacklist_receipt
+        .as_ref()
+        .expect("Blacklist tx should be mined");
+    let status = receipt_obj
+        .get("status")
+        .and_then(|s| s.as_str())
+        .expect("Receipt should have status");
+    assert_eq!(
+        status, "0x1",
+        "Blacklist transaction should have succeeded, but got status: {}",
+        status
+    );
 
     // Check how many logs the blacklist transaction emitted
-    let logs = receipt_obj.get("logs").and_then(|l| l.as_array()).expect("Receipt should have logs");
+    let logs = receipt_obj
+        .get("logs")
+        .and_then(|l| l.as_array())
+        .expect("Receipt should have logs");
     println!("Blacklist transaction emitted {} logs:", logs.len());
     for (i, log) in logs.iter().enumerate() {
-        let addr = log.get("address").and_then(|a| a.as_str()).unwrap_or("unknown");
+        let addr = log
+            .get("address")
+            .and_then(|a| a.as_str())
+            .unwrap_or("unknown");
         println!("  Log {}: address = {}", i, addr);
     }
 
