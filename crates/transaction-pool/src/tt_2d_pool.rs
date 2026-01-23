@@ -1101,13 +1101,11 @@ impl AA2dPool {
         let (counted_pending, counted_queued) = self.counts();
         assert_eq!(
             counted_pending, pending_count,
-            "pending_count ({}) != computed pending count ({})",
-            counted_pending, pending_count
+            "pending_count ({counted_pending}) != computed pending count ({pending_count})",
         );
         assert_eq!(
             counted_queued, queued_count,
-            "queued_count ({}) != computed queued count ({})",
-            counted_queued, queued_count
+            "queued_count ({counted_queued}) != computed queued count ({queued_count})",
         );
 
         // Verify quota compliance - counts don't exceed limits
@@ -3676,9 +3674,7 @@ mod tests {
         assert_eq!(
             pending + queued,
             2,
-            "Pool should be capped at max_txs=2, but has {} pending + {} queued",
-            pending,
-            queued,
+            "Pool should be capped at max_txs=2, but has {pending} pending + {queued} queued",
         );
 
         pool.assert_invariants();
