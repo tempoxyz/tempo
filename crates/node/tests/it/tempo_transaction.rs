@@ -4869,46 +4869,26 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
 
     let signed_tx = AASigned::new_unhashed(after_expiry_tx, expired_key_sig);
     let envelope: TempoTxEnvelope = signed_tx.into();
-    let tx_hash = *envelope.tx_hash();
     let mut encoded = Vec::new();
     envelope.encode_2718(&mut encoded);
 
-    // The tx should be accepted into the pool (pool doesn't check expiry in detail)
-    // but should fail when included in a block
-    setup.node.rpc.inject_tx(encoded.into()).await?;
-    setup.node.advance_block().await?;
-
-    // Check if transaction was included and reverted
-    let receipt = provider.get_transaction_receipt(tx_hash).await?;
-
-    // The tx might not be included at all (rejected by builder) or included but reverted
-    if let Some(receipt) = receipt {
-        assert!(
-            !receipt.status(),
-            "Expired key transaction must revert if included"
-        );
-        println!("✓ Expired key transaction was included but reverted (status: 0x0)");
-    } else {
-        println!("✓ Expired key transaction was rejected by block builder (not included)");
-    }
-
-    // Verify recipient3 received NO tokens
-    let recipient3_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
-        .balanceOf(recipient3)
-        .call()
-        .await?;
-
-    assert_eq!(
-        recipient3_balance,
-        U256::ZERO,
-        "Recipient must not receive tokens from expired key"
+    // The tx should be rejected by the mempool because the access key has expired
+    let result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        result.is_err(),
+        "Expired access key transaction must be rejected by mempool"
     );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Access key expired"),
+        "Error must indicate access key expiry, got: {err_msg}"
+    );
+    println!("✓ Expired access key transaction was rejected by mempool: {err_msg}");
 
-    // The expired key tx is stuck in mempool, so we need to skip that nonce
-    nonce += 1;
+    // Nonce was not consumed since tx was rejected
 
     // ========================================
-    // TEST 3: expiry in the past (should fail during block building)
+    // TEST 3: KeyAuthorization with expiry in the past (should fail in mempool)
     // ========================================
     println!("\n=== TEST 3: Authorize Key with expiry in the past ===");
 
@@ -4945,28 +4925,21 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
     let root_sig = sign_aa_tx_secp256k1(&past_expiry_tx, &root_signer)?;
     let signed_tx = AASigned::new_unhashed(past_expiry_tx, root_sig);
     let envelope: TempoTxEnvelope = signed_tx.into();
-    let tx_hash = *envelope.tx_hash();
     let mut encoded = Vec::new();
     envelope.encode_2718(&mut encoded);
 
-    // Expiry check happens during block building
-    // Transaction may be accepted to pool but will fail during block building
-    setup.node.rpc.inject_tx(encoded.into()).await?;
-    setup.node.advance_block().await?;
-
-    // Check if transaction was included (it should fail or not be included)
-    let receipt = provider.get_transaction_receipt(tx_hash).await?;
-
-    if let Some(receipt) = receipt {
-        // If included, it must have failed
-        assert!(
-            !receipt.status(),
-            "Past expiry key transaction must fail if included. Receipt: {receipt:?}"
-        );
-        println!("✓ Past expiry key transaction was included but failed (status: 0x0)");
-    } else {
-        println!("✓ Past expiry key transaction was rejected by block builder (not included)");
-    }
+    // The tx should be rejected by the mempool because the KeyAuthorization has expired
+    let result = setup.node.rpc.inject_tx(encoded.into()).await;
+    assert!(
+        result.is_err(),
+        "Expired KeyAuthorization transaction must be rejected by mempool"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("KeyAuthorization expired"),
+        "Error must indicate KeyAuthorization expiry, got: {err_msg}"
+    );
+    println!("✓ Expired KeyAuthorization transaction was rejected by mempool: {err_msg}");
 
     Ok(())
 }
