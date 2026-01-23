@@ -348,6 +348,7 @@ impl AA2dPool {
     }
 
     /// Returns the current pending and queued counts
+    #[cfg(test)]
     pub(crate) fn counts(&self) -> (usize, usize) {
         (self.pending_count, self.queued_count)
     }
