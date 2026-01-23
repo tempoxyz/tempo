@@ -6535,8 +6535,13 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     );
     println!("Transaction is in the mempool");
 
-    // Advance a block to ensure the maintenance task processes the new transaction event
-    // and updates fee payer tracking before we submit the blacklist transaction.
+    // Yield to the tokio runtime to allow the maintenance task to process the new
+    // transaction event before we proceed. This helps avoid race conditions where
+    // the chain event is processed before the transaction is tracked.
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Advance a block to ensure the maintenance task processes pending events.
     // The delayed tx won't be mined because valid_after is in the future.
     let sync_payload = setup.node.advance_block().await?;
     let sync_tip = sync_payload.block().inner.number;
