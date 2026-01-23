@@ -6506,8 +6506,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::ZERO,   // Protocol nonce - gets tracked by maintenance task
-        nonce: nonce + 1,        // Next nonce after createPolicy
+        nonce_key: U256::ZERO, // Protocol nonce - gets tracked by maintenance task
+        nonce: nonce + 1,      // Next nonce after createPolicy
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),

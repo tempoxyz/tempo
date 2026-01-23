@@ -15,7 +15,8 @@ use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain};
 use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{
-    FullTransactionEvent, PoolTransaction, TransactionOrigin, TransactionPool,
+    FullTransactionEvent, PoolTransaction, TransactionListenerKind, TransactionOrigin,
+    TransactionPool,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -198,7 +199,9 @@ where
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // Subscribe to new transactions, transaction events, and chain events
-    let mut new_txs = pool.new_transactions_listener();
+    // Use TransactionListenerKind::All to receive ALL new transactions,
+    // including those with valid_after in the future (not yet propagate-able)
+    let mut new_txs = pool.new_transactions_listener_for(TransactionListenerKind::All);
     let mut tx_events = pool.all_transactions_event_listener();
     let mut chain_events = pool.client().canonical_state_stream();
 
