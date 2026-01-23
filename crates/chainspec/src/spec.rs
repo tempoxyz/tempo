@@ -15,7 +15,12 @@ use reth_network_peers::NodeRecord;
 use std::sync::{Arc, LazyLock};
 use tempo_primitives::TempoHeader;
 
-pub const TEMPO_BASE_FEE: u64 = 10_000_000_000;
+/// T0 base fee: 10 gwei (1×10^10 wei)
+pub const TEMPO_T0_BASE_FEE: u64 = 10_000_000_000;
+
+/// T1 base fee: 20 gwei (2×10^10 wei)
+/// At this base fee, a standard TIP-20 transfer (~50,000 gas) costs ~0.1 cent
+pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
 // End-of-block system transactions
 pub const SYSTEM_TX_COUNT: usize = 1;
@@ -277,8 +282,8 @@ impl EthChainSpec for TempoChainSpec {
         self.inner.get_final_paris_total_difficulty()
     }
 
-    fn next_block_base_fee(&self, _parent: &TempoHeader, _target_timestamp: u64) -> Option<u64> {
-        Some(TEMPO_BASE_FEE)
+    fn next_block_base_fee(&self, _parent: &TempoHeader, target_timestamp: u64) -> Option<u64> {
+        Some(self.tempo_hardfork_at(target_timestamp).base_fee())
     }
 }
 
@@ -404,5 +409,11 @@ mod tests {
             testnet_chainspec.tempo_hardfork_at(u64::MAX),
             TempoHardfork::Genesis
         );
+
+        // Dev chainspec should return T1 (all hardforks active at 0)
+        let dev_chainspec = super::TempoChainSpecParser::parse("dev")
+            .expect("the dev chainspec must always be well formed");
+        assert_eq!(dev_chainspec.tempo_hardfork_at(0), TempoHardfork::T1);
+        assert_eq!(dev_chainspec.tempo_hardfork_at(1000), TempoHardfork::T1);
     }
 }

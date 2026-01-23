@@ -35,6 +35,10 @@ pub struct TempoEvm<DB: Database, I> {
     pub logs: Vec<Log>,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
+    /// Initial gas cost. Used for key_authorization validation in collectFeePreTx.
+    ///
+    /// Additional initial gas cost is added for authorization_key setting in pre execution.
+    pub(crate) initial_gas: u64,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -68,6 +72,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             logs: Vec::new(),
             collected_fee: U256::ZERO,
+            initial_gas: 0,
         }
     }
 }
@@ -186,9 +191,10 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::{Evm, EvmFactory, FromRecoveredTx};
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes};
+    use alloy_primitives::{Address, Bytes, Log, TxKind, U256, bytes};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -199,13 +205,14 @@ mod tests {
     use revm::{
         Context, DatabaseRef, ExecuteCommitEvm, ExecuteEvm, InspectEvm, MainContext,
         bytecode::opcode,
-        context::{ContextTr, TxEnv},
+        context::{CfgEnv, ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
         handler::system_call::SystemCallEvm,
         inspector::{CountInspector, InspectSystemCallEvm},
         state::{AccountInfo, Bytecode},
     };
     use sha2::{Digest, Sha256};
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::TempoEvmFactory;
     use tempo_precompiles::{
         NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -280,6 +287,26 @@ mod tests {
     /// Create an EVM with a funded account at the given address.
     fn create_funded_evm(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let mut evm = create_evm();
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T1 hardfork enabled and a funded account.
+    /// This applies TIP-1000 gas params via `tempo_gas_params()`.
+    fn create_funded_evm_t1(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        // Apply TIP-1000 gas params for T1 hardfork
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
         fund_account(&mut evm, address);
         evm
     }
@@ -436,7 +463,7 @@ mod tests {
                 calls: vec![],
                 nonce: 0,
                 nonce_key: U256::ZERO,
-                gas_limit: 100_000,
+                gas_limit: 1_000_000,
                 max_fee_per_gas: 0,
                 max_priority_fee_per_gas: 0,
                 valid_before: Some(u64::MAX),
@@ -1382,7 +1409,7 @@ mod tests {
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&large_calldata)
-                    .gas_limit(100_000) // Plenty of gas for both initial and floor
+                    .gas_limit(1_000_000) // Plenty of gas for both initial and floor
                     .build(),
             )?;
 
@@ -1407,7 +1434,7 @@ mod tests {
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_identity(&[0x01, 0x02, 0x03, 0x04])
-                    .gas_limit(100_000)
+                    .gas_limit(1_000_000)
                     .build(),
             )?;
 
@@ -1423,6 +1450,360 @@ mod tests {
 
         Ok(())
     }
+
+    // ==================== TIP-1000 EVM Configuration Tests ====================
+
+    /// Test that TempoEvm preserves initial fields when using with_inspector.
+    #[test]
+    fn test_tempo_evm_with_inspector_preserves_fields() {
+        let evm = create_evm();
+
+        // Use with_inspector to get a new EVM with CountInspector
+        let evm_with_inspector = evm.with_inspector(CountInspector::new());
+
+        // Verify fields are still initialized correctly
+        assert_eq!(
+            evm_with_inspector.initial_gas, 0,
+            "initial_gas should be 0 after with_inspector"
+        );
+    }
+
+    /// Test that take_logs clears logs and returns them.
+    #[test]
+    fn test_tempo_evm_take_logs() {
+        let mut evm = create_evm();
+
+        // Manually add some logs
+        evm.logs.push(Log::new_unchecked(
+            Address::repeat_byte(0x01),
+            vec![],
+            Bytes::new(),
+        ));
+        evm.logs.push(Log::new_unchecked(
+            Address::repeat_byte(0x02),
+            vec![],
+            Bytes::new(),
+        ));
+
+        assert_eq!(evm.logs.len(), 2);
+
+        // Take logs
+        let taken_logs = evm.take_logs();
+
+        assert_eq!(taken_logs.len(), 2, "Should return 2 logs");
+        assert!(evm.logs.is_empty(), "Logs should be cleared after take");
+    }
+
+    /// Test AA transaction gas usage for simple identity precompile call.
+    /// This establishes a baseline for gas comparison.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_baseline_identity_call() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Simple call to identity precompile
+        // T1 adds 250k for new account creation (nonce == 0)
+        let tx = TxBuilder::new()
+            .call_identity(&[0x01, 0x02, 0x03, 0x04])
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success());
+
+        // With T1 TIP-1000: new account cost (250k) + base intrinsic (21k) + WebAuthn (~3.4k) + calldata
+        let gas_used = result.gas_used();
+        assert_eq!(
+            gas_used, 278738,
+            "T1 baseline identity call gas should be exact"
+        );
+
+        Ok(())
+    }
+
+    /// Test AA transaction gas usage with SSTORE to a new storage slot.
+    /// This tests TIP-1000's increased SSTORE cost (250,000 gas for new slot).
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_sstore_new_slot() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x55);
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Deploy contract that does SSTORE to slot 0:
+        // PUSH1 0x42 PUSH1 0x00 SSTORE STOP
+        // This stores value 0x42 at slot 0
+        let sstore_bytecode = Bytecode::new_raw(bytes!("60426000555B00"));
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(sstore_bytecode),
+                ..Default::default()
+            },
+        );
+
+        // T1 costs: new account (250k) + SSTORE new slot (250k) + base costs
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(600_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "SSTORE transaction should succeed");
+
+        // With TIP-1000: new account (250k) + SSTORE to new slot (250k) + base costs
+        let gas_used = result.gas_used();
+        assert_eq!(
+            gas_used, 530863,
+            "T1 SSTORE to new slot gas should be exact"
+        );
+
+        Ok(())
+    }
+
+    /// Test AA transaction gas usage with SSTORE to an existing storage slot (warm).
+    /// Warm SSTORE should be much cheaper than cold SSTORE to a new slot.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_sstore_warm_slot() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x56);
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Deploy contract that does SSTORE to slot 0:
+        // PUSH1 0x42 PUSH1 0x00 SSTORE STOP
+        let sstore_bytecode = Bytecode::new_raw(bytes!("60426000555B00"));
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(sstore_bytecode),
+                ..Default::default()
+            },
+        );
+
+        // Pre-populate storage slot 0 with a non-zero value
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::from(1))
+            .unwrap();
+
+        // T1 costs: new account (250k) + SSTORE reset (not new slot) + base costs
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(
+            result.is_success(),
+            "SSTORE to existing slot should succeed"
+        );
+
+        // SSTORE to existing non-zero slot (reset) doesn't trigger the 250k new slot cost
+        // But still has new account cost (250k) + cold SLOAD (2100) + warm SSTORE reset (~2900)
+        let gas_used = result.gas_used();
+        assert_eq!(
+            gas_used, 283663,
+            "T1 SSTORE to existing slot gas should be exact"
+        );
+
+        Ok(())
+    }
+
+    /// Test AA transaction gas comparison: multiple SSTORE operations.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_multiple_sstores() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x57);
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Deploy contract that does 2 SSTOREs to different slots:
+        // PUSH1 0x11 PUSH1 0x00 SSTORE  (store 0x11 at slot 0)
+        // PUSH1 0x22 PUSH1 0x01 SSTORE  (store 0x22 at slot 1)
+        // STOP
+        let multi_sstore_bytecode = Bytecode::new_raw(bytes!("601160005560226001555B00"));
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(multi_sstore_bytecode),
+                ..Default::default()
+            },
+        );
+
+        // T1 costs: new account (250k) + 2 SSTORE new slots (2 * 250k) + base costs
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(1_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(
+            result.is_success(),
+            "Multiple SSTORE transaction should succeed"
+        );
+
+        // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
+        let gas_used = result.gas_used();
+        assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
+
+        Ok(())
+    }
+
+    /// Test AA transaction gas for contract creation (CREATE).
+    /// TIP-1000 increases TX create cost to 500,000 and new account cost to 250,000.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_create_contract() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN (deploys empty contract)
+        let initcode = vec![0x60, 0x00, 0x60, 0x00, 0xF3];
+
+        // T1 costs: CREATE cost (500k) + new account for sender (250k) + new account for contract (250k)
+        let tx = TxBuilder::new()
+            .create(&initcode)
+            .gas_limit(1_000_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "CREATE transaction should succeed");
+
+        // With TIP-1000: CREATE cost (500k) + new account for sender (250k) + base costs
+        let gas_used = result.gas_used();
+        assert_eq!(gas_used, 778720, "T1 CREATE contract gas should be exact");
+
+        Ok(())
+    }
+
+    /// Test gas comparison between single call and multiple calls.
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_single_vs_multiple_calls() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+
+        // Test 1: Single call
+        // T1 costs: new account (250k) + base costs
+        let mut evm1 = create_funded_evm_t1(caller);
+        let tx1 = TxBuilder::new()
+            .call_identity(&[0x01, 0x02, 0x03, 0x04])
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx1 = key_pair.sign_tx(tx1)?;
+        let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+        let result1 = evm1.transact_commit(tx_env1)?;
+        assert!(result1.is_success());
+        let gas_single = result1.gas_used();
+
+        // Test 2: Three calls
+        // T1 costs: new account (250k) + 3 calls overhead
+        let mut evm2 = create_funded_evm_t1(caller);
+        let tx2 = TxBuilder::new()
+            .call_identity(&[0x01, 0x02, 0x03, 0x04])
+            .call_identity(&[0x05, 0x06, 0x07, 0x08])
+            .call_identity(&[0x09, 0x0A, 0x0B, 0x0C])
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx2 = key_pair.sign_tx(tx2)?;
+        let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+        let result2 = evm2.transact_commit(tx_env2)?;
+        assert!(result2.is_success());
+        let gas_triple = result2.gas_used();
+
+        // Three calls should cost more than single call
+        assert_eq!(gas_single, 278738, "T1 single call gas should be exact");
+        assert_eq!(gas_triple, 284102, "T1 triple call gas should be exact");
+        assert!(
+            gas_triple > gas_single,
+            "3 calls should cost more than 1 call"
+        );
+        assert!(
+            gas_triple < gas_single * 3,
+            "3 calls should cost less than 3x single call (base costs shared)"
+        );
+
+        Ok(())
+    }
+
+    /// Test AA transaction gas with SLOAD operation (cold vs warm access).
+    /// Uses T1 hardfork for TIP-1000 gas costs.
+    #[test]
+    fn test_aa_tx_gas_sload_cold_vs_warm() -> eyre::Result<()> {
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x58);
+
+        let mut evm = create_funded_evm_t1(caller);
+
+        // Deploy contract that does 2 SLOADs from the same slot:
+        // PUSH1 0x00 SLOAD POP  (cold SLOAD from slot 0)
+        // PUSH1 0x00 SLOAD POP  (warm SLOAD from slot 0)
+        // STOP
+        let sload_bytecode = Bytecode::new_raw(bytes!("6000545060005450"));
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(sload_bytecode),
+                ..Default::default()
+            },
+        );
+
+        // Pre-populate storage
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::from(0x1234))
+            .unwrap();
+
+        // T1 costs: new account (250k) + SLOAD costs + base costs
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(500_000)
+            .build();
+
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "SLOAD transaction should succeed");
+
+        // T1 costs: new account (250k) + cold SLOAD (2100) + warm SLOAD (100) + cold account (~2.6k)
+        let gas_used = result.gas_used();
+        assert_eq!(gas_used, 280866, "T1 SLOAD cold/warm gas should be exact");
+
+        Ok(())
+    }
+
+    // ==================== End TIP-1000 Tests ====================
 
     /// Test system call functions and inspector management.
     /// Tests `system_call_one_with_caller`, `inspect_one_system_call_with_caller`, and `set_inspector`.

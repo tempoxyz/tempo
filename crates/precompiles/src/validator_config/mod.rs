@@ -246,7 +246,8 @@ impl ValidatorConfig {
         self.validators[call.newValidatorAddress].write(updated_validator)
     }
 
-    /// Change validator active status (owner only)
+    /// Change validator active status (owner only) - by address
+    /// Deprecated: Use change_validator_status_by_index to prevent front-running attacks
     pub fn change_validator_status(
         &mut self,
         sender: Address,
@@ -261,6 +262,26 @@ impl ValidatorConfig {
         let mut validator = self.validators[call.validator].read()?;
         validator.active = call.active;
         self.validators[call.validator].write(validator)
+    }
+
+    /// Change validator active status by index (owner only) - T1+
+    /// Added in T1 to prevent front-running attacks where a validator changes its address
+    pub fn change_validator_status_by_index(
+        &mut self,
+        sender: Address,
+        call: IValidatorConfig::changeValidatorStatusByIndexCall,
+    ) -> Result<()> {
+        self.check_owner(sender)?;
+
+        // Look up validator address by index
+        let validator_address = match self.validators_array.at(call.index as usize)? {
+            Some(elem) => elem.read()?,
+            None => return Err(ValidatorConfigError::validator_not_found())?,
+        };
+
+        let mut validator = self.validators[validator_address].read()?;
+        validator.active = call.active;
+        self.validators[validator_address].write(validator)
     }
 
     /// Get the epoch at which a fresh DKG ceremony will be triggered.

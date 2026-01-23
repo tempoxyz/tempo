@@ -4,7 +4,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     signers::local::MnemonicBuilder,
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -27,8 +27,8 @@ async fn test_createx() -> eyre::Result<()> {
     // Get deployed address from simulated call
     let deployed_address = createx
         .deployCreate(init_code.clone())
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(500_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(5_000_000)
         .call()
         .await?
         .0;
@@ -36,8 +36,8 @@ async fn test_createx() -> eyre::Result<()> {
     // Send the actual transaction
     createx
         .deployCreate(init_code)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(500_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()

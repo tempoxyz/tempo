@@ -13,6 +13,7 @@ pub use common::{TempoStateAccess, TempoTx};
 pub mod error;
 pub mod evm;
 pub mod exec;
+pub mod gas_params;
 pub mod handler;
 mod instructions;
 mod tx;

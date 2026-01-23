@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT OR Apache-2.0
+pragma solidity >=0.8.13 <0.9.0;
 
 import { FeeAMM } from "../../src/FeeAMM.sol";
 import { FeeManager } from "../../src/FeeManager.sol";

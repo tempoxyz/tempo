@@ -52,6 +52,7 @@ where
             caller,
             salt,
         )
+        .gas(5_000_000)
         .send()
         .await?
         .get_receipt()
@@ -64,6 +65,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
+        .gas(1_000_000)
         .send()
         .await?
         .get_receipt()
@@ -117,9 +119,15 @@ pub(crate) async fn setup_test_node(
 pub(crate) async fn await_receipts(
     pending_txs: &mut Vec<PendingTransactionBuilder<Ethereum>>,
 ) -> eyre::Result<()> {
-    for tx in pending_txs.drain(..) {
+    for (i, tx) in pending_txs.drain(..).enumerate() {
         let receipt = tx.get_receipt().await?;
-        assert!(receipt.status());
+        assert!(
+            receipt.status(),
+            "tx {} failed: hash={:?}, gas_used={}",
+            i,
+            receipt.transaction_hash,
+            receipt.gas_used
+        );
     }
 
     Ok(())

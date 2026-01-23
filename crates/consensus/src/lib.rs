@@ -14,13 +14,23 @@ use reth_consensus_common::validation::{
 use reth_ethereum_consensus::EthBeaconConsensus;
 use reth_primitives_traits::{RecoveredBlock, SealedBlock, SealedHeader};
 use std::sync::Arc;
-use tempo_chainspec::spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec};
+use tempo_chainspec::{
+    hardfork::TempoHardforks,
+    spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
+};
 use tempo_primitives::{
     Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
 };
 
 /// How far in the future the block timestamp can be.
 pub const ALLOWED_FUTURE_BLOCK_TIME_SECONDS: u64 = 3;
+
+/// Divisor for calculating shared gas limit (payment lane capacity).
+/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
+pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
+
+/// Maximum extra data size for Tempo blocks.
+pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
 /// Tempo consensus implementation.
 #[derive(Debug, Clone)]
@@ -61,13 +71,18 @@ impl HeaderValidator<TempoHeader> for TempoConsensus {
             ));
         }
 
-        // Validate the non-payment gas limit
-        if header.general_gas_limit
-            != (header.gas_limit() - header.shared_gas_limit) / TEMPO_GENERAL_GAS_DIVISOR
-        {
-            return Err(ConsensusError::Other(
-                "Non-payment gas limit does not match header gas limit".to_string(),
-            ));
+        // Validate the general (non-payment) gas limit
+        let expected_general_gas_limit = self.inner.chain_spec().general_gas_limit_at(
+            header.timestamp(),
+            header.gas_limit(),
+            header.shared_gas_limit,
+        );
+
+        if header.general_gas_limit != expected_general_gas_limit {
+            return Err(ConsensusError::Other(format!(
+                "General gas limit {} does not match expected {}",
+                header.general_gas_limit, expected_general_gas_limit
+            )));
         }
 
         // Validate the timestamp milliseconds part
@@ -178,15 +193,6 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
     }
 }
 
-/// Divisor for calculating non-payment gas limit.
-pub const TEMPO_GENERAL_GAS_DIVISOR: u64 = 2;
-
-/// Divisor for calculating shared gas limit.
-pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
-
-/// Maximum extra data size for Tempo blocks.
-pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,10 +200,14 @@ mod tests {
         Header, Signed, TxLegacy, constants::EMPTY_ROOT_HASH, proofs::calculate_transaction_root,
         transaction::TxHashRef,
     };
+    use alloy_genesis::Genesis;
     use alloy_primitives::{Address, B256, Signature, TxKind, U256};
     use reth_primitives_traits::SealedHeader;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tempo_chainspec::spec::ANDANTINO;
+    use tempo_chainspec::{
+        hardfork::TempoHardfork,
+        spec::{ANDANTINO, TempoChainSpec},
+    };
 
     fn current_timestamp() -> u64 {
         SystemTime::now()
@@ -215,6 +225,7 @@ mod tests {
         parent_hash: B256,
         shared_gas_limit: Option<u64>,
         general_gas_limit: Option<u64>,
+        base_fee: Option<u64>,
     }
 
     impl TestHeaderBuilder {
@@ -253,14 +264,19 @@ mod tests {
             self
         }
 
+        fn base_fee(mut self, fee: u64) -> Self {
+            self.base_fee = Some(fee);
+            self
+        }
+
         fn build(self) -> TempoHeader {
             let shared_gas_limit = self
                 .shared_gas_limit
                 .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
-            let general_gas_limit = self.general_gas_limit.unwrap_or_else(|| {
-                (self.gas_limit - self.gas_limit / TEMPO_SHARED_GAS_DIVISOR)
-                    / TEMPO_GENERAL_GAS_DIVISOR
-            });
+            // Default to pre-T1 divisor-based calculation for ANDANTINO (which doesn't have T1)
+            let general_gas_limit = self
+                .general_gas_limit
+                .unwrap_or_else(|| (self.gas_limit - shared_gas_limit) / 2);
 
             TempoHeader {
                 inner: Header {
@@ -268,7 +284,10 @@ mod tests {
                     timestamp: self.timestamp,
                     number: self.number,
                     parent_hash: self.parent_hash,
-                    base_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_BASE_FEE),
+                    base_fee_per_gas: Some(
+                        self.base_fee
+                            .unwrap_or(tempo_chainspec::spec::TEMPO_T0_BASE_FEE),
+                    ),
                     withdrawals_root: Some(EMPTY_ROOT_HASH),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
@@ -375,10 +394,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_header_non_payment_gas_mismatch() {
+    fn test_validate_header_general_gas_mismatch_pre_t1() {
+        // ANDANTINO doesn't have T1 active, so it uses the divisor-based calculation
         let consensus = TempoConsensus::new(ANDANTINO.clone());
+        let gas_limit = 500_000_000u64;
+        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
+        // Let's use a wrong value
         let header = TestHeaderBuilder::default()
-            .gas_limit(30_000_000)
+            .gas_limit(gas_limit)
             .timestamp(current_timestamp())
             .general_gas_limit(999)
             .build();
@@ -388,9 +412,93 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, ConsensusError::Other(_)));
         assert!(
-            err.to_string()
-                .contains("Non-payment gas limit does not match header gas limit")
+            err.to_string().contains("General gas limit"),
+            "Expected error about general gas limit, got: {err}",
         );
+
+        // Now verify the correct pre-T1 value works
+        let expected_general_gas_limit = (gas_limit - shared_gas_limit) / 2;
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(expected_general_gas_limit)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        assert!(consensus.validate_header(&sealed).is_ok());
+    }
+
+    /// Creates a chainspec with T1 active at timestamp 0.
+    fn create_t1_chainspec() -> Arc<TempoChainSpec> {
+        let genesis_json = r#"{
+            "config": {
+                "chainId": 99999,
+                "homesteadBlock": 0,
+                "daoForkSupport": false,
+                "eip150Block": 0,
+                "eip155Block": 0,
+                "eip158Block": 0,
+                "byzantiumBlock": 0,
+                "constantinopleBlock": 0,
+                "petersburgBlock": 0,
+                "istanbulBlock": 0,
+                "berlinBlock": 0,
+                "londonBlock": 0,
+                "mergeNetsplitBlock": 0,
+                "shanghaiTime": 0,
+                "cancunTime": 0,
+                "pragueTime": 0,
+                "osakaTime": 0,
+                "terminalTotalDifficulty": 0,
+                "terminalTotalDifficultyPassed": true,
+                "epochLength": 21600,
+                "t0Time": 0,
+                "t1Time": 0
+            },
+            "nonce": "0x42",
+            "timestamp": "0x0",
+            "extraData": "0x",
+            "gasLimit": "0x1dcd6500",
+            "difficulty": "0x0",
+            "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "coinbase": "0x0000000000000000000000000000000000000000",
+            "alloc": {}
+        }"#;
+        let genesis: Genesis = serde_json::from_str(genesis_json).unwrap();
+        Arc::new(TempoChainSpec::from_genesis(genesis))
+    }
+
+    #[test]
+    fn test_validate_header_general_gas_limit_t1() {
+        // Create a chainspec with T1 active at timestamp 0
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+        let gas_limit = 500_000_000u64;
+
+        // T1+: general gas limit must be fixed at 30M
+        // Test with wrong value
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(999)
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+
+        let result = consensus.validate_header(&sealed);
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConsensusError::Other(_)));
+        assert!(
+            err.to_string().contains("General gas limit"),
+            "Expected error about general gas limit, got: {err}",
+        );
+
+        // Now verify the correct T1 value works (fixed 30M)
+        let header = TestHeaderBuilder::default()
+            .gas_limit(gas_limit)
+            .timestamp(current_timestamp())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .build();
+        let sealed = SealedHeader::seal_slow(header);
+        assert!(consensus.validate_header(&sealed).is_ok());
     }
 
     #[test]
@@ -479,6 +587,76 @@ mod tests {
             result,
             Err(ConsensusError::TimestampIsInPast { .. })
         ));
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_t1() {
+        use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+
+        let parent_ts = current_timestamp() - 1;
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T1_BASE_FEE)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T1_BASE_FEE)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(result.is_ok(), "T1 validation failed: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_header_against_parent_t1_wrong_base_fee() {
+        use tempo_chainspec::spec::{TEMPO_T0_BASE_FEE, TEMPO_T1_BASE_FEE};
+
+        let chainspec = create_t1_chainspec();
+        let consensus = TempoConsensus::new(chainspec);
+
+        let parent_ts = current_timestamp() - 1;
+        let parent = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts)
+            .number(1)
+            .timestamp_millis_part(500)
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T1_BASE_FEE)
+            .build();
+        let parent_sealed = SealedHeader::seal_slow(parent);
+
+        // Child uses pre-T1 base fee (wrong for T1 chainspec)
+        let child = TestHeaderBuilder::default()
+            .gas_limit(500_000_000)
+            .timestamp(parent_ts + 1)
+            .timestamp_millis_part(600)
+            .number(2)
+            .parent_hash(parent_sealed.hash())
+            .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .base_fee(TEMPO_T0_BASE_FEE)
+            .build();
+        let child_sealed = SealedHeader::seal_slow(child);
+
+        let result = consensus.validate_header_against_parent(&child_sealed, &parent_sealed);
+        assert!(
+            matches!(result, Err(ConsensusError::BaseFeeDiff(_))),
+            "Expected BaseFeeDiff error, got: {result:?}"
+        );
     }
 
     #[test]

@@ -98,12 +98,21 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
-    /// - AA transaction with a `nonce key != 0`
+    /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
     pub(crate) fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
             .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if this is an expiring nonce transaction.
+    pub(crate) fn is_expiring_nonce(&self) -> bool {
+        self.inner
+            .transaction
+            .as_aa()
+            .map(|tx| tx.tx().is_expiring_nonce_tx())
             .unwrap_or(false)
     }
 
@@ -157,6 +166,11 @@ pub enum TempoPoolTransactionError {
         "Invalid fee token: {0}, please see https://docs.tempo.xyz/errors/tx/InvalidFeeToken for more"
     )]
     InvalidFeeToken(Address),
+
+    #[error(
+        "Fee token {0} is paused, please see https://docs.tempo.xyz/errors/tx/PausedFeeToken for more"
+    )]
+    PausedFeeToken(Address),
 
     #[error("No fee token preference configured")]
     MissingFeeToken,
@@ -249,6 +263,24 @@ pub enum TempoPoolTransactionError {
         "Too many token limits in key authorization: {count} exceeds maximum allowed {max_allowed}"
     )]
     TooManyTokenLimits { count: usize, max_allowed: usize },
+
+    /// Thrown when an expiring nonce transaction's valid_before is too far in the future.
+    #[error(
+        "Expiring nonce 'valid_before' {valid_before} exceeds max allowed {max_allowed} (must be within 30s)"
+    )]
+    ExpiringNonceValidBeforeTooFar { valid_before: u64, max_allowed: u64 },
+
+    /// Thrown when an expiring nonce transaction's hash has already been seen (replay).
+    #[error("Expiring nonce transaction replay: tx hash already seen and not expired")]
+    ExpiringNonceReplay,
+
+    /// Thrown when an expiring nonce transaction is missing the required valid_before field.
+    #[error("Expiring nonce transactions must have 'valid_before' set")]
+    ExpiringNonceMissingValidBefore,
+
+    /// Thrown when an expiring nonce transaction has a non-zero nonce.
+    #[error("Expiring nonce transactions must have nonce == 0")]
+    ExpiringNonceNonceNotZero,
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -256,10 +288,13 @@ impl PoolTransactionError for TempoPoolTransactionError {
         match self {
             Self::ExceedsNonPaymentLimit
             | Self::InvalidFeeToken(_)
+            | Self::PausedFeeToken(_)
             | Self::MissingFeeToken
             | Self::BlackListedFeePayer { .. }
             | Self::InvalidValidBefore { .. }
             | Self::InvalidValidAfter { .. }
+            | Self::ExpiringNonceValidBeforeTooFar { .. }
+            | Self::ExpiringNonceReplay
             | Self::Keychain(_)
             | Self::InsufficientLiquidity(_) => false,
             Self::NonZeroValue
@@ -271,7 +306,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::TooManyAccessListAccounts { .. }
             | Self::TooManyStorageKeysPerAccount { .. }
             | Self::TooManyTotalStorageKeys { .. }
-            | Self::TooManyTokenLimits { .. } => true,
+            | Self::TooManyTokenLimits { .. }
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero => true,
         }
     }
 
@@ -509,14 +546,14 @@ mod tests {
         let sender = Address::random();
         let value = U256::from(1000);
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(value)
             .build();
 
         // fee_token_cost = cost - value = gas spending
-        // gas spending = calc_gas_balance_spending(100_000, 2_000_000_000)
-        //              = (100_000 * 2_000_000_000) / 1_000_000_000_000 = 200
-        let expected_fee_cost = U256::from(200);
+        // gas spending = calc_gas_balance_spending(1_000_000, 2_000_000_000)
+        //              = (1_000_000 * 2_000_000_000) / 1_000_000_000_000 = 2000
+        let expected_fee_cost = U256::from(2000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
@@ -767,7 +804,7 @@ mod tests {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
@@ -793,14 +830,14 @@ mod tests {
     fn test_transaction_trait_forwarding() {
         let sender = Address::random();
         let tx = TxBuilder::aa(sender)
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(500))
             .build();
 
         // Test various Transaction trait methods
         assert_eq!(tx.chain_id(), Some(1));
         assert_eq!(tx.nonce(), 0);
-        assert_eq!(tx.gas_limit(), 100_000);
+        assert_eq!(tx.gas_limit(), 1_000_000);
         assert_eq!(tx.max_fee_per_gas(), 2_000_000_000);
         assert_eq!(tx.max_priority_fee_per_gas(), Some(1_000_000_000));
         assert!(tx.is_dynamic_fee());
@@ -810,7 +847,7 @@ mod tests {
     #[test]
     fn test_cost_returns_zero() {
         let tx = TxBuilder::aa(Address::random())
-            .gas_limit(100_000)
+            .gas_limit(1_000_000)
             .value(U256::from(1000))
             .build();
 

@@ -21,6 +21,7 @@
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
     "t0Time": 0,
+    "t1Time": 0,
     "depositContractAddress": "0x0000000000000000000000000000000000000000"
   },
   "nonce": "0x42",
@@ -1894,5 +1895,5 @@
       }
     }
   },
-  "baseFeePerGas": "0x2540be400"
+  "baseFeePerGas": "0x4a817c800"
 }

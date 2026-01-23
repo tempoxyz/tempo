@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+// SPDX-License-Identifier: MIT OR Apache-2.0
+pragma solidity >=0.8.13 <0.9.0;
 
 /// @title GhostState - Ghost Variable Tracking for Invariant Tests
 /// @dev Ghost variables mirror what we expect on-chain state to be
@@ -113,6 +113,30 @@ abstract contract GhostState {
     uint256 public ghost_gasTrackingCreate;
     uint256 public ghost_gasTrackingSignature;
     uint256 public ghost_gasTrackingKeyAuth;
+
+    // ============ Expiring Nonce Tracking (E1-E8) ============
+
+    /// @dev Tracks which tx hashes have been executed (for replay detection)
+    mapping(bytes32 => bool) public ghost_expiringNonceExecuted;
+    /// @dev Total expiring nonce transactions executed
+    uint256 public ghost_expiringNonceTxsExecuted;
+    /// @dev E1 violation: replay within validity window allowed
+    uint256 public ghost_expiringNonceReplayAllowed;
+    /// @dev E2 violation: expired tx (validBefore <= now) allowed
+    uint256 public ghost_expiringNonceExpiredAllowed;
+    /// @dev E3 violation: validBefore > now + 30s allowed
+    uint256 public ghost_expiringNonceWindowAllowed;
+    /// @dev E4 violation: nonce != 0 allowed
+    uint256 public ghost_expiringNonceNonZeroAllowed;
+    /// @dev E5 violation: missing validBefore allowed
+    uint256 public ghost_expiringNonceMissingVBAllowed;
+    /// @dev Attempt counters for coverage tracking
+    uint256 public ghost_expiringNonceReplayAttempted;
+    uint256 public ghost_expiringNonceExpiredAttempted;
+    uint256 public ghost_expiringNonceWindowAttempted;
+    uint256 public ghost_expiringNonceNonZeroAttempted;
+    uint256 public ghost_expiringNonceMissingVBAttempted;
+    uint256 public ghost_expiringNonceConcurrentExecuted;
 
     // ============ Update Functions ============
 
