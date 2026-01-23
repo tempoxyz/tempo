@@ -6449,9 +6449,6 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
 
     println!("Created blacklist policy with ID: {policy_id}");
 
-    // Get nonce after policy creation
-    let nonce = provider.get_transaction_count(root_addr).await?;
-
     // Get current block timestamp for valid_after
     let block = provider
         .get_block_by_number(Default::default())
@@ -6471,6 +6468,9 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     let recipient = Address::random();
     let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token
 
+    // Use nonce_key=1 (2D nonce) so this transaction doesn't block the protocol nonce.
+    // This allows the blacklist transaction to be mined independently while this tx
+    // waits in the pool for valid_after to be reached.
     let delayed_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -6486,8 +6486,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::ZERO,
-        nonce,
+        nonce_key: U256::from(1), // Use 2D nonce so blacklist tx can be mined independently
+        nonce: 0,                 // First nonce for this nonce_key
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),
