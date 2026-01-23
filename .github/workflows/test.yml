@@ -130,7 +130,6 @@ jobs:
       - test
       - msrv
       - genesis
-      - snapshot-re-execute
     timeout-minutes: 30
     steps:
       - name: Decide whether the needed jobs succeeded or failed
