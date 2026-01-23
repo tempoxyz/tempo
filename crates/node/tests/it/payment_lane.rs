@@ -6,7 +6,7 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20};
 use tempo_precompiles::TIP_FEE_MANAGER_ADDRESS;
 
@@ -108,8 +108,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = TransactionRequest::default()
                     .from(accounts[i])
                     .to(accounts[i]) // Send to self
-                    .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas_limit(300_000)
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_limit(2_000_000)
                     .value(U256::ZERO);
 
                 batch_futures.push(provider.send_transaction(tx));
@@ -222,8 +222,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = TransactionRequest::default()
                     .from(accounts[j])
                     .to(accounts[j]) // Send to self
-                    .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas_limit(300_000)
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_limit(2_000_000)
                     .value(U256::ZERO);
 
                 all_futures.push((provider.send_transaction(tx), "non-payment"));
@@ -236,8 +236,8 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
                 let tx = transfer_tx
                     .into_transaction_request()
                     .from(caller2)
-                    .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas_limit(100_000);
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_limit(2_000_000);
 
                 all_futures.push((provider2.send_transaction(tx), "payment"));
             }
@@ -330,11 +330,11 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
     for receipt in &payment_receipts {
         let effective_price = receipt.effective_gas_price();
         assert_eq!(
-            effective_price, TEMPO_BASE_FEE as u128,
+            effective_price, TEMPO_T1_BASE_FEE as u128,
             "Payment tx should pay base fee, not elevated prices"
         );
     }
-    println!("Payment transactions paid base fee ({TEMPO_BASE_FEE})");
+    println!("Payment transactions paid base fee ({TEMPO_T1_BASE_FEE})");
 
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();
@@ -474,8 +474,8 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
                 let tx = transfer_tx
                     .into_transaction_request()
                     .from(caller)
-                    .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas_limit(80000);
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_limit(1_000_000);
                 println!("Sending PAYMENT tx {i} from account {account_idx}");
                 let pending = provider.send_transaction(tx).await?;
                 Ok::<_, eyre::Error>((pending, format!("payment-{i}")))
@@ -487,8 +487,8 @@ async fn test_payment_lane_ordering() -> eyre::Result<()> {
                 let tx = TransactionRequest::default()
                     .from(caller)
                     .to(caller)
-                    .gas_price(TEMPO_BASE_FEE as u128)
-                    .gas_limit(80000)
+                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_limit(1_000_000)
                     .value(U256::ZERO);
                 println!("Sending NON-PAYMENT tx {i} from account {account_idx}");
                 let pending = provider.send_transaction(tx).await?;
@@ -562,8 +562,8 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
         let tx = TransactionRequest::default()
             .from(caller)
             .to(caller) // Send to self
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas_limit(500000) // High gas limit
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_limit(2_000_000) // High gas limit
             .value(U256::ZERO);
 
         let pending_tx = provider.send_transaction(tx).await?;
@@ -584,8 +584,8 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
         let tx = transfer_tx
             .into_transaction_request()
             .from(caller)
-            .gas_price(TEMPO_BASE_FEE as u128)
-            .gas_limit(100000);
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_limit(2_000_000);
 
         let pending_tx = provider.send_transaction(tx).await?;
         let receipt = pending_tx.get_receipt().await?;

@@ -1,0 +1,35 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 200
+extra_output = ["storageLayout"]
+invariant = { fail_on_revert = true, show_solidity = true }
+fs_permissions = [{ access = "read-write", path = "./"}]
+via_ir = true
+remappings = [
+    "tempo-std/=lib/tempo-std/src/",
+    "forge-std/=lib/forge-std/src/"
+]
+
+[profile.ci]
+optimizer = true
+optimizer_runs = 1
+invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true }
+
+[profile.fuzz500]
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }
+
+[fmt]
+line_length = 100
+sort_imports = true
+contract_new_lines = true
+bracket_spacing = true
+number_underscore = "thousands"
+multline_func_header = "all"
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

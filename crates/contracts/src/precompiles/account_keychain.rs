@@ -103,10 +103,16 @@ crate::sol! {
         error ZeroPublicKey();
         error ExpiryInPast();
         error KeyAlreadyRevoked();
+        error SignatureTypeMismatch(uint8 expected, uint8 actual);
     }
 }
 
 impl AccountKeychainError {
+    /// Creates an error for signature type mismatch.
+    pub const fn signature_type_mismatch(expected: u8, actual: u8) -> Self {
+        Self::SignatureTypeMismatch(IAccountKeychain::SignatureTypeMismatch { expected, actual })
+    }
+
     /// Creates an error for unauthorized caller.
     pub const fn unauthorized_caller() -> Self {
         Self::UnauthorizedCaller(IAccountKeychain::UnauthorizedCaller {})

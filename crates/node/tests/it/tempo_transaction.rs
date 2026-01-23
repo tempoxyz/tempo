@@ -14,7 +14,7 @@ use reth_ethereum::network::{NetworkSyncUpdater, SyncState};
 use reth_primitives_traits::transaction::TxHashRef;
 use reth_transaction_pool::TransactionPool;
 use tempo_alloy::TempoNetwork;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, account_keychain::IAccountKeychain::revokeKeyCall,
 };
@@ -26,7 +26,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        KeyAuthorization, SignedKeyAuthorization, TokenLimit,
+        KeyAuthorization, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -62,9 +63,9 @@ async fn fund_address_with_fee_tokens(
 
     let funding_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -710,8 +711,8 @@ fn create_basic_aa_tx(
 ) -> TempoTransaction {
     TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit,
         calls,
         nonce_key: U256::ZERO,
@@ -871,7 +872,7 @@ async fn test_aa_basic_transfer_secp256k1() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
 
     println!("Created AA transaction with secp256k1 signature");
@@ -943,7 +944,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
 
     // Sign and encode transaction
@@ -982,7 +983,7 @@ async fn test_aa_2d_nonce_system() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
     tx_parallel.nonce_key = U256::from(1); // Parallel nonce - should be rejected
 
@@ -1060,8 +1061,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         let tx = TempoTransaction {
             chain_id,
             max_priority_fee_per_gas: priority_fee,
-            max_fee_per_gas: TEMPO_BASE_FEE as u128 + priority_fee,
-            gas_limit: 100_000,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + priority_fee,
+            gas_limit: 2_000_000,
             calls: vec![Call {
                 to: recipient.into(),
                 value: U256::ZERO,
@@ -1104,7 +1105,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             0,
             initial_nonce,
-            TEMPO_BASE_FEE as u128,
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // Protocol pool
@@ -1116,7 +1117,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             1,
             0,
-            TEMPO_BASE_FEE as u128,
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // 2D pool
@@ -1128,7 +1129,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             2,
             0,
-            TEMPO_BASE_FEE as u128,
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // 2D pool
@@ -1301,7 +1302,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         0,
-        TEMPO_BASE_FEE as u128,
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("  Sent nonce_key=3, nonce=0 (should be pending)");
@@ -1314,7 +1315,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         2,
-        TEMPO_BASE_FEE as u128,
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("  Sent nonce_key=3, nonce=2 (should be queued - gap at nonce=1)");
@@ -1380,7 +1381,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         1,
-        TEMPO_BASE_FEE as u128,
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("\n  Sent nonce_key=3, nonce=1 (fills the gap)");
@@ -1472,8 +1473,8 @@ async fn send_tx(
     let tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: priority_fee,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128 + priority_fee,
-        gas_limit: 100_000,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128 + priority_fee,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -1696,7 +1697,7 @@ async fn test_aa_webauthn_signature_flow() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        200_000, // Higher gas limit for WebAuthn verification
+        2_000_000, // Higher gas limit for WebAuthn verification
     );
     // Use the correct fee token that was used for funding
     tx.fee_token = Some(fee_token);
@@ -1829,9 +1830,9 @@ async fn test_aa_webauthn_signature_negative_cases() -> eyre::Result<()> {
     // Helper function to create a test AA transaction
     let create_test_tx = |nonce_seq: u64| TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 200_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: recipient.into(),
             value: U256::ZERO,
@@ -2196,9 +2197,9 @@ async fn test_aa_p256_call_batching() -> eyre::Result<()> {
     // Use the fee token we funded with
     let batch_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000, // Higher gas limit for multiple calls
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000, // Higher gas limit for multiple calls
         calls,
         nonce_key: U256::ZERO,
         nonce: 0, // First transaction from P256 signer
@@ -2421,7 +2422,7 @@ async fn test_aa_fee_payer_tx() -> eyre::Result<()> {
             value: U256::ZERO,
             input: Bytes::new(),
         }],
-        100_000,
+        2_000_000,
     );
     tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false)); // Placeholder
 
@@ -2537,9 +2538,9 @@ async fn test_aa_empty_call_batch_should_fail() -> eyre::Result<()> {
     // The empty vector will be properly RLP-encoded as 0xc0 (empty list)
     let tx = TempoTransaction {
         chain_id: provider.get_chain_id().await?,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![], // EMPTY call batch - properly encoded but fails validation
         nonce_key: U256::ZERO,
         nonce,
@@ -2755,18 +2756,18 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let keychain_gas_u64 = u64::from_str_radix(keychain_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain gas: {keychain_gas_u64}");
 
-    // Keychain with same-tx auth adds:
+    // Keychain with same-tx auth adds ~289,693 gas which includes:
     // - 3,000 for keychain validation
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
-    // Total: ~33,000 gas
+    // - storage costs for key authorization precompile
     let keychain_diff = keychain_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (32_500..=34_000).contains(&keychain_diff.unsigned_abs()),
-        "Keychain + KeyAuth should add ~33,000 gas: actual diff {keychain_diff} (expected 33,000 ±500)"
+        (289_000..=291_000).contains(&keychain_diff.unsigned_abs()),
+        "Keychain + KeyAuth should add ~289,693 gas: actual diff {keychain_diff}"
     );
-    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~33,000)");
+    println!("  ✓ Keychain + KeyAuth adds {keychain_diff} gas (expected ~289,693)");
 
-    // Test 3: Keychain signature with P256 inner - should add 3,000 + 5,000 + ~30,000 = ~38,000 gas
+    // Test 3: Keychain signature with P256 inner
     println!("\nTest 3: Keychain signature (P256 inner)");
     let key_auth_p256_for_keychain =
         create_signed_key_authorization(&signer, SignatureType::P256, 0);
@@ -2788,17 +2789,17 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(keychain_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  Keychain P256 gas: {keychain_p256_gas_u64}");
 
-    let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
-    // Keychain P256 with same-tx auth adds:
+    // Keychain P256 with same-tx auth adds ~294,733 gas which includes:
     // - 3,000 for keychain validation
     // - 5,000 for P256 signature verification
     // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
-    // Total: ~38,000 gas
+    // - storage costs for key authorization precompile
+    let keychain_p256_diff = keychain_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (37_500..=39_000).contains(&keychain_p256_diff.unsigned_abs()),
-        "Keychain P256 + KeyAuth should add ~38,000 gas: actual diff {keychain_p256_diff} (expected 38,000 ±500)"
+        (294_000..=296_000).contains(&keychain_p256_diff.unsigned_abs()),
+        "Keychain P256 + KeyAuth should add ~294,733 gas: actual diff {keychain_p256_diff}"
     );
-    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~38,000)");
+    println!("  ✓ Keychain P256 + KeyAuth adds {keychain_p256_diff} gas (expected ~294,733)");
 
     // Test 4: KeyAuthorization with secp256k1 (no limits)
     println!("\nTest 4: KeyAuthorization (secp256k1, no limits)");
@@ -2817,13 +2818,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
     let key_auth_gas_u64 = u64::from_str_radix(key_auth_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth gas: {key_auth_gas_u64}");
 
-    // KeyAuth secp256k1 adds ~30,000 gas (27,000 base + 3,000 ecrecover)
+    // KeyAuth secp256k1 adds ~286,669 gas which includes:
+    // - ~30,000 for KeyAuthorization (27,000 base + 3,000 ecrecover)
+    // - storage costs for key authorization precompile
     let key_auth_diff = key_auth_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (29_500..=31_000).contains(&key_auth_diff.unsigned_abs()),
-        "KeyAuth secp256k1 should add ~30,000 gas: actual diff {key_auth_diff} (expected 30,000 ±500)"
+        (286_000..=288_000).contains(&key_auth_diff.unsigned_abs()),
+        "KeyAuth secp256k1 should add ~286,669 gas: actual diff {key_auth_diff}"
     );
-    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~30,000)");
+    println!("  ✓ KeyAuth secp256k1 adds {key_auth_diff} gas (expected ~286,669)");
 
     // Test 5: KeyAuthorization with P256 key type (no limits)
     // Note: The key authorization signature is secp256k1 (signed by root key).
@@ -2846,15 +2849,15 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_p256_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth P256 key type gas: {key_auth_p256_gas_u64}");
 
-    // KeyAuth with P256 key type has same gas as secp256k1 (~30,000) because
+    // KeyAuth with P256 key type has same gas as secp256k1 (~286,669) because
     // the authorization signature itself is always secp256k1 from the root key
     let key_auth_p256_diff = key_auth_p256_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (29_500..=31_000).contains(&key_auth_p256_diff.unsigned_abs()),
-        "KeyAuth P256 key type should add ~30,000 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
+        (286_000..=288_000).contains(&key_auth_p256_diff.unsigned_abs()),
+        "KeyAuth P256 key type should add ~286,669 gas (same as secp256k1): actual diff {key_auth_p256_diff}"
     );
     println!(
-        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~30,000)"
+        "  ✓ KeyAuth P256 key type adds {key_auth_p256_diff} gas (same as secp256k1, ~286,669)"
     );
 
     // Test 6: KeyAuthorization with spending limits
@@ -2875,13 +2878,16 @@ async fn test_aa_estimate_gas_with_keychain_and_key_auth() -> eyre::Result<()> {
         u64::from_str_radix(key_auth_limits_gas.trim_start_matches("0x"), 16)?;
     println!("  KeyAuth with 3 limits gas: {key_auth_limits_gas_u64}");
 
-    // KeyAuth secp256k1 with 3 limits adds ~96,000 gas (30,000 + 3*22,000)
+    // KeyAuth secp256k1 with 3 limits adds ~355,612 gas which includes:
+    // - ~30,000 for KeyAuthorization base (27,000 base + 3,000 ecrecover)
+    // - 3 * 22,000 = 66,000 for spending limits
+    // - storage costs for key authorization precompile
     let key_auth_limits_diff = key_auth_limits_gas_u64 as i64 - baseline_gas_u64 as i64;
     assert!(
-        (95_500..=97_500).contains(&key_auth_limits_diff.unsigned_abs()),
-        "KeyAuth with 3 limits should add ~96,000 gas: actual diff {key_auth_limits_diff} (expected 96,000 ±1,500)"
+        (355_000..=357_000).contains(&key_auth_limits_diff.unsigned_abs()),
+        "KeyAuth with 3 limits should add ~355,612 gas: actual diff {key_auth_limits_diff}"
     );
-    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~96,000)");
+    println!("  ✓ KeyAuth with 3 limits adds {key_auth_limits_diff} gas (expected ~355,612)");
 
     println!("\n✓ All gas estimation tests passed!");
     Ok(())
@@ -2974,9 +2980,9 @@ async fn test_tempo_authorization_list() -> eyre::Result<()> {
             from: Some(sender_addr),
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
-            gas: Some(300_000), // Higher gas for authorization list processing
-            max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
-            max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            gas: Some(2_000_000), // Higher gas for authorization list processing
+            max_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
             nonce: Some(provider.get_transaction_count(sender_addr).await?),
             chain_id: Some(chain_id),
             ..Default::default()
@@ -3169,9 +3175,9 @@ async fn test_keychain_authorization_in_auth_list_is_skipped() -> eyre::Result<(
             from: Some(sender_addr),
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
-            gas: Some(300_000),
-            max_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
-            max_priority_fee_per_gas: Some(TEMPO_BASE_FEE as u128),
+            gas: Some(2_000_000),
+            max_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(TEMPO_T1_BASE_FEE as u128),
             nonce: Some(provider.get_transaction_count(sender_addr).await?),
             chain_id: Some(chain_id),
             ..Default::default()
@@ -3254,9 +3260,9 @@ async fn test_aa_bump_nonce_on_failure() -> eyre::Result<()> {
     // Create AA transaction with secp256k1 signature and protocol nonce
     let tx = TempoTransaction {
         chain_id: provider.get_chain_id().await?,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: TxKind::Create,
             value: U256::ZERO,
@@ -3438,7 +3444,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
             value: U256::ZERO,
             input: transfer_calldata.into(),
         }],
-        300_000, // Higher gas for key authorization verification
+        2_000_000, // Higher gas for key authorization verification
     );
     // Use pathUSD (DEFAULT_FEE_TOKEN) as fee token
     // and our spending limit is set for pathUSD
@@ -3800,9 +3806,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     };
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
@@ -3857,9 +3863,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     // First authorization should succeed
     let tx1 = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -3890,9 +3896,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     // The transaction will be mined but should revert during execution
     let tx2 = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -3981,9 +3987,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     // Authorize access_key_1 with root key (should succeed)
     let tx3 = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4030,9 +4036,9 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
     )?;
     let tx4 = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4134,9 +4140,9 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     // Test 1: Authorize the access key with spending limits
     let auth_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 400_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4166,9 +4172,9 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     // Test 2: Try to use access key to call admin functions (must revert)
     let bad_admin_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
@@ -4229,9 +4235,9 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     let recipient = Address::random();
     let over_limit_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4291,9 +4297,9 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
     let safe_transfer_amount = U256::from(3u64) * U256::from(10).pow(U256::from(18));
     let within_limit_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4404,7 +4410,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_unlimited_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4426,7 +4432,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient1, large_transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4489,7 +4495,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_no_spending_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4511,7 +4517,7 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient2, small_transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     no_spending_transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4574,9 +4580,9 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     let second_unlimited_tx = TempoTransaction {
         chain_id,
         // Use higher gas price to replace the rejected no-spending tx still in pool
-        max_priority_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
-        max_fee_per_gas: (TEMPO_BASE_FEE * 2) as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: (TEMPO_T1_BASE_FEE * 2) as u128,
+        max_fee_per_gas: (TEMPO_T1_BASE_FEE * 2) as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -4685,7 +4691,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4705,7 +4711,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient1, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     transfer_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4772,7 +4778,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     auth_short_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4793,7 +4799,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient2, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     before_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4848,7 +4854,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient3, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     after_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -4930,7 +4936,7 @@ async fn test_aa_keychain_expiry() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     // Use pathUSD as fee token (matches the spending limit token)
     past_expiry_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
@@ -5050,9 +5056,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     let auth_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5111,9 +5117,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     let positive_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5184,9 +5190,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     let negative_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5295,9 +5301,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
 
     let invalid_auth_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5372,8 +5378,8 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let tx = TempoTransaction {
         chain_id: 1337,
         max_priority_fee_per_gas: 1_000_000_000u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 100_000,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: Address::random().into(),
             value: U256::ZERO,
@@ -5486,9 +5492,9 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let tx_wrong_chain = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5543,9 +5549,9 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
 
     let tx_wildcard = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 300_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: DEFAULT_FEE_TOKEN.into(),
             value: U256::ZERO,
@@ -5602,9 +5608,9 @@ async fn test_aa_create_correct_contract_address() -> eyre::Result<()> {
     // Create Tempo transaction with CREATE as first (and only) call
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_BASE_FEE as u128,
-        gas_limit: 500_000,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
         calls: vec![Call {
             to: TxKind::Create,
             value: U256::ZERO,
@@ -5718,7 +5724,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_balance_of_call(root_addr)],
-        400_000,
+        2_000_000,
     );
     auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     auth_tx.key_authorization = Some(key_auth);
@@ -5757,7 +5763,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
         chain_id,
         nonce,
         vec![create_transfer_call(recipient, transfer_amount)],
-        300_000,
+        2_000_000,
     );
     delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     delayed_tx.valid_after = Some(valid_after_time);
@@ -5810,7 +5816,7 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
             value: U256::ZERO,
             input: revoke_call.abi_encode().into(),
         }],
-        200_000,
+        2_000_000,
     );
     revoke_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
     revoke_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
@@ -5893,6 +5899,512 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
             );
         }
     }
+
+    Ok(())
+}
+
+// ============================================================================
+// Expiring Nonce Tests
+// ============================================================================
+
+/// Test basic expiring nonce flow - submit transaction with expiring nonce, verify it executes
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_basic_flow() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Basic Flow ===\n");
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let recipient = Address::random();
+
+    // Advance a few blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    println!("Current block timestamp: {current_timestamp}");
+
+    // Create expiring nonce transaction with valid_before in the future (within 30s window)
+    let valid_before = current_timestamp + 20; // 20 seconds in future
+    println!("Setting valid_before to: {valid_before}");
+
+    let tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Use expiring nonce key (uint256.max)
+        nonce: 0,                            // Must be 0 for expiring nonce
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        ..Default::default()
+    };
+
+    println!("Created expiring nonce transaction");
+    println!("  nonce_key: uint256.max (expiring nonce mode)");
+    println!("  nonce: 0");
+    println!("  valid_before: {valid_before}");
+
+    // Sign and encode the transaction
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let tx_hash = *envelope.tx_hash();
+    let encoded = envelope.encoded_2718();
+
+    println!("Transaction hash: {tx_hash}");
+
+    // Inject and mine
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    let payload = setup.node.advance_block().await?;
+
+    println!(
+        "✓ Expiring nonce transaction mined in block {}",
+        payload.block().inner.number
+    );
+
+    // Verify transaction was included - use raw RPC for Tempo tx type
+    let raw_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+
+    assert!(raw_receipt.is_some(), "Transaction receipt should exist");
+    let receipt = raw_receipt.unwrap();
+    let status = receipt["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status, "Transaction should succeed");
+
+    println!("✓ Expiring nonce transaction executed successfully");
+
+    // Verify alice's protocol nonce did NOT increment (expiring nonce doesn't use protocol nonce)
+    let alice_protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    assert_eq!(
+        alice_protocol_nonce, 0,
+        "Protocol nonce should remain 0 for expiring nonce transactions"
+    );
+    println!("✓ Protocol nonce unchanged (still 0)");
+
+    Ok(())
+}
+
+/// Test expiring nonce replay protection - same tx hash should be rejected
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_replay_protection() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Replay Protection ===\n");
+
+    let (mut setup, provider, alice_signer, _alice_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+    let recipient = Address::random();
+
+    // Advance a few blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    // Create expiring nonce transaction
+    let valid_before = current_timestamp + 25;
+
+    let tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: recipient.into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        ..Default::default()
+    };
+
+    // Sign and encode
+    let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+    let tx_hash = *envelope.tx_hash();
+    let encoded = envelope.encoded_2718();
+
+    println!("First submission - tx hash: {tx_hash}");
+
+    // First submission should succeed
+    setup.node.rpc.inject_tx(encoded.clone().into()).await?;
+    setup.node.advance_block().await?;
+
+    // Use raw RPC for Tempo tx type
+    let raw_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    assert!(raw_receipt.is_some(), "First transaction should be mined");
+    let status = raw_receipt.unwrap()["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status, "First transaction should succeed");
+    println!("✓ First submission succeeded");
+
+    // Second submission with SAME encoded tx (same hash) should fail
+    println!("\nSecond submission - attempting replay with same tx hash...");
+
+    // Try to inject the same transaction again - should be rejected at pool level
+    let replay_result = setup.node.rpc.inject_tx(encoded.clone().into()).await;
+
+    // The replay MUST be rejected at pool validation (we check seen[tx_hash] in validator)
+    assert!(
+        replay_result.is_err(),
+        "Replay should be rejected at transaction pool level"
+    );
+    println!("✓ Replay rejected at transaction pool level");
+
+    Ok(())
+}
+
+/// Test expiring nonce validity window - reject transactions outside the valid window
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_validity_window() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Validity Window ===\n");
+
+    let (mut setup, provider, alice_signer, _alice_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+
+    // Advance a few blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    println!("Current block timestamp: {current_timestamp}");
+    println!("Max expiry window: {TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS} seconds");
+
+    // TEST 1: valid_before exactly at max window (should succeed)
+    println!("\n--- TEST 1: valid_before at exactly max window (now + 30s) ---");
+    {
+        let recipient = Address::random();
+        let valid_before = current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS;
+
+        let tx = TempoTransaction {
+            chain_id,
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            gas_limit: 2_000_000,
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            valid_before: Some(valid_before),
+            ..Default::default()
+        };
+
+        let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+        let tx_hash = *envelope.tx_hash();
+
+        setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await?;
+        setup.node.advance_block().await?;
+
+        // Use raw RPC for Tempo tx type
+        let raw_receipt: Option<serde_json::Value> = provider
+            .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+            .await?;
+        let status = raw_receipt
+            .as_ref()
+            .and_then(|r| r["status"].as_str())
+            .map(|s| s == "0x1")
+            .unwrap_or(false);
+        assert!(
+            raw_receipt.is_some() && status,
+            "Transaction with valid_before at max window should succeed"
+        );
+        println!("✓ valid_before = now + 30s accepted");
+    }
+
+    // TEST 2: valid_before too far in future (should fail)
+    println!("\n--- TEST 2: valid_before too far in future (now + 31s) ---");
+    {
+        // Advance block to get fresh timestamp
+        setup.node.advance_block().await?;
+        let block = provider
+            .get_block_by_number(Default::default())
+            .await?
+            .unwrap();
+        let current_timestamp = block.header.timestamp();
+
+        let recipient = Address::random();
+        let valid_before = current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 1; // 31 seconds
+
+        let tx = TempoTransaction {
+            chain_id,
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            gas_limit: 2_000_000,
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            valid_before: Some(valid_before),
+            ..Default::default()
+        };
+
+        let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+
+        // This should be rejected at pool level with ExpiringNonceValidBeforeTooFar error
+        let inject_result = setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await;
+
+        let err = inject_result.expect_err(
+            "Transaction with valid_before too far in future should be rejected at pool level",
+        );
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("exceeds max allowed") || err_str.contains("valid_before"),
+            "Expected ExpiringNonceValidBeforeTooFar error, got: {err_str}"
+        );
+        println!("✓ valid_before = now + 31s rejected at pool level with expected error");
+    }
+
+    // TEST 3: valid_before in the past (should fail)
+    println!("\n--- TEST 3: valid_before in the past ---");
+    {
+        // Advance block to get fresh timestamp
+        setup.node.advance_block().await?;
+        let block = provider
+            .get_block_by_number(Default::default())
+            .await?
+            .unwrap();
+        let current_timestamp = block.header.timestamp();
+
+        let recipient = Address::random();
+        let valid_before = current_timestamp.saturating_sub(1); // 1 second in past
+
+        let tx = TempoTransaction {
+            chain_id,
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            gas_limit: 2_000_000,
+            calls: vec![Call {
+                to: recipient.into(),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            fee_token: Some(DEFAULT_FEE_TOKEN),
+            valid_before: Some(valid_before),
+            ..Default::default()
+        };
+
+        let aa_signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+        let envelope: TempoTxEnvelope = tx.into_signed(aa_signature).into();
+        let tx_hash = *envelope.tx_hash();
+
+        let inject_result = setup
+            .node
+            .rpc
+            .inject_tx(envelope.encoded_2718().into())
+            .await;
+
+        if inject_result.is_err() {
+            println!("✓ valid_before in past rejected at pool level");
+        } else {
+            setup.node.advance_block().await?;
+            // Use raw RPC for Tempo tx type
+            let raw_receipt: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+                .await?;
+            let status = raw_receipt
+                .as_ref()
+                .and_then(|r| r["status"].as_str())
+                .map(|s| s == "0x1")
+                .unwrap_or(false);
+            if raw_receipt.is_none() || !status {
+                println!("✓ valid_before in past rejected at execution level");
+            } else {
+                panic!("Transaction with valid_before in the past should be rejected");
+            }
+        }
+    }
+
+    println!("\n=== All Expiring Nonce Validity Window Tests Passed ===");
+    Ok(())
+}
+
+/// Test that expiring nonce transactions don't affect protocol nonce
+///
+/// This test demonstrates that expiring nonce transactions are independent from
+/// protocol nonce - alice can use expiring nonce, then use protocol nonce afterward.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing Expiring Nonce Independence from Protocol Nonce ===\n");
+
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    let chain_id = provider.get_chain_id().await?;
+
+    // Advance a few blocks to get a meaningful timestamp
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    // Step 1: Submit an expiring nonce transaction
+    println!("Step 1: Submit expiring nonce transaction...");
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 25;
+
+    let expiring_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+        nonce: 0,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(valid_before),
+        ..Default::default()
+    };
+
+    let aa_signature = sign_aa_tx_secp256k1(&expiring_tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = expiring_tx.into_signed(aa_signature).into();
+    let expiring_tx_hash = *envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
+    setup.node.advance_block().await?;
+
+    // Verify expiring tx succeeded
+    let raw_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [expiring_tx_hash])
+        .await?;
+    assert!(raw_receipt.is_some(), "Expiring nonce tx should be mined");
+    let status = raw_receipt.unwrap()["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status, "Expiring nonce tx should succeed");
+    println!("✓ Expiring nonce transaction succeeded");
+
+    // Verify protocol nonce is still 0
+    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    assert_eq!(
+        protocol_nonce, 0,
+        "Protocol nonce should be 0 after expiring nonce tx"
+    );
+    println!("✓ Protocol nonce still 0 after expiring nonce tx");
+
+    // Step 2: Now submit a protocol nonce transaction (nonce_key = 0)
+    println!("\nStep 2: Submit protocol nonce transaction...");
+    let protocol_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 2_000_000,
+        calls: vec![Call {
+            to: Address::random().into(),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        }],
+        nonce_key: U256::ZERO, // Protocol nonce
+        nonce: 0,              // First protocol tx
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        valid_before: Some(u64::MAX),
+        ..Default::default()
+    };
+
+    let aa_signature = sign_aa_tx_secp256k1(&protocol_tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = protocol_tx.into_signed(aa_signature).into();
+    let protocol_tx_hash = *envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(envelope.encoded_2718().into())
+        .await?;
+    setup.node.advance_block().await?;
+
+    // Verify protocol tx succeeded
+    let raw_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [protocol_tx_hash])
+        .await?;
+    assert!(raw_receipt.is_some(), "Protocol nonce tx should be mined");
+    let status = raw_receipt.unwrap()["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status, "Protocol nonce tx should succeed");
+    println!("✓ Protocol nonce transaction succeeded");
+
+    // Verify protocol nonce incremented
+    let protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+    assert_eq!(
+        protocol_nonce, 1,
+        "Protocol nonce should be 1 after protocol tx"
+    );
+    println!("✓ Protocol nonce now 1 after protocol tx");
+
+    println!("\n✓ Expiring nonces are independent from protocol nonces");
 
     Ok(())
 }

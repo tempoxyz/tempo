@@ -139,6 +139,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                     nonce_key: nonce_key.unwrap_or_default(),
                     key_authorization,
                     signature_hash: B256::ZERO,
+                    tx_hash: B256::ZERO,
                     valid_before: None,
                     valid_after: None,
                     subblock_transaction: false,
