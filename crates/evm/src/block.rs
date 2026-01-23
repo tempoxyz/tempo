@@ -1089,7 +1089,10 @@ mod tests {
         );
     }
 
-    fn create_subblock_tx_with_gas(proposer: &PartialValidatorKey, gas_limit: u64) -> TempoTxEnvelope {
+    fn create_subblock_tx_with_gas(
+        proposer: &PartialValidatorKey,
+        gas_limit: u64,
+    ) -> TempoTxEnvelope {
         let mut nonce_bytes = [0u8; 32];
         nonce_bytes[0] = TEMPO_SUBBLOCK_NONCE_KEY_PREFIX;
         nonce_bytes[1..16].copy_from_slice(proposer.as_slice());
