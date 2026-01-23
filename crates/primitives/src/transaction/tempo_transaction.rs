@@ -506,8 +506,8 @@ impl TempoTransaction {
         let max_priority_fee_per_gas = Decodable::decode(buf)?;
         let max_fee_per_gas = Decodable::decode(buf)?;
         let gas_limit = Decodable::decode(buf)?;
-        let calls: Vec<Call> = Decodable::decode(buf)?;
-        let access_list: AccessList = Decodable::decode(buf)?;
+        let calls = Decodable::decode(buf)?;
+        let access_list = Decodable::decode(buf)?;
         let nonce_key = Decodable::decode(buf)?;
         let nonce = Decodable::decode(buf)?;
 
@@ -569,7 +569,7 @@ impl TempoTransaction {
         // KeyAuthorization is encoded as a list, so it would start with 0xc0-0xf7 (short list) or 0xf8-0xff (long list)
         // If it's a bytes string (0x80-0xbf for short, 0xb8-0xbf for long), it's not a
         // KeyAuthorization and most likely a signature bytes following the AA transaction.
-        let key_authorization: Option<SignedKeyAuthorization> = if let Some(&first) = buf.first() {
+        let key_authorization = if let Some(&first) = buf.first() {
             // Check if this looks like an RLP list (KeyAuthorization is always a list)
             if first >= 0xc0 {
                 // This could be a KeyAuthorization
