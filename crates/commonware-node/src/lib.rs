@@ -32,6 +32,18 @@ use tempo_native_bridge::{
     gossip::P2pGossip,
 };
 
+#[cfg(feature = "bridge")]
+use commonware_codec::ReadExt as _;
+
+#[cfg(feature = "bridge")]
+use reth_ethereum::chainspec::EthChainSpec;
+
+#[cfg(feature = "bridge")]
+use alloy_consensus::BlockHeader as _;
+
+#[cfg(feature = "bridge")]
+use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
+
 use crate::config::PEERSETS_TO_TRACK;
 pub use crate::config::{
     BRIDGE_CHANNEL_IDENT, BRIDGE_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
@@ -97,6 +109,24 @@ pub async fn run_consensus_stack(
 
     #[cfg(feature = "bridge")]
     let bridge_channel = network.register(BRIDGE_CHANNEL_IDENT, BRIDGE_LIMIT, message_backlog);
+
+    // Extract sharing from genesis for bridge (must happen before execution_node is moved)
+    #[cfg(feature = "bridge")]
+    let bridge_sharing = if config.bridge.enabled {
+        let chain_spec = execution_node.chain_spec();
+        let genesis_header = chain_spec.genesis_header();
+        let extra_data = genesis_header.extra_data();
+        
+        if extra_data.is_empty() {
+            return Err(eyre::eyre!("genesis extraData is empty - cannot extract DKG sharing for bridge"));
+        }
+        
+        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref())
+            .map_err(|e| eyre::eyre!("failed to parse DKG outcome from genesis extraData: {e}"))?;
+        Some(outcome.sharing().clone())
+    } else {
+        None
+    };
 
     let fee_recipient = config
         .fee_recipient
@@ -168,9 +198,15 @@ pub async fn run_consensus_stack(
         let bridge_share = share.clone()
             .ok_or_else(|| eyre::eyre!("--consensus.signing-share is required when --bridge.enabled is set"))?;
 
-        // Load sharing from the bridge config file for now
-        // TODO: In the future, get this from OnchainDkgOutcome
-        let sharing = tempo_native_bridge::sidecar::load_sharing(&bridge_file_config.threshold.sharing_file)?;
+        // Use pre-extracted sharing from genesis
+        let sharing = bridge_sharing
+            .ok_or_else(|| eyre::eyre!("bridge sharing not extracted - this should not happen"))?;
+        
+        tracing::info!(
+            threshold = sharing.required::<commonware_utils::N3f1>(),
+            total = sharing.total().get(),
+            "bridge: using sharing polynomial from genesis"
+        );
 
         let service_config = BridgeServiceConfig {
             chains: bridge_file_config.chains,

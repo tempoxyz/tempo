@@ -39,7 +39,9 @@ impl BridgeSidecar {
         let signer = BLSSigner::from_file(&signer_config.bls_key_share_file)?;
 
         // Load sharing from file
-        let sharing = load_sharing(&config.threshold.sharing_file)?;
+        let sharing_file = config.threshold.sharing_file.as_ref()
+            .ok_or_else(|| crate::error::BridgeError::Config("[threshold].sharing_file required in standalone mode".into()))?;
+        let sharing = load_sharing(sharing_file)?;
 
         let aggregator = Arc::new(Mutex::new(Aggregator::new(sharing, config.threshold.epoch)));
 
