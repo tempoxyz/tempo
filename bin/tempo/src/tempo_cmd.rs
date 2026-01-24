@@ -1,5 +1,6 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs::OpenOptions, path::PathBuf, sync::Arc};
 
+use alloy_primitives::Address;
 use alloy_provider::Provider;
 
 use alloy_rpc_types_eth::TransactionRequest;
@@ -10,7 +11,7 @@ use commonware_consensus::types::{Epocher as _, FixedEpocher, Height};
 use commonware_cryptography::{Signer as _, ed25519::PrivateKey};
 use commonware_math::algebra::Random as _;
 use commonware_utils::NZU64;
-use eyre::{Context, OptionExt as _, eyre};
+use eyre::{OptionExt as _, Report, WrapErr as _, eyre};
 use reth_cli_runner::CliRunner;
 use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
@@ -61,18 +62,28 @@ pub(crate) struct GeneratePrivateKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
+
+    /// Whether to override `output`, if it already exists.
+    #[arg(long, short)]
+    force: bool,
 }
 
 impl GeneratePrivateKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { output } = self;
+        let Self { output, force } = self;
         let signing_key = PrivateKey::random(&mut rand::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
-        signing_key
-            .write_to_file(&output)
+        OpenOptions::new()
+            .write(true)
+            .create_new(!force)
+            .create(force)
+            .truncate(force)
+            .open(&output)
+            .map_err(Report::new)
+            .and_then(|f| signing_key.to_writer(f).map_err(Report::new))
             .wrap_err_with(|| format!("failed writing private key to `{}`", output.display()))?;
-        println!(
+        eprintln!(
             "wrote private key to: {}\npublic key: {public_key}",
             output.display()
         );
@@ -124,6 +135,8 @@ struct ValidatorInfoOutput {
 /// Individual validator entry
 #[derive(Debug, Serialize)]
 struct ValidatorEntry {
+    /// onchain address of the validator
+    onchain_address: Address,
     /// ed25519 public key (hex)
     public_key: String,
     /// Inbound IP address for p2p connections
@@ -256,18 +269,20 @@ impl ValidatorsInfo {
         for player in players.into_iter() {
             let pubkey_bytes: [u8; 32] = player.as_ref().try_into().wrap_err("invalid pubkey")?;
 
-            let (active, inbound, outbound) =
+            let (onchain_address, active, inbound, outbound) =
                 if let Some(v) = contract_validators.get(&pubkey_bytes) {
                     (
+                        v.validatorAddress,
                         v.active,
                         v.inboundAddress.clone(),
                         v.outboundAddress.clone(),
                     )
                 } else {
-                    (false, String::new(), String::new())
+                    (Address::ZERO, false, String::new(), String::new())
                 };
 
             validator_entries.push(ValidatorEntry {
+                onchain_address,
                 public_key: alloy_primitives::hex::encode(pubkey_bytes),
                 inbound_address: inbound,
                 outbound_address: outbound,

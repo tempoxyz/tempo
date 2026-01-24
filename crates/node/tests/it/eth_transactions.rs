@@ -6,7 +6,7 @@ use alloy::{
     signers::local::MnemonicBuilder,
 };
 use alloy_network::TransactionResponse;
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
@@ -26,8 +26,8 @@ async fn test_get_transaction_by_sender_and_nonce() -> eyre::Result<()> {
     let mint_amount = U256::from(1000000u64);
     let pending_tx = token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_BASE_FEE as u128)
-        .gas(300_000)
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
         .send()
         .await?;
 

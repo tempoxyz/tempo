@@ -14,7 +14,11 @@ use reth_transaction_pool::{
     EthTransactionValidator, PoolTransaction, TransactionOrigin, TransactionValidationOutcome,
     TransactionValidator, error::InvalidPoolTransactionError,
 };
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use revm::context_interface::cfg::GasId;
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{AccountKeychain, AuthorizedKey},
@@ -30,6 +34,8 @@ use tempo_primitives::{
 use tempo_revm::{
     EXISTING_NONCE_KEY_GAS, NEW_NONCE_KEY_GAS, TempoBatchCallEnv, TempoStateAccess,
     calculate_aa_batch_intrinsic_gas,
+    gas_params::{TempoGasParams, tempo_gas_params},
+    handler::EXPIRING_NONCE_GAS,
 };
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
@@ -43,6 +49,18 @@ pub const MAX_AA_CALLS: usize = 32;
 
 /// Maximum size of input data per call in bytes (128KB, DoS protection).
 pub const MAX_CALL_INPUT_SIZE: usize = 128 * 1024;
+
+/// Maximum number of accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_ACCOUNTS: usize = 256;
+
+/// Maximum number of storage keys per account in the access list (DoS protection).
+pub const MAX_STORAGE_KEYS_PER_ACCOUNT: usize = 256;
+
+/// Maximum total number of storage keys across all accounts in the access list (DoS protection).
+pub const MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL: usize = 2048;
+
+/// Maximum number of token limits in a KeyAuthorization (DoS protection).
+pub const MAX_TOKEN_LIMITS: usize = 256;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
@@ -91,15 +109,19 @@ where
     /// - ValidateKeychain: Need to validate the keychain authorization
     /// - Skip: No validation needed (not a keychain signature, or same-tx auth is valid)
     /// - Reject: Transaction should be rejected with the given reason
+    ///
+    /// Returns `Ok(Ok(()))` if validation passes, `Ok(Err(...))` for validation failures,
+    /// or `Err(...)` for provider errors.
     fn validate_against_keychain(
         &self,
         transaction: &TempoPooledTransaction,
         state_provider: &impl StateProvider,
-    ) -> Result<Result<(), &'static str>, ProviderError> {
+    ) -> Result<Result<(), TempoPoolTransactionError>, ProviderError> {
         let Some(tx) = transaction.inner().as_aa() else {
             return Ok(Ok(()));
         };
 
+        let current_time = self.inner.fork_tracker().tip_timestamp();
         let auth = tx.tx().key_authorization.as_ref();
 
         // Ensure that key auth is valid if present.
@@ -109,15 +131,28 @@ where
                 .recover_signer()
                 .is_ok_and(|signer| signer == transaction.sender())
             {
-                return Ok(Err("Invalid KeyAuthorization signature"));
+                return Ok(Err(TempoPoolTransactionError::Keychain(
+                    "Invalid KeyAuthorization signature",
+                )));
             }
 
             // Validate chain_id (chain_id == 0 is wildcard, works on any chain)
             let chain_id = self.inner.chain_spec().chain_id();
             if auth.chain_id != 0 && auth.chain_id != chain_id {
-                return Ok(Err(
+                return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization chain_id does not match current chain",
-                ));
+                )));
+            }
+
+            // Validate KeyAuthorization expiry - reject if already expired
+            // This prevents expired same-tx authorizations from entering the pool
+            if let Some(expiry) = auth.expiry
+                && expiry <= current_time
+            {
+                return Ok(Err(TempoPoolTransactionError::KeyAuthorizationExpired {
+                    expiry,
+                    current_time,
+                }));
             }
         }
 
@@ -127,22 +162,24 @@ where
 
         // This should never fail because we set sender based on the sig.
         if sig.user_address != transaction.sender() {
-            return Ok(Err("Keychain signature user_address does not match sender"));
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "Keychain signature user_address does not match sender",
+            )));
         }
 
         // This should fail happen because we validate the signature validity in `recover_signer`.
         let Ok(key_id) = sig.key_id(&tx.signature_hash()) else {
-            return Ok(Err(
+            return Ok(Err(TempoPoolTransactionError::Keychain(
                 "Failed to recover access key ID from Keychain signature",
-            ));
+            )));
         };
 
         // Ensure that if key auth is present, it is for the same key as the keychain signature.
         if let Some(auth) = auth {
             if auth.key_id != key_id {
-                return Ok(Err(
+                return Ok(Err(TempoPoolTransactionError::Keychain(
                     "KeyAuthorization key_id does not match Keychain signature key_id",
-                ));
+                )));
             }
 
             // KeyAuthorization is valid - skip keychain storage check (key will be authorized during execution)
@@ -162,15 +199,27 @@ where
 
         // Check if key was revoked (revoked keys cannot be used)
         if authorized_key.is_revoked {
-            return Ok(Err("access key has been revoked"));
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "access key has been revoked",
+            )));
         }
 
         // Check if key exists (key exists if expiry > 0)
         if authorized_key.expiry == 0 {
-            return Ok(Err("access key does not exist"));
+            return Ok(Err(TempoPoolTransactionError::Keychain(
+                "access key does not exist",
+            )));
         }
 
-        // Expiry checks are skipped here, they are done in the EVM handler where block timestamp is easily available.
+        // Check if key has expired - reject transactions using expired access keys
+        // This prevents expired keychain transactions from entering/persisting in the pool
+        if authorized_key.expiry <= current_time {
+            return Ok(Err(TempoPoolTransactionError::AccessKeyExpired {
+                expiry: authorized_key.expiry,
+                current_time,
+            }));
+        }
+
         Ok(Ok(()))
     }
 
@@ -273,6 +322,7 @@ where
     fn ensure_aa_intrinsic_gas(
         &self,
         transaction: &TempoPooledTransaction,
+        spec: TempoHardfork,
     ) -> Result<(), TempoPoolTransactionError> {
         let Some(aa_tx) = transaction.inner().as_aa() else {
             return Ok(());
@@ -300,13 +350,25 @@ where
         };
 
         // Calculate the intrinsic gas for the AA transaction
+        let gas_params = tempo_gas_params(spec);
+
         let mut init_and_floor_gas =
-            calculate_aa_batch_intrinsic_gas(&aa_env, Some(tx.access_list.iter()))
+            calculate_aa_batch_intrinsic_gas(&aa_env, &gas_params, Some(tx.access_list.iter()))
                 .map_err(|_| TempoPoolTransactionError::NonZeroValue)?;
 
-        // Add 2D nonce gas if nonce_key is non-zero
+        // Add nonce gas based on hardfork
         // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-        if !tx.nonce_key.is_zero() {
+        if spec.is_t1() {
+            // Expiring nonce transactions
+            if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                init_and_floor_gas.initial_gas += EXPIRING_NONCE_GAS;
+            } else if tx.nonce == 0 {
+                // TIP-1000: Storage pricing updates for launch
+                // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
+                init_and_floor_gas.initial_gas += gas_params.get(GasId::new_account_cost());
+            }
+        } else if !tx.nonce_key.is_zero() {
+            // Pre-T1: Add 2D nonce gas if nonce_key is non-zero
             if tx.nonce == 0 {
                 // New key - cold SLOAD + SSTORE set (0 -> non-zero)
                 init_and_floor_gas.initial_gas += NEW_NONCE_KEY_GAS;
@@ -341,15 +403,12 @@ where
         Ok(())
     }
 
-    /// Validates the size of calls in an AA transaction.
+    /// Validates AA transaction field limits (calls, access list, token limits).
     ///
-    /// This prevents DoS attacks where attackers send transactions with:
-    /// - Too many calls (exceeding `MAX_AA_CALLS`)
-    /// - Calls with oversized input data (exceeding `MAX_CALL_INPUT_SIZE`)
-    ///
-    /// These limits are enforced at the pool level rather than RLP decoding to keep
-    /// the core transaction format flexible while still protecting validators.
-    fn ensure_aa_call_limits(
+    /// These limits are enforced at the pool level rather than RLP decoding to:
+    /// - Keep the core transaction format flexible
+    /// - Allow peer penalization for sending bad transactions
+    fn ensure_aa_field_limits(
         &self,
         transaction: &TempoPooledTransaction,
     ) -> Result<(), TempoPoolTransactionError> {
@@ -357,18 +416,18 @@ where
             return Ok(());
         };
 
-        let calls = &aa_tx.tx().calls;
+        let tx = aa_tx.tx();
 
         // Check number of calls
-        if calls.len() > MAX_AA_CALLS {
+        if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
-                count: calls.len(),
+                count: tx.calls.len(),
                 max_allowed: MAX_AA_CALLS,
             });
         }
 
         // Check each call's input size
-        for (idx, call) in calls.iter().enumerate() {
+        for (idx, call) in tx.calls.iter().enumerate() {
             if call.input.len() > MAX_CALL_INPUT_SIZE {
                 return Err(TempoPoolTransactionError::CallInputTooLarge {
                     call_index: idx,
@@ -376,6 +435,45 @@ where
                     max_allowed: MAX_CALL_INPUT_SIZE,
                 });
             }
+        }
+
+        // Check access list accounts
+        if tx.access_list.len() > MAX_ACCESS_LIST_ACCOUNTS {
+            return Err(TempoPoolTransactionError::TooManyAccessListAccounts {
+                count: tx.access_list.len(),
+                max_allowed: MAX_ACCESS_LIST_ACCOUNTS,
+            });
+        }
+
+        // Check storage keys per account and total
+        let mut total_storage_keys = 0usize;
+        for (idx, entry) in tx.access_list.iter().enumerate() {
+            if entry.storage_keys.len() > MAX_STORAGE_KEYS_PER_ACCOUNT {
+                return Err(TempoPoolTransactionError::TooManyStorageKeysPerAccount {
+                    account_index: idx,
+                    count: entry.storage_keys.len(),
+                    max_allowed: MAX_STORAGE_KEYS_PER_ACCOUNT,
+                });
+            }
+            total_storage_keys = total_storage_keys.saturating_add(entry.storage_keys.len());
+        }
+
+        if total_storage_keys > MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL {
+            return Err(TempoPoolTransactionError::TooManyTotalStorageKeys {
+                count: total_storage_keys,
+                max_allowed: MAX_ACCESS_LIST_STORAGE_KEYS_TOTAL,
+            });
+        }
+
+        // Check token limits in key_authorization
+        if let Some(ref key_auth) = tx.key_authorization
+            && let Some(ref limits) = key_auth.limits
+            && limits.len() > MAX_TOKEN_LIMITS
+        {
+            return Err(TempoPoolTransactionError::TooManyTokenLimits {
+                count: limits.len(),
+                max_allowed: MAX_TOKEN_LIMITS,
+            });
         }
 
         Ok(())
@@ -387,6 +485,12 @@ where
         transaction: TempoPooledTransaction,
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
+        // Get the current hardfork based on tip timestamp
+        let spec = self
+            .inner
+            .chain_spec()
+            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
             return TransactionValidationOutcome::Error(
@@ -398,10 +502,10 @@ where
         // Validate transactions that involve keychain keys
         match self.validate_against_keychain(&transaction, &state_provider) {
             Ok(Ok(())) => {}
-            Ok(Err(reason)) => {
+            Ok(Err(err)) => {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
-                    InvalidPoolTransactionError::other(TempoPoolTransactionError::Keychain(reason)),
+                    InvalidPoolTransactionError::other(err),
                 );
             }
             Err(err) => {
@@ -441,16 +545,16 @@ where
         // This ensures the gas limit covers all AA-specific costs (per-call overhead,
         // signature verification, etc.) to prevent mempool DoS attacks where transactions
         // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction) {
+        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
             );
         }
 
-        // Validate AA transaction call limits (number of calls and input sizes).
+        // Validate AA transaction field limits (calls, access list, token limits).
         // This prevents DoS attacks via oversized transactions.
-        if let Err(err) = self.ensure_aa_call_limits(&transaction) {
+        if let Err(err) = self.ensure_aa_field_limits(&transaction) {
             return TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidPoolTransactionError::other(err),
@@ -463,11 +567,6 @@ where
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
         };
-
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
 
         let fee_token = match state_provider.get_fee_token(transaction.inner(), fee_payer, spec) {
             Ok(fee_token) => fee_token,
@@ -571,6 +670,11 @@ where
             }
         }
 
+        // validate intrinsic gas with additional TIP-1000 and T1 checks
+        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
+        }
+
         match self
             .inner
             .validate_one_with_state_provider(origin, transaction, &state_provider)
@@ -672,6 +776,46 @@ where
             }
             outcome => outcome,
         }
+    }
+}
+
+/// Ensures that gas limit of the transaction exceeds the intrinsic gas of the transaction.
+pub fn ensure_intrinsic_gas_tempo_tx(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+) -> Result<(), InvalidPoolTransactionError> {
+    let gas_params = tempo_gas_params(spec);
+
+    let mut gas = gas_params.initial_tx_gas(
+        tx.input(),
+        tx.is_create(),
+        tx.access_list().map(|l| l.len()).unwrap_or_default() as u64,
+        tx.access_list()
+            .map(|l| l.iter().map(|i| i.storage_keys.len()).sum::<usize>())
+            .unwrap_or_default() as u64,
+        tx.authorization_list().map(|l| l.len()).unwrap_or_default() as u64,
+    );
+
+    // TIP-1000: Storage pricing updates for launch
+    // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+    // no need for v1 fork check as gas_params would be zero
+    for auth in tx.authorization_list().unwrap_or_default() {
+        if auth.nonce == 0 {
+            gas.initial_gas += gas_params.tx_tip1000_auth_account_creation_cost();
+        }
+    }
+
+    // TIP-1000: Storage pricing updates for launch
+    // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+    if spec.is_t1() && tx.nonce() == 0 {
+        gas.initial_gas += gas_params.get(GasId::new_account_cost());
+    }
+
+    let gas_limit = tx.gas_limit();
+    if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+    } else {
+        Ok(())
     }
 }
 
@@ -1151,8 +1295,8 @@ mod tests {
             ),
         }
 
-        // Test 2: 100k gas should pass intrinsic gas check
-        let tx_high_gas = create_aa_tx(100_000);
+        // Test 2: 1M gas should pass intrinsic gas check
+        let tx_high_gas = create_aa_tx(1_000_000);
         let validator = setup_validator(&tx_high_gas, current_time);
         let outcome = validator
             .validate_transaction(TransactionOrigin::External, tx_high_gas)
@@ -1303,7 +1447,7 @@ mod tests {
                 chain_id: 42431, // MODERATO chain_id
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 2_000_000_000,
-                gas_limit: 100_000,
+                gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                     value: U256::ZERO,
@@ -1470,9 +1614,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("access key has been revoked"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "access key has been revoked"
+                    ))
+                ),
                 "Revoked key should be rejected"
             );
         }
@@ -1503,9 +1651,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("access key does not exist"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "access key does not exist"
+                    ))
+                ),
                 "Non-existent key should be rejected"
             );
         }
@@ -1528,9 +1680,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("access key does not exist"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "access key does not exist"
+                    ))
+                ),
                 "Missing storage should result in non-existent key error"
             );
         }
@@ -1615,9 +1771,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("KeyAuthorization chain_id does not match current chain"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization chain_id does not match current chain"
+                    ))
+                ),
                 "Wrong chain_id should be rejected"
             );
         }
@@ -1703,9 +1863,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("KeyAuthorization key_id does not match Keychain signature key_id"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "KeyAuthorization key_id does not match Keychain signature key_id"
+                    ))
+                ),
                 "Mismatched key_id should be rejected"
             );
         }
@@ -1748,9 +1912,13 @@ mod tests {
             let state_provider = validator.inner.client().latest().unwrap();
 
             let result = validator.validate_against_keychain(&transaction, &state_provider);
-            assert_eq!(
-                result.expect("should not be a provider error"),
-                Err("Invalid KeyAuthorization signature"),
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::Keychain(
+                        "Invalid KeyAuthorization signature"
+                    ))
+                ),
                 "Invalid KeyAuthorization signature should be rejected"
             );
         }
@@ -1765,7 +1933,7 @@ mod tests {
                 chain_id: 42431,
                 max_priority_fee_per_gas: 1_000_000_000,
                 max_fee_per_gas: 2_000_000_000,
-                gas_limit: 100_000,
+                gas_limit: 1_000_000,
                 calls: vec![Call {
                     to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                     value: U256::ZERO,
@@ -1834,6 +2002,360 @@ mod tests {
             );
             Ok(())
         }
+
+        /// Setup validator with keychain storage and a specific tip timestamp.
+        fn setup_validator_with_keychain_storage_and_timestamp(
+            transaction: &TempoPooledTransaction,
+            user_address: Address,
+            key_id: Address,
+            authorized_key_slot_value: Option<U256>,
+            tip_timestamp: u64,
+        ) -> TempoTransactionValidator<
+            MockEthProvider<reth_ethereum_primitives::EthPrimitives, TempoChainSpec>,
+        > {
+            let provider =
+                MockEthProvider::default().with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()));
+
+            // Add sender account
+            provider.add_account(
+                transaction.sender(),
+                ExtendedAccount::new(transaction.nonce(), U256::ZERO),
+            );
+
+            // Create block with proper timestamp
+            let block = reth_ethereum_primitives::Block {
+                header: Header {
+                    timestamp: tip_timestamp,
+                    gas_limit: 30_000_000,
+                    ..Default::default()
+                },
+                body: Default::default(),
+            };
+            provider.add_block(B256::random(), block);
+
+            // If slot value provided, setup AccountKeychain storage
+            if let Some(slot_value) = authorized_key_slot_value {
+                let storage_slot = AccountKeychain::new().keys[user_address][key_id].base_slot();
+                provider.add_account(
+                    ACCOUNT_KEYCHAIN_ADDRESS,
+                    ExtendedAccount::new(0, U256::ZERO)
+                        .extend_storage([(storage_slot.into(), slot_value)]),
+                );
+            }
+
+            let inner = EthTransactionValidatorBuilder::new(provider.clone())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+            let amm_cache =
+                AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+            let validator = TempoTransactionValidator::new(
+                inner,
+                3600,
+                DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+                amm_cache,
+            );
+
+            // Set the tip timestamp
+            let mock_block = create_mock_block(tip_timestamp);
+            validator.on_new_head_block(&mock_block);
+
+            validator
+        }
+
+        #[test]
+        fn test_stored_access_key_expired_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+            let current_time = 1000u64;
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with an expired key (expiry in the past)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time - 1, // Expired (in the past)
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::AccessKeyExpired { expiry, current_time: ct })
+                    if expiry == current_time - 1 && ct == current_time
+                ),
+                "Expired access key should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_stored_access_key_expiry_at_current_time_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+            let current_time = 1000u64;
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with expiry == current_time (edge case: expired)
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time, // Expiry at exactly current time should be rejected
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::AccessKeyExpired { .. })
+                ),
+                "Access key with expiry == current_time should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_stored_access_key_valid_expiry_accepted() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let user_address = Address::random();
+            let current_time = 1000u64;
+
+            let transaction =
+                create_aa_with_keychain_signature(user_address, &access_key_signer, None);
+
+            // Setup storage with a future expiry
+            let slot_value = AuthorizedKey {
+                signature_type: 0,
+                expiry: current_time + 100, // Valid (in the future)
+                enforce_limits: false,
+                is_revoked: false,
+            }
+            .encode_to_slot();
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                Some(slot_value),
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "Access key with future expiry should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_expired_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+
+            // Create KeyAuthorization with expired expiry
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: Some(current_time - 1), // Expired
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::KeyAuthorizationExpired { expiry, current_time: ct })
+                    if expiry == current_time - 1 && ct == current_time
+                ),
+                "Expired KeyAuthorization should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_expiry_at_current_time_rejected() {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+
+            // Create KeyAuthorization with expiry == current_time
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: Some(current_time), // Expired at exactly current time
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider);
+            assert!(
+                matches!(
+                    result.expect("should not be a provider error"),
+                    Err(TempoPoolTransactionError::KeyAuthorizationExpired { .. })
+                ),
+                "KeyAuthorization with expiry == current_time should be rejected"
+            );
+        }
+
+        #[test]
+        fn test_key_authorization_valid_expiry_accepted() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+
+            // Create KeyAuthorization with future expiry
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: Some(current_time + 100), // Valid (in the future)
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "KeyAuthorization with future expiry should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn test_key_authorization_no_expiry_accepted() -> Result<(), ProviderError> {
+            let (access_key_signer, access_key_address) = generate_keypair();
+            let (user_signer, user_address) = generate_keypair();
+            let current_time = 1000u64;
+
+            // Create KeyAuthorization with no expiry (None = never expires)
+            let key_auth = KeyAuthorization {
+                chain_id: 42431,
+                key_type: SignatureType::Secp256k1,
+                key_id: access_key_address,
+                expiry: None, // Never expires
+                limits: None,
+            };
+
+            let auth_sig_hash = key_auth.signature_hash();
+            let auth_signature = user_signer
+                .sign_hash_sync(&auth_sig_hash)
+                .expect("signing failed");
+            let signed_key_auth =
+                key_auth.into_signed(PrimitiveSignature::Secp256k1(auth_signature));
+
+            let transaction = create_aa_with_keychain_signature(
+                user_address,
+                &access_key_signer,
+                Some(signed_key_auth),
+            );
+
+            let validator = setup_validator_with_keychain_storage_and_timestamp(
+                &transaction,
+                user_address,
+                access_key_address,
+                None,
+                current_time,
+            );
+            let state_provider = validator.inner.client().latest().unwrap();
+
+            let result = validator.validate_against_keychain(&transaction, &state_provider)?;
+            assert!(
+                result.is_ok(),
+                "KeyAuthorization with no expiry should be accepted, got: {result:?}"
+            );
+            Ok(())
+        }
     }
 
     // ============================================
@@ -1874,7 +2396,7 @@ mod tests {
             chain_id: 1,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(address!("0000000000000000000000000000000000000001")),
                 value: U256::ZERO,

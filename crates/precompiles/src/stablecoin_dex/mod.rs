@@ -1148,16 +1148,17 @@ impl StablecoinDEX {
             };
 
             let amount_out_tick = if is_bid {
-                // Round down amount_out_tick (user receives less quote)
+                // Round down amount_out_tick (user receives less quote).
+                // Cap at remaining_out to avoid underflow from round-trip rounding:
+                // when tick > 0, base_to_quote(quote_to_base(x, Up), Down) can exceed x by 1.
                 base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
                     .ok_or(TempoPrecompileError::under_overflow())?
+                    .min(remaining_out)
             } else {
                 fill_amount
             };
 
-            remaining_out = remaining_out
-                .checked_sub(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            remaining_out = remaining_out.saturating_sub(amount_out_tick);
             amount_in = amount_in
                 .checked_add(amount_in_tick)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -2168,6 +2169,43 @@ mod tests {
             let expected_amount_in =
                 (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
             assert_eq!(amount_in, expected_amount_in);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_quote_exact_out_bid_positive_tick_no_underflow() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+            exchange.initialize()?;
+
+            let alice = Address::random();
+            let admin = Address::random();
+
+            let (base_token, quote_token) =
+                setup_test_tokens(admin, alice, exchange.address, 200_000_000u128)?;
+            exchange.create_pair(base_token)?;
+
+            let tick = 10;
+            let order_amount = MIN_ORDER_AMOUNT;
+            exchange.place(alice, base_token, order_amount, true, tick)?;
+
+            for amount_out in [100_001u128, 100_003, 100_007, 100_009, 100_011] {
+                let amount_in = exchange
+                    .quote_swap_exact_amount_out(base_token, quote_token, amount_out)
+                    .unwrap_or_else(|_| {
+                        panic!("quote_exact_out should not underflow for amount_out={amount_out}")
+                    });
+
+                let expected =
+                    orderbook::quote_to_base(amount_out, tick, RoundingDirection::Up).unwrap();
+                assert_eq!(
+                    amount_in, expected,
+                    "amount_in should equal quote_to_base(amount_out, tick, Up) for amount_out={amount_out}"
+                );
+            }
 
             Ok(())
         })

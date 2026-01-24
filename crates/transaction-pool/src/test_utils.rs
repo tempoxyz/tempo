@@ -63,7 +63,7 @@ impl Default for TxBuilder {
             sender: Address::random(),
             nonce_key: U256::ZERO,
             nonce: 0,
-            gas_limit: 100_000,
+            gas_limit: 1_000_000,
             value: U256::ZERO,
             max_priority_fee_per_gas: 1_000_000_000,
             max_fee_per_gas: 2_000_000_000,

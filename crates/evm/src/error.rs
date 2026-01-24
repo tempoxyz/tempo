@@ -3,7 +3,7 @@
 use reth_consensus::ConsensusError;
 
 /// Errors that can occur during EVM configuration and execution.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum TempoEvmError {
     /// Error decoding fee lane data from extra data field.
     #[error("failed to decode fee lane data: {0}")]

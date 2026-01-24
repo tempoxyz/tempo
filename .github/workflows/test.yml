@@ -3,9 +3,24 @@ name: Test
 on:
   push:
     branches: [main]
+    paths:
+      - "crates/**"
+      - "bin/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/test.yml"
   pull_request:
+    paths:
+      - "crates/**"
+      - "bin/**"
+      - "xtask/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/test.yml"
   merge_group:
-
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

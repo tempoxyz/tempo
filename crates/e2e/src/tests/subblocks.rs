@@ -19,7 +19,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::ConsensusEngineEvent;
 use reth_node_core::primitives::transaction::TxHashRef;
-use tempo_chainspec::spec::{SYSTEM_TX_COUNT, TEMPO_BASE_FEE};
+use tempo_chainspec::spec::{SYSTEM_TX_COUNT, TEMPO_T1_BASE_FEE};
 use tempo_node::primitives::{
     SubBlockMetadata, TempoTransaction, TempoTxEnvelope,
     subblock::{PartialValidatorKey, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -242,7 +242,7 @@ fn subblocks_are_included_with_failing_txs() {
                 *expected_fees.entry(fee_recipient).or_insert(U256::ZERO) +=
                     calc_gas_balance_spending(
                         receipt.cumulative_gas_used - cumulative_gas_used,
-                        TEMPO_BASE_FEE as u128,
+                        TEMPO_T1_BASE_FEE as u128,
                     );
                 cumulative_gas_used = receipt.cumulative_gas_used;
 
@@ -296,12 +296,14 @@ fn subblocks_are_included_with_failing_txs() {
             }
 
             // Send subblock transactions to all nodes.
+            // TIP-1000 charges 250k gas for new account creation, so txs from random signers
+            // need ~300k intrinsic gas. With 600k per-validator budget (5 validators), we fit 2 txs.
             for node in nodes.iter() {
                 for _ in 0..5 {
                     // Randomly submit some of the transactions from a new signer that doesn't have any funds
                     if rand::random::<bool>() {
                         let tx =
-                            submit_subblock_tx_from(node, &PrivateKeySigner::random(), 100_000)
+                            submit_subblock_tx_from(node, &PrivateKeySigner::random(), 1_000_000)
                                 .await;
                         failing_transactions.push(tx);
                         expected_transactions.push(tx);
@@ -393,7 +395,7 @@ async fn submit_subblock_tx<TClock: commonware_runtime::Clock>(
     ))
     .unwrap();
 
-    submit_subblock_tx_from(node, &wallet, 100_000).await
+    submit_subblock_tx_from(node, &wallet, 300_000).await
 }
 
 async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
@@ -407,7 +409,7 @@ async fn submit_subblock_tx_from<TClock: commonware_runtime::Clock>(
 
     let provider = node.execution_provider();
 
-    let gas_price = TEMPO_BASE_FEE as u128;
+    let gas_price = TEMPO_T1_BASE_FEE as u128;
 
     let mut tx = TempoTransaction {
         chain_id: provider.chain_spec().chain_id(),

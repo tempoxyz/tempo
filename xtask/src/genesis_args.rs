@@ -36,7 +36,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
 };
-use tempo_chainspec::spec::TEMPO_BASE_FEE;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_commonware_node_config::{SigningKey, SigningShare};
 use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
@@ -81,10 +81,6 @@ pub(crate) struct GenesisArgs {
     /// Chain ID
     #[arg(long, short, default_value = "1337")]
     chain_id: u64,
-
-    /// Base fee
-    #[arg(long, default_value_t = TEMPO_BASE_FEE.into())]
-    base_fee_per_gas: u128,
 
     /// Genesis block gas limit
     #[arg(long, default_value_t = 500_000_000)]
@@ -151,7 +147,7 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value = "0")]
     t0_time: u64,
 
-    /// Timestamp for T1 hardfork activation (0 = genesis).
+    /// T1 hardfork activation time.
     #[arg(long, default_value = "0")]
     t1_time: u64,
 }
@@ -506,9 +502,16 @@ impl GenesisArgs {
             }
         }
 
+        // Base fee determined by hardfork: T1 active at genesis (t1_time=0) uses T1 fee
+        let base_fee: u128 = if self.t1_time == 0 {
+            TempoHardfork::T1.base_fee().into()
+        } else {
+            TempoHardfork::T0.base_fee().into()
+        };
+
         let mut genesis = Genesis::default()
             .with_gas_limit(self.gas_limit)
-            .with_base_fee(Some(self.base_fee_per_gas))
+            .with_base_fee(Some(base_fee))
             .with_nonce(0x42)
             .with_extra_data(extra_data)
             .with_coinbase(self.coinbase);
