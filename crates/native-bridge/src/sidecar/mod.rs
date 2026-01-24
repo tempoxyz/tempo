@@ -134,7 +134,7 @@ impl BridgeSidecar {
 /// Load a sharing from a hex-encoded file.
 ///
 /// Uses MinSig variant (same as consensus) so we can reuse the same DKG shares.
-fn load_sharing(path: &str) -> Result<Sharing<MinSig>> {
+pub fn load_sharing(path: &str) -> Result<Sharing<MinSig>> {
     use commonware_utils::NZU32;
 
     let hex_content = std::fs::read_to_string(path).map_err(|e| {

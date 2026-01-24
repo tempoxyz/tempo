@@ -15,6 +15,11 @@ pub mod attestation;
 pub mod config;
 pub mod eip2537;
 pub mod error;
+pub mod gossip;
 pub mod message;
+pub mod service;
 pub mod sidecar;
 pub mod signer;
+
+pub use gossip::{BridgeGossip, BridgeGossipMessage, MessageContext, NoOpGossip};
+pub use service::{BridgeService, BridgeServiceConfig};

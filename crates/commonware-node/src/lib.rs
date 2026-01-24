@@ -25,14 +25,22 @@ use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
 
-use crate::config::PEERSETS_TO_TRACK;
-pub use crate::config::{
-    BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
-    DKG_CHANNEL_IDENT, DKG_LIMIT, MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT,
-    RESOLVER_LIMIT, SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+#[cfg(feature = "bridge")]
+use tempo_native_bridge::{
+    BridgeService, BridgeServiceConfig,
+    config::Config as BridgeConfig,
+    gossip::P2pGossip,
 };
 
-pub use args::Args;
+use crate::config::PEERSETS_TO_TRACK;
+pub use crate::config::{
+    BRIDGE_CHANNEL_IDENT, BRIDGE_LIMIT, BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT,
+    CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT, DKG_CHANNEL_IDENT, DKG_LIMIT,
+    MARSHAL_CHANNEL_IDENT, MARSHAL_LIMIT, RESOLVER_CHANNEL_IDENT, RESOLVER_LIMIT,
+    SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, VOTES_CHANNEL_IDENT, VOTES_LIMIT,
+};
+
+pub use args::{Args, BridgeArgs};
 
 pub async fn run_consensus_stack(
     context: &commonware_runtime::tokio::Context,
@@ -87,6 +95,9 @@ pub async fn run_consensus_stack(
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
+    #[cfg(feature = "bridge")]
+    let bridge_channel = network.register(BRIDGE_CHANNEL_IDENT, BRIDGE_LIMIT, message_backlog);
+
     let fee_recipient = config
         .fee_recipient
         .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
@@ -100,7 +111,7 @@ pub async fn run_consensus_stack(
         // TODO: Set this through config?
         partition_prefix: "engine".into(),
         signer: signing_key.into_inner(),
-        share,
+        share: share.clone(),
 
         mailbox_size: config.mailbox_size,
         deque_size: config.deque_size,
@@ -146,6 +157,44 @@ pub async fn run_consensus_stack(
     .await
     .wrap_err("failed initializing consensus engine")?;
 
+    #[cfg(feature = "bridge")]
+    let bridge_handle = if config.bridge.enabled {
+        let bridge_config_path = config.bridge.config
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("--bridge.config is required when --bridge.enabled is set"))?;
+
+        let bridge_file_config = BridgeConfig::load(bridge_config_path)?;
+
+        let bridge_share = share.clone()
+            .ok_or_else(|| eyre::eyre!("--consensus.signing-share is required when --bridge.enabled is set"))?;
+
+        // Load sharing from the bridge config file for now
+        // TODO: In the future, get this from OnchainDkgOutcome
+        let sharing = tempo_native_bridge::sidecar::load_sharing(&bridge_file_config.threshold.sharing_file)?;
+
+        let service_config = BridgeServiceConfig {
+            chains: bridge_file_config.chains,
+            epoch: bridge_file_config.threshold.epoch,
+        };
+
+        // Create P2P gossip adapter from the registered bridge channel
+        let gossip = P2pGossip::new(bridge_channel.0, bridge_channel.1);
+
+        let bridge_service = BridgeService::with_gossip(bridge_share, sharing, service_config, gossip).await?;
+
+        tracing::info!("starting bridge service with P2P gossip");
+        Some(tokio::spawn(async move {
+            if let Err(e) = bridge_service.run().await {
+                tracing::error!("bridge service error: {e}");
+            }
+        }))
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "bridge"))]
+    let bridge_handle: Option<tokio::task::JoinHandle<()>> = None;
+
     let (network, consensus_engine) = (
         network.start(),
         consensus_engine.start(
@@ -170,6 +219,16 @@ pub async fn run_consensus_stack(
             ret.map_err(eyre::Report::from)
                 .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
                 .wrap_err("consensus engine task failed")
+        }
+
+        ret = async {
+            if let Some(handle) = bridge_handle {
+                handle.await.map_err(|e| eyre::eyre!("bridge task panicked: {e}"))
+            } else {
+                std::future::pending::<eyre::Result<()>>().await
+            }
+        } => {
+            ret.wrap_err("bridge service failed")
         }
     }
 }

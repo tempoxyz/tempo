@@ -140,6 +140,23 @@ pub struct Args {
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,
+
+    /// Bridge sidecar configuration.
+    #[clap(flatten)]
+    pub bridge: BridgeArgs,
+}
+
+/// Command line arguments for configuring the native bridge sidecar.
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+pub struct BridgeArgs {
+    /// Enable the native bridge sidecar functionality.
+    #[arg(long = "bridge.enabled", default_value_t = false)]
+    pub enabled: bool,
+
+    /// Path to bridge configuration file (TOML).
+    /// Required when --bridge.enabled is set.
+    #[arg(long = "bridge.config")]
+    pub config: Option<PathBuf>,
 }
 
 impl Args {

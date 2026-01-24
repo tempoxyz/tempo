@@ -64,3 +64,9 @@ reth-rpc-convert.workspace = true
 tokio = { workspace = true, features = ["macros", "sync"] }
 tracing.workspace = true
 pin-project = "1.1.10"
+
+tempo-native-bridge = { workspace = true, optional = true }
+
+[features]
+default = []
+bridge = ["tempo-native-bridge"]

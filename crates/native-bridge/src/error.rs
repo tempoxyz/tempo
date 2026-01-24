@@ -33,6 +33,9 @@ pub enum BridgeError {
     #[error("message already processed: {0}")]
     AlreadyProcessed(B256),
 
+    #[error("gossip error: {0}")]
+    Gossip(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
