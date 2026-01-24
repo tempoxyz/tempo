@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -etempoup/install
 
 # Tempoup bootstrap installer
 # Downloads tempoup script and sets up PATH
