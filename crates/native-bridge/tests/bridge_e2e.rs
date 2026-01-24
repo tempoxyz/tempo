@@ -1244,17 +1244,12 @@ async fn deploy_token_bridge_tempo(
 /// Full TokenBridge E2E test: USDC Lock/Mint (Eth→Tempo) and Burn/Unlock (Tempo→Eth).
 ///
 /// This test deploys REAL tokens and performs ACTUAL transfers:
-/// 1. Generates real DKG keys (5 shares, threshold 3)
+/// 1. Generates real DKG keys (5 shares, threshold 4)
 /// 2. Deploys MessageBridge + TokenBridge on both Anvil (Ethereum) and Tempo
 /// 3. Deploys MockERC20 (USDC) on Ethereum, creates TIP-20 (USDC.t) on Tempo
 /// 4. Phase 1: Lock USDC on Ethereum → sign attestation → claim/mint USDC.t on Tempo
 /// 5. Phase 2: Burn USDC.t on Tempo → sign attestation → claim/unlock USDC on Ethereum
-///
-/// KNOWN ISSUE: The claimTokens step fails because TIP-20 precompiles reject calls from
-/// contracts (the TokenBridge). See ISSUE.md for details. The test currently verifies
-/// the message attestation flow works correctly up to the mint step.
 #[tokio::test]
-#[ignore = "TIP-20 precompiles reject contract calls - see ISSUE.md"]
 async fn test_token_bridge_full_flow_lock_mint_burn_unlock() -> eyre::Result<()> {
     use alloy::sol_types::SolCall;
     use tempo_native_bridge::eip2537::g1_to_eip2537;
@@ -1484,16 +1479,12 @@ async fn test_token_bridge_full_flow_lock_mint_burn_unlock() -> eyre::Result<()>
         transferNonce: transfer_nonce,
         originChainId: ethereum_chain_id,
     };
-    
     let tx = alloy::rpc::types::TransactionRequest::default()
         .to(tempo_token_bridge)
-        .gas_limit(500_000)
+        .gas_limit(5_000_000)
         .input(claim_call.abi_encode().into());
     let claim_receipt = tempo_provider_with_wallet.send_transaction(tx).await?.get_receipt().await?;
-    // NOTE: This will fail because TIP-20 precompiles reject calls from contracts.
-    // The TokenBridge calls mint() on the TIP-20 token, but the precompile's
-    // is_direct_call() check fails for contract-to-precompile calls.
-    assert!(claim_receipt.status(), "claimTokens failed - see ISSUE.md");
+    assert!(claim_receipt.status(), "claimTokens failed");
     tracing::info!("tokens claimed on Tempo - USDC.t minted");
 
     // Verify tempo_user received USDC.t
@@ -1516,7 +1507,7 @@ async fn test_token_bridge_full_flow_lock_mint_burn_unlock() -> eyre::Result<()>
     let approve_tempo_call = approveCall { spender: tempo_token_bridge, amount: bridge_amount };
     let tx = alloy::rpc::types::TransactionRequest::default()
         .to(tempo_usdc)
-        .gas_limit(100_000)
+        .gas_limit(1_000_000)
         .input(approve_tempo_call.abi_encode().into());
     let receipt = tempo_provider_with_wallet.send_transaction(tx).await?.get_receipt().await?;
     assert!(receipt.status(), "approve USDC.t failed");
@@ -1530,7 +1521,7 @@ async fn test_token_bridge_full_flow_lock_mint_burn_unlock() -> eyre::Result<()>
     };
     let tx = alloy::rpc::types::TransactionRequest::default()
         .to(tempo_token_bridge)
-        .gas_limit(500_000)
+        .gas_limit(5_000_000)
         .input(bridge_back_call.abi_encode().into());
     let bridge_back_receipt = tempo_provider_with_wallet.send_transaction(tx).await?.get_receipt().await?;
     assert!(bridge_back_receipt.status(), "bridgeTokens on Tempo failed");

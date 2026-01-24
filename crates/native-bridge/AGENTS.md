@@ -27,3 +27,4 @@
 
 - E2E tests should use real contracts, not mocks - the MessageBridge bytecode is at `contracts/out/MessageBridge.sol/MessageBridge.bytecode.hex`
 - Run `forge build` in `contracts/` to regenerate bytecode after Solidity changes
+- Calls from contracts to TIP-20 precompiles require high gas limits (~5M) - 500k will cause silent reverts with no error data
