@@ -6825,6 +6825,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "portpicker"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
+dependencies = [
+ "rand 0.8.5",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11801,6 +11810,7 @@ dependencies = [
  "tempo-alloy",
  "tempo-commonware-node-config",
  "tempo-dkg-onchain-artifacts",
+ "tempo-native-bridge",
  "tempo-node",
  "tempo-payload-types",
  "tempo-precompiles",
@@ -11958,6 +11968,52 @@ dependencies = [
  "reth-rpc-server-types",
  "tempo-alloy",
  "tempo-precompiles",
+]
+
+[[package]]
+name = "tempo-native-bridge"
+version = "1.0.2"
+dependencies = [
+ "alloy",
+ "alloy-primitives",
+ "alloy-rpc-types-engine",
+ "async-trait",
+ "bincode",
+ "blst",
+ "clap",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-math",
+ "commonware-p2p",
+ "commonware-parallel",
+ "commonware-utils",
+ "const-hex",
+ "eyre",
+ "futures",
+ "hex",
+ "portpicker",
+ "proptest",
+ "rand 0.8.5",
+ "reth-e2e-test-utils",
+ "reth-ethereum",
+ "reth-node-api",
+ "reth-node-builder",
+ "reth-node-core",
+ "reth-rpc-builder",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempo-chainspec",
+ "tempo-contracts",
+ "tempo-node",
+ "tempo-payload-types",
+ "tempo-precompiles",
+ "tempo-primitives",
+ "thiserror 2.0.17",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber 0.3.22",
 ]
 
 [[package]]

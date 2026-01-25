@@ -1,0 +1,16 @@
+# Compiler files
+cache/
+
+# Ignore compiled output except bytecode hex files needed for Rust tests
+out/
+!out/
+out/*
+!out/*/
+out/*/**
+!out/*/*.bytecode.hex
+
+# Ignores development broadcast logs
+/broadcast
+
+# Docs
+docs/

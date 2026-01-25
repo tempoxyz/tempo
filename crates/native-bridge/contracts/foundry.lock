@@ -1,0 +1,20 @@
+{
+  "../../../tips/ref-impls/lib/forge-std": {
+    "rev": "f61e4dd133379a4536a54ee57a808c9c00019b60"
+  },
+  "../../../tips/ref-impls/lib/tempo-std": {
+    "rev": "91dfcf70289b07ec6409f289917c6d4c9ce7e73e"
+  },
+  "lib/bls-solidity": {
+    "tag": {
+      "name": "v0.3.0",
+      "rev": "9e10df92d631fab9c46f0ce9cd5c445f857bedcb"
+    }
+  },
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.14.0",
+      "rev": "1801b0541f4fda118a10798fd3486bb7051c5dd6"
+    }
+  }
+}

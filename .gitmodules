@@ -4,3 +4,12 @@
 [submodule "tips/ref-impls/lib/tempo-std"]
 	path = tips/ref-impls/lib/tempo-std
 	url = https://github.com/tempoxyz/tempo-std
+[submodule "crates/native-bridge/contracts/lib/forge-std"]
+	path = crates/native-bridge/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "crates/native-bridge/contracts/lib/bls-solidity"]
+	path = crates/native-bridge/contracts/lib/bls-solidity
+	url = https://github.com/randa-mu/bls-solidity
+[submodule "crates/native-bridge/contracts/lib/solidity-merkle-trees"]
+	path = crates/native-bridge/contracts/lib/solidity-merkle-trees
+	url = https://github.com/polytope-labs/solidity-merkle-trees

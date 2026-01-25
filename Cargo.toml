@@ -30,6 +30,7 @@ members = [
   "crates/telemetry-util",
   "crates/transaction-pool",
   "crates/revm",
+  "crates/native-bridge",
   "xtask",
 ]
 
@@ -117,6 +118,7 @@ tempo-primitives = { path = "crates/primitives", default-features = false, featu
 tempo-contracts = { path = "crates/contracts", default-features = false }
 tempo-telemetry-util = { path = "crates/telemetry-util", default-features = false }
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
+tempo-native-bridge = { path = "crates/native-bridge", default-features = false }
 
 # reth v1.10.1
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "f0c9cb9" }
@@ -244,6 +246,7 @@ secp256k1 = "0.30.0"
 pyroscope = "0.5.8"
 pyroscope_pprofrs = "0.2.10"
 rayon = "1.10"
+toml = "0.8"
 
 # build deps
 vergen = "9.1.0"
