@@ -160,4 +160,4 @@ At 500M payment lane execution gas limit:
 | 1KB contract | 3.5 cents | 6.5 cents |
 | 24KB contract | 60 cents | 130 cents |
 
-Cost calculations assume base_fee = 2 × 10^10 smallest units (1 token unit = 10^-6 USD).
+Cost calculations assume base_fee = 2 × 10^10 attodollars (1 token unit = 1 microdollar = 10^-6 USD).
