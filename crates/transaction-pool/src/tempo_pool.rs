@@ -26,7 +26,7 @@ use reth_transaction_pool::{
 };
 use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -304,20 +304,9 @@ where
                             .map(|auths| self.protocol_pool.inner().get_sender_ids(auths)),
                     };
 
-                    // Get the active Tempo hardfork for expiring nonce handling
-                    let tip_timestamp = self
-                        .protocol_pool
-                        .validator()
-                        .validator()
-                        .inner
-                        .fork_tracker()
-                        .tip_timestamp();
-                    let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
-
                     let added = self.aa_2d_pool.write().add_transaction(
                         Arc::new(tx),
                         state_nonce,
-                        hardfork,
                     )?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
