@@ -9,10 +9,7 @@
 //! - BLS signature verification properties
 
 use alloy_primitives::{Address, B256, keccak256};
-use blst::{
-    BLST_ERROR,
-    min_pk::{PublicKey, SecretKey, Signature},
-};
+use blst::{BLST_ERROR, min_pk::SecretKey};
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 

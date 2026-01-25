@@ -12,7 +12,7 @@ library ReceiptDecoder {
 
     /// @notice MessageSent event signature
     /// @dev keccak256("MessageSent(address,bytes32,uint64)")
-    bytes32 internal constant MESSAGE_SENT_SIGNATURE = 0x5e20a0ccfe5564a3463f8c3a4d561e860a5a5a42a2c36a6ed2804dcb1a2d3d89;
+    bytes32 internal constant MESSAGE_SENT_SIGNATURE = 0x461908389c48b18509635356200579f524bd58d0bf841361ffd8964b2fd41273;
 
     /// @notice Receipt field indices
     uint256 internal constant LOGS_INDEX = 3;
