@@ -43,17 +43,25 @@ All operations continue to consume gas as specified in TIP-1000. Gas is now cate
 
 ## Gas Limits
 
-Transaction and block gas limits apply only to execution gas:
+Storage gas counts against the user's transaction gas limit (to prevent surprise costs) but NOT against protocol limits:
 
 ```
-Validation:
-  execution_gas_consumed <= transaction_gas_limit
-  block_execution_gas_consumed <= block_gas_limit
+User Authorization:
+  execution_gas + storage_gas <= transaction.gas_limit
+
+Protocol Limits:
+  execution_gas <= max_transaction_gas_limit (EIP-7825, e.g. 16M)
+  block_execution_gas <= block_gas_limit (e.g. 500M)
 
 Cost:
   total_gas = execution_gas + storage_gas
   cost = total_gas × (base_fee_per_gas + priority_fee)
 ```
+
+**Rationale**:
+- User's `gas_limit` bounds total cost (no surprise charges)
+- Protocol limits bound only execution gas (block time constraint)
+- Storage doesn't reduce block execution capacity or prevent large contracts
 
 ## Storage Gas Operations
 
@@ -76,39 +84,45 @@ Example for 24KB contract:
 - Contract code: `24,576 × 2,500 = 61,440,000` storage gas
 - Contract metadata: `500,000` storage gas
 - Account creation: `250,000` storage gas
-- Total storage gas: `62,190,000` (not counted against transaction limit)
-- Execution gas for deployment: ~1-2M (counted against transaction limit)
-- **Can deploy with transaction_gas_limit = 16M**
+- Execution gas for deployment: ~2M
+- Total gas: ~64M
+- User must set `transaction.gas_limit >= 64M` (authorizes cost)
+- But only ~2M execution gas counts against protocol's max_transaction_gas_limit (e.g. 16M)
+- **Can deploy even with protocol max_transaction_gas_limit = 16M**
 
 ## Examples
 
 ### TIP-20 Transfer to New Address
 - Execution gas: ~50,000 (transfer logic)
 - Storage gas: ~250,000 (new balance slot)
-- Transaction gas limit: 50,000 required
+- User must authorize: `gas_limit >= 300,000`
+- Counts toward block limit: ~50,000 execution gas
 - Total cost: 300,000 gas
 
 ### TIP-20 Transfer to Existing Address
 - Execution gas: ~50,000 (transfer logic)
 - Storage gas: 0
-- Transaction gas limit: 50,000 required
+- User must authorize: `gas_limit >= 50,000`
+- Counts toward block limit: ~50,000 execution gas
 - Total cost: 50,000 gas
 
 ### Block Throughput
-At 500M block gas limit:
-- New accounts: ~10,000 transfers/block (same as existing accounts)
-- Not penalized by storage creation costs
+At 500M execution gas block limit:
+- Each transfer (new or existing) consumes ~50k execution gas
+- 10,000 transfers per block (regardless of new vs existing accounts)
+- Storage gas doesn't reduce block capacity
 
 ---
 
 # Invariants
 
-1. **Execution Gas Limit**: Transaction execution gas MUST NOT exceed transaction gas limit
-2. **Block Execution Gas Limit**: Block execution gas MUST NOT exceed block gas limit
-3. **Storage Gas Unrestricted**: Storage gas consumption has no per-transaction or per-block limit
-4. **Total Cost**: Transaction cost MUST equal `(execution_gas + storage_gas) × (base_fee_per_gas + priority_fee)`
-5. **Classification**: Every operation MUST be classified as either execution gas or storage gas, not both
-6. **Storage Gas Operations**: Storage creation MUST consume storage gas; compute/memory/reads MUST consume execution gas
+1. **User Authorization**: `execution_gas + storage_gas` MUST NOT exceed `transaction.gas_limit` (prevents surprise costs)
+2. **Protocol Transaction Limit**: `execution_gas` MUST NOT exceed `max_transaction_gas_limit` (EIP-7825 limit, e.g. 16M)
+3. **Protocol Block Limit**: Block `execution_gas` MUST NOT exceed `block_gas_limit` (e.g. 500M)
+4. **Storage Gas Exemption**: Storage gas MUST NOT count toward protocol limits (transaction and block)
+5. **Total Cost**: Transaction cost MUST equal `(execution_gas + storage_gas) × (base_fee_per_gas + priority_fee)`
+6. **Classification**: Every operation MUST be classified as either execution gas or storage gas, not both
+7. **Storage Gas Operations**: Storage creation MUST consume storage gas; compute/memory/reads MUST consume execution gas
 
 ---
 
@@ -117,21 +131,21 @@ At 500M block gas limit:
 | Parameter | TIP-1000 | TIP-YYYY |
 |-----------|----------|----------|
 | Contract code pricing | 1,000 gas/byte | 2,500 gas/byte |
-| Contract code counted against limits | Yes | No |
-| Account creation counted against limits | Yes | No |
-| Storage creation counted against limits | Yes | No |
-| Transaction gas cap | 30M | Can reduce to 16M |
-| General gas limit | 30M | Can reduce to lower value |
+| Storage gas counts toward user's gas_limit | Yes | Yes (no change) |
+| Storage gas counts toward protocol limits | Yes | No (exempted) |
+| Max transaction gas limit (EIP-7825) | 30M | Can reduce to 16M |
+| Block gas limit for execution | 500M | 500M (unchanged) |
+| Block gas limit for storage | 500M (shared) | Unlimited (exempted) |
 
 ---
 
 # Key Benefits
 
 1. **Higher contract code pricing**: 2,500 gas/byte provides better state growth protection ($50M for 1TB vs $20M)
-2. **Lower transaction cap**: Can use 16M transaction gas limit (better for execution safety)
-3. **Full throughput for new accounts**: 20,000 TPS regardless of new vs existing accounts
-4. **No complexity**: Single gas unit, one basefee, existing transaction format works
-5. **No griefing**: Transaction gas limit still bounds execution gas (CPU/memory)
+2. **Lower protocol transaction limit**: Can use 16M max_transaction_gas_limit (better for execution safety) while still deploying 24KB contracts
+3. **Full throughput for new accounts**: 20,000 TPS regardless of new vs existing accounts (storage doesn't consume block capacity)
+4. **No surprise costs**: User's `gas_limit` still bounds total cost (no griefing)
+5. **No complexity**: Single gas unit, one basefee, existing transaction format works
 
 ## Economic Impact
 
