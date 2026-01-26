@@ -138,7 +138,9 @@ where
     ///
     /// This performs a single scan of all pooled transactions and checks for:
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
-    /// 2. **Validator token changes**: Transactions that would fail due to insufficient
+    /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
+    ///    changed for a token matching the transaction's fee token
+    /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     ///
     /// All checks are combined into one scan to avoid iterating the pool multiple times

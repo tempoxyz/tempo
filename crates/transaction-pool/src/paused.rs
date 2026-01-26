@@ -166,6 +166,43 @@ impl PausedFeeTokenPool {
         count
     }
 
+    /// Removes transactions affected by spending limit updates from the paused pool.
+    ///
+    /// Only evicts transactions where the fee token matches the token whose limit changed.
+    /// Returns the number of transactions removed.
+    pub fn evict_by_spending_limit_updates(
+        &mut self,
+        spending_limit_updates: &[(Address, Address, Address)],
+    ) -> usize {
+        if spending_limit_updates.is_empty() {
+            return 0;
+        }
+
+        let mut count = 0;
+        for (fee_token, meta) in self.by_token.iter_mut() {
+            let before = meta.entries.len();
+            meta.entries.retain(|entry| {
+                let Some(aa_tx) = entry.tx.transaction.inner().as_aa() else {
+                    return true;
+                };
+                let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
+                    return true;
+                };
+                let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
+                    return true;
+                };
+                let account = keychain_sig.user_address;
+                !spending_limit_updates
+                    .iter()
+                    .any(|&(a, k, t)| a == account && k == key_id && t == *fee_token)
+            });
+            count += before - meta.entries.len();
+        }
+        // Clean up empty token entries
+        self.by_token.retain(|_, m| !m.entries.is_empty());
+        count
+    }
+
     /// Returns an iterator over all paused entries across all tokens.
     pub fn all_entries(&self) -> impl Iterator<Item = &PausedEntry> {
         self.by_token.values().flat_map(|m| &m.entries)

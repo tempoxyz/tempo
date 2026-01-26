@@ -402,9 +402,14 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys from paused pool
+                // 5. Evict revoked keys and spending limit changes from paused pool
                 if !updates.revoked_keys.is_empty() {
                     state.paused_pool.evict_by_revoked_keys(&updates.revoked_keys);
+                }
+                if !updates.spending_limit_changes.is_empty() {
+                    state
+                        .paused_pool
+                        .evict_by_spending_limit_updates(&updates.spending_limit_changes);
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
@@ -444,7 +449,9 @@ where
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
                     metrics.transactions_invalidated.increment(evicted as u64);
-                    metrics.invalidation_eviction_duration_seconds.record(invalidation_start.elapsed());
+                    metrics
+                        .invalidation_eviction_duration_seconds
+                        .record(invalidation_start.elapsed());
                 }
 
                 // Record total block update duration
