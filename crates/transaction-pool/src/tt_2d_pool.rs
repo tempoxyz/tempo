@@ -603,6 +603,9 @@ impl AA2dPool {
     }
 
     /// Removes the transaction by its hash from all internal sets.
+    ///
+    /// This batches demotion by seq_id to avoid O(N*N) complexity when removing many
+    /// transactions from the same sequence.
     pub(crate) fn remove_transactions<'a, I>(
         &mut self,
         tx_hashes: I,
@@ -611,11 +614,29 @@ impl AA2dPool {
         I: Iterator<Item = &'a TxHash> + 'a,
     {
         let mut txs = Vec::new();
+        let mut seq_ids_to_demote: HashMap<AASequenceId, u64> = HashMap::default();
+
         for tx_hash in tx_hashes {
-            if let Some(tx) = self.remove_transaction_by_hash(tx_hash) {
+            if let Some((tx, seq_id)) = self.remove_transaction_by_hash_no_demote(tx_hash) {
+                if let Some(id) = seq_id {
+                    seq_ids_to_demote
+                        .entry(id.seq_id)
+                        .and_modify(|min_nonce| {
+                            if id.nonce < *min_nonce {
+                                *min_nonce = id.nonce;
+                            }
+                        })
+                        .or_insert(id.nonce);
+                }
                 txs.push(tx);
             }
         }
+
+        // Demote once per seq_id, starting from the minimum removed nonce
+        for (seq_id, min_nonce) in seq_ids_to_demote {
+            self.demote_from_nonce(&seq_id, min_nonce);
+        }
+
         txs
     }
 
@@ -627,12 +648,32 @@ impl AA2dPool {
         &mut self,
         tx_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let (tx, id) = self.remove_transaction_by_hash_no_demote(tx_hash)?;
+
+        // Demote all descendants to queued status since removing this transaction creates a gap
+        if let Some(id) = id {
+            self.demote_descendants(&id);
+        }
+
+        Some(tx)
+    }
+
+    /// Internal helper that removes a transaction without demoting descendants.
+    ///
+    /// Returns the removed transaction and its AA2dTransactionId (if it was a 2D nonce tx).
+    fn remove_transaction_by_hash_no_demote(
+        &mut self,
+        tx_hash: &B256,
+    ) -> Option<(
+        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        Option<AA2dTransactionId>,
+    )> {
         let tx = self.by_hash.remove(tx_hash)?;
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
             self.expiring_nonce_txs.remove(tx_hash);
-            return Some(tx);
+            return Some((tx, None));
         }
 
         // Regular 2D nonce transaction
@@ -642,10 +683,7 @@ impl AA2dPool {
             .expect("is AA transaction");
         self.remove_transaction_by_id(&id)?;
 
-        // Demote all descendants to queued status since removing this transaction creates a gap
-        self.demote_descendants(&id);
-
-        Some(tx)
+        Some((tx, Some(id)))
     }
 
     /// Demotes all descendants of the given transaction to queued status (`is_pending = false`).
@@ -653,10 +691,19 @@ impl AA2dPool {
     /// This should be called after removing a transaction to ensure descendants don't remain
     /// marked as pending when they're no longer executable due to the nonce gap.
     fn demote_descendants(&mut self, id: &AA2dTransactionId) {
+        self.demote_from_nonce(&id.seq_id, id.nonce);
+    }
+
+    /// Demotes all transactions for a seq_id with nonce > min_nonce to queued status.
+    ///
+    /// This is used both for single-tx removal (demote_descendants) and batch removal
+    /// where we want to demote once per seq_id starting from the minimum removed nonce.
+    fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
+        let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
         for (_, tx) in self
             .by_id
-            .range_mut((Excluded(id), Unbounded))
-            .take_while(|(other, _)| id.seq_id == other.seq_id)
+            .range_mut((Excluded(&start_id), Unbounded))
+            .take_while(|(other, _)| *seq_id == other.seq_id)
         {
             if std::mem::replace(&mut tx.is_pending, false) {
                 self.pending_count -= 1;
