@@ -1,0 +1,64 @@
+{
+  "abi": [
+    {
+      "type": "function",
+      "name": "load",
+      "inputs": [
+        {
+          "name": "key",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "store",
+      "inputs": [
+        {
+          "name": "key",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "value",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "storeBatch",
+      "inputs": [
+        {
+          "name": "startKey",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "count",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    }
+  ],
+  "bytecode": {
+    "object": "0x6080604052348015600e575f5ffd5b506101db8061001c5f395ff3fe608060405234801561000f575f5ffd5b506004361061003f575f3560e01c80633ae20806146100435780636ed28ed01461005f57806399d548aa1461007b575b5f5ffd5b61005d60048036038101906100589190610114565b6100ab565b005b61007960048036038101906100749190610114565b6100cc565b005b61009560048036038101906100909190610152565b6100d3565b6040516100a2919061018c565b60405180910390f35b335f5b828110156100c65781818501556001810190506100ae565b50505050565b8082555050565b5f81549050919050565b5f5ffd5b5f819050919050565b6100f3816100e1565b81146100fd575f5ffd5b50565b5f8135905061010e816100ea565b92915050565b5f5f6040838503121561012a576101296100dd565b5b5f61013785828601610100565b925050602061014885828601610100565b9150509250929050565b5f60208284031215610167576101666100dd565b5b5f61017484828501610100565b91505092915050565b610186816100e1565b82525050565b5f60208201905061019f5f83018461017d565b9291505056fea2646970667358221220da38e8ddac4aa8aa629c950bfd6046d90f7dbd566d745c06920c76ef731a244864736f6c63430008210033",
+    "sourceMap": "139:1044:0:-:0;;;;;;;;;;;;;;;;;;;",
+    "linkReferences": {}
+  }
+}

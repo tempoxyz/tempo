@@ -1,5 +1,6 @@
 mod dex;
 mod erc20;
+mod storage_bloat;
 
 use alloy_consensus::Transaction;
 use itertools::Itertools;
@@ -146,6 +147,11 @@ pub struct MaxTpsArgs {
     /// A weight that determines the likelihood of generating an ERC-20 transfer transaction.
     #[arg(long, default_value_t = 0.0)]
     erc20_weight: f64,
+
+    /// A weight that determines the likelihood of generating a storage bloat (SSTORE to new slot)
+    /// transaction.
+    #[arg(long, default_value_t = 0.0)]
+    sstore_weight: f64,
 
     /// An amount of receipts to wait for after sending all the transactions.
     #[arg(long, default_value_t = 100)]
@@ -324,12 +330,20 @@ impl MaxTpsArgs {
             Vec::new()
         };
 
+        let storage_bloat_contract = if self.sstore_weight > 0.0 {
+            info!("Setting up StorageBloat contract");
+            Some(storage_bloat::setup(signer_providers).await?)
+        } else {
+            None
+        };
+
         // Generate all transactions
         let total_txs = self.tps * self.duration;
         let tip20_weight = (self.tip20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let place_order_weight = (self.place_order_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let swap_weight = (self.swap_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let erc20_weight = (self.erc20_weight * Self::WEIGHT_PRECISION).trunc() as u64;
+        let sstore_weight = (self.sstore_weight * Self::WEIGHT_PRECISION).trunc() as u64;
         let transactions = generate_transactions(GenerateTransactionsInput {
             total_txs,
             accounts,
@@ -339,9 +353,11 @@ impl MaxTpsArgs {
             place_order_weight,
             swap_weight,
             erc20_weight,
+            sstore_weight,
             quote_token,
             user_tokens,
             erc20_tokens,
+            storage_bloat_contract,
         })
         .await
         .context("Failed to generate transactions")?;
@@ -537,9 +553,11 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         place_order_weight,
         swap_weight,
         erc20_weight,
+        sstore_weight,
         quote_token,
         user_tokens,
         erc20_tokens,
+        storage_bloat_contract,
     } = input;
 
     let txs_per_sender = total_txs / accounts;
@@ -550,9 +568,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
 
     info!(transactions = total_txs, "Generating transactions");
 
-    const TX_TYPES: usize = 4;
+    const TX_TYPES: usize = 5;
     // Weights for random sampling for each transaction type
-    let tx_weights: [u64; TX_TYPES] = [tip20_weight, swap_weight, place_order_weight, erc20_weight];
+    let tx_weights: [u64; TX_TYPES] =
+        [tip20_weight, swap_weight, place_order_weight, erc20_weight, sstore_weight];
     // Cached gas estimates for each transaction type
     let gas_estimates: [Arc<OnceLock<(u128, u128, u64)>>; TX_TYPES] = Default::default();
 
@@ -561,6 +580,10 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
     let swaps = Arc::new(AtomicUsize::new(0));
     let orders = Arc::new(AtomicUsize::new(0));
     let erc20_transfers = Arc::new(AtomicUsize::new(0));
+    let sstore_txs = Arc::new(AtomicUsize::new(0));
+
+    // Counter for unique storage keys (to ensure each SSTORE goes to a new slot)
+    let sstore_key_counter = Arc::new(AtomicUsize::new(0));
 
     let builders = ProgressBar::new(total_txs)
         .wrap_stream(stream::iter(
@@ -621,6 +644,21 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
                         .transfer(Address::random(), U256::ONE)
                         .into_transaction_request()
                 }
+                4 => {
+                    sstore_txs.fetch_add(1, Ordering::Relaxed);
+                    let contract_address = storage_bloat_contract
+                        .expect("StorageBloat contract should be deployed when sstore_weight > 0");
+                    let contract =
+                        storage_bloat::StorageBloat::new(contract_address, provider.clone());
+
+                    // Get a unique key for this SSTORE to ensure it always writes to a new slot
+                    let key = sstore_key_counter.fetch_add(1, Ordering::Relaxed);
+
+                    // Store a value at a new storage slot (maximizes state bloat)
+                    contract
+                        .store(U256::from(key), U256::from(1u64))
+                        .into_transaction_request()
+                }
                 _ => unreachable!("Only {TX_TYPES} transaction types are supported"),
             };
 
@@ -679,6 +717,7 @@ async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
         swaps = swaps.load(Ordering::Relaxed),
         orders = orders.load(Ordering::Relaxed),
         erc20_transfers = erc20_transfers.load(Ordering::Relaxed),
+        sstore_txs = sstore_txs.load(Ordering::Relaxed),
         "Generated transactions",
     );
 
@@ -787,6 +826,7 @@ struct BenchmarkMetadata {
     place_order_weight: f64,
     swap_weight: f64,
     erc20_weight: f64,
+    sstore_weight: f64,
 }
 
 #[derive(Serialize)]
@@ -858,6 +898,7 @@ pub async fn generate_report(
         place_order_weight: args.place_order_weight,
         swap_weight: args.swap_weight,
         erc20_weight: args.erc20_weight,
+        sstore_weight: args.sstore_weight,
     };
 
     let report = BenchmarkReport {
@@ -957,7 +998,9 @@ struct GenerateTransactionsInput<F: TxFiller<TempoNetwork>> {
     place_order_weight: u64,
     swap_weight: u64,
     erc20_weight: u64,
+    sstore_weight: u64,
     quote_token: Address,
     user_tokens: Vec<Address>,
     erc20_tokens: Vec<Address>,
+    storage_bloat_contract: Option<Address>,
 }
