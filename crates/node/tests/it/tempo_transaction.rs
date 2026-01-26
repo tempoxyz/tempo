@@ -4536,24 +4536,31 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     envelope.encode_2718(&mut encoded);
     let tx_hash = *envelope.tx_hash();
 
-    setup.node.rpc.inject_tx(encoded.into()).await?;
-    setup.node.advance_block().await?;
-
-    // The transaction should be rejected during block building (not included)
+    // The transaction should be rejected at RPC, during block building, or reverted on-chain
     // because fee payment exceeds the spending limit (empty limits = no spending allowed)
-    let receipt = provider.get_transaction_receipt(tx_hash).await?;
+    match setup.node.rpc.inject_tx(encoded.into()).await {
+        Err(e) => {
+            // Rejected at RPC level - this is valid
+            println!("No-spending key transaction was rejected by RPC: {e}");
+        }
+        Ok(_) => {
+            // If accepted into pool, check what happened at block building
+            setup.node.advance_block().await?;
+            let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
-    if let Some(receipt) = receipt {
-        // If included, it must have failed
-        assert!(
-            !receipt.status(),
-            "No-spending key must not be able to transfer any tokens"
-        );
-        println!("✓ No-spending key transaction was included but reverted");
-    } else {
-        println!(
-            "✓ No-spending key transaction was rejected by block builder (spending limit exceeded)"
-        );
+            if let Some(receipt) = receipt {
+                // If included, it must have failed
+                assert!(
+                    !receipt.status(),
+                    "No-spending key must not be able to transfer any tokens"
+                );
+                println!("No-spending key transaction was included but reverted");
+            } else {
+                println!(
+                    "No-spending key transaction was rejected by block builder (spending limit exceeded)"
+                );
+            }
+        }
     }
 
     // Verify recipient2 received NO tokens
