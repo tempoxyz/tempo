@@ -44,7 +44,7 @@ use reth_node_builder::{
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt, RpcTxReq,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
@@ -54,7 +54,7 @@ use reth_rpc_eth_api::{
 };
 use reth_rpc_eth_types::{
     EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    StateOverride, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
@@ -326,7 +326,61 @@ impl<N: FullNodeTypes<Types = TempoNode>> Call for TempoEthApi<N> {
     }
 }
 
-impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {}
+/// TIP-1000: New account cost added for nonce=0 transactions on T1+
+const TIP1000_NEW_ACCOUNT_COST: u64 = 250_000;
+
+/// TIP-1000: Additional contract creation cost delta (500k - 53k = 447k)
+const TIP1000_CREATE_COST_DELTA: u64 = 447_000;
+
+impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {
+    /// Custom gas estimation that accounts for TIP-1000's increased gas costs on T1+.
+    ///
+    /// On Ethereum, `eth_estimateGas` clears the nonce unconditionally so the EVM fills it from
+    /// state. On Tempo T1+, TIP-1000 adds 250,000 gas when `nonce == 0` (new account cost).
+    ///
+    /// When the parent implementation clears a user-provided `nonce=0`, it gets replaced with
+    /// the state nonce (which may be > 0), causing the estimation to undercount gas.
+    ///
+    /// Fix: Capture the original nonce, call parent implementation, then add TIP-1000 costs
+    /// if the original nonce was 0 and we're on T1+.
+    fn estimate_gas_with<S>(
+        &self,
+        evm_env: EvmEnvFor<Self::Evm>,
+        request: RpcTxReq<<Self::RpcConvert as RpcConvert>::Network>,
+        state: S,
+        state_override: Option<StateOverride>,
+    ) -> Result<U256, Self::Error>
+    where
+        S: reth_rpc_eth_api::helpers::estimate::EvmStateProvider,
+    {
+        // Capture the original nonce before it gets cleared by take_nonce()
+        let original_nonce = request.as_ref().nonce();
+
+        // Check if this is a create transaction
+        let is_create = request.as_ref().to().is_none();
+
+        // Check if T1 is active (TIP-1000 applies)
+        let is_t1 = evm_env.cfg_env.spec.is_t1();
+
+        // Get base estimate from parent implementation
+        let base_estimate =
+            self.inner.estimate_gas_with(evm_env, request, state, state_override)?;
+
+        // TIP-1000 (T1+ only): If the original request had nonce=0, add new account cost
+        // This covers the case where eth_estimateGas is called for a first transaction
+        let tip1000_additional = if is_t1 && original_nonce == Some(0) {
+            let mut additional = TIP1000_NEW_ACCOUNT_COST;
+            if is_create {
+                additional += TIP1000_CREATE_COST_DELTA;
+            }
+            additional
+        } else {
+            0
+        };
+
+        Ok(base_estimate.saturating_add(U256::from(tip1000_additional)))
+    }
+}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadBlock for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> LoadReceipt for TempoEthApi<N> {}
 impl<N: FullNodeTypes<Types = TempoNode>> EthBlocks for TempoEthApi<N> {}

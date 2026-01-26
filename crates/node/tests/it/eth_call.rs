@@ -410,3 +410,67 @@ async fn test_unknown_selector_error_via_rpc() -> eyre::Result<()> {
 
     Ok(())
 }
+
+/// TIP-1000 regression test: Verify that eth_estimateGas correctly adds 250k gas
+/// when a user explicitly specifies nonce=0, even if the account's on-chain nonce is > 0.
+///
+/// This tests the fix for the gas estimation bug where take_nonce() would clear
+/// a user-provided nonce=0, causing the TIP-1000 new account cost to be missed.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_estimate_gas_tip1000_nonce_zero_explicit() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let http_url = setup.http_url;
+
+    let wallet = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC).build()?;
+    let caller = wallet.address();
+    let provider = ProviderBuilder::new().wallet(wallet).connect_http(http_url);
+
+    // Setup test token and send a transaction to increment the account nonce
+    let token = setup_test_token(provider.clone(), caller).await?;
+
+    // Send a transaction to ensure the account nonce is > 0
+    let mint_tx = token
+        .mint(caller, U256::from(1000))
+        .gas_price(tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(mint_tx.status());
+
+    // Verify account nonce is now > 0
+    let current_nonce = provider
+        .get_transaction_count(caller)
+        .await?;
+    assert!(current_nonce > 0, "Account nonce should be > 0 after sending transaction");
+
+    // Build a transaction request with explicit nonce=0
+    let calldata = token.mint(caller, U256::from(1000)).calldata().clone();
+    let tx_nonce0 = TransactionRequest::default()
+        .to(*token.address())
+        .input(calldata.clone().into())
+        .nonce(0);
+
+    // Build same transaction with the current (correct) nonce
+    let tx_nonce_current = TransactionRequest::default()
+        .to(*token.address())
+        .input(calldata.into())
+        .nonce(current_nonce);
+
+    // Estimate gas for both
+    let gas_nonce0 = provider.estimate_gas(tx_nonce0).await?;
+    let gas_nonce_current = provider.estimate_gas(tx_nonce_current).await?;
+
+    // TIP-1000: nonce=0 should have 250,000 more gas than nonce>0
+    const TIP1000_NEW_ACCOUNT_COST: u64 = 250_000;
+    assert_eq!(
+        gas_nonce0,
+        gas_nonce_current + TIP1000_NEW_ACCOUNT_COST,
+        "Gas estimate for nonce=0 should be 250k higher than nonce>0 (TIP-1000)"
+    );
+
+    Ok(())
+}
