@@ -12433,7 +12433,6 @@ dependencies = [
  "tempo-chainspec",
  "tempo-consensus",
  "tempo-contracts",
- "tempo-dkg-onchain-artifacts",
  "tempo-e2e",
  "tempo-evm",
  "tempo-payload-builder",

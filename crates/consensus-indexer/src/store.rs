@@ -1,6 +1,5 @@
 use tempo_node::rpc::consensus::{
-    ConsensusFeed, ConsensusState, DkgOutcomeError, DkgOutcomeQuery, DkgOutcomeResponse, Event,
-    IdentityProofError, IdentityTransitionResponse, Query,
+    ConsensusFeed, ConsensusState, Event, IdentityProofError, IdentityTransitionResponse, Query,
 };
 use tokio::sync::broadcast;
 
@@ -66,12 +65,5 @@ impl ConsensusFeed for ConsensusStore {
             .get_identity_transition_proof(from_epoch, full)
             .await
             .map_err(|_| IdentityProofError::NotReady)
-    }
-
-    async fn get_dkg_outcome(
-        &self,
-        _query: DkgOutcomeQuery,
-    ) -> Result<DkgOutcomeResponse, DkgOutcomeError> {
-        Err(DkgOutcomeError::NotReady)
     }
 }
