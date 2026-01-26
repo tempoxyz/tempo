@@ -200,7 +200,9 @@ impl MaxTpsArgs {
                 self.erc20_weight = 1.0;
             }
             if self.faucet {
-                eyre::bail!("--faucet is not supported in --reth-mode. Pre-fund accounts using genesis or dev mode.");
+                eyre::bail!(
+                    "--faucet is not supported in --reth-mode. Pre-fund accounts using genesis or dev mode."
+                );
             }
         }
 
