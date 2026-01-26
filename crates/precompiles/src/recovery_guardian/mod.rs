@@ -88,7 +88,7 @@ impl RecoveryGuardian {
         }
 
         // Validate delay
-        if recovery_delay < MIN_RECOVERY_DELAY || recovery_delay > MAX_RECOVERY_DELAY {
+        if !(MIN_RECOVERY_DELAY..=MAX_RECOVERY_DELAY).contains(&recovery_delay) {
             return Err(RecoveryGuardianError::invalid_delay().into());
         }
 

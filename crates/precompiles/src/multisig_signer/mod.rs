@@ -153,7 +153,7 @@ impl MultiSigSigner {
 
         // Decode signature data: (address[] signers, bytes[] signatures)
         let (signers, signatures) =
-            match <(Vec<Address>, Vec<alloy::primitives::Bytes>)>::abi_decode(&signature_data) {
+            match <(Vec<Address>, Vec<alloy::primitives::Bytes>)>::abi_decode(signature_data) {
                 Ok(d) => d,
                 Err(_) => return Ok(FixedBytes::ZERO),
             };
