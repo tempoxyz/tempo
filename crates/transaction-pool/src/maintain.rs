@@ -20,12 +20,114 @@ use std::{
     sync::Arc,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20};
+use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, tip20::is_tip20_prefix,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    tip20::is_tip20_prefix,
 };
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
+
+/// Aggregated block-level updates for the transaction pool.
+///
+/// Collects all invalidation events from a block into a single structure,
+/// allowing efficient batch processing of pool updates.
+#[derive(Debug, Default)]
+pub struct BlockPoolUpdates {
+    /// Transaction hashes that have expired (valid_before <= tip_timestamp).
+    pub expired_txs: Vec<TxHash>,
+    /// Revoked keychain keys: (account, public_key).
+    pub revoked_keys: Vec<(Address, Address)>,
+    /// Validator token preference changes: (validator, new_token).
+    pub validator_token_changes: Vec<(Address, Address)>,
+    /// TIP403 blacklist additions: (policy_id, account).
+    pub blacklist_additions: Vec<(u64, Address)>,
+    /// Fee token pause state changes: (token, is_paused).
+    pub pause_events: Vec<(Address, bool)>,
+    /// Transaction hashes mined in this block.
+    pub mined_tx_hashes: Vec<TxHash>,
+}
+
+impl BlockPoolUpdates {
+    /// Creates a new empty `BlockPoolUpdates`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns true if there are no updates to process.
+    pub fn is_empty(&self) -> bool {
+        self.expired_txs.is_empty()
+            && self.revoked_keys.is_empty()
+            && self.validator_token_changes.is_empty()
+            && self.blacklist_additions.is_empty()
+            && self.pause_events.is_empty()
+            && self.mined_tx_hashes.is_empty()
+    }
+
+    /// Extracts pool updates from a committed chain segment.
+    ///
+    /// Parses receipts for relevant events (key revocations, validator token changes,
+    /// blacklist additions, pause events) and collects mined transaction hashes.
+    pub fn from_chain(chain: &Chain<TempoPrimitives>) -> Self {
+        let mut updates = Self::new();
+
+        // Collect mined transaction hashes
+        updates.mined_tx_hashes = chain
+            .blocks_iter()
+            .flat_map(|block| block.body().transactions())
+            .map(|tx| *tx.tx_hash())
+            .collect();
+
+        // Parse events from receipts
+        for log in chain
+            .execution_outcome()
+            .receipts()
+            .iter()
+            .flatten()
+            .flat_map(|receipt| &receipt.logs)
+        {
+            // Key revocations
+            if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
+                if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
+                    updates.revoked_keys.push((event.account, event.publicKey));
+                }
+            }
+            // Validator token changes
+            else if log.address == TIP_FEE_MANAGER_ADDRESS {
+                if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
+                    updates
+                        .validator_token_changes
+                        .push((event.validator, event.token));
+                }
+            }
+            // TIP403 blacklist additions
+            else if log.address == TIP403_REGISTRY_ADDRESS {
+                if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
+                    && event.restricted
+                {
+                    updates
+                        .blacklist_additions
+                        .push((event.policyId, event.account));
+                }
+            }
+            // Fee token pause events
+            else if is_tip20_prefix(log.address)
+                && let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log)
+            {
+                updates.pause_events.push((log.address, event.isPaused));
+            }
+        }
+
+        updates
+    }
+
+    /// Returns true if there are any invalidation events that require scanning the pool.
+    pub fn has_invalidation_events(&self) -> bool {
+        !self.revoked_keys.is_empty()
+            || !self.validator_token_changes.is_empty()
+            || !self.blacklist_additions.is_empty()
+    }
+}
 
 /// Tracking state for pool maintenance operations.
 ///
@@ -174,68 +276,30 @@ where
 
                 let tip = &new;
                 let bundle_state = tip.execution_outcome().state().state();
-
-                // 1. Evict expired AA transactions (filter to only those still in pool)
                 let tip_timestamp = tip.tip().header().timestamp();
-                let expired = state.drain_expired(tip_timestamp);
-                let to_remove: Vec<_> =
-                    expired.into_iter().filter(|h| pool.contains(h)).collect();
 
-                if !to_remove.is_empty() {
+                // 1. Collect all block-level updates into a single structure
+                let mut updates = BlockPoolUpdates::from_chain(tip);
+
+                // Add expired transactions (from local tracking state)
+                let expired = state.drain_expired(tip_timestamp);
+                updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
+
+                // 2. Evict expired AA transactions
+                if !updates.expired_txs.is_empty() {
                     debug!(
                         target: "txpool",
-                        count = to_remove.len(),
+                        count = updates.expired_txs.len(),
                         tip_timestamp,
                         "Evicting expired AA transactions"
                     );
-                    pool.remove_transactions(to_remove);
+                    pool.remove_transactions(updates.expired_txs.clone());
                 }
 
-                // 2. Collect invalidation events from this block
-                // Key revocations are rare, so we scan the pool on-demand rather than
-                // tracking all keychain-signed transactions.
-                let revoked_keys: Vec<_> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| log.address == ACCOUNT_KEYCHAIN_ADDRESS)
-                    .filter_map(|log| IAccountKeychain::KeyRevoked::decode_log(log).ok())
-                    .map(|event| (event.account, event.publicKey))
-                    .collect();
-
-                // Validator token changes - transactions may fail if there's insufficient
-                // liquidity in the new (user_token, validator_token) AMM pool.
-                let validator_token_changes: Vec<(Address, Address)> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| log.address == TIP_FEE_MANAGER_ADDRESS)
-                    .filter_map(|log| IFeeManager::ValidatorTokenSet::decode_log(log).ok())
-                    .map(|event| (event.validator, event.token))
-                    .collect();
 
                 // 3. Handle fee token pause/unpause events
-                // Collect PauseStateUpdate events from TIP20 tokens
-                let pause_events: Vec<(Address, bool)> = tip
-                    .execution_outcome()
-                    .receipts()
-                    .iter()
-                    .flatten()
-                    .flat_map(|receipt| &receipt.logs)
-                    .filter(|log| is_tip20_prefix(log.address))
-                    .filter_map(|log| {
-                        ITIP20::PauseStateUpdate::decode_log(log)
-                            .ok()
-                            .map(|event| (log.address, event.isPaused))
-                    })
-                    .collect();
-
-                for (token, is_paused) in pause_events {
-                    if is_paused {
+                for (token, is_paused) in &updates.pause_events {
+                    if *is_paused {
                         // Pause: remove from main pool and store in paused pool
                         let all_txs = pool.all_transactions();
                         let hashes_to_pause: Vec<_> = all_txs
@@ -243,7 +307,7 @@ where
                             .iter()
                             .chain(all_txs.queued.iter())
                             .filter_map(|tx| {
-                                tx.transaction.inner().fee_token().filter(|&t| t == token).map(|_| {
+                                tx.transaction.inner().fee_token().filter(|t| t == token).map(|_| {
                                     *tx.hash()
                                 })
                             })
@@ -266,7 +330,7 @@ where
                                     })
                                     .collect();
 
-                                state.paused_pool.insert_batch(token, entries);
+                                state.paused_pool.insert_batch(*token, entries);
                                 debug!(
                                     target: "txpool",
                                     %token,
@@ -277,10 +341,11 @@ where
                         }
                     } else {
                         // Unpause: drain from paused pool and re-add to main pool
-                        let paused_entries = state.paused_pool.drain_token(&token);
+                        let paused_entries = state.paused_pool.drain_token(token);
                         if !paused_entries.is_empty() {
                             let count = paused_entries.len();
                             let pool_clone = pool.clone();
+                            let token = *token;
                             tokio::spawn(async move {
                                 let txs: Vec<_> = paused_entries
                                     .into_iter()
@@ -318,8 +383,8 @@ where
                 }
 
                 // 5. Evict revoked keys from paused pool
-                if !revoked_keys.is_empty() {
-                    state.paused_pool.evict_by_revoked_keys(&revoked_keys);
+                if !updates.revoked_keys.is_empty() {
+                    state.paused_pool.evict_by_revoked_keys(&updates.revoked_keys);
                 }
 
                 // 6. Update 2D nonce pool
@@ -328,12 +393,7 @@ where
                 // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
                 // so we need to remove them on inclusion rather than relying on nonce changes.
-                let mined_tx_hashes: Vec<_> = tip
-                    .blocks_iter()
-                    .flat_map(|block| block.body().transactions())
-                    .map(|tx| *tx.tx_hash())
-                    .collect();
-                pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
+                pool.remove_included_expiring_nonce_txs(updates.mined_tx_hashes.iter());
 
                 // 8. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
@@ -346,14 +406,15 @@ where
                 // 9. Evict invalidated transactions in a single pool scan
                 // This checks both revoked keys and validator token changes together
                 // to avoid scanning all transactions multiple times per block.
-                if !revoked_keys.is_empty() || !validator_token_changes.is_empty() {
+                if updates.has_invalidation_events() {
                     debug!(
                         target: "txpool",
-                        revoked_keys = revoked_keys.len(),
-                        validator_token_changes = validator_token_changes.len(),
+                        revoked_keys = updates.revoked_keys.len(),
+                        validator_token_changes = updates.validator_token_changes.len(),
+                        blacklist_additions = updates.blacklist_additions.len(),
                         "Processing transaction invalidation events"
                     );
-                    pool.evict_invalidated_transactions(&revoked_keys, &validator_token_changes);
+                    pool.evict_invalidated_transactions(&updates);
                 }
             }
         }
