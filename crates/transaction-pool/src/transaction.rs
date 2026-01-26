@@ -289,6 +289,16 @@ pub enum TempoPoolTransactionError {
     /// Thrown when a KeyAuthorization has expired.
     #[error("KeyAuthorization expired: expiry {expiry} <= current time {current_time}")]
     KeyAuthorizationExpired { expiry: u64, current_time: u64 },
+
+    /// Thrown when a keychain transaction's fee token cost exceeds the spending limit.
+    #[error(
+        "Fee token spending limit exceeded: cost {cost} exceeds remaining limit {remaining} for token {fee_token}"
+    )]
+    SpendingLimitExceeded {
+        fee_token: Address,
+        cost: U256,
+        remaining: U256,
+    },
 }
 
 impl PoolTransactionError for TempoPoolTransactionError {
@@ -304,7 +314,8 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceValidBeforeTooFar { .. }
             | Self::ExpiringNonceReplay
             | Self::Keychain(_)
-            | Self::InsufficientLiquidity(_) => false,
+            | Self::InsufficientLiquidity(_)
+            | Self::SpendingLimitExceeded { .. } => false,
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
