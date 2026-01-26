@@ -902,6 +902,25 @@ mod tests {
 // Keychain invalidation types
 // ========================================
 
+/// Represents a revoked keychain key.
+///
+/// This struct provides clear semantics for the two addresses involved in a key
+/// revocation, rather than using an anonymous tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RevokedKey {
+    /// The account that owns the keychain key.
+    pub account: Address,
+    /// The key ID that was revoked.
+    pub key_id: Address,
+}
+
+impl RevokedKey {
+    /// Creates a new revoked key.
+    pub fn new(account: Address, key_id: Address) -> Self {
+        Self { account, key_id }
+    }
+}
+
 /// Represents a spending limit update event.
 ///
 /// This struct provides clear semantics for the three addresses involved in a spending
@@ -945,8 +964,8 @@ impl KeychainSubject {
     /// Returns true if this subject matches any of the revoked keys.
     ///
     /// Uses a pre-built set for O(1) lookup instead of linear scan.
-    pub fn matches_revoked(&self, revoked_keys: &HashSet<(Address, Address)>) -> bool {
-        revoked_keys.contains(&(self.account, self.key_id))
+    pub fn matches_revoked(&self, revoked_keys: &HashSet<RevokedKey>) -> bool {
+        revoked_keys.contains(&RevokedKey::new(self.account, self.key_id))
     }
 
     /// Returns true if this subject is affected by any of the spending limit updates.

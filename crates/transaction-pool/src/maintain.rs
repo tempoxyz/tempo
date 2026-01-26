@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{
-    SpendingLimitUpdate, TempoTransactionPool,
+    RevokedKey, SpendingLimitUpdate, TempoTransactionPool,
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
@@ -38,9 +38,9 @@ use tracing::{debug, error};
 pub struct TempoPoolUpdates {
     /// Transaction hashes that have expired (valid_before <= tip_timestamp).
     pub expired_txs: Vec<TxHash>,
-    /// Revoked keychain keys: (account, key_id).
+    /// Revoked keychain keys.
     /// Stored as a set for O(1) lookup when checking transactions.
-    pub revoked_keys: HashSet<(Address, Address)>,
+    pub revoked_keys: HashSet<RevokedKey>,
     /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
@@ -90,7 +90,7 @@ impl TempoPoolUpdates {
                 if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
                     updates
                         .revoked_keys
-                        .insert((event.account, event.publicKey));
+                        .insert(RevokedKey::new(event.account, event.publicKey));
                 } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
                     updates
                         .spending_limit_changes
