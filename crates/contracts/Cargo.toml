@@ -1,6 +1,6 @@
 [package]
 name = "tempo-contracts"
-description = "TODO:"
+description = "Bindings and RPC helpers for Tempo on-chain contracts and ABIs"
 
 version.workspace = true
 edition.workspace = true

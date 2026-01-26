@@ -1,6 +1,6 @@
 [package]
 name = "tempo-evm"
-description = "TODO:"
+description = "Tempo EVM execution integration built on reth/revm with RPC and engine support"
 
 version.workspace = true
 edition.workspace = true

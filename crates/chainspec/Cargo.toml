@@ -1,6 +1,6 @@
 [package]
 name = "tempo-chainspec"
-description = "TODO:"
+description = "Tempo chain specification definitions with serde and CLI helpers"
 
 version.workspace = true
 edition.workspace = true
