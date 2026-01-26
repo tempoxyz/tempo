@@ -166,15 +166,15 @@ where
         }
 
         // Need state provider for validator token changes and blacklist checks
-        let state_provider = if !validator_token_changes.is_empty() || !blacklist_additions.is_empty()
-        {
-            match self.client().latest() {
-                Ok(provider) => Some(provider),
-                Err(_) => return,
-            }
-        } else {
-            None
-        };
+        let state_provider =
+            if !validator_token_changes.is_empty() || !blacklist_additions.is_empty() {
+                match self.client().latest() {
+                    Ok(provider) => Some(provider),
+                    Err(_) => return,
+                }
+            } else {
+                None
+            };
 
         // Cache policy lookups per fee token to avoid redundant storage reads
         let mut policy_cache: HashMap<Address, u64> = HashMap::default();

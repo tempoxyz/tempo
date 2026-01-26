@@ -22,7 +22,7 @@ use std::{
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip20::is_tip20_prefix,
 };
 use tempo_primitives::{AASigned, TempoPrimitives};
