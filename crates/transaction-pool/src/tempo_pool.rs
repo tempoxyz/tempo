@@ -11,7 +11,6 @@ use alloy_primitives::{Address, B256, TxHash, map::HashMap};
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
 use reth_eth_wire_types::HandleMempoolData;
-use reth_primitives_traits::Block;
 use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
@@ -900,14 +899,13 @@ impl<Client> TransactionPoolExt for TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    type Block = tempo_primitives::Block;
+
     fn set_block_info(&self, info: BlockInfo) {
         self.protocol_pool.set_block_info(info)
     }
 
-    fn on_canonical_state_change<B>(&self, update: CanonicalStateUpdate<'_, B>)
-    where
-        B: Block,
-    {
+    fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
         self.protocol_pool.on_canonical_state_change(update)
     }
 

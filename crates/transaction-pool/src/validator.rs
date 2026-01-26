@@ -2,12 +2,12 @@ use crate::{
     amm::AmmLiquidityCache,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{BlockHeader as _, Transaction};
 
 use alloy_primitives::U256;
-use reth_chainspec::{ChainSpecProvider, EthChainSpec};
+use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_primitives_traits::{
-    Block, GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
+    GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
 use reth_storage_api::{StateProvider, StateProviderFactory, errors::ProviderError};
 use reth_transaction_pool::{
@@ -824,6 +824,7 @@ where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
 {
     type Transaction = TempoPooledTransaction;
+    type Block = tempo_primitives::Block;
 
     async fn validate_transaction(
         &self,
@@ -885,11 +886,31 @@ where
             .collect()
     }
 
-    fn on_new_head_block<B>(&self, new_tip_block: &SealedBlock<B>)
-    where
-        B: Block,
-    {
-        self.inner.on_new_head_block(new_tip_block)
+    fn on_new_head_block(&self, new_tip_block: &SealedBlock<Self::Block>) {
+        // Update the fork tracker directly since the inner validator has a different Block type.
+        // This replicates what EthTransactionValidator::on_new_head_block does.
+        let header = new_tip_block.header();
+        let fork_tracker = self.inner.fork_tracker();
+        let chain_spec = self.inner.chain_spec();
+
+        if chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) {
+            fork_tracker.shanghai.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if chain_spec.is_cancun_active_at_timestamp(header.timestamp()) {
+            fork_tracker.cancun.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if chain_spec.is_prague_active_at_timestamp(header.timestamp()) {
+            fork_tracker.prague.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if chain_spec.is_osaka_active_at_timestamp(header.timestamp()) {
+            fork_tracker.osaka.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        fork_tracker.tip_timestamp.store(header.timestamp(), std::sync::atomic::Ordering::Relaxed);
+
+        if let Some(blob_params) = chain_spec.blob_params_at_timestamp(header.timestamp()) {
+            fork_tracker.max_blob_count.store(blob_params.max_blobs_per_tx, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
 
