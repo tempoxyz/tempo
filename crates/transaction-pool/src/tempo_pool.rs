@@ -147,6 +147,7 @@ where
         use reth_storage_api::StateProvider;
         use tempo_precompiles::{
             TIP_FEE_MANAGER_ADDRESS,
+            storage::packing::extract_from_word,
             tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
             tip20::slots as tip20_slots,
         };
@@ -268,11 +269,16 @@ where
                             .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
                             .ok()
                             .flatten()
-                            .map(|packed: alloy_primitives::U256| {
-                                let shifted: alloy_primitives::U256 = packed >> 160;
-                                let policy_id: u64 = shifted.to();
-                                policy_cache.insert(fee_token, policy_id);
-                                policy_id
+                            .and_then(|packed| {
+                                extract_from_word::<u64>(
+                                    packed,
+                                    tip20_slots::TRANSFER_POLICY_ID_OFFSET,
+                                    tip20_slots::TRANSFER_POLICY_ID_BYTES,
+                                )
+                                .ok()
+                                .inspect(|&policy_id| {
+                                    policy_cache.insert(fee_token, policy_id);
+                                })
                             })
                     };
 
