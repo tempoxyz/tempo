@@ -26,13 +26,19 @@ use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    tip20::is_tip20_prefix,
+    tip20::{is_tip20_prefix, slots as tip20_slots},
 };
 use tempo_primitives::{AASigned, TempoPrimitives, TempoTxEnvelope};
 use tracing::{debug, error};
 
 /// A key identifying a keychain-signed transaction: (account, key_id).
 type KeychainKey = (Address, Address);
+
+/// A key identifying a fee token and fee payer combination.
+/// This allows per-policy blacklist eviction: only transactions using a specific
+/// (fee_token, fee_payer) combination are evicted when that fee_payer is blacklisted
+/// on that token's transfer policy.
+type FeeTokenPayerKey = (Address, Address);
 
 /// Tracking state for pool maintenance operations.
 ///
@@ -51,10 +57,12 @@ struct MaintenanceState {
     keychain_txs: HashMap<KeychainKey, HashSet<TxHash>>,
     /// Reverse mapping: tx_hash -> (account, key_id) (for cleanup when tx is removed).
     tx_to_key: HashMap<TxHash, KeychainKey>,
-    /// Maps fee payer address to the set of transaction hashes they are paying for.
-    fee_payer_txs: HashMap<Address, HashSet<TxHash>>,
-    /// Reverse mapping: tx_hash -> fee payer address (for cleanup when tx is removed).
-    tx_to_fee_payer: HashMap<TxHash, Address>,
+    /// Maps (fee_token, fee_payer) to the set of transaction hashes for that combination.
+    /// This enables per-policy blacklist eviction - only transactions using a fee token
+    /// whose transfer_policy_id matches the blacklist policy are evicted.
+    fee_token_payer_txs: HashMap<FeeTokenPayerKey, HashSet<TxHash>>,
+    /// Reverse mapping: tx_hash -> (fee_token, fee_payer) (for cleanup when tx is removed).
+    tx_to_fee_token_payer: HashMap<TxHash, FeeTokenPayerKey>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
 }
@@ -92,14 +100,19 @@ impl MaintenanceState {
         self.tx_to_key.insert(tx_hash, key);
     }
 
-    /// Tracks the fee payer for a transaction.
+    /// Tracks the fee token and fee payer for a transaction.
+    /// Only tracks AA transactions with a fee token, as those are subject to TIP403 blacklisting.
     fn track_fee_payer(&mut self, tx: &TempoTxEnvelope, sender: Address, tx_hash: TxHash) {
+        let Some(fee_token) = tx.fee_token() else {
+            return;
+        };
         let fee_payer = tx.fee_payer(sender).unwrap_or(sender);
-        self.fee_payer_txs
-            .entry(fee_payer)
+        let key = (fee_token, fee_payer);
+        self.fee_token_payer_txs
+            .entry(key)
             .or_default()
             .insert(tx_hash);
-        self.tx_to_fee_payer.insert(tx_hash, fee_payer);
+        self.tx_to_fee_token_payer.insert(tx_hash, key);
     }
 
     /// Removes a transaction from keychain tracking maps.
@@ -126,14 +139,14 @@ impl MaintenanceState {
         }
     }
 
-    /// Removes a transaction from fee payer tracking maps.
+    /// Removes a transaction from fee token/payer tracking maps.
     fn remove_from_fee_payer_tracking(&mut self, tx_hash: &TxHash) {
-        if let Some(fee_payer) = self.tx_to_fee_payer.remove(tx_hash)
-            && let Some(hashes) = self.fee_payer_txs.get_mut(&fee_payer)
+        if let Some(key) = self.tx_to_fee_token_payer.remove(tx_hash)
+            && let Some(hashes) = self.fee_token_payer_txs.get_mut(&key)
         {
             hashes.remove(tx_hash);
             if hashes.is_empty() {
-                self.fee_payer_txs.remove(&fee_payer);
+                self.fee_token_payer_txs.remove(&key);
             }
         }
     }
@@ -166,9 +179,22 @@ impl MaintenanceState {
         self.keychain_txs.get(&(account, key_id))
     }
 
-    /// Finds all transactions for a specific fee payer.
-    fn txs_for_fee_payer(&self, fee_payer: Address) -> Option<&HashSet<TxHash>> {
-        self.fee_payer_txs.get(&fee_payer)
+    /// Finds all transactions for a specific fee token and fee payer combination.
+    fn txs_for_fee_token_payer(
+        &self,
+        fee_token: Address,
+        fee_payer: Address,
+    ) -> Option<&HashSet<TxHash>> {
+        self.fee_token_payer_txs.get(&(fee_token, fee_payer))
+    }
+
+    /// Returns all fee tokens associated with a specific fee payer.
+    /// Used to check which tokens a blacklisted fee payer has transactions for.
+    fn fee_tokens_for_payer(&self, fee_payer: Address) -> impl Iterator<Item = Address> + '_ {
+        self.fee_token_payer_txs
+            .keys()
+            .filter(move |(_, payer)| *payer == fee_payer)
+            .map(|(token, _)| *token)
     }
 }
 
@@ -363,7 +389,23 @@ where
                 }
 
                 // 3. Evict transactions where fee payer was added to a blacklist
+                // TIP403 blacklists are per-policy: a fee payer blacklisted on one policy
+                // should only have transactions evicted if they use a fee token whose
+                // transfer_policy_id matches that policy.
                 let mut blacklisted_txs = Vec::new();
+
+                let tip_hash = tip.tip().hash();
+                let state_provider = match pool.client().state_by_block_hash(tip_hash) {
+                    Ok(provider) => Some(provider),
+                    Err(err) => {
+                        error!(
+                            target: "txpool",
+                            ?err,
+                            "Failed to get state provider for blacklist check"
+                        );
+                        None
+                    }
+                };
 
                 for receipts in tip.execution_outcome().receipts().iter() {
                     for receipt in receipts {
@@ -395,20 +437,68 @@ where
                                     "Decoded BlacklistUpdated event"
                                 );
                                 if event.restricted {
-                                    if let Some(tx_hashes) = state.txs_for_fee_payer(event.account) {
+                                    let fee_payer = event.account;
+                                    let blacklist_policy_id = event.policyId;
+
+                                    // Find all fee tokens this fee payer has transactions for
+                                    let fee_tokens: Vec<Address> =
+                                        state.fee_tokens_for_payer(fee_payer).collect();
+
+                                    if fee_tokens.is_empty() {
                                         debug!(
                                             target: "txpool",
-                                            count = tx_hashes.len(),
-                                            account = ?event.account,
-                                            "Found transactions to evict for blacklisted fee payer"
-                                        );
-                                        blacklisted_txs.extend(tx_hashes.iter().copied());
-                                    } else {
-                                        debug!(
-                                            target: "txpool",
-                                            account = ?event.account,
+                                            account = ?fee_payer,
                                             "No transactions found for blacklisted fee payer"
                                         );
+                                    }
+
+                                    for fee_token in fee_tokens {
+                                        // Check if this fee token's transfer_policy_id matches
+                                        // the blacklist policy
+                                        let token_policy_matches = state_provider
+                                            .as_ref()
+                                            .and_then(|provider| {
+                                                use reth_storage_api::StateProvider;
+                                                provider
+                                                    .storage(
+                                                        fee_token,
+                                                        tip20_slots::TRANSFER_POLICY_ID.into(),
+                                                    )
+                                                    .ok()
+                                                    .flatten()
+                                                    .map(|packed: alloy_primitives::U256| {
+                                                        // transfer_policy_id is packed at byte offset 20
+                                                        // (u64 after Address), so shift right by 160 bits
+                                                        let shifted: alloy_primitives::U256 = packed >> 160;
+                                                        let policy_id: u64 = shifted.to();
+                                                        policy_id == blacklist_policy_id
+                                                    })
+                                            })
+                                            .unwrap_or(false);
+
+                                        if token_policy_matches {
+                                            if let Some(tx_hashes) = state
+                                                .txs_for_fee_token_payer(fee_token, fee_payer)
+                                            {
+                                                debug!(
+                                                    target: "txpool",
+                                                    count = tx_hashes.len(),
+                                                    account = ?fee_payer,
+                                                    ?fee_token,
+                                                    policy_id = blacklist_policy_id,
+                                                    "Evicting transactions for blacklisted fee payer on matching policy"
+                                                );
+                                                blacklisted_txs.extend(tx_hashes.iter().copied());
+                                            }
+                                        } else {
+                                            debug!(
+                                                target: "txpool",
+                                                account = ?fee_payer,
+                                                ?fee_token,
+                                                blacklist_policy_id,
+                                                "Fee token policy does not match blacklist policy, skipping eviction"
+                                            );
+                                        }
                                     }
                                 }
                             }
