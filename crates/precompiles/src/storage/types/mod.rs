@@ -6,6 +6,8 @@ pub use mapping::*;
 
 pub mod array;
 pub mod vec;
+pub mod set;
+pub use set::{Set, SetHandler};
 
 pub mod bytes_like;
 mod primitives;
