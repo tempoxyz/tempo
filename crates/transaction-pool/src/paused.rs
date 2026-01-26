@@ -135,11 +135,16 @@ impl PausedFeeTokenPool {
         count
     }
 
-    /// Removes transactions with revoked keychain keys from the paused pool.
+    /// Removes transactions matching invalidation criteria from the paused pool.
     ///
+    /// This handles both revoked keys and spending limit updates in a single pass.
     /// Returns the number of transactions removed.
-    pub fn evict_by_revoked_keys(&mut self, revoked_keys: &[(Address, Address)]) -> usize {
-        if revoked_keys.is_empty() {
+    pub fn evict_invalidated(
+        &mut self,
+        revoked_keys: &[(Address, Address)],
+        spending_limit_updates: &[(Address, Address, Address)],
+    ) -> usize {
+        if revoked_keys.is_empty() && spending_limit_updates.is_empty() {
             return 0;
         }
 
@@ -147,54 +152,11 @@ impl PausedFeeTokenPool {
         for meta in self.by_token.values_mut() {
             let before = meta.entries.len();
             meta.entries.retain(|entry| {
-                let Some(aa_tx) = entry.tx.transaction.inner().as_aa() else {
+                let Some(subject) = entry.tx.transaction.keychain_subject() else {
                     return true;
                 };
-                let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
-                    return true;
-                };
-                let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
-                    return true;
-                };
-                let account = keychain_sig.user_address;
-                !revoked_keys.contains(&(account, key_id))
-            });
-            count += before - meta.entries.len();
-        }
-        // Clean up empty token entries
-        self.by_token.retain(|_, m| !m.entries.is_empty());
-        count
-    }
-
-    /// Removes transactions affected by spending limit updates from the paused pool.
-    ///
-    /// Only evicts transactions where the fee token matches the token whose limit changed.
-    /// Returns the number of transactions removed.
-    pub fn evict_by_spending_limit_updates(
-        &mut self,
-        spending_limit_updates: &[(Address, Address, Address)],
-    ) -> usize {
-        if spending_limit_updates.is_empty() {
-            return 0;
-        }
-
-        let mut count = 0;
-        for (fee_token, meta) in self.by_token.iter_mut() {
-            let before = meta.entries.len();
-            meta.entries.retain(|entry| {
-                let Some(aa_tx) = entry.tx.transaction.inner().as_aa() else {
-                    return true;
-                };
-                let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
-                    return true;
-                };
-                let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
-                    return true;
-                };
-                let account = keychain_sig.user_address;
-                !spending_limit_updates
-                    .iter()
-                    .any(|&(a, k, t)| a == account && k == key_id && t == *fee_token)
+                !subject.matches_revoked(revoked_keys)
+                    && !subject.matches_spending_limit_update(spending_limit_updates)
             });
             count += before - meta.entries.len();
         }

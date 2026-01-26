@@ -20,10 +20,50 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::nonce::NonceManager;
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::TempoTxEnv;
 use thiserror::Error;
+
+/// Keychain identity extracted from a transaction.
+///
+/// Contains the account (user_address), key_id, and fee_token for matching against
+/// revocation and spending limit events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeychainSubject {
+    /// The account that owns the keychain key (from `user_address` in the signature).
+    pub account: Address,
+    /// The key ID recovered from the keychain signature.
+    pub key_id: Address,
+    /// The fee token used by this transaction.
+    pub fee_token: Address,
+}
+
+impl KeychainSubject {
+    /// Returns true if this subject matches any of the revoked keys.
+    ///
+    /// Revoked keys are identified by (account, key_id) pairs.
+    pub fn matches_revoked(&self, revoked_keys: &[(Address, Address)]) -> bool {
+        revoked_keys
+            .iter()
+            .any(|&(account, key_id)| self.account == account && self.key_id == key_id)
+    }
+
+    /// Returns true if this subject is affected by any of the spending limit updates.
+    ///
+    /// Spending limit updates are identified by (account, key_id, token) tuples.
+    /// Only matches if the transaction's fee token matches the updated token.
+    pub fn matches_spending_limit_update(
+        &self,
+        spending_limit_updates: &[(Address, Address, Address)],
+    ) -> bool {
+        spending_limit_updates
+            .iter()
+            .any(|&(account, key_id, token)| {
+                self.account == account && self.key_id == key_id && self.fee_token == token
+            })
+    }
+}
 
 /// Tempo pooled transaction representation.
 ///
@@ -114,6 +154,26 @@ impl TempoPooledTransaction {
             .as_aa()
             .map(|tx| tx.tx().is_expiring_nonce_tx())
             .unwrap_or(false)
+    }
+
+    /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
+    ///
+    /// Returns `None` if:
+    /// - This is not an AA transaction
+    /// - The signature is not a keychain signature
+    /// - The key_id cannot be recovered from the signature
+    ///
+    /// Used for matching transactions against revocation and spending limit events.
+    pub fn keychain_subject(&self) -> Option<KeychainSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let keychain_sig = aa_tx.signature().as_keychain()?;
+        let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
+        let fee_token = self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN);
+        Some(KeychainSubject {
+            account: keychain_sig.user_address,
+            key_id,
+            fee_token,
+        })
     }
 
     /// Returns the unique identifier for this AA transaction.

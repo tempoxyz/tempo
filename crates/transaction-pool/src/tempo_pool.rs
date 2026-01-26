@@ -160,14 +160,12 @@ where
             return 0;
         }
 
-        // Need state provider for validator token changes and blacklist checks
+        // Only fetch state provider if we need to check liquidity or blacklists.
+        // Don't let a provider error skip revoked/spending-limit eviction.
         let state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
         {
-            match self.client().latest() {
-                Ok(provider) => Some(provider),
-                Err(_) => return 0,
-            }
+            self.client().latest().ok()
         } else {
             None
         };
@@ -183,53 +181,28 @@ where
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-            // Check 1: Revoked keychain keys (only for AA transactions with keychain signatures)
+            // Extract keychain subject once per transaction (if applicable)
+            let keychain_subject = tx.transaction.keychain_subject();
+
+            // Check 1: Revoked keychain keys
             if !updates.revoked_keys.is_empty()
-                && let Some(aa_tx) = tx.transaction.inner().as_aa()
-                && let Some(keychain_sig) = aa_tx.signature().as_keychain()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_revoked(&updates.revoked_keys)
             {
-                let is_revoked = updates.revoked_keys.iter().any(|&(account, key_id)| {
-                    keychain_sig.user_address == account
-                        && keychain_sig
-                            .key_id(&aa_tx.signature_hash())
-                            .is_ok_and(|tx_key_id| tx_key_id == key_id)
-                });
-                if is_revoked {
-                    to_remove.push(*tx.hash());
-                    revoked_count += 1;
-                    continue;
-                }
+                to_remove.push(*tx.hash());
+                revoked_count += 1;
+                continue;
             }
 
-            // Check 2: Spending limit changes (only for AA transactions with keychain signatures)
-            // When a spending limit changes, transactions from that key paying with that token
-            // may become unexecutable if the new limit is below their value.
+            // Check 2: Spending limit updates
+            // Only evict if the transaction's fee token matches the token whose limit changed.
             if !updates.spending_limit_changes.is_empty()
-                && let Some(aa_tx) = tx.transaction.inner().as_aa()
-                && let Some(keychain_sig) = aa_tx.signature().as_keychain()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_spending_limit_update(&updates.spending_limit_changes)
             {
-                let tx_fee_token = tx
-                    .transaction
-                    .inner()
-                    .fee_token()
-                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
-
-                let is_affected =
-                    updates
-                        .spending_limit_changes
-                        .iter()
-                        .any(|&(account, key_id, token)| {
-                            keychain_sig.user_address == account
-                                && tx_fee_token == token
-                                && keychain_sig
-                                    .key_id(&aa_tx.signature_hash())
-                                    .is_ok_and(|tx_key_id| tx_key_id == key_id)
-                        });
-                if is_affected {
-                    to_remove.push(*tx.hash());
-                    spending_limit_count += 1;
-                    continue;
-                }
+                to_remove.push(*tx.hash());
+                spending_limit_count += 1;
+                continue;
             }
 
             // Check 3: Validator token changes (check liquidity for all transactions)
