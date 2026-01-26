@@ -894,22 +894,35 @@ where
         let chain_spec = self.inner.chain_spec();
 
         if chain_spec.is_shanghai_active_at_timestamp(header.timestamp()) {
-            fork_tracker.shanghai.store(true, std::sync::atomic::Ordering::Relaxed);
+            fork_tracker
+                .shanghai
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if chain_spec.is_cancun_active_at_timestamp(header.timestamp()) {
-            fork_tracker.cancun.store(true, std::sync::atomic::Ordering::Relaxed);
+            fork_tracker
+                .cancun
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if chain_spec.is_prague_active_at_timestamp(header.timestamp()) {
-            fork_tracker.prague.store(true, std::sync::atomic::Ordering::Relaxed);
+            fork_tracker
+                .prague
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if chain_spec.is_osaka_active_at_timestamp(header.timestamp()) {
-            fork_tracker.osaka.store(true, std::sync::atomic::Ordering::Relaxed);
+            fork_tracker
+                .osaka
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        fork_tracker.tip_timestamp.store(header.timestamp(), std::sync::atomic::Ordering::Relaxed);
+        fork_tracker
+            .tip_timestamp
+            .store(header.timestamp(), std::sync::atomic::Ordering::Relaxed);
 
         if let Some(blob_params) = chain_spec.blob_params_at_timestamp(header.timestamp()) {
-            fork_tracker.max_blob_count.store(blob_params.max_blobs_per_tx, std::sync::atomic::Ordering::Relaxed);
+            fork_tracker.max_blob_count.store(
+                blob_params.max_blobs_per_tx,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 }
@@ -936,14 +949,19 @@ mod tests {
     use tempo_revm::TempoStateAccess;
 
     /// Helper to create a mock sealed block with the given timestamp.
-    fn create_mock_block(timestamp: u64) -> SealedBlock<reth_ethereum_primitives::Block> {
+    fn create_mock_block(timestamp: u64) -> SealedBlock<tempo_primitives::Block> {
+        use tempo_primitives::TempoHeader;
         let header = Header {
             timestamp,
             gas_limit: 30_000_000,
             ..Default::default()
         };
-        let block = reth_ethereum_primitives::Block {
-            header,
+        let tempo_header = TempoHeader {
+            inner: header,
+            ..Default::default()
+        };
+        let block = Block {
+            header: tempo_header,
             body: Default::default(),
         };
         SealedBlock::seal_slow(block)

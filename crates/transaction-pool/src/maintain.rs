@@ -436,7 +436,6 @@ mod tests {
             blocks,
             ExecutionOutcome::default(),
             Default::default(),
-            Default::default(),
         ))
     }
 
