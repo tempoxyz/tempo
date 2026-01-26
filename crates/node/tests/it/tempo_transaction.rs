@@ -6504,6 +6504,56 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     assert_eq!(policy_id, 2, "First user-created policy should have ID 2");
     println!("Created blacklist policy with ID: {policy_id}");
 
+    // ========================================
+    // STEP 1b: Assign the blacklist policy to the fee token
+    // ========================================
+    println!("\n=== STEP 1b: Assign blacklist policy to fee token ===");
+
+    let change_policy_call = ITIP20::changeTransferPolicyIdCall {
+        newPolicyId: policy_id,
+    };
+
+    let change_policy_nonce = provider.get_transaction_count(root_addr).await?;
+    let change_policy_tx = TempoTransaction {
+        chain_id,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        gas_limit: 500_000,
+        calls: vec![Call {
+            to: DEFAULT_FEE_TOKEN.into(),
+            value: U256::ZERO,
+            input: change_policy_call.abi_encode().into(),
+        }],
+        nonce_key: U256::ZERO,
+        nonce: change_policy_nonce,
+        fee_token: Some(DEFAULT_FEE_TOKEN),
+        ..Default::default()
+    };
+
+    let change_policy_sig = sign_aa_tx_secp256k1(&change_policy_tx, &root_signer)?;
+    let change_policy_envelope: TempoTxEnvelope =
+        change_policy_tx.into_signed(change_policy_sig).into();
+    let change_policy_hash = *change_policy_envelope.tx_hash();
+
+    setup
+        .node
+        .rpc
+        .inject_tx(change_policy_envelope.encoded_2718().into())
+        .await?;
+
+    setup.node.advance_block().await?;
+
+    let policy_change_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [change_policy_hash])
+        .await?;
+    let receipt_obj = policy_change_receipt.expect("changeTransferPolicyId tx should be mined");
+    let status = receipt_obj
+        .get("status")
+        .and_then(|s| s.as_str())
+        .expect("Receipt should have status");
+    assert_eq!(status, "0x1", "changeTransferPolicyId should succeed");
+    println!("Fee token now uses blacklist policy ID: {policy_id}");
+
     // Get current block timestamp for valid_after
     let block = provider
         .get_block_by_number(Default::default())
