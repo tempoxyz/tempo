@@ -12208,7 +12208,6 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
- "eyre",
  "futures",
  "metrics",
  "parking_lot",

@@ -3,10 +3,6 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-// Used for test-utils feature propagation
-#[cfg(feature = "test-utils")]
-use reth_ethereum_primitives as _;
-
 pub mod transaction;
 pub mod validator;
 
@@ -14,8 +10,6 @@ pub mod validator;
 pub mod tempo_pool;
 
 // The main Tempo transaction pool type that handles both protocol and 2D nonces
-#[cfg(feature = "test-utils")]
-pub use tempo_pool::MaintenanceTestSync;
 pub use tempo_pool::TempoTransactionPool;
 
 pub mod amm;

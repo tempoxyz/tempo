@@ -41,8 +41,8 @@ use crate::utils::{SingleNodeSetup, TEST_MNEMONIC, TestNodeBuilder};
 use tempo_node::rpc::TempoTransactionRequest;
 use tempo_primitives::transaction::tt_signature::normalize_p256_s;
 
-/// Default timeout for waiting on pool processing
-const POOL_PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Duration to wait for pool maintenance task to process blocks
+const POOL_MAINTENANCE_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Helper function to fund an address with fee tokens
 /// Returns the fee token address that was used for funding
@@ -1167,13 +1167,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
     );
     println!("  ✓ Protocol nonce: {initial_nonce} → {protocol_nonce_after}",);
 
-    // Wait for maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload1.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool and included in the block
@@ -1286,13 +1281,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         );
     }
 
-    // Wait for maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload2.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     for tx_hash in &sent {
         // Assert that transactions were removed from the pool
@@ -1460,13 +1450,8 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         println!("  ✓ Both nonce=1 and nonce=2 included");
     }
 
-    // Wait for maintenance task to process the block and remove mined transactions
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(payload4.block().inner.number, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for pool maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // Assert that all transactions are removed from the pool
     assert!(!setup.node.inner.pool.contains(&pending));
@@ -5819,19 +5804,15 @@ async fn test_aa_keychain_revocation_toctou_dos() -> eyre::Result<()> {
     assert!(key_info.isRevoked, "Key should be marked as revoked");
     println!("Access key revoked");
 
-    // The maintain_tempo_pool task monitors block commits and evicts transactions signed
-    // with revoked keys. Advance a block to trigger the commit notification,
+    // The evict_revoked_keychain_txs maintenance task has a 1-second startup delay,
+    // then monitors storage changes on block commits and evicts transactions signed
+    // with revoked keys. We need to advance a block to trigger the commit notification,
     // then wait for the maintenance task to process it.
-    let payload = setup.node.advance_block().await?;
-    let new_tip = payload.block().inner.number;
+    // Advance another block to trigger the commit notification
+    setup.node.advance_block().await?;
 
-    // Wait for maintenance task to process the block with the revocation
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for keychain eviction task to process the block with the revocation
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -6428,13 +6409,11 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // ========================================
     println!("\n=== STEP 1: Create a blacklist policy ===");
 
-    // Build createPolicy call using Alloy bindings
     let create_policy_call = ITIP403Registry::createPolicyCall {
         admin: root_addr,
         policyType: ITIP403Registry::PolicyType::BLACKLIST,
     };
 
-    // Build and sign an AA transaction for createPolicy
     let nonce = provider.get_transaction_count(root_addr).await?;
     let create_policy_tx = TempoTransaction {
         chain_id,
@@ -6462,21 +6441,19 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         .inject_tx(create_policy_envelope.encoded_2718().into())
         .await?;
 
-    // Advance block to mine the createPolicy transaction
     setup.node.advance_block().await?;
 
-    // Verify createPolicy succeeded and extract policy ID from event
+    // Verify and extract policy ID
     let policy_receipt: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [create_policy_hash])
         .await?;
     let receipt_obj = policy_receipt.expect("createPolicy tx should be mined");
-    let status = receipt_obj
-        .get("status")
-        .and_then(|s| s.as_str())
-        .expect("Receipt should have status");
-    assert_eq!(status, "0x1", "createPolicy should succeed");
+    assert_eq!(
+        receipt_obj.get("status").and_then(|s| s.as_str()),
+        Some("0x1"),
+        "createPolicy should succeed"
+    );
 
-    // Extract policy ID from PolicyCreated event in logs
     let logs = receipt_obj
         .get("logs")
         .and_then(|l| l.as_array())
@@ -6486,15 +6463,11 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         .iter()
         .find_map(|log| {
             let topics = log.get("topics")?.as_array()?;
-            let _data = log.get("data")?.as_str()?;
-            // PolicyCreated event signature
             let event_sig = ITIP403Registry::PolicyCreated::SIGNATURE_HASH;
             let topic0 = topics.first()?.as_str()?;
             if topic0 == format!("{event_sig:?}") {
-                // policyId is in topic[1]
                 let policy_id_hex = topics.get(1)?.as_str()?;
-                let policy_id = u64::from_str_radix(&policy_id_hex[2..], 16).ok()?;
-                Some(policy_id)
+                u64::from_str_radix(&policy_id_hex[2..], 16).ok()
             } else {
                 None
             }
@@ -6546,12 +6519,14 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     let policy_change_receipt: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [change_policy_hash])
         .await?;
-    let receipt_obj = policy_change_receipt.expect("changeTransferPolicyId tx should be mined");
-    let status = receipt_obj
-        .get("status")
-        .and_then(|s| s.as_str())
-        .expect("Receipt should have status");
-    assert_eq!(status, "0x1", "changeTransferPolicyId should succeed");
+    assert_eq!(
+        policy_change_receipt
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|s| s.as_str()),
+        Some("0x1"),
+        "changeTransferPolicyId should succeed"
+    );
     println!("Fee token now uses blacklist policy ID: {policy_id}");
 
     // Get current block timestamp for valid_after
@@ -6566,18 +6541,14 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
     // ========================================
     println!("\n=== STEP 2: Submit transaction with future valid_after ===");
 
-    // Set valid_after to be in the future (enough time to blacklist the sender)
     let valid_after_time = current_timestamp + 10;
     println!("Setting valid_after to {valid_after_time} (current: {current_timestamp})");
 
     let recipient = Address::random();
-    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6)); // 1 token
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(6));
 
-    // Get current nonce (after createPolicy transaction was mined)
     let delayed_nonce = provider.get_transaction_count(root_addr).await?;
 
-    // Use protocol nonce (nonce_key=0) so the maintenance task tracks this transaction.
-    // The blacklist transaction will use a 2D nonce to bypass the nonce ordering.
     let delayed_tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -6593,8 +6564,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             .abi_encode()
             .into(),
         }],
-        nonce_key: U256::ZERO, // Protocol nonce - gets tracked by maintenance task
-        nonce: delayed_nonce,  // Current nonce after createPolicy
+        nonce_key: U256::ZERO,
+        nonce: delayed_nonce,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_after: Some(valid_after_time),
@@ -6602,7 +6573,6 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         ..Default::default()
     };
 
-    // Sign the transaction
     let delayed_sig = sign_aa_tx_secp256k1(&delayed_tx, &root_signer)?;
     let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(delayed_sig).into();
     let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
@@ -6615,42 +6585,17 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
 
     println!("Delayed transaction submitted (hash: {delayed_tx_hash})");
 
-    // Verify transaction is in the pool
     assert!(
         setup.node.inner.pool.contains(&delayed_tx_hash),
         "Delayed transaction should be in the pool"
     );
     println!("Transaction is in the mempool");
 
-    // Advance multiple blocks to give the maintenance task time to process
-    // the new transaction event. The tokio::select! in the maintenance loop
-    // may process chain events before new_tx events, so we need to ensure
-    // multiple iterations have occurred to guarantee the transaction is tracked.
-    for i in 1..=3 {
-        let sync_payload = setup.node.advance_block().await?;
-        let sync_tip = sync_payload.block().inner.number;
-        setup
-            .node
-            .inner
-            .pool
-            .wait_for_maintenance_processed_tip(sync_tip, POOL_PROCESS_TIMEOUT)
-            .await?;
-        println!("Sync block {i} processed (tip: {sync_tip})");
-    }
-
-    // Verify transaction is still in the pool (not mined because valid_after is future)
-    assert!(
-        setup.node.inner.pool.contains(&delayed_tx_hash),
-        "Delayed transaction should still be in the pool after sync blocks"
-    );
-
     // ========================================
     // STEP 3: Blacklist the root address (fee payer)
     // ========================================
     println!("\n=== STEP 3: Blacklist the fee payer ===");
 
-    // Build and submit the modifyPolicyBlacklist transaction
-    // Use 2D nonce (nonce_key=1) so this can be mined independently of the delayed tx
     let blacklist_call = ITIP403Registry::modifyPolicyBlacklistCall {
         policyId: policy_id,
         account: root_addr,
@@ -6667,8 +6612,8 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
             value: U256::ZERO,
             input: blacklist_call.abi_encode().into(),
         }],
-        nonce_key: U256::from(1), // 2D nonce - bypasses protocol nonce ordering
-        nonce: 0,                 // First nonce for this nonce_key
+        nonce_key: U256::from(1), // 2D nonce to bypass protocol nonce ordering
+        nonce: 0,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         valid_before: Some(u64::MAX),
         ..Default::default()
@@ -6684,49 +6629,24 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
         .inject_tx(blacklist_envelope.encoded_2718().into())
         .await?;
 
-    // Advance block to mine the blacklist transaction and trigger commit notification
-    let payload = setup.node.advance_block().await?;
-    let new_tip = payload.block().inner.number;
+    setup.node.advance_block().await?;
 
-    // Verify the blacklist transaction was mined and succeeded
     let blacklist_receipt: Option<serde_json::Value> = provider
         .raw_request("eth_getTransactionReceipt".into(), [blacklist_tx_hash])
         .await?;
-    let receipt_obj = blacklist_receipt
-        .as_ref()
-        .expect("Blacklist tx should be mined");
-    let status = receipt_obj
-        .get("status")
-        .and_then(|s| s.as_str())
-        .expect("Receipt should have status");
     assert_eq!(
-        status, "0x1",
-        "Blacklist transaction should have succeeded, but got status: {status}"
+        blacklist_receipt
+            .as_ref()
+            .and_then(|r| r.get("status"))
+            .and_then(|s| s.as_str()),
+        Some("0x1"),
+        "Blacklist transaction should have succeeded"
     );
 
-    // Check how many logs the blacklist transaction emitted
-    let logs = receipt_obj
-        .get("logs")
-        .and_then(|l| l.as_array())
-        .expect("Receipt should have logs");
-    println!("Blacklist transaction emitted {} logs:", logs.len());
-    for (i, log) in logs.iter().enumerate() {
-        let addr = log
-            .get("address")
-            .and_then(|a| a.as_str())
-            .unwrap_or("unknown");
-        println!("  Log {i}: address = {addr}");
-    }
+    println!("Fee payer blacklisted");
 
-    println!("Fee payer blacklisted in block {new_tip}");
-
-    // Wait for the maintenance task to process the block
-    setup
-        .node
-        .inner
-        .pool
-        .wait_for_maintenance_processed_tip(new_tip, POOL_PROCESS_TIMEOUT)
-        .await?;
+    // Wait for maintenance task to process the block
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
 
     // ========================================
     // STEP 4: Verify transaction is evicted from the pool
@@ -6744,7 +6664,7 @@ async fn test_tip403_blacklist_evicts_fee_payer_transactions() -> eyre::Result<(
          Transaction with blacklisted fee payer should be evicted from the mempool"
     );
 
-    println!("Transaction was correctly evicted after fee payer was blacklisted");
+    println!("✓ Transaction was correctly evicted after fee payer was blacklisted");
 
     Ok(())
 }

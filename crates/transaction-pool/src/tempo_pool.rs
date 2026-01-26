@@ -28,53 +28,6 @@ use revm::database::BundleAccount;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 
-/// Helper struct for test synchronization with the maintenance task.
-///
-/// Groups the atomic counters and notifications used to wait for the maintenance
-/// task to process blocks before checking assertions in tests.
-#[cfg(feature = "test-utils")]
-#[derive(Default)]
-pub struct MaintenanceTestSync {
-    /// Last block tip number processed by the 2D pool maintenance.
-    last_processed_tip: std::sync::atomic::AtomicU64,
-    /// Notifies waiters when maintenance processes a new tip.
-    processed_notify: tokio::sync::Notify,
-}
-
-#[cfg(feature = "test-utils")]
-impl MaintenanceTestSync {
-    /// Signals that the maintenance task has processed a new tip.
-    pub fn mark_processed(&self, tip: u64) {
-        use std::sync::atomic::Ordering;
-        self.last_processed_tip.store(tip, Ordering::Release);
-        self.processed_notify.notify_waiters();
-    }
-
-    /// Waits until the maintenance task has processed up to the given tip.
-    pub async fn wait_for_tip(&self, tip: u64, timeout: std::time::Duration) -> eyre::Result<()> {
-        use std::sync::atomic::Ordering;
-        use tokio::time;
-
-        let deadline = time::Instant::now() + timeout;
-        loop {
-            if self.last_processed_tip.load(Ordering::Acquire) >= tip {
-                return Ok(());
-            }
-
-            let notified = self.processed_notify.notified();
-            let now = time::Instant::now();
-            if now >= deadline {
-                eyre::bail!(
-                    "timeout waiting for maintenance to process tip={}, last_processed={}",
-                    tip,
-                    self.last_processed_tip.load(Ordering::Acquire)
-                );
-            }
-            let _ = time::timeout(deadline - now, notified).await;
-        }
-    }
-}
-
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
@@ -85,9 +38,6 @@ pub struct TempoTransactionPool<Client> {
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
     aa_2d_pool: Arc<RwLock<AA2dPool>>,
-    /// Test synchronization for the maintenance task.
-    #[cfg(feature = "test-utils")]
-    maintenance_sync: Arc<MaintenanceTestSync>,
 }
 
 impl<Client> TempoTransactionPool<Client> {
@@ -102,27 +52,7 @@ impl<Client> TempoTransactionPool<Client> {
         Self {
             protocol_pool,
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
-            #[cfg(feature = "test-utils")]
-            maintenance_sync: Arc::default(),
         }
-    }
-
-    /// Signals that the maintenance task has processed a new tip.
-    #[cfg(feature = "test-utils")]
-    pub fn mark_maintenance_processed_tip(&self, tip: u64) {
-        self.maintenance_sync.mark_processed(tip);
-    }
-
-    /// Waits until the maintenance task has processed up to the given tip.
-    ///
-    /// This is used by tests to synchronize with the async maintenance task.
-    #[cfg(feature = "test-utils")]
-    pub async fn wait_for_maintenance_processed_tip(
-        &self,
-        tip: u64,
-        timeout: std::time::Duration,
-    ) -> eyre::Result<()> {
-        self.maintenance_sync.wait_for_tip(tip, timeout).await
     }
 }
 impl<Client> TempoTransactionPool<Client>
@@ -210,24 +140,34 @@ where
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
     /// 2. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
+    /// 3. **Blacklisted fee payers**: AA transactions where the fee payer was added to a
+    ///    TIP403 blacklist that applies to the transaction's fee token
     ///
-    /// Both checks are combined into one scan to avoid iterating the pool multiple times
+    /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
     pub fn evict_invalidated_transactions(
         &self,
         revoked_keys: &[(Address, Address)],
         validator_token_changes: &[(Address, Address)],
+        blacklist_additions: &[(u64, Address)], // (policy_id, account)
     ) {
+        use reth_storage_api::StateProvider;
         use tempo_precompiles::{
             TIP_FEE_MANAGER_ADDRESS,
             tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+            tip20::slots as tip20_slots,
         };
 
-        if revoked_keys.is_empty() && validator_token_changes.is_empty() {
+        if revoked_keys.is_empty()
+            && validator_token_changes.is_empty()
+            && blacklist_additions.is_empty()
+        {
             return;
         }
 
-        let state_provider = if !validator_token_changes.is_empty() {
+        // Need state provider for validator token changes and blacklist checks
+        let state_provider = if !validator_token_changes.is_empty() || !blacklist_additions.is_empty()
+        {
             match self.client().latest() {
                 Ok(provider) => Some(provider),
                 Err(_) => return,
@@ -236,9 +176,13 @@ where
             None
         };
 
+        // Cache policy lookups per fee token to avoid redundant storage reads
+        let mut policy_cache: HashMap<Address, u64> = HashMap::default();
+
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
         let mut liquidity_count = 0;
+        let mut blacklisted_count = 0;
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
@@ -305,6 +249,50 @@ where
                     }
                 }
             }
+
+            // Check 3: Blacklisted fee payers
+            // Only check AA transactions with a fee token (non-AA transactions don't have
+            // a fee payer that can be blacklisted via TIP403)
+            if !blacklist_additions.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(fee_token) = tx.transaction.inner().fee_token()
+            {
+                let fee_payer = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(tx.transaction.sender())
+                    .unwrap_or(tx.transaction.sender());
+
+                // Check if any blacklist addition applies to this transaction
+                for &(blacklist_policy_id, blacklisted_account) in blacklist_additions {
+                    if fee_payer != blacklisted_account {
+                        continue;
+                    }
+
+                    // Get the token's transfer policy ID from cache or storage
+                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
+                        Some(cached)
+                    } else {
+                        provider
+                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
+                            .ok()
+                            .flatten()
+                            .map(|packed: alloy_primitives::U256| {
+                                let shifted: alloy_primitives::U256 = packed >> 160;
+                                let policy_id: u64 = shifted.to();
+                                policy_cache.insert(fee_token, policy_id);
+                                policy_id
+                            })
+                    };
+
+                    // If the token's policy matches the blacklist policy, evict the transaction
+                    if token_policy == Some(blacklist_policy_id) {
+                        to_remove.push(*tx.hash());
+                        blacklisted_count += 1;
+                        break;
+                    }
+                }
+            }
         }
 
         if !to_remove.is_empty() {
@@ -313,6 +301,7 @@ where
                 total = to_remove.len(),
                 revoked_count,
                 liquidity_count,
+                blacklisted_count,
                 "Evicting invalidated transactions"
             );
             self.remove_transactions(to_remove);
@@ -440,8 +429,6 @@ impl<Client> Clone for TempoTransactionPool<Client> {
         Self {
             protocol_pool: self.protocol_pool.clone(),
             aa_2d_pool: Arc::clone(&self.aa_2d_pool),
-            #[cfg(feature = "test-utils")]
-            maintenance_sync: Arc::clone(&self.maintenance_sync),
         }
     }
 }
