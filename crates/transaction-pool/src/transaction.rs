@@ -16,6 +16,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
+    collections::HashSet,
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -24,46 +25,6 @@ use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::TempoTxEnv;
 use thiserror::Error;
-
-/// Keychain identity extracted from a transaction.
-///
-/// Contains the account (user_address), key_id, and fee_token for matching against
-/// revocation and spending limit events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeychainSubject {
-    /// The account that owns the keychain key (from `user_address` in the signature).
-    pub account: Address,
-    /// The key ID recovered from the keychain signature.
-    pub key_id: Address,
-    /// The fee token used by this transaction.
-    pub fee_token: Address,
-}
-
-impl KeychainSubject {
-    /// Returns true if this subject matches any of the revoked keys.
-    ///
-    /// Revoked keys are identified by (account, key_id) pairs.
-    pub fn matches_revoked(&self, revoked_keys: &[(Address, Address)]) -> bool {
-        revoked_keys
-            .iter()
-            .any(|&(account, key_id)| self.account == account && self.key_id == key_id)
-    }
-
-    /// Returns true if this subject is affected by any of the spending limit updates.
-    ///
-    /// Spending limit updates are identified by (account, key_id, token) tuples.
-    /// Only matches if the transaction's fee token matches the updated token.
-    pub fn matches_spending_limit_update(
-        &self,
-        spending_limit_updates: &[(Address, Address, Address)],
-    ) -> bool {
-        spending_limit_updates
-            .iter()
-            .any(|&(account, key_id, token)| {
-                self.account == account && self.key_id == key_id && self.fee_token == token
-            })
-    }
-}
 
 /// Tempo pooled transaction representation.
 ///
@@ -934,5 +895,71 @@ mod tests {
 
         // PoolTransaction::cost() returns &U256::ZERO for Tempo
         assert_eq!(*tx.cost(), U256::ZERO);
+    }
+}
+
+// ========================================
+// Keychain invalidation types
+// ========================================
+
+/// Represents a spending limit update event.
+///
+/// This struct provides clear semantics for the three addresses involved in a spending
+/// limit change, rather than using an anonymous tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SpendingLimitUpdate {
+    /// The account that owns the keychain key.
+    pub account: Address,
+    /// The key ID whose spending limit changed.
+    pub key_id: Address,
+    /// The fee token for which the spending limit changed.
+    pub token: Address,
+}
+
+impl SpendingLimitUpdate {
+    /// Creates a new spending limit update.
+    pub fn new(account: Address, key_id: Address, token: Address) -> Self {
+        Self {
+            account,
+            key_id,
+            token,
+        }
+    }
+}
+
+/// Keychain identity extracted from a transaction.
+///
+/// Contains the account (user_address), key_id, and fee_token for matching against
+/// revocation and spending limit events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeychainSubject {
+    /// The account that owns the keychain key (from `user_address` in the signature).
+    pub account: Address,
+    /// The key ID recovered from the keychain signature.
+    pub key_id: Address,
+    /// The fee token used by this transaction.
+    pub fee_token: Address,
+}
+
+impl KeychainSubject {
+    /// Returns true if this subject matches any of the revoked keys.
+    ///
+    /// Uses a pre-built set for O(1) lookup instead of linear scan.
+    pub fn matches_revoked(&self, revoked_keys: &HashSet<(Address, Address)>) -> bool {
+        revoked_keys.contains(&(self.account, self.key_id))
+    }
+
+    /// Returns true if this subject is affected by any of the spending limit updates.
+    ///
+    /// Uses a pre-built set for O(1) lookup instead of linear scan.
+    pub fn matches_spending_limit_update(
+        &self,
+        spending_limit_updates: &HashSet<SpendingLimitUpdate>,
+    ) -> bool {
+        spending_limit_updates.contains(&SpendingLimitUpdate::new(
+            self.account,
+            self.key_id,
+            self.fee_token,
+        ))
     }
 }

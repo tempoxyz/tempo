@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{
-    TempoTransactionPool,
+    SpendingLimitUpdate, TempoTransactionPool,
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
@@ -38,12 +38,14 @@ use tracing::{debug, error};
 pub struct TempoPoolUpdates {
     /// Transaction hashes that have expired (valid_before <= tip_timestamp).
     pub expired_txs: Vec<TxHash>,
-    /// Revoked keychain keys: (account, public_key).
-    pub revoked_keys: Vec<(Address, Address)>,
-    /// Spending limit changes: (account, public_key, token).
+    /// Revoked keychain keys: (account, key_id).
+    /// Stored as a set for O(1) lookup when checking transactions.
+    pub revoked_keys: HashSet<(Address, Address)>,
+    /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
-    pub spending_limit_changes: Vec<(Address, Address, Address)>,
+    /// Stored as a set for O(1) lookup when checking transactions.
+    pub spending_limit_changes: HashSet<SpendingLimitUpdate>,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
     /// TIP403 blacklist additions: (policy_id, account).
@@ -86,13 +88,17 @@ impl TempoPoolUpdates {
             // Key revocations and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
-                    updates.revoked_keys.push((event.account, event.publicKey));
+                    updates
+                        .revoked_keys
+                        .insert((event.account, event.publicKey));
                 } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
-                    updates.spending_limit_changes.push((
-                        event.account,
-                        event.publicKey,
-                        event.token,
-                    ));
+                    updates
+                        .spending_limit_changes
+                        .insert(SpendingLimitUpdate::new(
+                            event.account,
+                            event.publicKey,
+                            event.token,
+                        ));
                 }
             }
             // Validator token changes
