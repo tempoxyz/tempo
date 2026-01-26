@@ -8,8 +8,7 @@ use alloy_provider::{
 use alloy_transport::TransportResult;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempo_primitives::{
-    subblock::has_sub_block_nonce_key_prefix,
-    transaction::TEMPO_EXPIRING_NONCE_KEY,
+    subblock::has_sub_block_nonce_key_prefix, transaction::TEMPO_EXPIRING_NONCE_KEY,
 };
 
 /// A [`TxFiller`] that populates the [`TempoTransaction`](`tempo_primitives::TempoTransaction`) transaction with a random `nonce_key`, and `nonce` set to `0`.

@@ -9,9 +9,7 @@ use reth_tracing::{
     tracing::{debug, error, info},
 };
 use tempo_alloy::{
-    TempoNetwork,
-    fillers::ExpiringNonceFiller,
-    primitives::TempoTxEnvelope,
+    TempoNetwork, fillers::ExpiringNonceFiller, primitives::TempoTxEnvelope,
     provider::ext::TempoProviderBuilderExt,
 };
 
@@ -223,8 +221,7 @@ impl MaxTpsArgs {
             let expiry_secs = ExpiringNonceFiller::DEFAULT_EXPIRY_SECS;
             info!(
                 accounts = self.accounts,
-                expiry_secs,
-                "Creating signers (with expiring nonces - TIP-1009)"
+                expiry_secs, "Creating signers (with expiring nonces - TIP-1009)"
             );
             let signer_provider_manager = SignerProviderManager::new(
                 self.mnemonic.resolve(),
@@ -689,8 +686,6 @@ async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
 ) -> VecDeque<PendingTransactionBuilder<TempoNetwork>> {
     // Create a rate limiter
     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
-
-    
 
     stream::iter(transactions)
         .ratelimit_stream(&rate_limiter)
