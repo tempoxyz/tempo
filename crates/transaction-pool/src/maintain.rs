@@ -30,6 +30,73 @@ use tempo_precompiles::{
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
+/// Default threshold for pending transaction staleness eviction (30 minutes).
+/// Transactions that have been pending for longer than this will be evicted.
+pub const DEFAULT_PENDING_STALENESS_THRESHOLD: u64 = 30 * 60;
+
+/// Tracks when transactions first became pending to detect stale transactions.
+///
+/// Used to evict transactions that have been pending for too long but can't be included
+/// (e.g., due to dynamic state changes like AMM liquidity).
+#[derive(Debug)]
+pub struct PendingStalenessTracker {
+    /// Maps tx_hash -> timestamp when the transaction first became pending.
+    pending_since: HashMap<TxHash, u64>,
+    /// Threshold in seconds for considering a transaction stale.
+    threshold_secs: u64,
+}
+
+impl PendingStalenessTracker {
+    /// Creates a new tracker with the given staleness threshold.
+    pub fn new(threshold_secs: u64) -> Self {
+        Self {
+            pending_since: HashMap::default(),
+            threshold_secs,
+        }
+    }
+
+    /// Updates the pending set with the current pending transaction hashes.
+    ///
+    /// - New hashes are recorded with the current timestamp
+    /// - Hashes no longer pending are removed from tracking
+    /// - Existing hashes keep their original timestamp (first-seen semantics)
+    pub fn update_pending(&mut self, current_pending: impl Iterator<Item = TxHash>, now: u64) {
+        let current_set: HashSet<TxHash> = current_pending.collect();
+
+        // Remove entries no longer in the pending set
+        self.pending_since
+            .retain(|hash, _| current_set.contains(hash));
+
+        // Add new entries with current timestamp (only if not already tracked)
+        for hash in current_set {
+            self.pending_since.entry(hash).or_insert(now);
+        }
+    }
+
+    /// Drains and returns all transactions that have been pending longer than the threshold.
+    pub fn drain_stale(&mut self, now: u64) -> Vec<TxHash> {
+        let threshold = self.threshold_secs;
+        let stale: Vec<TxHash> = self
+            .pending_since
+            .iter()
+            .filter(|(_, first_seen)| now.saturating_sub(**first_seen) > threshold)
+            .map(|(hash, _)| *hash)
+            .collect();
+
+        for hash in &stale {
+            self.pending_since.remove(hash);
+        }
+
+        stale
+    }
+}
+
+impl Default for PendingStalenessTracker {
+    fn default() -> Self {
+        Self::new(DEFAULT_PENDING_STALENESS_THRESHOLD)
+    }
+}
+
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
@@ -160,6 +227,8 @@ struct TempoPoolState {
     tx_to_expiry: HashMap<TxHash, u64>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
+    /// Tracks pending transaction staleness for DoS mitigation.
+    pending_staleness: PendingStalenessTracker,
 }
 
 impl TempoPoolState {
@@ -465,6 +534,25 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
+                // 10. Track and evict stale pending transactions
+                // Update the pending set tracking (must happen after AA pool promotions in step 6)
+                let all_txs = pool.all_transactions();
+                let current_pending = all_txs.pending.iter().map(|tx| *tx.hash());
+                state.pending_staleness.update_pending(current_pending, tip_timestamp);
+
+                // Evict transactions that have been pending too long
+                let stale_to_evict = state.pending_staleness.drain_stale(tip_timestamp);
+
+                if !stale_to_evict.is_empty() {
+                    debug!(
+                        target: "txpool",
+                        count = stale_to_evict.len(),
+                        tip_timestamp,
+                        "Evicting stale pending transactions"
+                    );
+                    pool.remove_transactions(stale_to_evict);
+                }
+
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
             }
@@ -538,6 +626,78 @@ mod tests {
     use reth_transaction_pool::PoolTransaction;
     use std::collections::HashSet;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
+
+    mod pending_staleness_tracker_tests {
+        use super::*;
+
+        #[test]
+        fn tracks_new_pending_transactions() {
+            let mut tracker = PendingStalenessTracker::new(DEFAULT_PENDING_STALENESS_THRESHOLD);
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            // Track tx1 at timestamp 100
+            tracker.update_pending(std::iter::once(tx1), 100);
+            assert_eq!(tracker.pending_since.get(&tx1), Some(&100));
+
+            // Track tx2 at timestamp 200, tx1 should keep original timestamp
+            tracker.update_pending([tx1, tx2].into_iter(), 200);
+            assert_eq!(tracker.pending_since.get(&tx1), Some(&100));
+            assert_eq!(tracker.pending_since.get(&tx2), Some(&200));
+        }
+
+        #[test]
+        fn removes_transactions_no_longer_pending() {
+            let mut tracker = PendingStalenessTracker::new(DEFAULT_PENDING_STALENESS_THRESHOLD);
+            let tx1 = TxHash::random();
+            let tx2 = TxHash::random();
+
+            // Track both txs
+            tracker.update_pending([tx1, tx2].into_iter(), 100);
+            assert_eq!(tracker.pending_since.len(), 2);
+
+            // Only tx1 is still pending
+            tracker.update_pending(std::iter::once(tx1), 200);
+            assert!(tracker.pending_since.contains_key(&tx1));
+            assert!(!tracker.pending_since.contains_key(&tx2));
+        }
+
+        #[test]
+        fn drains_stale_pending_transactions() {
+            let mut tracker = PendingStalenessTracker::new(100); // 100 second threshold
+            let tx_old = TxHash::random();
+            let tx_new = TxHash::random();
+
+            // Track old tx at timestamp 100
+            tracker.update_pending(std::iter::once(tx_old), 100);
+            // Track new tx at timestamp 250
+            tracker.update_pending([tx_old, tx_new].into_iter(), 250);
+
+            // At timestamp 250, tx_old has been pending for 150s (> 100s threshold)
+            let stale = tracker.drain_stale(250);
+            assert_eq!(stale.len(), 1);
+            assert_eq!(stale[0], tx_old);
+
+            // tx_old should be removed from tracking
+            assert!(!tracker.pending_since.contains_key(&tx_old));
+            // tx_new should still be tracked
+            assert!(tracker.pending_since.contains_key(&tx_new));
+        }
+
+        #[test]
+        fn does_not_drain_fresh_transactions() {
+            let mut tracker = PendingStalenessTracker::new(100); // 100 second threshold
+            let tx = TxHash::random();
+
+            // Track tx at timestamp 100
+            tracker.update_pending(std::iter::once(tx), 100);
+
+            // At timestamp 150, tx has only been pending for 50s (< 100s threshold)
+            let stale = tracker.drain_stale(150);
+            assert!(stale.is_empty());
+            assert!(tracker.pending_since.contains_key(&tx));
+        }
+    }
 
     fn create_test_chain(
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
