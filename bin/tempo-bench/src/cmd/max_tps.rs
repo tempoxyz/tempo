@@ -397,7 +397,7 @@ impl MaxTpsArgs {
         let mut pending_txs = if self.expiring_nonces {
             let batch_secs = self.expiring_batch_secs.unwrap_or(15);
             let batch_size = self.tps * batch_secs;
-            let num_batches = (total_txs + batch_size - 1) / batch_size;
+            let num_batches = total_txs.div_ceil(batch_size);
 
             info!(
                 total_txs,
@@ -690,7 +690,9 @@ async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
     // Create a rate limiter
     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(tps as u32).unwrap()));
 
-    let transactions = stream::iter(transactions)
+    
+
+    stream::iter(transactions)
         .ratelimit_stream(&rate_limiter)
         .zip(stream::repeat_with(|| {
             signer_provider_manager.random_unsigned_provider()
@@ -724,9 +726,7 @@ async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
         })
         .take_until(deadline)
         .collect()
-        .await;
-
-    transactions
+        .await
 }
 
 async fn generate_transactions<F: TxFiller<TempoNetwork> + 'static>(
