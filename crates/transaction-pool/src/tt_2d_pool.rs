@@ -26,6 +26,54 @@ use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
 type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
 
+/// Key for ordering transactions by eviction priority.
+///
+/// Orders by:
+/// 1. Priority ascending (lowest priority evicted first)
+/// 2. Submission ID descending (newer transactions evicted first among same priority)
+///
+/// This is the inverse of the execution order (where highest priority, oldest submission wins).
+/// Newer transactions are evicted first to preserve older transactions that have been waiting longer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvictionKey {
+    /// The transaction's priority (from `CoinbaseTipOrdering`).
+    priority: Priority<u128>,
+    /// The submission ID when the transaction was added to the pool.
+    submission_id: u64,
+    /// The transaction's unique identifier (for disambiguation).
+    tx_id: AA2dTransactionId,
+}
+
+impl EvictionKey {
+    /// Creates a new eviction key from transaction data.
+    fn new(priority: Priority<u128>, submission_id: u64, tx_id: AA2dTransactionId) -> Self {
+        Self {
+            priority,
+            submission_id,
+            tx_id,
+        }
+    }
+}
+
+impl Ord for EvictionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Lower priority first (evict lowest priority)
+        self.priority
+            .cmp(&other.priority)
+            // Then newer submission first (evict newer transactions among same priority)
+            // This preserves older transactions that have been waiting longer
+            .then_with(|| other.submission_id.cmp(&self.submission_id))
+            // Finally by tx_id for uniqueness
+            .then_with(|| self.tx_id.cmp(&other.tx_id))
+    }
+}
+
+impl PartialOrd for EvictionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -70,6 +118,13 @@ pub struct AA2dPool {
     pending_count: usize,
     /// Number of queued (non-executable) transactions
     queued_count: usize,
+    /// Pending transactions ordered by eviction priority (lowest priority first).
+    ///
+    /// Since Tempo has a constant base fee, priority never changes after insertion,
+    /// so we can maintain this ordering incrementally.
+    pending_by_eviction_order: BTreeSet<EvictionKey>,
+    /// Queued transactions ordered by eviction priority (lowest priority first).
+    queued_by_eviction_order: BTreeSet<EvictionKey>,
 }
 
 impl Default for AA2dPool {
@@ -93,6 +148,8 @@ impl AA2dPool {
             metrics: AA2dPoolMetrics::default(),
             pending_count: 0,
             queued_count: 0,
+            pending_by_eviction_order: Default::default(),
+            queued_by_eviction_order: Default::default(),
         }
     }
 
@@ -206,14 +263,27 @@ impl AA2dPool {
             // we only need to remove it from the hash list, because we already replaced it in the by id set,
             // and if this is the independent transaction, it will be replaced by the new transaction below
             self.by_hash.remove(replaced.inner.transaction.hash());
+            // Remove from eviction set
+            let replaced_key = EvictionKey::new(
+                replaced.inner.priority.clone(),
+                replaced.inner.submission_id,
+                tx_id,
+            );
+            if replaced.is_pending {
+                self.pending_by_eviction_order.remove(&replaced_key);
+            } else {
+                self.queued_by_eviction_order.remove(&replaced_key);
+            }
         }
 
         // insert transaction by hash
         self.by_hash
             .insert(*tx.inner.transaction.hash(), tx.inner.transaction.clone());
 
-        // contains transactions directly impacted by the new transaction (filled nonca gap)
+        // contains transactions directly impacted by the new transaction (filled nonce gap)
         let mut promoted = Vec::new();
+        // eviction keys of promoted transactions (to move from queued to pending eviction set)
+        let mut promoted_eviction_keys = Vec::new();
         // now we need to scan the range and mark transactions as pending, if any
         let on_chain_id = AA2dTransactionId::new(tx_id.seq_id, on_chain_nonce);
         // track the next nonce we expect if the transactions are gapless
@@ -235,6 +305,11 @@ impl AA2dPool {
                         // if this was previously not pending we need to promote the transaction
                         let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
                         if is_promoted {
+                            promoted_eviction_keys.push(EvictionKey::new(
+                                existing_tx.inner.priority.clone(),
+                                existing_tx.inner.submission_id,
+                                *existing_id,
+                            ));
                             promoted.push(existing_tx.inner.transaction.clone());
                         }
                     }
@@ -247,6 +322,12 @@ impl AA2dPool {
             }
         }
 
+        // Move promoted transactions from queued to pending eviction set
+        for key in promoted_eviction_keys {
+            self.queued_by_eviction_order.remove(&key);
+            self.pending_by_eviction_order.insert(key);
+        }
+
         // Update counters for promoted transactions
         let promoted_count = promoted.len();
         if !promoted.is_empty() {
@@ -257,9 +338,15 @@ impl AA2dPool {
         // Record metrics
         self.metrics.inc_inserted();
 
+        // Create eviction key for the new transaction
+        let new_tx_eviction_key =
+            EvictionKey::new(tx.inner.priority.clone(), tx.inner.submission_id, tx_id);
+
         if inserted_as_pending {
             // Increment pending counter for the newly inserted transaction
             self.pending_count += 1;
+            // Add to pending eviction set
+            self.pending_by_eviction_order.insert(new_tx_eviction_key);
 
             if !promoted.is_empty() {
                 self.metrics.inc_promoted(promoted_count);
@@ -279,6 +366,8 @@ impl AA2dPool {
 
         // Increment queued counter for the newly inserted transaction
         self.queued_count += 1;
+        // Add to queued eviction set
+        self.queued_by_eviction_order.insert(new_tx_eviction_key);
 
         // Call discard for queued transactions too
         let _ = self.discard();
@@ -565,10 +654,13 @@ impl AA2dPool {
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let tx = self.by_id.remove(id)?;
 
-        // Update counters based on the removed transaction's pending status
+        // Remove from eviction set
+        let eviction_key = EvictionKey::new(tx.inner.priority, tx.inner.submission_id, *id);
         if tx.is_pending {
+            self.pending_by_eviction_order.remove(&eviction_key);
             self.pending_count -= 1;
         } else {
+            self.queued_by_eviction_order.remove(&eviction_key);
             self.queued_count -= 1;
         }
 
@@ -734,6 +826,9 @@ impl AA2dPool {
 
         let mut promoted = Vec::new();
         let mut mined_ids = Vec::new();
+        // Track eviction key movements: (key, from_pending_to_queued)
+        // true = demoted (pending -> queued), false = promoted (queued -> pending)
+        let mut eviction_key_moves: Vec<(EvictionKey, bool)> = Vec::new();
 
         // we assume the set of changed senders is smaller than the individual accounts
         'changes: for (sender_id, on_chain_nonce) in on_chain_ids {
@@ -769,6 +864,15 @@ impl AA2dPool {
                         // Update counters for txs promoted from queued to pending
                         self.queued_count -= 1;
                         self.pending_count += 1;
+                        // Track for eviction set update (queued -> pending)
+                        eviction_key_moves.push((
+                            EvictionKey::new(
+                                existing_tx.inner.priority.clone(),
+                                existing_tx.inner.submission_id,
+                                *existing_id,
+                            ),
+                            false, // promoted: queued -> pending
+                        ));
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -785,6 +889,15 @@ impl AA2dPool {
                     if std::mem::replace(&mut existing_tx.is_pending, false) {
                         self.pending_count -= 1;
                         self.queued_count += 1;
+                        // Track for eviction set update (pending -> queued)
+                        eviction_key_moves.push((
+                            EvictionKey::new(
+                                existing_tx.inner.priority.clone(),
+                                existing_tx.inner.submission_id,
+                                *existing_id,
+                            ),
+                            true, // demoted: pending -> queued
+                        ));
                     }
                 }
             }
@@ -794,6 +907,19 @@ impl AA2dPool {
             // This handles reorgs where the on-chain nonce decreases.
             if next_nonce == on_chain_nonce {
                 self.independent_transactions.remove(&sender_id);
+            }
+        }
+
+        // Apply eviction set movements
+        for (key, demoted) in eviction_key_moves {
+            if demoted {
+                // pending -> queued
+                self.pending_by_eviction_order.remove(&key);
+                self.queued_by_eviction_order.insert(key);
+            } else {
+                // queued -> pending
+                self.queued_by_eviction_order.remove(&key);
+                self.pending_by_eviction_order.insert(key);
             }
         }
 
@@ -848,8 +974,8 @@ impl AA2dPool {
 
     /// Evicts the lowest-priority transactions from the pool.
     ///
-    /// Collects transactions matching `is_pending`, sorts by priority ascending,
-    /// and removes up to `count` of the lowest-priority ones.
+    /// Uses the pre-sorted eviction sets to efficiently pop the lowest-priority
+    /// transactions without collecting and sorting.
     fn evict_lowest_priority(
         &mut self,
         count: usize,
@@ -859,23 +985,18 @@ impl AA2dPool {
             return vec![];
         }
 
-        // Collect transactions matching is_pending with their IDs
-        let mut txs_by_priority: Vec<_> = self
-            .by_id
-            .iter()
-            .filter(|(_, tx)| tx.is_pending == is_pending)
-            .map(|(id, tx)| (*id, tx.inner.clone()))
-            .collect();
+        // Collect tx_ids to evict from the appropriate eviction set
+        let eviction_set = if is_pending {
+            &self.pending_by_eviction_order
+        } else {
+            &self.queued_by_eviction_order
+        };
 
-        // Sort by priority ascending (lowest priority first for eviction)
-        // PendingTransaction::Ord orders highest priority first, so we use natural order
-        txs_by_priority.sort_by(|a, b| a.1.cmp(&b.1));
-
-        // Take the lowest priority transactions to remove
-        let to_remove: Vec<_> = txs_by_priority.into_iter().take(count).collect();
+        // Take the first `count` keys (lowest priority first)
+        let to_remove: Vec<_> = eviction_set.iter().take(count).map(|k| k.tx_id).collect();
 
         let mut removed = Vec::with_capacity(to_remove.len());
-        for (id, _) in to_remove {
+        for id in to_remove {
             if let Some(tx) = self.remove_transaction_by_id(&id) {
                 removed.push(tx);
             }
