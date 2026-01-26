@@ -28,7 +28,7 @@ use tempo_precompiles::{
 use tempo_primitives::{AASigned, TempoPrimitives};
 use tracing::{debug, error};
 
-/// Aggregated block-level updates for the transaction pool.
+/// Aggregated block-level invalidation events for the transaction pool.
 ///
 /// Collects all invalidation events from a block into a single structure,
 /// allowing efficient batch processing of pool updates.
@@ -44,8 +44,6 @@ pub struct TempoPoolUpdates {
     pub blacklist_additions: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
-    /// Transaction hashes mined in this block.
-    pub mined_tx_hashes: Vec<TxHash>,
 }
 
 impl TempoPoolUpdates {
@@ -61,22 +59,14 @@ impl TempoPoolUpdates {
             && self.validator_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.pause_events.is_empty()
-            && self.mined_tx_hashes.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
     ///
     /// Parses receipts for relevant events (key revocations, validator token changes,
-    /// blacklist additions, pause events) and collects mined transaction hashes.
+    /// blacklist additions, pause events).
     pub fn from_chain(chain: &Chain<TempoPrimitives>) -> Self {
         let mut updates = Self::new();
-
-        // Collect mined transaction hashes
-        updates.mined_tx_hashes = chain
-            .blocks_iter()
-            .flat_map(|block| block.body().transactions())
-            .map(|tx| *tx.tx_hash())
-            .collect();
 
         // Parse events from receipts
         for log in chain
@@ -278,8 +268,15 @@ where
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
-                // 1. Collect all block-level updates into a single structure
+                // 1. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
+
+                // Collect mined transaction hashes separately (not an invalidation event)
+                let mined_tx_hashes: Vec<TxHash> = tip
+                    .blocks_iter()
+                    .flat_map(|block| block.body().transactions())
+                    .map(|tx| *tx.tx_hash())
+                    .collect();
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(tip_timestamp);
@@ -393,7 +390,7 @@ where
                 // 7. Remove included expiring nonce transactions
                 // Expiring nonce txs use tx hash for replay protection rather than sequential nonces,
                 // so we need to remove them on inclusion rather than relying on nonce changes.
-                pool.remove_included_expiring_nonce_txs(updates.mined_tx_hashes.iter());
+                pool.remove_included_expiring_nonce_txs(mined_tx_hashes.iter());
 
                 // 8. Update AMM liquidity cache (must happen before validator token eviction)
                 amm_cache.on_new_state(tip.execution_outcome());
