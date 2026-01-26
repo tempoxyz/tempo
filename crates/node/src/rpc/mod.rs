@@ -357,6 +357,7 @@ impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {
         S: EvmStateProvider,
     {
         // Capture the original nonce before it gets cleared by take_nonce()
+        // Only Some(0) triggers additional gas - None means user didn't specify nonce
         let original_nonce = request.nonce;
 
         // Check if this is a create transaction
@@ -365,13 +366,14 @@ impl<N: FullNodeTypes<Types = TempoNode>> EstimateCall for TempoEthApi<N> {
         // Check if T1 is active (TIP-1000 applies)
         let is_t1 = evm_env.cfg_env.spec.is_t1();
 
-        // Get base estimate from parent implementation
+        // Delegate to the inner EthApi's EstimateCall implementation
+        // This uses the default reth implementation which handles all the binary search logic
         let base_estimate =
-            self.inner
-                .estimate_gas_with(evm_env, request, state, state_override)?;
+            EstimateCall::estimate_gas_with(&self.inner, evm_env, request, state, state_override)?;
 
-        // TIP-1000 (T1+ only): If the original request had nonce=0, add new account cost
+        // TIP-1000 (T1+ only): If the original request explicitly had nonce=0, add new account cost
         // This covers the case where eth_estimateGas is called for a first transaction
+        // Note: We only add gas when nonce is explicitly Some(0), not when it's None
         let tip1000_additional = if is_t1 && original_nonce == Some(0) {
             let mut additional = TIP1000_NEW_ACCOUNT_COST;
             if is_create {
