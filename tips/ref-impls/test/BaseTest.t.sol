@@ -32,6 +32,7 @@ contract BaseTest is Test {
     bytes32 internal constant _ISSUER_ROLE = keccak256("ISSUER_ROLE");
     bytes32 internal constant _PAUSE_ROLE = keccak256("PAUSE_ROLE");
     bytes32 internal constant _UNPAUSE_ROLE = keccak256("UNPAUSE_ROLE");
+    bytes32 internal constant _BURN_BLOCKED_ROLE = keccak256("BURN_BLOCKED_ROLE");
     bytes32 internal constant _TRANSFER_ROLE = keccak256("TRANSFER_ROLE");
     bytes32 internal constant _RECEIVE_WITH_MEMO_ROLE = keccak256("RECEIVE_WITH_MEMO_ROLE");
 
