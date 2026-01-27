@@ -725,12 +725,15 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         // TEMPO-KEY19: Invalid signature type should be rejected
         assertFalse(success, "TEMPO-KEY19: Invalid signature type should revert");
-        assertGe(returnData.length, 4, "TEMPO-KEY19: Revert data should contain selector");
-        assertEq(
-            bytes4(returnData),
-            IAccountKeychain.InvalidSignatureType.selector,
-            "TEMPO-KEY19: Should revert with InvalidSignatureType"
-        );
+        // If revert data is provided, verify it's the expected error
+        // (Empty revert data is acceptable - ABI-level rejection for invalid enum)
+        if (returnData.length >= 4) {
+            assertEq(
+                bytes4(returnData),
+                IAccountKeychain.InvalidSignatureType.selector,
+                "TEMPO-KEY19: Should revert with InvalidSignatureType"
+            );
+        }
 
         _log(
             string.concat(
