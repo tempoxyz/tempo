@@ -13,15 +13,14 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Log file path for recording actions
     string private constant LOG_FILE = "tip403_registry.log";
 
-    /// @dev Ghost variables for tracking operations
+    /// @dev Ghost variable for tracking total policies created in handlers
     uint256 private _totalPoliciesCreated;
-    uint256 private _totalAdminChanges;
-    uint256 private _totalWhitelistModifications;
-    uint256 private _totalBlacklistModifications;
-    uint256 private _totalAuthorizationChecks;
 
     /// @dev Ghost variable for counter monotonicity tracking (TEMPO-REG15)
     uint64 private _lastSeenCounter;
+
+    /// @dev Policies created during base setup (derived, not hardcoded)
+    uint64 private _basePoliciesCreated;
 
     /// @dev Track created policies
     uint64[] private _createdPolicies;
@@ -43,7 +42,10 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
         targetContract(address(this));
 
+        uint64 counterBefore = registry.policyIdCounter();
         _setupInvariantBase();
+        _basePoliciesCreated = registry.policyIdCounter() - counterBefore;
+
         _actors = _buildActors(10);
 
         _initLogFile(LOG_FILE, "TIP403Registry Invariant Test Log");
@@ -192,8 +194,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         try registry.setPolicyAdmin(policyId, newAdmin) {
             vm.stopPrank();
 
-            _totalAdminChanges++;
-
             // TEMPO-REG6: Admin should be updated
             (, address storedAdmin) = registry.policyData(policyId);
             assertEq(storedAdmin, newAdmin, "TEMPO-REG6: Admin not updated correctly");
@@ -220,12 +220,9 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         if (_createdPolicies.length == 0) return;
 
         uint64 policyId = _createdPolicies[policySeed % _createdPolicies.length];
-        address attacker = _selectActor(attackerSeed);
 
         (, address currentAdmin) = registry.policyData(policyId);
-
-        // Skip if attacker is the admin
-        vm.assume(attacker != currentAdmin);
+        address attacker = _selectActorExcluding(attackerSeed, currentAdmin);
 
         vm.startPrank(attacker);
         try registry.setPolicyAdmin(policyId, attacker) {
@@ -267,7 +264,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         try registry.modifyPolicyWhitelist(policyId, account, allowed) {
             vm.stopPrank();
 
-            _totalWhitelistModifications++;
             _ghostPolicySet[policyId][account] = allowed;
             if (!_policyAccountTracked[policyId][account]) {
                 _policyAccountTracked[policyId][account] = true;
@@ -320,7 +316,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         try registry.modifyPolicyBlacklist(policyId, account, restricted) {
             vm.stopPrank();
 
-            _totalBlacklistModifications++;
             _ghostPolicySet[policyId][account] = restricted;
             if (!_policyAccountTracked[policyId][account]) {
                 _policyAccountTracked[policyId][account] = true;
@@ -392,8 +387,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     function checkSpecialPolicies(uint256 accountSeed) external {
         address account = _selectActor(accountSeed);
 
-        _totalAuthorizationChecks++;
-
         // TEMPO-REG11: Policy 0 is always-reject
         assertFalse(registry.isAuthorized(0, account), "TEMPO-REG11: Policy 0 should always reject");
 
@@ -408,8 +401,8 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @notice Handler for checking non-existent policies
     /// @dev Tests TEMPO-REG14 (policy existence checks)
     function checkNonExistentPolicy(uint64 policyId) external view {
-        // Use a policy ID that definitely doesn't exist
-        uint64 nonExistentId = registry.policyIdCounter() + 100 + policyId;
+        uint64 counter = registry.policyIdCounter();
+        uint64 nonExistentId = counter + uint64(bound(policyId, 0, 1000));
 
         // TEMPO-REG14: Non-existent policy should not exist
         assertFalse(
@@ -488,8 +481,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertTrue(counter >= 2, "TEMPO-REG15: Counter should be at least 2");
 
         // TEMPO-REG15: Counter must equal exactly 2 + total policies created
-        uint64 expectedCounter =
-            2 + uint64(_totalPoliciesCreatedInBase()) + uint64(_totalPoliciesCreated);
+        uint64 expectedCounter = 2 + _basePoliciesCreated + uint64(_totalPoliciesCreated);
         assertEq(
             counter, expectedCounter, "TEMPO-REG15: Counter must equal 2 + totalPoliciesCreated"
         );
@@ -555,25 +547,9 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice Verify operation counters are consistent
-    function _invariantOperationCountersConsistent() internal view {
-        assertTrue(
-            _totalPoliciesCreated + _totalAdminChanges + _totalWhitelistModifications
-                    + _totalBlacklistModifications + _totalAuthorizationChecks >= 0,
-            "Operation counters should be non-negative"
-        );
-    }
-
     /*//////////////////////////////////////////////////////////////
                             HELPERS
     //////////////////////////////////////////////////////////////*/
-
-    /// @dev Count policies created in base setup
-    /// InvariantBaseTest creates blacklist policies for each token + pathUSD
-    function _totalPoliciesCreatedInBase() internal pure returns (uint256) {
-        // 4 tokens + 1 pathUSD = 5 policies created in _setupInvariantBase
-        return 5;
-    }
 
     /// @dev Checks if an error is known/expected
     function _assertKnownError(bytes memory reason) internal pure {
