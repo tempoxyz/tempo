@@ -137,6 +137,9 @@ contract GasPricingInvariantTest is InvariantBase {
 
     /// @notice Summary invariant - ensure tests are exercised
     function invariant_testsExecuted() public view {
+        // Skip this check when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         // At least one category of tests should run
         uint256 totalTests = ghost_sstoreTests + ghost_createTests + ghost_multiSlotTests;
         assertTrue(totalTests > 0, "No gas pricing tests were executed");
@@ -150,6 +153,9 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @param actorSeed Seed for selecting actor
     /// @param slotSeed Seed for generating unique slot
     function handler_sstoreNewSlot(uint256 actorSeed, uint256 slotSeed) external {
+        // Skip when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         ghost_sstoreTests++;
 
         uint256 senderIdx = actorSeed % actors.length;
@@ -205,6 +211,9 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @notice Handler: Test CREATE gas requirement (TEMPO-GAS5)
     /// @param actorSeed Seed for selecting actor
     function handler_createContract(uint256 actorSeed) external {
+        // Skip when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         ghost_createTests++;
 
         uint256 senderIdx = actorSeed % actors.length;
@@ -260,6 +269,9 @@ contract GasPricingInvariantTest is InvariantBase {
     /// @param actorSeed Seed for selecting actor
     /// @param numSlots Number of slots to write (2-5)
     function handler_multipleNewSlots(uint256 actorSeed, uint256 numSlots) external {
+        // Skip when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         numSlots = bound(numSlots, 2, 5);
         ghost_multiSlotTests++;
 

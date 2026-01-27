@@ -152,6 +152,9 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
     /// @notice Summary invariant
     function invariant_testsExecuted() public view {
+        // Skip this check when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         uint256 totalTests = ghost_txGasCapTests + ghost_deploymentTests;
         assertTrue(totalTests > 0, "No block gas limit tests were executed");
     }
@@ -164,6 +167,9 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @param actorSeed Seed for selecting actor
     /// @param gasMultiplier Multiplier to test various gas levels
     function handler_txGasCapEnforcement(uint256 actorSeed, uint256 gasMultiplier) external {
+        // Skip when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         ghost_txGasCapTests++;
 
         uint256 senderIdx = actorSeed % actors.length;
@@ -215,6 +221,9 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
     /// @param actorSeed Seed for selecting actor
     /// @param sizeFraction Fraction of max size to deploy (50-100%)
     function handler_maxDeploymentFits(uint256 actorSeed, uint256 sizeFraction) external {
+        // Skip when not on Tempo (vmExec.executeTransaction not available)
+        if (!isTempo) return;
+
         ghost_deploymentTests++;
 
         uint256 senderIdx = actorSeed % actors.length;
