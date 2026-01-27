@@ -5,10 +5,10 @@
 //! When the token is unpaused, transactions are moved back to the main pool
 //! and re-validated.
 
-use crate::{RevokedKey, SpendingLimitUpdates, transaction::TempoPooledTransaction};
+use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
 use alloy_primitives::{Address, TxHash, map::HashMap};
 use reth_transaction_pool::ValidPoolTransaction;
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 /// Duration after which paused transactions are expired and removed.
 /// If a token isn't unpaused within this time, we clear all pending transactions.
@@ -138,11 +138,11 @@ impl PausedFeeTokenPool {
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
     /// This handles both revoked keys and spending limit updates in a single pass.
-    /// Uses pre-built sets for O(1) lookup per transaction.
+    /// Uses account-keyed indexes for O(1) account lookup per transaction.
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
         &mut self,
-        revoked_keys: &HashSet<RevokedKey>,
+        revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
     ) -> usize {
         if revoked_keys.is_empty() && spending_limit_updates.is_empty() {

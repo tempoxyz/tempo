@@ -16,7 +16,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -902,22 +902,42 @@ mod tests {
 // Keychain invalidation types
 // ========================================
 
-/// Represents a revoked keychain key.
+/// Index of revoked keychain keys, keyed by account for efficient lookup.
 ///
-/// This struct provides clear semantics for the two addresses involved in a key
-/// revocation, rather than using an anonymous tuple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RevokedKey {
-    /// The account that owns the keychain key.
-    pub account: Address,
-    /// The key ID that was revoked.
-    pub key_id: Address,
+/// Uses account as the primary key with a list of revoked key_ids,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct RevokedKeys {
+    /// Map from account to list of revoked key_ids.
+    by_account: HashMap<Address, Vec<Address>>,
 }
 
-impl RevokedKey {
-    /// Creates a new revoked key.
-    pub fn new(account: Address, key_id: Address) -> Self {
-        Self { account, key_id }
+impl RevokedKeys {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a revoked key.
+    pub fn insert(&mut self, account: Address, key_id: Address) {
+        self.by_account.entry(account).or_default().push(key_id);
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of revoked keys.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|key_ids| key_ids.contains(&key_id))
     }
 }
 
@@ -982,9 +1002,10 @@ pub struct KeychainSubject {
 impl KeychainSubject {
     /// Returns true if this subject matches any of the revoked keys.
     ///
-    /// Uses a pre-built set for O(1) lookup instead of linear scan.
-    pub fn matches_revoked(&self, revoked_keys: &HashSet<RevokedKey>) -> bool {
-        revoked_keys.contains(&RevokedKey::new(self.account, self.key_id))
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of key_ids for that account.
+    pub fn matches_revoked(&self, revoked_keys: &RevokedKeys) -> bool {
+        revoked_keys.contains(self.account, self.key_id)
     }
 
     /// Returns true if this subject is affected by any of the spending limit updates.
