@@ -341,8 +341,6 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
 
-=======
->>>>>>> 185278e4 (feat: add base invariant test plumbing/logic)
 ## TIP20
 
 TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, memo support, pause functionality, and reward distribution.

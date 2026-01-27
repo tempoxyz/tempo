@@ -6,7 +6,8 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title AccountKeychain Invariant Tests
 /// @notice Fuzz-based invariant tests for the AccountKeychain precompile
-/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY16 for access key management
+/// @dev Tests invariants TEMPO-KEY1 through TEMPO-KEY19 for access key management
+///      Note: TEMPO-KEY20/21 require integration tests (transient storage for transaction_key)
 contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for key ID address pool (distinct from zero address)
@@ -148,6 +149,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             assertEq(info.keyId, keyId, "TEMPO-KEY1: KeyId should match");
             assertEq(info.expiry, expiry, "TEMPO-KEY1: Expiry should match");
             assertEq(info.enforceLimits, enforceLimits, "TEMPO-KEY1: EnforceLimits should match");
+            assertEq(uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match");
             assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
 
             _log(
@@ -186,10 +188,16 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
             _totalKeysRevoked++;
 
-            // Update ghost state
+            // Update ghost state - clear all fields on revoke for consistency
             _ghostKeyExists[account][keyId] = false;
             _ghostKeyRevoked[account][keyId] = true;
             _ghostKeyExpiry[account][keyId] = 0;
+            _ghostKeyEnforceLimits[account][keyId] = false;
+            _ghostKeySignatureType[account][keyId] = 0;
+            // Clear spending limits for all tokens
+            for (uint256 t = 0; t < _tokens.length; t++) {
+                _ghostSpendingLimits[account][keyId][address(_tokens[t])] = 0;
+            }
 
             // TEMPO-KEY3: Verify key is revoked
             IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
@@ -403,20 +411,21 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for revoking non-existent key (should fail)
-    /// @dev Tests TEMPO-KEY9 (revoke non-existent key)
+    /// @dev Tests TEMPO-KEY9 (revoke non-existent key returns KeyNotFound)
     function tryRevokeNonExistentKey(uint256 accountSeed, uint256 keyIdSeed) external {
         address account = _selectActor(accountSeed);
         address keyId = _selectKeyId(keyIdSeed);
 
-        // Skip if key exists
+        // Skip if key exists (not revoked)
         if (_ghostKeyExists[account][keyId]) return;
-        // Skip if key was revoked (would give KeyNotFound due to expiry=0)
-        if (_ghostKeyRevoked[account][keyId]) return;
+
+        // Both never-existed and already-revoked keys should return KeyNotFound
+        bool wasRevoked = _ghostKeyRevoked[account][keyId];
 
         vm.startPrank(account);
         try keychain.revokeKey(keyId) {
             vm.stopPrank();
-            revert("TEMPO-KEY9: Revoking non-existent key should fail");
+            revert("TEMPO-KEY9: Revoking non-existent/revoked key should fail");
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertEq(
@@ -428,11 +437,11 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         _log(
             string.concat(
-                "TRY_REVOKE_NONEXISTENT: account=",
+                wasRevoked ? "TRY_REVOKE_ALREADY_REVOKED: account=" : "TRY_REVOKE_NONEXISTENT: account=",
                 _getActorIndex(account),
                 " keyId=",
                 vm.toString(keyId),
-                " correctly rejected"
+                " correctly rejected with KeyNotFound"
             )
         );
     }
@@ -565,62 +574,119 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for testing expiry boundary condition
-    /// @dev Tests that expiry at current timestamp is treated as expired (timestamp >= expiry)
+    /// @dev Tests TEMPO-KEY17 (expiry == block.timestamp counts as expired)
+    ///      Rust uses timestamp >= expiry, so expiry == now is already expired
     function testExpiryBoundary(uint256 accountSeed, uint256 keyIdSeed) external {
         address account = _selectActor(accountSeed);
         address keyId = _selectKeyId(keyIdSeed);
 
         // Skip if key already exists or was revoked
         if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+        if (_tokens.length == 0) return;
 
-        // Create a key that expires at the current timestamp (edge case)
-        uint64 expiryAtNow = uint64(block.timestamp);
+        // Create a key with expiry 1 second in the future (valid at creation)
+        uint64 expiry = uint64(block.timestamp + 1);
 
         IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
         vm.startPrank(account);
         try keychain.authorizeKey(
-            keyId, IAccountKeychain.SignatureType.Secp256k1, expiryAtNow, false, limits
+            keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, false, limits
         ) {
             vm.stopPrank();
 
-            // Key was created, now update ghost state
+            // Key was created, update ghost state
             _ghostKeyExists[account][keyId] = true;
-            _ghostKeyExpiry[account][keyId] = expiryAtNow;
+            _ghostKeyExpiry[account][keyId] = expiry;
+            _ghostKeySignatureType[account][keyId] = 0;
 
             if (!_keyUsed[account][keyId]) {
                 _keyUsed[account][keyId] = true;
                 _accountKeys[account].push(keyId);
             }
 
-            // Try to use the key by updating spending limit - should fail with KeyExpired
-            // because Rust uses timestamp >= expiry (equality counts as expired)
+            _totalKeysAuthorized++;
+
+            // Warp to exactly the expiry timestamp
+            // TEMPO-KEY17: timestamp >= expiry means equality counts as expired
+            vm.warp(expiry);
+
             vm.startPrank(account);
             try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
                 vm.stopPrank();
-                // If it succeeds, the expiry logic might differ from Rust (timestamp >= expiry)
-                // This is an edge case that reveals implementation differences
+                revert("TEMPO-KEY17: Operation at expiry timestamp should fail with KeyExpired");
             } catch (bytes memory reason) {
                 vm.stopPrank();
-                // Expected: KeyExpired when timestamp == expiry
-                _assertKnownKeychainError(reason);
+                assertEq(
+                    bytes4(reason),
+                    IAccountKeychain.KeyExpired.selector,
+                    "TEMPO-KEY17: Should revert with KeyExpired when timestamp == expiry"
+                );
             }
 
             _log(
                 string.concat(
                     "EXPIRY_BOUNDARY: account=",
                     _getActorIndex(account),
-                    " key expires at current timestamp"
+                    " key correctly expired at timestamp==expiry"
                 )
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
+            // ExpiryInPast is acceptable if expiry <= block.timestamp at creation
             _assertKnownKeychainError(reason);
         }
     }
 
+    /// @notice Handler for testing operations on expired keys
+    /// @dev Tests TEMPO-KEY18 (operations on expired keys fail with KeyExpired)
+    function testExpiredKeyOperations(uint256 accountSeed, uint256 keyIdSeed, uint256 warpAmount) external {
+        address account = _selectActor(accountSeed);
+
+        // Get an existing key for this account
+        if (_accountKeys[account].length == 0) return;
+        address keyId = _accountKeys[account][keyIdSeed % _accountKeys[account].length];
+
+        // Skip if key doesn't exist or is revoked
+        if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
+        if (_tokens.length == 0) return;
+
+        uint64 expiry = _ghostKeyExpiry[account][keyId];
+
+        // Skip if already expired or expiry is max (never expires)
+        if (block.timestamp >= expiry || expiry == type(uint64).max) return;
+
+        // Warp past expiry (1 second to 1 day past)
+        uint256 warpTo = expiry + 1 + (warpAmount % 1 days);
+        vm.warp(warpTo);
+
+        // TEMPO-KEY18: Operations on expired keys should fail with KeyExpired
+        vm.startPrank(account);
+        try keychain.updateSpendingLimit(keyId, address(_tokens[0]), 1000e6) {
+            vm.stopPrank();
+            revert("TEMPO-KEY18: Operation on expired key should fail");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(
+                bytes4(reason),
+                IAccountKeychain.KeyExpired.selector,
+                "TEMPO-KEY18: Should revert with KeyExpired"
+            );
+        }
+
+        _log(
+            string.concat(
+                "EXPIRED_KEY_OP: account=",
+                _getActorIndex(account),
+                " keyId=",
+                vm.toString(keyId),
+                " correctly rejected after expiry"
+            )
+        );
+    }
+
     /// @notice Handler for testing invalid signature type
-    /// @dev Tests that invalid enum values are rejected with InvalidSignatureType
+    /// @dev Tests TEMPO-KEY19 (invalid enum values >= 3 are rejected with InvalidSignatureType)
     function testInvalidSignatureType(uint256 accountSeed, uint256 keyIdSeed, uint8 badType)
         external
     {
@@ -631,95 +697,42 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         if (_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
 
         // Only test with values >= 3 (invalid enum values)
-        vm.assume(badType >= 3);
+        badType = uint8(bound(badType, 3, 255));
 
-        // Note: In Solidity, passing an invalid enum value directly to the function
-        // may revert at the ABI level. The Rust code handles this with InvalidSignatureType.
-        // This test documents the expected behavior.
+        uint64 expiry = uint64(block.timestamp + 1 days);
+        IAccountKeychain.TokenLimit[] memory limits = new IAccountKeychain.TokenLimit[](0);
 
-        _log(
-            string.concat(
-                "INVALID_SIG_TYPE: Testing enum value ",
-                vm.toString(badType),
-                " for ",
-                _getActorIndex(account)
-            )
+        // Use low-level call to bypass Solidity's enum type checking
+        // This allows us to pass an invalid uint8 value for signatureType
+        bytes memory callData = abi.encodeWithSelector(
+            IAccountKeychain.authorizeKey.selector,
+            keyId,
+            badType,  // Raw uint8 instead of enum
+            expiry,
+            false,
+            limits
         );
-    }
 
-    /// @notice Handler for testing transaction context enforcement on authorizeKey
-    /// @dev Tests TEMPO-KEY20 (main-key-only administration)
-    /// Rust rejects authorize_key, revoke_key, update_spending_limit when transaction_key != 0
-    /// This ensures only the Root Key can manage Access Keys.
-    ///
-    /// NOTE: This test is SKIPPED because:
-    /// - vm.store cannot modify transient storage (TSTORE/TLOAD)
-    /// - Both Solidity reference and Rust precompile use transient storage for transaction_key
-    /// - For comprehensive testing, use integration tests in crates/node/tests/it/
-    function testTransactionContextEnforcement(uint256 accountSeed, uint256 keyIdSeed) external {
-        // Skip - vm.store cannot modify transient storage
-        // Transient storage tests require proper integration tests with real transaction context
-        _log("TX_CONTEXT_AUTH: SKIPPED (vm.store cannot modify transient storage)");
-    }
+        vm.startPrank(account);
+        (bool success, bytes memory returnData) = address(keychain).call(callData);
+        vm.stopPrank();
 
-    /// @notice Handler for testing revokeKey with non-zero transaction context
-    /// @dev Tests TEMPO-KEY20 (main-key-only administration) for revokeKey
-    ///
-    /// NOTE: This test is SKIPPED because vm.store cannot modify transient storage.
-    /// For comprehensive testing, use integration tests in crates/node/tests/it/
-    function testRevokeKeyTransactionContext(uint256 accountSeed, uint256 keyIdSeed) external {
-        // Skip - vm.store cannot modify transient storage
-        _log("TX_CONTEXT_REVOKE: SKIPPED (vm.store cannot modify transient storage)");
-    }
-
-    /// @notice Handler for testing updateSpendingLimit with non-zero transaction context
-    /// @dev Tests TEMPO-KEY20 (main-key-only administration) for updateSpendingLimit
-    ///
-    /// NOTE: This test is SKIPPED because vm.store cannot modify transient storage.
-    /// For comprehensive testing, use integration tests in crates/node/tests/it/
-    function testUpdateLimitTransactionContext(uint256 accountSeed, uint256 keyIdSeed) external {
-        // Skip - vm.store cannot modify transient storage
-        _log("TX_CONTEXT_LIMIT: SKIPPED (vm.store cannot modify transient storage)");
-    }
-
-    /// @notice Handler for testing spending limit enforcement with tx_origin != msg_sender
-    /// @dev Tests TEMPO-KEY21 (spending limits only apply when msg_sender == tx_origin)
-    /// Rust explicitly documents: contract-initiated operations should NOT consume EOA's spending limit.
-    ///
-    /// NOTE: This is a critical security property. When a user calls a contract that then
-    /// calls a TIP20 transfer, the spending limit should NOT be decremented because the
-    /// transfer is contract-initiated (msg_sender is contract, not the EOA that signed).
-    ///
-    /// Testing this requires a helper contract that calls the keychain on behalf of an EOA.
-    /// For invariant tests, we document the expected behavior.
-    function testSpendingLimitTxOriginEnforcement(uint256 accountSeed, uint256 keyIdSeed) external {
-        address account = _selectActor(accountSeed);
-
-        // Get an existing key for this account with limits
-        if (_accountKeys[account].length == 0) return;
-        address keyId = _accountKeys[account][keyIdSeed % _accountKeys[account].length];
-
-        // Skip if key doesn't exist or is revoked
-        if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) return;
-
-        // Skip if key doesn't enforce limits
-        if (!_ghostKeyEnforceLimits[account][keyId]) return;
-
-        // TEMPO-KEY21: Document tx_origin enforcement for spending limits
-        // In Rust consume_spending_limit:
-        // - Only called when transaction_key != 0
-        // - Uses msg_sender for the transfer, but the limit check uses the transaction_key owner
-        //
-        // Key insight: When msg_sender != tx_origin (contract call), limits are not consumed
-        // because the transaction was not directly signed by the Access Key.
+        // TEMPO-KEY19: Invalid signature type should be rejected
+        assertFalse(success, "TEMPO-KEY19: Invalid signature type should revert");
+        assertGe(returnData.length, 4, "TEMPO-KEY19: Revert data should contain selector");
+        assertEq(
+            bytes4(returnData),
+            IAccountKeychain.InvalidSignatureType.selector,
+            "TEMPO-KEY19: Should revert with InvalidSignatureType"
+        );
 
         _log(
             string.concat(
-                "LIMIT_TX_ORIGIN: account=",
+                "INVALID_SIG_TYPE: account=",
                 _getActorIndex(account),
-                " keyId=",
-                vm.toString(keyId),
-                " - limits only apply when msg_sender == tx_origin"
+                " badType=",
+                vm.toString(badType),
+                " correctly rejected"
             )
         );
     }
@@ -748,9 +761,12 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 IAccountKeychain.KeyInfo memory info = keychain.getKey(account, keyId);
 
                 if (_ghostKeyRevoked[account][keyId]) {
-                    // Revoked key should show isRevoked=true
+                    // Revoked key should show isRevoked=true and other fields defaulted
                     assertTrue(info.isRevoked, "TEMPO-KEY13: Revoked key should show isRevoked");
                     assertEq(info.keyId, address(0), "TEMPO-KEY13: Revoked key keyId should be 0");
+                    assertEq(info.expiry, 0, "TEMPO-KEY13: Revoked key expiry should be 0");
+                    assertFalse(info.enforceLimits, "TEMPO-KEY13: Revoked key enforceLimits should be false");
+                    assertEq(uint8(info.signatureType), 0, "TEMPO-KEY13: Revoked key signatureType should be 0");
                 } else if (_ghostKeyExists[account][keyId]) {
                     // Active key should match ghost state
                     assertEq(info.keyId, keyId, "TEMPO-KEY13: Active key keyId should match");
@@ -789,6 +805,12 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                 if (!_ghostKeyExists[account][keyId] || _ghostKeyRevoked[account][keyId]) continue;
                 if (!_ghostKeyEnforceLimits[account][keyId]) continue;
 
+                // Skip expired keys (vm.warp can cause keys to expire mid-run)
+                uint64 expiry = _ghostKeyExpiry[account][keyId];
+                bool neverExpires = expiry == type(uint64).max;
+                bool isExpired = !neverExpires && block.timestamp >= expiry;
+                if (isExpired) continue;
+
                 for (uint256 t = 0; t < _tokens.length; t++) {
                     address token = address(_tokens[t]);
                     uint256 expected = _ghostSpendingLimits[account][keyId][token];
@@ -818,16 +840,50 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice TEMPO-KEY16: Operation counters are consistent
-    /// @dev Validates that key operations are being tracked
-    function _invariantOperationCountersConsistent() internal view {
-        // Total keys authorized should be >= total revoked (can't revoke more than authorized)
-        // Note: This isn't strictly true because actors may authorize the same keyId
-        // for different accounts, but revocations are tracked separately
-        assertTrue(
-            _totalKeysAuthorized + _totalKeysRevoked + _totalLimitUpdates >= 0,
-            "Operation counters should be non-negative"
-        );
+    /*//////////////////////////////////////////////////////////////
+                           COVERAGE SANITY
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Verify that key invariant paths were actually exercised
+    /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
+    function invariant_coverageSanity() public view {
+        // After sufficient runs, we expect some activity
+        uint256 totalOps = _totalKeysAuthorized + _totalKeysRevoked + _totalLimitUpdates;
+        if (totalOps >= 10) {
+            // Should have authorized at least one key
+            assertTrue(_totalKeysAuthorized > 0, "Coverage: No keys authorized after 10+ ops");
+        }
+    }
+
+    /// @notice Called after each invariant run to log final state
+    function afterInvariant() public {
+        _log("");
+        _log("--------------------------------------------------------------------------------");
+        _log("Final State Summary");
+        _log("--------------------------------------------------------------------------------");
+        _log(string.concat("Keys authorized: ", vm.toString(_totalKeysAuthorized)));
+        _log(string.concat("Keys revoked: ", vm.toString(_totalKeysRevoked)));
+        _log(string.concat("Limit updates: ", vm.toString(_totalLimitUpdates)));
+
+        // Count total keys across all accounts
+        uint256 totalActiveKeys = 0;
+        uint256 totalRevokedKeys = 0;
+        for (uint256 a = 0; a < _actors.length; a++) {
+            address account = _actors[a];
+            address[] memory keys = _accountKeys[account];
+            for (uint256 k = 0; k < keys.length; k++) {
+                if (_ghostKeyRevoked[account][keys[k]]) {
+                    totalRevokedKeys++;
+                } else if (_ghostKeyExists[account][keys[k]]) {
+                    totalActiveKeys++;
+                }
+            }
+        }
+
+        _log(string.concat("Active keys (ghost): ", vm.toString(totalActiveKeys)));
+        _log(string.concat("Revoked keys (ghost): ", vm.toString(totalRevokedKeys)));
+        _log(string.concat("Final timestamp: ", vm.toString(block.timestamp)));
+        _log("--------------------------------------------------------------------------------");
     }
 
     /*//////////////////////////////////////////////////////////////
