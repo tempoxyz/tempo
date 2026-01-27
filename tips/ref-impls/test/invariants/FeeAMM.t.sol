@@ -330,11 +330,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             vm.stopPrank();
             // TEMPO-AMM33: Verify the revert is due to PolicyForbids or another known error
-            // Other valid errors: InsufficientBalance (if actor lost funds), InsufficientAllowance
+            // Other valid errors: InsufficientBalance (if actor lost funds), InsufficientAllowance,
+            // InsufficientLiquidity (pool not initialized)
+
+            require(reason.length >= 4, "TEMPO-AMM33: Empty revert data");
             bytes4 selector = bytes4(reason);
             bool isExpectedError = selector == ITIP20.PolicyForbids.selector
                 || selector == ITIP20.InsufficientBalance.selector
-                || selector == ITIP20.InsufficientAllowance.selector;
+                || selector == ITIP20.InsufficientAllowance.selector
+                || selector == IFeeAMM.InsufficientLiquidity.selector;
             assertTrue(
                 isExpectedError,
                 "TEMPO-AMM33: Blacklisted mint should revert with PolicyForbids or known error"
@@ -764,7 +768,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-AMM22: +1 rounding applies even when (amountOut * N) % SCALE == 0
     /// @param actorSeed Seed for selecting actor
     /// @param pairSeed Seed for selecting token pair
-    function testExactDivisionRebalance(uint256 actorSeed, uint256 pairSeed) external {
+    /// @dev Converted to invariant handler since it requires initialized pools
+    function handler_exactDivisionRebalance(uint256 actorSeed, uint256 pairSeed) external {
         (address userToken, address validatorToken) = _selectInitializedPoolPair(pairSeed);
         address actor = _selectAuthorizedActor(actorSeed, validatorToken);
 
