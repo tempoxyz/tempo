@@ -547,11 +547,8 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
         uint256 cancellerActorRnd,
         bool forBids
     ) external {
-        address blacklistedActor = _actors[blacklistActorRnd % _actors.length];
-        address canceller = _actors[cancellerActorRnd % _actors.length];
-
-        // Skip if canceller is the same as blacklisted actor
-        vm.assume(canceller != blacklistedActor);
+        address blacklistedActor = _selectActor(blacklistActorRnd);
+        address canceller = _selectActorExcluding(cancellerActorRnd, blacklistedActor);
 
         // Skip if the actor has no orders
         vm.assume(_placedOrders[blacklistedActor].length > 0);

@@ -834,9 +834,15 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     }
 
     // TIP-1000: Storage pricing updates for launch
-    // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+    // Tempo transactions with `nonce == 0` require additional gas, but the amount depends on nonce type:
+    // - Expiring nonce (nonce_key == MAX): EXPIRING_NONCE_GAS (13k) for ring buffer operations
+    // - Regular/2D nonce with nonce == 0: new_account_cost (250k) for potential account creation
     if spec.is_t1() && tx.nonce() == 0 {
-        gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        if tx.nonce_key() == Some(TEMPO_EXPIRING_NONCE_KEY) {
+            gas.initial_gas += EXPIRING_NONCE_GAS;
+        } else {
+            gas.initial_gas += gas_params.get(GasId::new_account_cost());
+        }
     }
 
     let gas_limit = tx.gas_limit();
@@ -1335,6 +1341,76 @@ mod tests {
                 err.downcast_other_ref::<TempoPoolTransactionError>(),
                 Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expiring_nonce_intrinsic_gas_uses_lower_cost() {
+        use alloy_primitives::{Signature, TxKind, address};
+        use tempo_primitives::transaction::{
+            TempoTransaction,
+            tempo_transaction::Call,
+            tt_signature::{PrimitiveSignature, TempoSignature},
+            tt_signed::AASigned,
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Helper to create expiring nonce AA tx with given gas limit
+        let create_expiring_nonce_tx = |gas_limit: u64| {
+            let calls: Vec<Call> = vec![Call {
+                to: TxKind::Call(Address::from([1u8; 20])),
+                value: U256::ZERO,
+                input: alloy_primitives::Bytes::from(vec![0xd0, 0x9d, 0xe0, 0x8a]), // increment()
+            }];
+
+            let tx = TempoTransaction {
+                chain_id: 1,
+                max_priority_fee_per_gas: 1_000_000_000,
+                max_fee_per_gas: 2_000_000_000,
+                gas_limit,
+                calls,
+                nonce_key: TEMPO_EXPIRING_NONCE_KEY, // Expiring nonce
+                nonce: 0,
+                valid_before: Some(current_time + 25), // Valid for 25 seconds
+                fee_token: Some(address!("0000000000000000000000000000000000000002")),
+                ..Default::default()
+            };
+
+            let signed = AASigned::new_unhashed(
+                tx,
+                TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    Signature::test_signature(),
+                )),
+            );
+            TempoPooledTransaction::new(TempoTxEnvelope::from(signed).try_into_recovered().unwrap())
+        };
+
+        // Expiring nonce tx should only need ~35k gas (base + EXPIRING_NONCE_GAS of 13k)
+        // NOT 250k+ which would be required for new account creation
+        // Test: 50k gas should pass for expiring nonce (would fail if 250k was required)
+        let tx = create_expiring_nonce_tx(50_000);
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT fail with InsufficientGasForAAIntrinsicCost or IntrinsicGasTooLow
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            let is_intrinsic_gas_error = matches!(
+                err.downcast_other_ref::<TempoPoolTransactionError>(),
+                Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+            ) || matches!(
+                err.downcast_other_ref::<InvalidPoolTransactionError>(),
+                Some(InvalidPoolTransactionError::IntrinsicGasTooLow)
+            );
+            assert!(
+                !is_intrinsic_gas_error,
+                "Expiring nonce tx with 50k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
         }
     }
 
