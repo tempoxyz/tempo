@@ -448,10 +448,10 @@ contract NonceInvariantTest is InvariantBaseTest {
         );
     }
 
-    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY behavior
-    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max behavior)
-    /// Note: type(uint256).max is reserved for TEMPO_EXPIRING_NONCE_KEY and should be
-    /// readable (returns 0 for uninitialized) but we document it as reserved
+    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY readability
+    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max is readable via getNonce)
+    /// @dev Expiring nonces use tx-hash-based replay protection (separate storage). This
+    ///      test verifies the key is accessible and returns 0 for uninitialized accounts.
     function testReservedExpiringNonceKey(uint256 actorSeed) external {
         address actor = _selectActor(actorSeed);
         uint256 reservedKey = type(uint256).max;
