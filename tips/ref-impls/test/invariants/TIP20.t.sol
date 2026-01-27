@@ -942,8 +942,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             }
 
             // TEMPO-TIP15: Claimed should be at least storedRewardBalance (may be more due to pending accrual)
-            assertGe(claimed, storedRewardBalance > contractBalance ? contractBalance : storedRewardBalance,
-                "TEMPO-TIP15: Claimed less than stored reward balance");
+            assertGe(
+                claimed,
+                storedRewardBalance > contractBalance ? contractBalance : storedRewardBalance,
+                "TEMPO-TIP15: Claimed less than stored reward balance"
+            );
 
             // TEMPO-TIP15: Claimed should not exceed contract balance
             assertLe(claimed, contractBalance, "TEMPO-TIP15: Claimed more than contract balance");
