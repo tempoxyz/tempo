@@ -86,7 +86,7 @@ fn validator_can_fast_sync_after_full_dkg() {
             .unwrap()
             < blocks_before_late_join
         {
-            context.sleep(Duration::from_millis(50)).await;
+            context.sleep(Duration::from_secs(1)).await;
         }
 
         // start late validator
@@ -117,7 +117,7 @@ fn validator_can_fast_sync_after_full_dkg() {
             .execution_provider()
             .last_block_number()
             .unwrap();
-        context.sleep(Duration::from_millis(200)).await;
+        context.sleep(Duration::from_secs(2)).await;
         let block_later = late_validator
             .execution_provider()
             .last_block_number()

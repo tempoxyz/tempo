@@ -145,7 +145,7 @@ async fn wait_for_height(
             assert!(!assert_skips || skips_observed);
             break;
         }
-        context.sleep(Duration::from_millis(50)).await;
+        context.sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -171,7 +171,7 @@ async fn ensure_no_progress(context: &Context, tries: u32) {
         height.expect("processed height is a metric")
     };
     for _ in 0..=tries {
-        context.sleep(Duration::from_millis(50)).await;
+        context.sleep(Duration::from_secs(1)).await;
 
         let metrics = context.encode();
         let mut height = None;
@@ -235,7 +235,7 @@ fn network_resumes_after_restart_with_el_p2p() {
             debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
 
             // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_millis(50)).await;
+            context.sleep(Duration::from_secs(1)).await;
             ensure_no_progress(&context, 5).await;
 
             validators[idx].start(&context).await;
@@ -289,7 +289,7 @@ fn network_resumes_after_restart_without_el_p2p() {
             debug!(public_key = %validators[idx].public_key(), "stopped a random validator");
 
             // wait a bit to let the network settle; some finalizations come in later
-            context.sleep(Duration::from_millis(50)).await;
+            context.sleep(Duration::from_secs(1)).await;
             ensure_no_progress(&context, 5).await;
 
             validators[idx].start(&context).await;
@@ -326,7 +326,7 @@ fn validator_catches_up_to_network_during_epoch() {
 fn validator_catches_up_with_gap_of_one_epoch() {
     let _ = tempo_eyre::install();
 
-    let epoch_length = 20;
+    let epoch_length = 30;
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(epoch_length),
         shutdown_height: epoch_length + 1,
@@ -342,7 +342,7 @@ fn validator_catches_up_with_gap_of_one_epoch() {
 fn validator_catches_up_with_gap_of_three_epochs() {
     let _ = tempo_eyre::install();
 
-    let epoch_length = 20;
+    let epoch_length = 30;
     let setup = RestartSetup {
         node_setup: Setup::new()
             .epoch_length(epoch_length)
@@ -531,7 +531,7 @@ impl AssertNodeRecoversAfterFinalizingBlock {
 
             let mut iteration = 0;
             'look_for_progress: loop {
-                context.sleep(Duration::from_millis(50)).await;
+                context.sleep(Duration::from_secs(1)).await;
                 let metrics = context.encode();
                 'lines: for line in metrics.lines() {
                     if !line.starts_with(CONSENSUS_NODE_PREFIX) {

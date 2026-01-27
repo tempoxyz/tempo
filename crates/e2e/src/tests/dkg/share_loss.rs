@@ -41,7 +41,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
         let mut node_forgot_share = false;
 
         'acquire_share: loop {
-            context.sleep(Duration::from_millis(50)).await;
+            context.sleep(Duration::from_secs(1)).await;
 
             let metrics = context.encode();
 

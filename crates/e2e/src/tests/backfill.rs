@@ -31,7 +31,7 @@ async fn run_validator_late_join_test(
 
     // Wait for chain to advance before starting the last node
     while nodes[0].execution_provider().last_block_number().unwrap() < blocks_before_join {
-        context.sleep(Duration::from_millis(50)).await;
+        context.sleep(Duration::from_secs(1)).await;
     }
 
     // Start the last node

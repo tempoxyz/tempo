@@ -252,7 +252,7 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            new_payload_wait_time: Duration::from_millis(50),
+            new_payload_wait_time: Duration::from_millis(200),
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(300),
@@ -315,7 +315,7 @@ pub fn run(setup: Setup, mut stop_condition: impl FnMut(&str, &str) -> bool) -> 
                 break;
             }
 
-            context.sleep(Duration::from_millis(50)).await;
+            context.sleep(Duration::from_secs(1)).await;
         }
 
         context.auditor().state()

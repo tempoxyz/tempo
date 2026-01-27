@@ -14,7 +14,7 @@ use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 fn validator_is_added_to_a_set_of_three() {
     AssertValidatorIsAdded {
         how_many_initial: 3,
-        epoch_length: 20,
+        epoch_length: 30,
     }
     .run();
 }
@@ -32,7 +32,7 @@ fn validator_is_removed_from_set_of_two() {
 fn validator_is_removed_from_set_of_four() {
     AssertValidatorIsRemoved {
         how_many_initial: 4,
-        epoch_length: 25,
+        epoch_length: 40,
     }
     .run();
 }
@@ -110,7 +110,7 @@ impl AssertValidatorIsAdded {
             // First, all initial validator nodes must observe a ceremony with
             // dealers = how_many_initial, players = how_many_initial + 1.
             loop {
-                context.sleep(Duration::from_millis(50)).await;
+                context.sleep(Duration::from_secs(1)).await;
 
                 let mut dealers_is_initial = 0;
                 let mut players_is_initial_plus_one = 0;
@@ -158,7 +158,7 @@ impl AssertValidatorIsAdded {
             // Then, all how_many_initial + 1 nodes must observe an epoch with the
             // same number of participants (= how_many_initial + 1).
             loop {
-                context.sleep(Duration::from_millis(50)).await;
+                context.sleep(Duration::from_secs(1)).await;
 
                 let metrics = context.encode();
                 let mut participants_is_initial_plus_one = 0;
@@ -240,7 +240,7 @@ impl AssertValidatorIsRemoved {
             // including the validator to be removed because it is part of the
             // original dealer set.
             loop {
-                context.sleep(Duration::from_millis(50)).await;
+                context.sleep(Duration::from_secs(1)).await;
 
                 let mut dealers_is_initial = 0;
                 let mut players_is_initial_minus_one = 0;
@@ -289,7 +289,7 @@ impl AssertValidatorIsRemoved {
             // same number of participants (= how_many_intial - 1). This even
             // includes the validator to be removed, since it will still transition.
             loop {
-                context.sleep(Duration::from_millis(50)).await;
+                context.sleep(Duration::from_secs(1)).await;
 
                 let metrics = context.encode();
                 let mut participants_is_initial_minus_one = 0;
