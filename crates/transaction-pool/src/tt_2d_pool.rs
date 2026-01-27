@@ -69,10 +69,6 @@ pub struct AA2dPool {
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
     metrics: AA2dPoolMetrics,
-    /// Number of pending (executable) transactions
-    pending_count: usize,
-    /// Number of queued (non-executable) transactions
-    queued_count: usize,
     /// All transactions ordered by eviction priority (lowest priority first).
     ///
     /// Since Tempo has a constant base fee, priority never changes after insertion,
@@ -100,8 +96,6 @@ impl AA2dPool {
             seq_id_to_slot: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
-            pending_count: 0,
-            queued_count: 0,
             by_eviction_order: Default::default(),
         }
     }
@@ -196,14 +190,7 @@ impl AA2dPool {
                     ));
                 }
 
-                let old_tx = entry.insert(tx.clone());
-                // counters always mirror actual tx count, so underflow is impossible
-                if old_tx.is_pending.load(Ordering::Relaxed) {
-                    self.pending_count -= 1;
-                } else {
-                    self.queued_count -= 1;
-                }
-                Some(old_tx)
+                Some(entry.insert(tx.clone()))
             }
             Entry::Vacant(entry) => {
                 entry.insert(tx.clone());
@@ -267,13 +254,6 @@ impl AA2dPool {
             }
         }
 
-        // Update counters for promoted transactions (no eviction set manipulation needed)
-        let promoted_count = promoted.len();
-        if !promoted.is_empty() {
-            self.queued_count -= promoted_count;
-            self.pending_count += promoted_count;
-        }
-
         // Record metrics
         self.metrics.inc_inserted();
 
@@ -287,11 +267,8 @@ impl AA2dPool {
         self.by_eviction_order.insert(new_tx_eviction_key);
 
         if inserted_as_pending {
-            // Increment pending counter for the newly inserted transaction
-            self.pending_count += 1;
-
             if !promoted.is_empty() {
-                self.metrics.inc_promoted(promoted_count);
+                self.metrics.inc_promoted(promoted.len());
             }
             // if this is the next nonce in line we can mark it as independent
             if tx_id.nonce == on_chain_nonce {
@@ -305,9 +282,6 @@ impl AA2dPool {
                 discarded: self.discard(),
             }));
         }
-
-        // Increment queued counter for the newly inserted transaction
-        self.queued_count += 1;
 
         // Call discard for queued transactions too
         let _ = self.discard();
@@ -374,12 +348,6 @@ impl AA2dPool {
         // Expiring nonce txs are always pending
         let expiring_pending = self.expiring_nonce_txs.len();
         (pending_2d + expiring_pending, queued_2d)
-    }
-
-    /// Returns the current pending and queued counts
-    #[cfg(test)]
-    pub(crate) fn counts(&self) -> (usize, usize) {
-        (self.pending_count, self.queued_count)
     }
 
     /// Returns all transactions that where submitted with the given [`TransactionOrigin`]
@@ -604,13 +572,6 @@ impl AA2dPool {
             Arc::clone(&tx.is_pending),
         );
         self.by_eviction_order.remove(&eviction_key);
-
-        // Update counters based on the removed transaction's pending status
-        if tx.is_pending.load(Ordering::Relaxed) {
-            self.pending_count -= 1;
-        } else {
-            self.queued_count -= 1;
-        }
 
         // Clean up cached nonce key slots if this was the last transaction of the sequence
         if self.by_id.range(id.seq_id.range()).next().is_none()
@@ -876,9 +837,6 @@ impl AA2dPool {
                     // Promote if transaction was previously queued (not pending)
                     let was_pending = existing_tx.is_pending.swap(true, Ordering::Relaxed);
                     if !was_pending {
-                        // Update counters for txs promoted from queued to pending
-                        self.queued_count -= 1;
-                        self.pending_count += 1;
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -891,12 +849,7 @@ impl AA2dPool {
                     next_nonce = next_nonce.saturating_add(1);
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
-                    // Update counters if tx was previously pending
-                    let was_pending = existing_tx.is_pending.swap(false, Ordering::Relaxed);
-                    if was_pending {
-                        self.pending_count -= 1;
-                        self.queued_count += 1;
-                    }
+                    existing_tx.is_pending.store(false, Ordering::Relaxed);
                 }
             }
 
@@ -935,18 +888,22 @@ impl AA2dPool {
     /// to avoid eviction.
     ///
     /// Evicts queued transactions first (up to queued_limit), then pending if needed.
+    /// Counts are computed lazily by scanning the eviction set.
     fn discard(&mut self) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let mut removed = Vec::new();
 
+        // Compute counts lazily by scanning the pool
+        let (pending_count, queued_count) = self.pending_and_queued_txn_count();
+
         // Evict queued transactions if over queued limit (lowest priority first)
-        if self.queued_count > self.config.queued_limit.max_txs {
-            let queued_excess = self.queued_count - self.config.queued_limit.max_txs;
+        if queued_count > self.config.queued_limit.max_txs {
+            let queued_excess = queued_count - self.config.queued_limit.max_txs;
             removed.extend(self.evict_lowest_priority(queued_excess, false));
         }
 
         // Evict pending transactions if over pending limit (lowest priority first)
-        if self.pending_count > self.config.pending_limit.max_txs {
-            let pending_excess = self.pending_count - self.config.pending_limit.max_txs;
+        if pending_count > self.config.pending_limit.max_txs {
+            let pending_excess = pending_count - self.config.pending_limit.max_txs;
             removed.extend(self.evict_lowest_priority(pending_excess, true));
         }
 
@@ -1233,28 +1190,17 @@ impl AA2dPool {
             self.expiring_nonce_txs.len()
         );
 
-        // Verify counters match the computed values
-        let (counted_pending, counted_queued) = self.counts();
-        assert_eq!(
-            counted_pending, pending_count,
-            "pending_count ({counted_pending}) != computed pending count ({pending_count})",
-        );
-        assert_eq!(
-            counted_queued, queued_count,
-            "queued_count ({counted_queued}) != computed queued count ({queued_count})",
-        );
-
         // Verify quota compliance - counts don't exceed limits
         assert!(
-            self.pending_count <= self.config.pending_limit.max_txs,
+            pending_count <= self.config.pending_limit.max_txs,
             "pending_count {} exceeds limit {}",
-            self.pending_count,
+            pending_count,
             self.config.pending_limit.max_txs
         );
         assert!(
-            self.queued_count <= self.config.queued_limit.max_txs,
+            queued_count <= self.config.queued_limit.max_txs,
             "queued_count {} exceeds limit {}",
-            self.queued_count,
+            queued_count,
             self.config.queued_limit.max_txs
         );
 
