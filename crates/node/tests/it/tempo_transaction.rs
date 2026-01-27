@@ -4536,24 +4536,31 @@ async fn test_aa_keychain_enforce_limits() -> eyre::Result<()> {
     envelope.encode_2718(&mut encoded);
     let tx_hash = *envelope.tx_hash();
 
-    setup.node.rpc.inject_tx(encoded.into()).await?;
-    setup.node.advance_block().await?;
-
-    // The transaction should be rejected during block building (not included)
+    // The transaction should be rejected at RPC, during block building, or reverted on-chain
     // because fee payment exceeds the spending limit (empty limits = no spending allowed)
-    let receipt = provider.get_transaction_receipt(tx_hash).await?;
+    match setup.node.rpc.inject_tx(encoded.into()).await {
+        Err(e) => {
+            // Rejected at RPC level - this is valid
+            println!("No-spending key transaction was rejected by RPC: {e}");
+        }
+        Ok(_) => {
+            // If accepted into pool, check what happened at block building
+            setup.node.advance_block().await?;
+            let receipt = provider.get_transaction_receipt(tx_hash).await?;
 
-    if let Some(receipt) = receipt {
-        // If included, it must have failed
-        assert!(
-            !receipt.status(),
-            "No-spending key must not be able to transfer any tokens"
-        );
-        println!("✓ No-spending key transaction was included but reverted");
-    } else {
-        println!(
-            "✓ No-spending key transaction was rejected by block builder (spending limit exceeded)"
-        );
+            if let Some(receipt) = receipt {
+                // If included, it must have failed
+                assert!(
+                    !receipt.status(),
+                    "No-spending key must not be able to transfer any tokens"
+                );
+                println!("No-spending key transaction was included but reverted");
+            } else {
+                println!(
+                    "No-spending key transaction was rejected by block builder (spending limit exceeded)"
+                );
+            }
+        }
     }
 
     // Verify recipient2 received NO tokens
@@ -6379,5 +6386,241 @@ async fn test_aa_expiring_nonce_independent_from_protocol_nonce() -> eyre::Resul
 
     println!("\n✓ Expiring nonces are independent from protocol nonces");
 
+    Ok(())
+}
+/// Verifies that transactions signed with a keychain key are evicted when spending limits change.
+///
+/// This tests the TOCTOU vulnerability (CHAIN-444) where:
+/// 1. An attacker funds and authorizes an address with balance > spending limit
+/// 2. Submits transactions that pass validation
+/// 3. Reduces spending limit so execution would fail
+/// 4. Transactions should be evicted from the mempool
+#[tokio::test]
+async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
+    use tempo_precompiles::account_keychain::updateSpendingLimitCall;
+
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing AA Keychain Spending Limit TOCTOU DoS ===\n");
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+
+    let root_signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let root_addr = root_signer.address();
+
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(root_signer.clone())
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    // Generate an access key for the attack
+    let (access_key_signing, access_pub_x, access_pub_y, access_key_addr) =
+        generate_p256_access_key();
+
+    println!("Access key address: {access_key_addr}");
+
+    let mut nonce = provider.get_transaction_count(root_addr).await?;
+
+    // Get current block timestamp
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    println!("Current block timestamp: {current_timestamp}");
+
+    // ========================================
+    // STEP 1: Authorize the access key with a spending limit
+    // ========================================
+    println!("\n=== STEP 1: Authorize the access key with spending limit ===");
+
+    // Set a generous spending limit initially (100 tokens)
+    let initial_spending_limit = U256::from(100u64) * U256::from(10).pow(U256::from(18));
+
+    let key_auth = create_key_authorization(
+        &root_signer,
+        access_key_addr,
+        create_mock_p256_sig(access_pub_x, access_pub_y),
+        chain_id,
+        None, // Never expires
+        Some(vec![tempo_primitives::transaction::TokenLimit {
+            token: DEFAULT_FEE_TOKEN,
+            limit: initial_spending_limit,
+        }]),
+    )?;
+
+    let mut auth_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_balance_of_call(root_addr)],
+        2_000_000,
+    );
+    auth_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    auth_tx.key_authorization = Some(key_auth);
+
+    let root_sig = sign_aa_tx_secp256k1(&auth_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, auth_tx, root_sig).await?;
+    nonce += 1;
+
+    println!("Access key authorized with spending limit: {initial_spending_limit}");
+
+    // ========================================
+    // STEP 2: Submit a transaction with valid_after in the future using the access key
+    // ========================================
+    println!("\n=== STEP 2: Submit transaction with future valid_after using access key ===");
+
+    // Advance a couple blocks to get a fresh timestamp
+    for _ in 0..2 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let new_timestamp = block.header.timestamp();
+
+    // Set valid_after to be 10 seconds in the future (enough time to reduce spending limit)
+    let valid_after_time = new_timestamp + 10;
+    println!("Setting valid_after to {valid_after_time} (current: {new_timestamp})");
+
+    // Create a transaction that uses the access key with valid_after
+    let recipient = Address::random();
+    let transfer_amount = U256::from(1u64) * U256::from(10).pow(U256::from(18)); // 1 token
+
+    let mut delayed_tx = create_basic_aa_tx(
+        chain_id,
+        nonce,
+        vec![create_transfer_call(recipient, transfer_amount)],
+        300_000,
+    );
+    delayed_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    delayed_tx.valid_after = Some(valid_after_time);
+
+    // Sign with the access key (wrapped in Keychain signature)
+    let access_key_sig = sign_aa_tx_with_p256_access_key(
+        &delayed_tx,
+        &access_key_signing,
+        &access_pub_x,
+        &access_pub_y,
+        root_addr,
+    )?;
+
+    // Submit the transaction - it should pass validation because the spending limit is still high
+    let delayed_tx_envelope: TempoTxEnvelope = delayed_tx.into_signed(access_key_sig).into();
+    let delayed_tx_hash = *delayed_tx_envelope.tx_hash();
+    setup
+        .node
+        .rpc
+        .inject_tx(delayed_tx_envelope.encoded_2718().into())
+        .await?;
+
+    println!("Delayed transaction submitted (hash: {delayed_tx_hash})");
+
+    // Verify transaction is in the pool
+    assert!(
+        setup.node.inner.pool.contains(&delayed_tx_hash),
+        "Delayed transaction should be in the pool"
+    );
+    println!("Transaction is in the mempool");
+
+    // ========================================
+    // STEP 3: Reduce the spending limit to 0 before valid_after is reached
+    // ========================================
+    println!("\n=== STEP 3: Reduce spending limit to 0 ===");
+
+    let update_limit_call = updateSpendingLimitCall {
+        keyId: access_key_addr,
+        token: DEFAULT_FEE_TOKEN,
+        newLimit: U256::ZERO, // Set to 0, making all pending transfers fail
+    };
+
+    // Use a 2D nonce (different nonce_key) so this tx can be mined independently
+    let mut update_tx = create_basic_aa_tx(
+        chain_id,
+        0, // nonce 0 for this new nonce_key
+        vec![Call {
+            to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
+            value: U256::ZERO,
+            input: update_limit_call.abi_encode().into(),
+        }],
+        2_000_000,
+    );
+    update_tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    update_tx.nonce_key = U256::from(1); // Use a different nonce key so it's independent
+
+    let update_sig = sign_aa_tx_secp256k1(&update_tx, &root_signer)?;
+    submit_and_mine_aa_tx(&mut setup, update_tx, update_sig).await?;
+
+    println!("Spending limit reduced to 0");
+
+    // The maintenance task monitors for SpendingLimitUpdated events and evicts transactions
+    // signed with keys whose spending limits have changed.
+    // Advance another block to trigger the commit notification
+    setup.node.advance_block().await?;
+
+    // Wait for maintenance task to process the block with the spending limit update
+    tokio::time::sleep(POOL_MAINTENANCE_DELAY).await;
+
+    // ========================================
+    // STEP 4: Verify transaction is evicted from the pool
+    // ========================================
+    println!("\n=== STEP 4: Verify transaction is evicted from pool ===");
+
+    // Check pool state after spending limit update
+    let tx_still_in_pool = setup.node.inner.pool.contains(&delayed_tx_hash);
+
+    // Check if transaction was mined (should not be, since it had valid_after in future)
+    let receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [delayed_tx_hash])
+        .await?;
+
+    // Check the transfer recipient balance
+    let recipient_balance = ITIP20::new(DEFAULT_FEE_TOKEN, &provider)
+        .balanceOf(recipient)
+        .call()
+        .await?;
+
+    println!("\n=== RESULTS ===");
+    println!("Transaction still in pool: {tx_still_in_pool}");
+    println!("Transaction mined: {}", receipt.is_some());
+    println!("Recipient balance: {recipient_balance}");
+    println!("Expected transfer amount: {transfer_amount}");
+
+    if tx_still_in_pool {
+        panic!(
+            "DoS via AA keychain spending limit TOCTOU: \
+             Transaction from key with reduced spending limit should be evicted from the mempool"
+        );
+    } else if receipt.is_some() {
+        // Transaction was mined - check if it succeeded or reverted
+        let receipt_obj = receipt.as_ref().unwrap().as_object().unwrap();
+        let status = receipt_obj
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown");
+
+        if status == "0x1" {
+            // Verify the transfer actually happened
+            if recipient_balance == transfer_amount {
+                println!("Recipient received {transfer_amount} tokens");
+            }
+
+            panic!(
+                "Transaction exceeding spending limit was executed successfully. \
+                 The spending limit enforcement is not being enforced at execution time."
+            );
+        } else {
+            // Transaction was mined but reverted - this is expected behavior
+            // Verify the transfer did NOT happen
+            assert_eq!(
+                recipient_balance,
+                U256::ZERO,
+                "Recipient should have no balance since transaction reverted"
+            );
+        }
+    }
+
+    println!("\n=== Test passed: Transaction was correctly evicted ===");
     Ok(())
 }
