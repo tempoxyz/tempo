@@ -52,26 +52,12 @@ impl AmmLiquidityCache {
 
     /// Checks whether there's enough liquidity in at least one of the AMM pools
     /// used by recent validators for the given fee token and fee amount.
-    ///
-    /// If `builder_token` is provided, the check bypasses AMM liquidity verification
-    /// when the user's fee token matches the builder's token (since no swap is needed).
-    /// This should only be used during block building when the builder's token is known.
-    /// For mempool validation, pass `None` to require actual AMM liquidity.
     pub fn has_enough_liquidity(
         &self,
         user_token: Address,
         fee: U256,
         state_provider: &impl StateProvider,
-        builder_token: Option<Address>,
     ) -> Result<bool, ProviderError> {
-        // If building a block with a known builder token, bypass liquidity check
-        // when user pays directly in the builder's token (no swap needed).
-        if let Some(bt) = builder_token
-            && user_token == bt
-        {
-            return Ok(true);
-        }
-
         // DEFAULT_FEE_TOKEN (PATH_USD) is always accepted by all validators without
         // requiring an AMM swap. Skip liquidity check for the base token.
         if user_token == DEFAULT_FEE_TOKEN {
@@ -266,7 +252,7 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_has_enough_liquidity_user_token_matches_builder_token() {
+    fn test_has_enough_liquidity_no_amm_pool() {
         let cache = AmmLiquidityCache {
             inner: Arc::new(RwLock::new(AmmLiquidityCacheInner::default())),
         };
@@ -275,22 +261,11 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-
-        // With builder_token matching user_token, bypass applies
-        let result =
-            cache.has_enough_liquidity(user_token, U256::from(100), &state, Some(user_token));
-        assert!(result.is_ok());
-        assert!(
-            result.unwrap(),
-            "Should return true when user token matches builder token (bypass)"
-        );
-
-        // Without builder_token (mempool validation), bypass does not apply
-        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state, None);
+        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
-            "Should return false without builder_token bypass (no AMM liquidity)"
+            "Should return false when no AMM liquidity exists for user's fee token"
         );
     }
 
@@ -314,7 +289,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state, None);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -342,7 +317,7 @@ mod tests {
         let provider = create_mock_provider();
         let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state, None);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -360,7 +335,7 @@ mod tests {
         let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state, None);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -385,7 +360,7 @@ mod tests {
         let state = provider.latest().unwrap();
 
         // Provider returns default (zero) storage values
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state, None);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),

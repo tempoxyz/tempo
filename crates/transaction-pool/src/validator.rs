@@ -654,7 +654,7 @@ where
 
         match self
             .amm_liquidity_cache
-            .has_enough_liquidity(fee_token, cost, &state_provider, None)
+            .has_enough_liquidity(fee_token, cost, &state_provider)
         {
             Ok(true) => {}
             Ok(false) => {
@@ -2542,28 +2542,16 @@ mod tests {
             "Token should be in unique_tokens for this test"
         );
 
-        // With the fix for CHAIN-442, the bypass only applies when builder_token is provided.
-        // For mempool validation (None), the bypass does not apply.
+        // With the fix for CHAIN-442, user tokens matching a validator's preferred token
+        // no longer bypass the AMM liquidity check. The old bypass was removed entirely.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state, None);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
             liquidity_result.is_ok() && !liquidity_result.unwrap(),
-            "Mempool validation (builder_token=None) should NOT bypass liquidity check"
+            "User token matching a validator token no longer bypasses liquidity check"
         );
 
-        // With builder_token matching user token, bypass applies
-        let liquidity_result = amm_cache.has_enough_liquidity(
-            paused_validator_token,
-            U256::from(1000),
-            &state,
-            Some(paused_validator_token),
-        );
-        assert!(
-            liquidity_result.is_ok() && liquidity_result.unwrap(),
-            "Block building with matching builder_token should bypass liquidity check"
-        );
-
-        // BUT the pause check in is_fee_token_paused should catch it BEFORE the bypass
+        // The pause check in is_fee_token_paused provides defense-in-depth
         let is_paused = state.is_fee_token_paused(spec, paused_validator_token);
         assert!(is_paused.is_ok());
         assert!(
