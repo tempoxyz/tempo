@@ -326,8 +326,7 @@ fn validator_catches_up_to_network_during_epoch() {
 fn validator_catches_up_with_gap_of_one_epoch() {
     let _ = tempo_eyre::install();
 
-    // Use smaller epoch_length for faster tests (was 30)
-    let epoch_length = 10;
+    let epoch_length = 5;
     let setup = RestartSetup {
         node_setup: Setup::new().epoch_length(epoch_length),
         shutdown_height: epoch_length + 1,
@@ -343,8 +342,7 @@ fn validator_catches_up_with_gap_of_one_epoch() {
 fn validator_catches_up_with_gap_of_three_epochs() {
     let _ = tempo_eyre::install();
 
-    // Use smaller epoch_length for faster tests (was 30)
-    let epoch_length = 10;
+    let epoch_length = 5;
     let setup = RestartSetup {
         node_setup: Setup::new()
             .epoch_length(epoch_length)

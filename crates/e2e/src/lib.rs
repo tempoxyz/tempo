@@ -246,18 +246,16 @@ pub async fn setup_validators(
             signer: private_key.clone(),
             mailbox_size: 1024,
             deque_size: 10,
-            // Use fast timeouts for e2e tests since we use real wall-clock time
-            // (external feature is enabled for tokio interop)
-            time_to_propose: Duration::from_millis(100),
-            time_to_collect_notarizations: Duration::from_millis(150),
-            time_to_retry_nullify_broadcast: Duration::from_millis(500),
-            time_for_peer_response: Duration::from_millis(100),
+            time_to_propose: Duration::from_secs(2),
+            time_to_collect_notarizations: Duration::from_secs(3),
+            time_to_retry_nullify_broadcast: Duration::from_secs(10),
+            time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
             new_payload_wait_time: Duration::from_millis(50),
-            time_to_build_subblock: Duration::from_millis(25),
-            subblock_broadcast_interval: Duration::from_millis(25),
-            fcu_heartbeat_interval: Duration::from_secs(30),
+            time_to_build_subblock: Duration::from_millis(100),
+            subblock_broadcast_interval: Duration::from_millis(50),
+            fcu_heartbeat_interval: Duration::from_secs(300),
             feed_state,
         };
 

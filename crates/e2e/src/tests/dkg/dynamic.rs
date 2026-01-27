@@ -14,8 +14,7 @@ use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 fn validator_is_added_to_a_set_of_three() {
     AssertValidatorIsAdded {
         how_many_initial: 3,
-        // Use smaller epoch_length for faster tests (was 30)
-        epoch_length: 10,
+        epoch_length: 5,
     }
     .run();
 }
@@ -33,8 +32,7 @@ fn validator_is_removed_from_set_of_two() {
 fn validator_is_removed_from_set_of_four() {
     AssertValidatorIsRemoved {
         how_many_initial: 4,
-        // Use smaller epoch_length for faster tests (was 40)
-        epoch_length: 15,
+        epoch_length: 10,
     }
     .run();
 }
