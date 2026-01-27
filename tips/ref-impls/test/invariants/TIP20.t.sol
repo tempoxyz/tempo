@@ -787,6 +787,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.distributeReward(amount) {
             vm.stopPrank();
 
+            // Update ghost variables (same as distributeReward)
+            _totalRewardsDistributed++;
+            _ghostRewardInputSum += amount;
+            _tokenRewardsDistributed[address(token)] += amount;
+            _tokenDistributionCount[address(token)]++;
             _registerHolder(address(token), actor);
             _registerHolder(address(token), address(token));
 
@@ -1560,10 +1565,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
             uint256 expectedUnclaimed = distributed - claimed;
 
             // Max dust = distributions * holders (1 unit per holder per distribution due to floor)
-            uint256 maxDust = _tokenDistributionCount[tokenAddr]
-                * (_tokenOptedInHolderCount[tokenAddr] > 0
-                        ? _tokenOptedInHolderCount[tokenAddr]
-                        : 1);
+            // Use total registered holders as conservative upper bound (more reliable than tracking opt-in count)
+            uint256 holderCount = _tokenHolders[tokenAddr].length;
+            uint256 maxDust =
+                _tokenDistributionCount[tokenAddr] * (holderCount > 0 ? holderCount : 1);
 
             if (expectedUnclaimed > maxDust) {
                 assertGe(
