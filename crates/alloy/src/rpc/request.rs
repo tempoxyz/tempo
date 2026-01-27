@@ -82,6 +82,11 @@ pub struct TempoTransactionRequest {
     /// Transaction can only be included in a block after this timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_after: Option<u64>,
+
+    /// Fee payer signature for sponsored transactions.
+    /// The sponsor signs fee_payer_signature_hash(sender) to commit to paying gas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer_signature: Option<alloy_primitives::Signature>,
 }
 
 impl TempoTransactionRequest {
@@ -171,7 +176,7 @@ impl TempoTransactionRequest {
             // TODO: use tempo mainnet chainid once assigned
             chain_id: self.inner.chain_id.unwrap_or(1),
             nonce,
-            fee_payer_signature: None,
+            fee_payer_signature: self.fee_payer_signature,
             valid_before: self.valid_before,
             valid_after: self.valid_after,
             gas_limit,
@@ -184,6 +189,17 @@ impl TempoTransactionRequest {
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: None,
         })
+    }
+
+    /// Set the fee payer signature for sponsored transactions.
+    pub fn set_fee_payer_signature(&mut self, signature: alloy_primitives::Signature) {
+        self.fee_payer_signature = Some(signature);
+    }
+
+    /// Builder-pattern method for setting fee payer signature.
+    pub fn with_fee_payer_signature(mut self, signature: alloy_primitives::Signature) -> Self {
+        self.fee_payer_signature = Some(signature);
+        self
     }
 }
 
@@ -302,6 +318,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_authorization: tx.key_authorization,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
+            fee_payer_signature: tx.fee_payer_signature,
         }
     }
 }
@@ -463,5 +480,74 @@ mod tests {
             request.fee_token,
             Some(address!("0x20c0000000000000000000000000000000000000"))
         );
+    }
+
+    #[test]
+    fn test_set_fee_payer_signature() {
+        use alloy_primitives::Signature;
+
+        let mut request = TempoTransactionRequest::default();
+        assert!(request.fee_payer_signature.is_none());
+
+        let sig = Signature::test_signature();
+        request.set_fee_payer_signature(sig);
+        assert!(request.fee_payer_signature.is_some());
+    }
+
+    #[test]
+    fn test_with_fee_payer_signature() {
+        use alloy_primitives::Signature;
+
+        let sig = Signature::test_signature();
+        let request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
+        assert!(request.fee_payer_signature.is_some());
+    }
+
+    #[test]
+    fn test_build_aa_with_fee_payer_signature() {
+        use alloy_primitives::Signature;
+
+        let sig = Signature::test_signature();
+        let mut request =
+            TempoTransactionRequest::default().with_fee_payer_signature(sig.clone());
+
+        request.inner.nonce = Some(0);
+        request.inner.gas = Some(21000);
+        request.inner.max_fee_per_gas = Some(1000000000);
+        request.inner.max_priority_fee_per_gas = Some(1000000);
+        request.inner.to = Some(address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into());
+
+        let tx = request.build_aa().expect("should build transaction");
+        assert_eq!(tx.fee_payer_signature, Some(sig));
+    }
+
+    #[test]
+    fn test_from_tempo_transaction_preserves_fee_payer_signature() {
+        use alloy_primitives::Signature;
+
+        let sig = Signature::test_signature();
+        let tx = TempoTransaction {
+            chain_id: 1,
+            nonce: 0,
+            fee_payer_signature: Some(sig.clone()),
+            valid_before: None,
+            valid_after: None,
+            gas_limit: 21000,
+            max_fee_per_gas: 1000000000,
+            max_priority_fee_per_gas: 1000000,
+            fee_token: None,
+            access_list: Default::default(),
+            calls: vec![Call {
+                to: address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D").into(),
+                value: Default::default(),
+                input: Default::default(),
+            }],
+            tempo_authorization_list: vec![],
+            nonce_key: Default::default(),
+            key_authorization: None,
+        };
+
+        let request: TempoTransactionRequest = tx.into();
+        assert_eq!(request.fee_payer_signature, Some(sig));
     }
 }
