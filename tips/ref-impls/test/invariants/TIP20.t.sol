@@ -189,9 +189,19 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertTrue(success, "Zero transfer should return true");
 
             // Balances should remain unchanged
-            assertEq(token.balanceOf(actor), actorBalanceBefore, "Sender balance changed on zero transfer");
-            assertEq(token.balanceOf(recipient), recipientBalanceBefore, "Recipient balance changed on zero transfer");
-            assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer");
+            assertEq(
+                token.balanceOf(actor),
+                actorBalanceBefore,
+                "Sender balance changed on zero transfer"
+            );
+            assertEq(
+                token.balanceOf(recipient),
+                recipientBalanceBefore,
+                "Recipient balance changed on zero transfer"
+            );
+            assertEq(
+                token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer"
+            );
 
             _log(
                 string.concat(
@@ -1321,9 +1331,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
             // TEMPO-TIP22: Cap must be >= current supply
             assertGe(
-                token.supplyCap(),
-                token.totalSupply(),
-                "TEMPO-TIP22: Supply cap below total supply"
+                token.supplyCap(), token.totalSupply(), "TEMPO-TIP22: Supply cap below total supply"
             );
 
             _log(
