@@ -84,8 +84,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _registerHolder(tokenAddr, bob);
             _registerHolder(tokenAddr, charlie);
             _registerHolder(tokenAddr, pathUSDAdmin);
-            // FeeManager precompile can hold tokens via transferFeePreTx/transferFeePostTx
-            _registerHolder(tokenAddr, 0xfeEC000000000000000000000000000000000000);
         }
 
         _initLogFile(LOG_FILE, "TIP20 Invariant Test Log");
