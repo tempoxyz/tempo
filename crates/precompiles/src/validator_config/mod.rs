@@ -187,6 +187,16 @@ impl ValidatorConfig {
     }
 
     /// Update validator information (and optionally rotate to new address)
+    ///
+    /// # Security Note
+    ///
+    /// The field `validator_address` must never be set to a user-controllable address.
+    ///
+    /// This function allows validators to update their own public key mid-epoch, which could
+    /// cause a chain halt at the next epoch boundary if exploited (the DKG manager panics when
+    /// the original key stored in the boundary header cannot be mapped to the modified registry).
+    /// By setting validator addresses to non-user-controllable addresses in the genesis config,
+    /// only the contract owner (admin) can effectively call this function.
     pub fn update_validator(
         &mut self,
         sender: Address,
