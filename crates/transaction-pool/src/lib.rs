@@ -6,6 +6,8 @@
 pub mod transaction;
 pub mod validator;
 
+pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
+
 // Tempo pool module with 2D nonce support
 pub mod tempo_pool;
 

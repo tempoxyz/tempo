@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{
-    TempoTransactionPool,
+    RevokedKeys, SpendingLimitUpdates, TempoTransactionPool,
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
@@ -38,8 +38,14 @@ use tracing::{debug, error};
 pub struct TempoPoolUpdates {
     /// Transaction hashes that have expired (valid_before <= tip_timestamp).
     pub expired_txs: Vec<TxHash>,
-    /// Revoked keychain keys: (account, public_key).
-    pub revoked_keys: Vec<(Address, Address)>,
+    /// Revoked keychain keys.
+    /// Indexed by account for efficient lookup.
+    pub revoked_keys: RevokedKeys,
+    /// Spending limit changes.
+    /// When a spending limit changes, transactions from that key paying with that token
+    /// may become unexecutable if the new limit is below their value.
+    /// Indexed by account for efficient lookup.
+    pub spending_limit_changes: SpendingLimitUpdates,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
     /// TIP403 blacklist additions: (policy_id, account).
@@ -58,6 +64,7 @@ impl TempoPoolUpdates {
     pub fn is_empty(&self) -> bool {
         self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
+            && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
             && self.pause_events.is_empty()
@@ -78,10 +85,16 @@ impl TempoPoolUpdates {
             .flatten()
             .flat_map(|receipt| &receipt.logs)
         {
-            // Key revocations
+            // Key revocations and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
                 if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
-                    updates.revoked_keys.push((event.account, event.publicKey));
+                    updates.revoked_keys.insert(event.account, event.publicKey);
+                } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
+                    updates.spending_limit_changes.insert(
+                        event.account,
+                        event.publicKey,
+                        event.token,
+                    );
                 }
             }
             // Validator token changes
@@ -116,6 +129,7 @@ impl TempoPoolUpdates {
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         !self.revoked_keys.is_empty()
+            || !self.spending_limit_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
     }
@@ -390,9 +404,12 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys from paused pool
-                if !updates.revoked_keys.is_empty() {
-                    state.paused_pool.evict_by_revoked_keys(&updates.revoked_keys);
+                // 5. Evict revoked keys and spending limit updates from paused pool
+                if !updates.revoked_keys.is_empty() || !updates.spending_limit_changes.is_empty() {
+                    state.paused_pool.evict_invalidated(
+                        &updates.revoked_keys,
+                        &updates.spending_limit_changes,
+                    );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
@@ -417,20 +434,24 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 9. Evict invalidated transactions in a single pool scan
-                // This checks both revoked keys and validator token changes together
-                // to avoid scanning all transactions multiple times per block.
+                // This checks revoked keys, spending limit changes, validator token changes,
+                // and blacklist additions together to avoid scanning all transactions
+                // multiple times per block.
                 if updates.has_invalidation_events() {
                     let invalidation_start = Instant::now();
                     debug!(
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
+                        spending_limit_changes = updates.spending_limit_changes.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
                         "Processing transaction invalidation events"
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
                     metrics.transactions_invalidated.increment(evicted as u64);
-                    metrics.invalidation_eviction_duration_seconds.record(invalidation_start.elapsed());
+                    metrics
+                        .invalidation_eviction_duration_seconds
+                        .record(invalidation_start.elapsed());
                 }
 
                 // Record total block update duration
