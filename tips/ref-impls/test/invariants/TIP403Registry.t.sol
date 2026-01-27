@@ -411,6 +411,24 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         );
     }
 
+    /// @notice Handler for checking authorization of accounts never added to a policy
+    /// @dev Verifies default authorization behavior for whitelist (reject unknown) and blacklist (allow unknown)
+    function checkUnknownAccountAuth(uint256 policySeed, uint256 accountSeed) external view {
+        if (_createdPolicies.length == 0) return;
+
+        uint64 policyId = _createdPolicies[policySeed % _createdPolicies.length];
+        address account = _selectActor(accountSeed);
+
+        if (_policyAccountTracked[policyId][account]) return;
+
+        bool isAuthorized = registry.isAuthorized(policyId, account);
+        if (_policyTypes[policyId] == ITIP403Registry.PolicyType.WHITELIST) {
+            assertFalse(isAuthorized, "Whitelist: unknown account should not be authorized");
+        } else {
+            assertTrue(isAuthorized, "Blacklist: unknown account should be authorized");
+        }
+    }
+
     /// @notice Handler for attempting to modify special policies (0 and 1)
     /// @dev Tests TEMPO-REG17 (special policies cannot be modified) and TEMPO-REG18 (admin cannot change)
     function tryModifySpecialPolicies(uint256 actorSeed, uint256 accountSeed, uint8 policyChoice)
