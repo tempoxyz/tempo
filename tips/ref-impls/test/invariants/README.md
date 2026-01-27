@@ -131,6 +131,31 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 - **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
+## TIP20Factory
+
+The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
+
+### Token Creation Invariants
+
+- **TEMPO-FAC1**: Deterministic addresses - `createToken` deploys to the exact address returned by `getTokenAddress` for the same sender/salt combination.
+- **TEMPO-FAC2**: TIP20 recognition - all tokens created by the factory are recognized as TIP-20 by `isTIP20()`.
+- **TEMPO-FAC3**: Address uniqueness - attempting to create a token at an existing address reverts with `TokenAlreadyExists`.
+- **TEMPO-FAC4**: Quote token validation - `createToken` reverts with `InvalidQuoteToken` if the quote token is not a valid TIP-20.
+- **TEMPO-FAC5**: Reserved address enforcement - addresses in the reserved range (lower 64 bits < 1024) revert with `AddressReserved`.
+- **TEMPO-FAC6**: Token properties - created tokens have correct name, symbol, and currency as specified.
+- **TEMPO-FAC7**: Currency consistency - USD tokens must have USD quote tokens; non-USD tokens can have any valid quote token.
+
+### Address Prediction Invariants
+
+- **TEMPO-FAC8**: isTIP20 consistency - created tokens return true, non-TIP20 addresses return false.
+- **TEMPO-FAC9**: Address determinism - `getTokenAddress(sender, salt)` always returns the same address for the same inputs.
+- **TEMPO-FAC10**: Sender differentiation - different senders with the same salt produce different token addresses.
+
+### Global Invariants
+
+- **TEMPO-FAC11**: Address format - all created tokens have addresses with the correct TIP-20 prefix (`0x20C0...`).
+- **TEMPO-FAC12**: Salt-to-token consistency - ghost mappings `saltToToken` and `tokenToSalt` match factory's `getTokenAddress` for all tracked sender/salt combinations.
+
 ## TIP403Registry
 
 The TIP403Registry manages transfer policies (whitelists and blacklists) that control which addresses can send or receive tokens.

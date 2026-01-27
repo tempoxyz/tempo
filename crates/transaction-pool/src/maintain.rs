@@ -50,6 +50,8 @@ pub struct TempoPoolUpdates {
     pub validator_token_changes: Vec<(Address, Address)>,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
+    /// TIP403 whitelist removals: (policy_id, account).
+    pub whitelist_removals: Vec<(u64, Address)>,
     /// Fee token pause state changes: (token, is_paused).
     pub pause_events: Vec<(Address, bool)>,
 }
@@ -67,6 +69,7 @@ impl TempoPoolUpdates {
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.blacklist_additions.is_empty()
+            && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
     }
 
@@ -105,13 +108,19 @@ impl TempoPoolUpdates {
                         .push((event.validator, event.token));
                 }
             }
-            // TIP403 blacklist additions
+            // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
                 if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
                     && event.restricted
                 {
                     updates
                         .blacklist_additions
+                        .push((event.policyId, event.account));
+                } else if let Ok(event) = ITIP403Registry::WhitelistUpdated::decode_log(log)
+                    && !event.allowed
+                {
+                    updates
+                        .whitelist_removals
                         .push((event.policyId, event.account));
                 }
             }
@@ -132,6 +141,7 @@ impl TempoPoolUpdates {
             || !self.spending_limit_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
+            || !self.whitelist_removals.is_empty()
     }
 }
 
@@ -435,8 +445,8 @@ where
 
                 // 9. Evict invalidated transactions in a single pool scan
                 // This checks revoked keys, spending limit changes, validator token changes,
-                // and blacklist additions together to avoid scanning all transactions
-                // multiple times per block.
+                // blacklist additions, and whitelist removals together to avoid scanning
+                // all transactions multiple times per block.
                 if updates.has_invalidation_events() {
                     let invalidation_start = Instant::now();
                     debug!(
@@ -445,6 +455,7 @@ where
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
+                        whitelist_removals = updates.whitelist_removals.len(),
                         "Processing transaction invalidation events"
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);

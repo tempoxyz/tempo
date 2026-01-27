@@ -160,10 +160,11 @@ where
             return 0;
         }
 
-        // Only fetch state provider if we need to check liquidity or blacklists.
+        // Only fetch state provider if we need to check liquidity, blacklists, or whitelists.
         // Don't let a provider error skip revoked/spending-limit eviction.
         let state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
+            || !updates.whitelist_removals.is_empty()
         {
             self.client().latest().ok()
         } else {
@@ -178,6 +179,7 @@ where
         let mut spending_limit_count = 0;
         let mut liquidity_count = 0;
         let mut blacklisted_count = 0;
+        let mut unwhitelisted_count = 0;
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
@@ -294,6 +296,49 @@ where
                     }
                 }
             }
+
+            // Check 5: Un-whitelisted fee payers
+            // When a fee payer is removed from a whitelist, their pending transactions
+            // will fail validation at execution time.
+            if !updates.whitelist_removals.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(fee_token) = tx.transaction.inner().fee_token()
+            {
+                let fee_payer = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(tx.transaction.sender())
+                    .unwrap_or(tx.transaction.sender());
+
+                for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
+                    if fee_payer != unwhitelisted_account {
+                        continue;
+                    }
+
+                    // Get the token's transfer policy ID from cache or storage
+                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
+                        Some(cached)
+                    } else {
+                        provider
+                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
+                            .ok()
+                            .flatten()
+                            .map(|packed| {
+                                let policy_id: u64 =
+                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
+                                policy_cache.insert(fee_token, policy_id);
+                                policy_id
+                            })
+                    };
+
+                    // If the token's policy matches the whitelist policy, evict the transaction
+                    if token_policy == Some(whitelist_policy_id) {
+                        to_remove.push(*tx.hash());
+                        unwhitelisted_count += 1;
+                        break;
+                    }
+                }
+            }
         }
 
         let evicted_count = to_remove.len();
@@ -305,6 +350,7 @@ where
                 spending_limit_count,
                 liquidity_count,
                 blacklisted_count,
+                unwhitelisted_count,
                 "Evicting invalidated transactions"
             );
             self.remove_transactions(to_remove);
