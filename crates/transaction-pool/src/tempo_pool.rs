@@ -138,59 +138,74 @@ where
     ///
     /// This performs a single scan of all pooled transactions and checks for:
     /// 1. **Revoked keychain keys**: AA transactions signed with keys that have been revoked
-    /// 2. **Validator token changes**: Transactions that would fail due to insufficient
+    /// 2. **Spending limit updates**: AA transactions signed with keys whose spending limit
+    ///    changed for a token matching the transaction's fee token
+    /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     ///
-    /// Both checks are combined into one scan to avoid iterating the pool multiple times
+    /// All checks are combined into one scan to avoid iterating the pool multiple times
     /// per block.
     pub fn evict_invalidated_transactions(
         &self,
-        revoked_keys: &[(Address, Address)],
-        validator_token_changes: &[(Address, Address)],
-    ) {
+        updates: &crate::maintain::TempoPoolUpdates,
+    ) -> usize {
+        use reth_storage_api::StateProvider;
         use tempo_precompiles::{
             TIP_FEE_MANAGER_ADDRESS,
             tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+            tip20::slots as tip20_slots,
         };
 
-        if revoked_keys.is_empty() && validator_token_changes.is_empty() {
-            return;
+        if !updates.has_invalidation_events() {
+            return 0;
         }
 
-        let state_provider = if !validator_token_changes.is_empty() {
-            match self.client().latest() {
-                Ok(provider) => Some(provider),
-                Err(_) => return,
-            }
+        // Only fetch state provider if we need to check liquidity or blacklists.
+        // Don't let a provider error skip revoked/spending-limit eviction.
+        let state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.blacklist_additions.is_empty()
+        {
+            self.client().latest().ok()
         } else {
             None
         };
 
+        // Cache policy lookups per fee token to avoid redundant storage reads
+        let mut policy_cache: HashMap<Address, u64> = HashMap::default();
+
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
+        let mut spending_limit_count = 0;
         let mut liquidity_count = 0;
+        let mut blacklisted_count = 0;
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-            // Check 1: Revoked keychain keys (only for AA transactions with keychain signatures)
-            if !revoked_keys.is_empty()
-                && let Some(aa_tx) = tx.transaction.inner().as_aa()
-                && let Some(keychain_sig) = aa_tx.signature().as_keychain()
+            // Extract keychain subject once per transaction (if applicable)
+            let keychain_subject = tx.transaction.keychain_subject();
+
+            // Check 1: Revoked keychain keys
+            if !updates.revoked_keys.is_empty()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_revoked(&updates.revoked_keys)
             {
-                let is_revoked = revoked_keys.iter().any(|&(account, key_id)| {
-                    keychain_sig.user_address == account
-                        && keychain_sig
-                            .key_id(&aa_tx.signature_hash())
-                            .is_ok_and(|tx_key_id| tx_key_id == key_id)
-                });
-                if is_revoked {
-                    to_remove.push(*tx.hash());
-                    revoked_count += 1;
-                    continue;
-                }
+                to_remove.push(*tx.hash());
+                revoked_count += 1;
+                continue;
             }
 
-            // Check 2: Validator token changes (check liquidity for all transactions)
+            // Check 2: Spending limit updates
+            // Only evict if the transaction's fee token matches the token whose limit changed.
+            if !updates.spending_limit_changes.is_empty()
+                && let Some(ref subject) = keychain_subject
+                && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+            {
+                to_remove.push(*tx.hash());
+                spending_limit_count += 1;
+                continue;
+            }
+
+            // Check 3: Validator token changes (check liquidity for all transactions)
             if let Some(ref provider) = state_provider {
                 let user_token = tx
                     .transaction
@@ -204,7 +219,7 @@ where
                     Err(_) => continue,
                 };
 
-                for &(_validator, new_validator_token) in validator_token_changes {
+                for &(_validator, new_validator_token) in &updates.validator_token_changes {
                     if user_token == new_validator_token {
                         continue;
                     }
@@ -235,18 +250,66 @@ where
                     }
                 }
             }
+
+            // Check 4: Blacklisted fee payers
+            // Only check AA transactions with a fee token (non-AA transactions don't have
+            // a fee payer that can be blacklisted via TIP403)
+            if !updates.blacklist_additions.is_empty()
+                && let Some(ref provider) = state_provider
+                && let Some(fee_token) = tx.transaction.inner().fee_token()
+            {
+                let fee_payer = tx
+                    .transaction
+                    .inner()
+                    .fee_payer(tx.transaction.sender())
+                    .unwrap_or(tx.transaction.sender());
+
+                // Check if any blacklist addition applies to this transaction
+                for &(blacklist_policy_id, blacklisted_account) in &updates.blacklist_additions {
+                    if fee_payer != blacklisted_account {
+                        continue;
+                    }
+
+                    // Get the token's transfer policy ID from cache or storage
+                    let token_policy = if let Some(&cached) = policy_cache.get(&fee_token) {
+                        Some(cached)
+                    } else {
+                        provider
+                            .storage(fee_token, tip20_slots::TRANSFER_POLICY_ID.into())
+                            .ok()
+                            .flatten()
+                            .map(|packed| {
+                                let policy_id: u64 =
+                                    (packed >> tip20_slots::TRANSFER_POLICY_ID_OFFSET).to();
+                                policy_cache.insert(fee_token, policy_id);
+                                policy_id
+                            })
+                    };
+
+                    // If the token's policy matches the blacklist policy, evict the transaction
+                    if token_policy == Some(blacklist_policy_id) {
+                        to_remove.push(*tx.hash());
+                        blacklisted_count += 1;
+                        break;
+                    }
+                }
+            }
         }
 
-        if !to_remove.is_empty() {
+        let evicted_count = to_remove.len();
+        if evicted_count > 0 {
             tracing::debug!(
                 target: "txpool",
-                total = to_remove.len(),
+                total = evicted_count,
                 revoked_count,
+                spending_limit_count,
                 liquidity_count,
+                blacklisted_count,
                 "Evicting invalidated transactions"
             );
             self.remove_transactions(to_remove);
         }
+        evicted_count
     }
 
     fn add_validated_transactions(

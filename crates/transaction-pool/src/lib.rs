@@ -6,6 +6,8 @@
 pub mod transaction;
 pub mod validator;
 
+pub use transaction::{KeychainSubject, RevokedKeys, SpendingLimitUpdates};
+
 // Tempo pool module with 2D nonce support
 pub mod tempo_pool;
 
@@ -19,7 +21,9 @@ pub mod metrics;
 pub mod paused;
 pub mod tt_2d_pool;
 
-pub use metrics::AA2dPoolMetrics;
+pub use maintain::TempoPoolUpdates;
+
+pub use metrics::{AA2dPoolMetrics, TempoPoolMaintenanceMetrics};
 pub use tt_2d_pool::{AA2dPool, AA2dPoolConfig, AASequenceId};
 
 #[cfg(test)]

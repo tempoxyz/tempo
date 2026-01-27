@@ -21,6 +21,30 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  check-precompiles:
+    name: Check precompiles changes
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.check.outputs.coverage }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Check for precompiles changes
+        id: check
+        run: |
+          # Only run coverage on pull_request events when precompiles/contracts changed
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: not a pull_request event (event: ${{ github.event_name }})"
+          elif git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -qE '^crates/(precompiles|contracts)/'; then
+            echo "coverage=true" >> "$GITHUB_OUTPUT"
+            echo "Running coverage: precompiles/contracts changed"
+          else
+            echo "coverage=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping coverage: no precompiles/contracts changes"
+          fi
+
   build:
     name: Forge Build
     runs-on: ubuntu-latest
@@ -71,6 +95,7 @@ jobs:
 
   tempo-foundry-test:
     name: Forge Test (Rust Precompiles)
+    needs: check-precompiles
     runs-on: depot-ubuntu-latest-8
     timeout-minutes: 60
     steps:
@@ -97,6 +122,7 @@ jobs:
           workspaces: tempo-foundry
 
       - name: Install llvm-tools
+        if: needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
       - name: Update tempo-foundry to use current commit
@@ -117,26 +143,42 @@ jobs:
           # Update Cargo.lock to resolve version conflicts
           cargo update
 
+      # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build tempo-foundry forge with coverage instrumentation
+        if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo-foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release
 
-      - name: Run Forge tests with Rust precompiles
+      - name: Run Forge tests with Rust precompiles (with coverage)
+        if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo/tips/ref-impls
         run: |
           echo "Running forge test with tempo-foundry (isTempo=true)"
           LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../tempo-foundry/target/release/forge test -vvv
 
+      # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
+      - name: Build tempo-foundry forge
+        if: needs.check-precompiles.outputs.coverage != 'true'
+        working-directory: tempo-foundry
+        run: cargo build -p forge --profile release
+
+      - name: Run Forge tests with Rust precompiles
+        if: needs.check-precompiles.outputs.coverage != 'true'
+        working-directory: tempo/tips/ref-impls
+        run: |
+          echo "Running forge test with tempo-foundry (isTempo=true)"
+          ../../../tempo-foundry/target/release/forge test -vvv
+
       - name: Generate coverage profdata
-        if: always()
+        if: needs.check-precompiles.outputs.coverage == 'true'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
           "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/ref-impls/*.profraw -o coverage/forge-test.profdata
 
       - name: Upload forge coverage artifacts
+        if: needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: forge-test-coverage
           path: |
@@ -149,6 +191,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     needs:
+      - check-precompiles
       - build
       - lint
       - test
@@ -163,8 +206,8 @@ jobs:
 
   precompiles-coverage:
     name: Precompiles Coverage
-    needs: [specs-success]
-    if: success()
+    needs: [check-precompiles, specs-success]
+    if: success() && needs.check-precompiles.outputs.coverage == 'true'
     uses: ./.github/workflows/coverage.yml
     with:
       commit_sha: ${{ github.event.pull_request.head.sha || github.sha }}
