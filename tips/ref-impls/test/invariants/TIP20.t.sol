@@ -160,7 +160,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -214,7 +214,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -301,7 +301,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -341,7 +341,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -398,7 +398,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -438,7 +438,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _log(string.concat("BURN: ", vm.toString(amount), " ", token.symbol()));
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -504,7 +504,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -595,7 +595,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -684,7 +684,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -752,7 +752,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -809,7 +809,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -910,7 +910,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -980,7 +980,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1037,7 +1037,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1207,7 +1207,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         } catch (bytes memory reason) {
             vm.stopPrank();
             // Expected if policy doesn't exist
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1277,7 +1277,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             }
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1335,7 +1335,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1427,7 +1427,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             );
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
     }
 
@@ -1474,7 +1474,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             revert("Transfer should fail when paused");
         } catch (bytes memory reason) {
             vm.stopPrank();
-            _assertKnownError(reason);
+            assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
         }
 
         _log(
@@ -1644,15 +1644,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _totalTransfers + _totalMints + _totalBurns + _totalApprovals >= 0,
             "Operation counters should be non-negative"
         );
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            HELPERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @dev Checks if an error is known/expected
-    function _assertKnownError(bytes memory reason) internal pure {
-        assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
     }
 
 }
