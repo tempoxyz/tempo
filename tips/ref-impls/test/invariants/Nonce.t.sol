@@ -12,6 +12,9 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @dev Storage slot for nonces mapping (slot 0)
     uint256 private constant NONCES_SLOT = 0;
 
+    /// @dev Maximum nonce key used by normal handlers (1 to MAX_NORMAL_NONCE_KEY)
+    uint256 private constant MAX_NORMAL_NONCE_KEY = 1000;
+
     /// @dev Ghost variables for tracking nonce state
     /// Maps account => nonceKey => expected nonce value
     mapping(address => mapping(uint256 => uint64)) private _ghostNonces;
@@ -42,15 +45,28 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         targetContract(address(this));
 
+        // Exclude helper functions from fuzzing - only target actual handlers
+        bytes4[] memory selectors = new bytes4[](9);
+        selectors[0] = this.incrementNonce.selector;
+        selectors[1] = this.readNonce.selector;
+        selectors[2] = this.tryProtocolNonce.selector;
+        selectors[3] = this.verifyAccountIndependence.selector;
+        selectors[4] = this.verifyKeyIndependence.selector;
+        selectors[5] = this.testLargeNonceKey.selector;
+        selectors[6] = this.multipleIncrements.selector;
+        selectors[7] = this.testNonceOverflow.selector;
+        selectors[8] = this.testInvalidNonceKeyIncrement.selector;
+        targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
+
         _setupInvariantBase();
         _actors = _buildActors(10);
 
         _initLogFile("nonce.log", "Nonce Invariant Test Log");
     }
 
-    /// @dev Gets a valid nonce key (1 to max)
+    /// @dev Gets a valid nonce key (1 to MAX_NORMAL_NONCE_KEY)
     function _selectNonceKey(uint256 seed) internal pure returns (uint256) {
-        return (seed % 1000) + 1;
+        return (seed % MAX_NORMAL_NONCE_KEY) + 1;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -78,6 +94,14 @@ contract NonceInvariantTest is InvariantBaseTest {
         vm.store(_NONCE, slot, bytes32(uint256(newNonce)));
 
         return newNonce;
+    }
+
+    /// @dev External wrapper for testing reverts
+    function externalIncrementNonceViaStorage(address account, uint256 nonceKey)
+        external
+        returns (uint64)
+    {
+        return _incrementNonceViaStorage(account, nonceKey);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -244,11 +268,12 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing max nonce key
     /// @dev Tests TEMPO-NON7 (large nonce keys work)
+    /// Note: type(uint256).max is reserved for TEMPO_EXPIRING_NONCE_KEY, so we use max-1
     function testLargeNonceKey(uint256 actorSeed) external {
         address actor = _selectActor(actorSeed);
-        uint256 largeKey = type(uint256).max;
+        uint256 largeKey = type(uint256).max - 1;
 
-        // Should work with max uint256 key
+        // Should work with large uint256 key
         uint64 result = nonce.getNonce(actor, largeKey);
         assertEq(result, _ghostNonces[actor][largeKey], "TEMPO-NON7: Large key should work");
 
@@ -269,7 +294,7 @@ contract NonceInvariantTest is InvariantBaseTest {
             string.concat(
                 "LARGE_KEY: ",
                 _getActorIndex(actor),
-                " key=MAX_UINT256 nonce=",
+                " key=MAX_UINT256-1 nonce=",
                 vm.toString(newNonce)
             )
         );
@@ -322,9 +347,13 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing nonce overflow at u64::MAX
     /// @dev Tests TEMPO-NON9 (nonce overflow protection)
+    /// Uses a bounded nonce key to avoid conflicts with:
+    /// - Normal handlers (1 to MAX_NORMAL_NONCE_KEY)
+    /// - testLargeNonceKey (max-1)
+    /// - Reserved TEMPO_EXPIRING_NONCE_KEY (max)
     function testNonceOverflow(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
-        uint256 nonceKey = _selectNonceKey(keySeed);
+        uint256 nonceKey = bound(keySeed, MAX_NORMAL_NONCE_KEY + 1, type(uint256).max - 2);
 
         // Set nonce to max value via direct storage manipulation
         bytes32 slot = _getNonceSlot(actor, nonceKey);
@@ -343,14 +372,11 @@ contract NonceInvariantTest is InvariantBaseTest {
             _accountNonceKeys[actor].push(nonceKey);
         }
 
-        // TEMPO-NON9: Attempting to increment at max should fail with NonceOverflow
+        // TEMPO-NON9: Attempting to increment at max should revert
         // The Rust implementation uses checked_add(1) which returns NonceOverflow on overflow.
-        // Our _incrementNonceViaStorage helper has a require that would revert,
-        // but the actual precompile would emit NonceOverflow error.
-        //
-        // Since we can't directly test the precompile's increment function from Solidity
-        // (it's internal to the protocol), we document the expected behavior here.
-        // The Solidity helper will revert with "Nonce overflow" require message.
+        // Our Solidity helper reverts with "Nonce overflow" message.
+        vm.expectRevert("Nonce overflow");
+        this.externalIncrementNonceViaStorage(actor, nonceKey);
 
         _log(
             string.concat(
@@ -358,7 +384,7 @@ contract NonceInvariantTest is InvariantBaseTest {
                 _getActorIndex(actor),
                 " key=",
                 vm.toString(nonceKey),
-                " at u64::MAX - increment would overflow"
+                " at u64::MAX - increment correctly reverted"
             )
         );
     }
@@ -371,19 +397,17 @@ contract NonceInvariantTest is InvariantBaseTest {
     function testInvalidNonceKeyIncrement(uint256 actorSeed) external {
         address actor = _selectActor(actorSeed);
 
-        // TEMPO-NON10: Increment with key 0 should use InvalidNonceKey (not ProtocolNonceNotSupported)
-        // The Rust implementation explicitly checks:
-        // - get_nonce: "protocol nonce not queryable here"
-        // - increment_nonce: "invalid to increment key 0"
-        //
-        // Since we simulate increment via storage manipulation, the helper reverts.
-        // Document that Rust would return InvalidNonceKey.
+        // TEMPO-NON10: Increment with key 0 should revert
+        // The Rust implementation returns InvalidNonceKey for increment_nonce(key=0).
+        // Our Solidity helper reverts with "Cannot increment protocol nonce (key 0)" message.
+        vm.expectRevert("Cannot increment protocol nonce (key 0)");
+        this.externalIncrementNonceViaStorage(actor, 0);
 
         _log(
             string.concat(
                 "INVALID_KEY_INCREMENT: ",
                 _getActorIndex(actor),
-                " key=0 would return InvalidNonceKey"
+                " key=0 correctly reverted"
             )
         );
     }
