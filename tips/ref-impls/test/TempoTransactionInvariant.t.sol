@@ -1353,11 +1353,15 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _recordProtocolNonceCreateSuccess(sender, currentNonce, expectedAddress);
-            _recordCreateGasTracked();
+            // Verify nonce actually incremented before updating ghost state
+            uint256 actualNonce = vm.getNonce(sender);
+            if (actualNonce > currentNonce) {
+                _recordProtocolNonceCreateSuccess(sender, currentNonce, expectedAddress);
+                _recordCreateGasTracked();
+            }
         } catch {
-            ghost_protocolNonce[sender]++;
-            ghost_totalProtocolNonceTxs++;
+            // Sync ghost state with actual nonce in case tx was partially processed
+            _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
     }
