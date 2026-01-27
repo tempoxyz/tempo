@@ -41,6 +41,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -57,6 +58,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            fee_payer,
                         }));
                     }
                 };
@@ -73,6 +75,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            fee_payer,
                         })
                     },
                 )?)
@@ -98,11 +101,24 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            fee_payer,
         } = self;
+
+        // Resolve fee_payer for gas estimation:
+        // - true -> use a dummy address to indicate sponsored transaction
+        // - false or None -> no fee payer (caller pays)
+        let caller_addr = inner.from.unwrap_or_default();
+        let resolved_fee_payer = if fee_payer.unwrap_or(false) {
+            // Use a dummy address different from caller to indicate sponsored transaction
+            Some(Some(Address::with_last_byte(1)))
+        } else {
+            None
+        };
+
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            fee_payer: None,
+            fee_payer: resolved_fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
@@ -112,7 +128,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 // Create mock signature for gas estimation
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
-                let caller_addr = inner.from.unwrap_or_default();
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
                 let mock_signature =
                     create_mock_tempo_signature(&key_type, key_data.as_ref(), key_id, caller_addr);

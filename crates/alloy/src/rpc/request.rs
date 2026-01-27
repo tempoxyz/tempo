@@ -72,6 +72,12 @@ pub struct TempoTransactionRequest {
     /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Optional fee payer indicator for gas estimation of sponsored transactions.
+    /// When true, indicates the transaction will have a fee_payer_signature,
+    /// adding ECRECOVER_GAS (3,000) to intrinsic gas calculation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<bool>,
 }
 
 impl TempoTransactionRequest {
@@ -268,6 +274,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            fee_payer: tx.fee_payer_signature.as_ref().map(|_| true),
         }
     }
 }
