@@ -354,7 +354,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for verifying isTIP20 on controlled addresses
-    /// @dev Tests TEMPO-FAC8 (isTIP20 consistency) - only checks known addresses to avoid false positives
+    /// @dev Tests TEMPO-FAC8 (isTIP20 consistency)
     function checkIsTIP20(uint256 addrSeed) external {
         _totalIsTIP20Checks++;
 
@@ -370,18 +370,28 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             assertFalse(
                 factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20"
             );
-        } else {
-            // Check a known non-TIP20 system address
+            // Check AMM address - should NOT be TIP20
             assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
+        } else {
+            // Check a random address - exclude known TIP20s
+            address checkAddr = address(uint160(addrSeed));
+            if (
+                !_isCreatedToken[checkAddr] && checkAddr != address(pathUSD)
+                    && checkAddr != address(token1) && checkAddr != address(token2)
+                    && checkAddr != address(token3) && checkAddr != address(token4)
+            ) {
+                assertFalse(
+                    factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be TIP20"
+                );
+            }
         }
     }
 
     /// @notice Handler for verifying getTokenAddress determinism
     /// @dev Tests TEMPO-FAC9 (address prediction is deterministic), TEMPO-FAC10 (sender differentiation)
     function verifyAddressDeterminism(uint256 actorSeed, bytes32 salt) external view {
-        uint256 actorIndex = actorSeed % _actors.length;
-        address actor = _actors[actorIndex];
-        address otherActor = _actors[(actorIndex + 1) % _actors.length];
+        address actor = _selectActor(actorSeed);
+        address otherActor = _selectActorExcluding(actorSeed, actor);
 
         try factory.getTokenAddress(actor, salt) returns (address addr1) {
             // TEMPO-FAC9: Same inputs always produce same output
