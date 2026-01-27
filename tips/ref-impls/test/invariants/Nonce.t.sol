@@ -6,7 +6,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title Nonce Invariant Tests
 /// @notice Fuzz-based invariant tests for the Nonce precompile
-/// @dev Tests invariants TEMPO-NON1 through TEMPO-NON8 for the 2D nonce system
+/// @dev Tests invariants TEMPO-NON1 through TEMPO-NON11 for the 2D nonce system
 contract NonceInvariantTest is InvariantBaseTest {
 
     /// @dev Storage slot for nonces mapping (slot 0)
@@ -35,6 +35,30 @@ contract NonceInvariantTest is InvariantBaseTest {
     /// @dev Total reads performed
     uint256 private _totalReads;
 
+    /// @dev Total protocol nonce rejections (key 0 reads)
+    uint256 private _totalProtocolNonceRejections;
+
+    /// @dev Total account independence checks
+    uint256 private _totalAccountIndependenceChecks;
+
+    /// @dev Total key independence checks
+    uint256 private _totalKeyIndependenceChecks;
+
+    /// @dev Total large key tests
+    uint256 private _totalLargeKeyTests;
+
+    /// @dev Total multiple increment operations
+    uint256 private _totalMultipleIncrements;
+
+    /// @dev Total overflow tests
+    uint256 private _totalOverflowTests;
+
+    /// @dev Total invalid key increment rejections
+    uint256 private _totalInvalidKeyRejections;
+
+    /// @dev Total reserved expiring key tests
+    uint256 private _totalReservedKeyTests;
+
     /*//////////////////////////////////////////////////////////////
                                SETUP
     //////////////////////////////////////////////////////////////*/
@@ -46,7 +70,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         targetContract(address(this));
 
         // Exclude helper functions from fuzzing - only target actual handlers
-        bytes4[] memory selectors = new bytes4[](9);
+        bytes4[] memory selectors = new bytes4[](10);
         selectors[0] = this.incrementNonce.selector;
         selectors[1] = this.readNonce.selector;
         selectors[2] = this.tryProtocolNonce.selector;
@@ -56,6 +80,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         selectors[6] = this.multipleIncrements.selector;
         selectors[7] = this.testNonceOverflow.selector;
         selectors[8] = this.testInvalidNonceKeyIncrement.selector;
+        selectors[9] = this.testReservedExpiringNonceKey.selector;
         targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
 
         _setupInvariantBase();
@@ -79,16 +104,17 @@ contract NonceInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Increment nonce via direct storage manipulation (simulates protocol behavior)
+    /// @dev Uses INonce custom errors to align with protocol error semantics
     function _incrementNonceViaStorage(address account, uint256 nonceKey)
         internal
         returns (uint64 newNonce)
     {
-        require(nonceKey > 0, "Cannot increment protocol nonce (key 0)");
+        if (nonceKey == 0) revert INonce.InvalidNonceKey();
 
         bytes32 slot = _getNonceSlot(account, nonceKey);
         uint64 current = uint64(uint256(vm.load(_NONCE, slot)));
 
-        require(current < type(uint64).max, "Nonce overflow");
+        if (current == type(uint64).max) revert INonce.NonceOverflow();
 
         newNonce = current + 1;
         vm.store(_NONCE, slot, bytes32(uint256(newNonce)));
@@ -185,6 +211,8 @@ contract NonceInvariantTest is InvariantBaseTest {
             );
         }
 
+        _totalProtocolNonceRejections++;
+
         _log(string.concat("TRY_PROTOCOL_NONCE: ", _getActorIndex(actor), " correctly rejected"));
     }
 
@@ -214,6 +242,8 @@ contract NonceInvariantTest is InvariantBaseTest {
         // TEMPO-NON5: Actor2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor2, nonceKey);
         assertEq(nonce2After, nonce2Before, "TEMPO-NON5: Other account nonce should be unchanged");
+
+        _totalAccountIndependenceChecks++;
 
         _log(
             string.concat(
@@ -252,6 +282,8 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 nonce2After = nonce.getNonce(actor, key2);
         assertEq(nonce2After, nonce2Before, "TEMPO-NON6: Other key nonce should be unchanged");
 
+        _totalKeyIndependenceChecks++;
+
         _log(
             string.concat(
                 "KEY_INDEPENDENCE: ",
@@ -289,6 +321,8 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         uint64 afterIncrement = nonce.getNonce(actor, largeKey);
         assertEq(afterIncrement, newNonce, "TEMPO-NON7: Large key should increment correctly");
+
+        _totalLargeKeyTests++;
 
         _log(
             string.concat(
@@ -329,6 +363,8 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 endNonce = nonce.getNonce(actor, nonceKey);
         assertEq(endNonce, startNonce + uint64(count), "TEMPO-NON8: Total increment should match");
 
+        _totalMultipleIncrements++;
+
         _log(
             string.concat(
                 "MULTI_INCREMENT: ",
@@ -347,13 +383,14 @@ contract NonceInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing nonce overflow at u64::MAX
     /// @dev Tests TEMPO-NON9 (nonce overflow protection)
-    /// Uses a bounded nonce key to avoid conflicts with:
+    /// Uses a small bounded key range to avoid conflicts and prevent unbounded key growth:
     /// - Normal handlers (1 to MAX_NORMAL_NONCE_KEY)
     /// - testLargeNonceKey (max-1)
     /// - Reserved TEMPO_EXPIRING_NONCE_KEY (max)
     function testNonceOverflow(uint256 actorSeed, uint256 keySeed) external {
         address actor = _selectActor(actorSeed);
-        uint256 nonceKey = bound(keySeed, MAX_NORMAL_NONCE_KEY + 1, type(uint256).max - 2);
+        // Use a small bounded range to prevent unbounded _accountNonceKeys growth
+        uint256 nonceKey = bound(keySeed, MAX_NORMAL_NONCE_KEY + 1, MAX_NORMAL_NONCE_KEY + 100);
 
         // Set nonce to max value via direct storage manipulation
         bytes32 slot = _getNonceSlot(actor, nonceKey);
@@ -372,11 +409,11 @@ contract NonceInvariantTest is InvariantBaseTest {
             _accountNonceKeys[actor].push(nonceKey);
         }
 
-        // TEMPO-NON9: Attempting to increment at max should revert
-        // The Rust implementation uses checked_add(1) which returns NonceOverflow on overflow.
-        // Our Solidity helper reverts with "Nonce overflow" message.
-        vm.expectRevert("Nonce overflow");
+        // TEMPO-NON9: Attempting to increment at max should revert with NonceOverflow
+        vm.expectRevert(INonce.NonceOverflow.selector);
         this.externalIncrementNonceViaStorage(actor, nonceKey);
+
+        _totalOverflowTests++;
 
         _log(
             string.concat(
@@ -397,15 +434,43 @@ contract NonceInvariantTest is InvariantBaseTest {
     function testInvalidNonceKeyIncrement(uint256 actorSeed) external {
         address actor = _selectActor(actorSeed);
 
-        // TEMPO-NON10: Increment with key 0 should revert
-        // The Rust implementation returns InvalidNonceKey for increment_nonce(key=0).
-        // Our Solidity helper reverts with "Cannot increment protocol nonce (key 0)" message.
-        vm.expectRevert("Cannot increment protocol nonce (key 0)");
+        // TEMPO-NON10: Increment with key 0 should revert with InvalidNonceKey
+        vm.expectRevert(INonce.InvalidNonceKey.selector);
         this.externalIncrementNonceViaStorage(actor, 0);
+
+        _totalInvalidKeyRejections++;
 
         _log(
             string.concat(
                 "INVALID_KEY_INCREMENT: ", _getActorIndex(actor), " key=0 correctly reverted"
+            )
+        );
+    }
+
+    /// @notice Handler for testing reserved TEMPO_EXPIRING_NONCE_KEY behavior
+    /// @dev Tests TEMPO-NON11 (reserved key type(uint256).max behavior)
+    /// Note: type(uint256).max is reserved for TEMPO_EXPIRING_NONCE_KEY and should be
+    /// readable (returns 0 for uninitialized) but we document it as reserved
+    function testReservedExpiringNonceKey(uint256 actorSeed) external {
+        address actor = _selectActor(actorSeed);
+        uint256 reservedKey = type(uint256).max;
+
+        // TEMPO-NON11: Reserved key should be readable (returns 0 for uninitialized)
+        // The key is reserved for expiring nonces but reading it works
+        uint64 result = nonce.getNonce(actor, reservedKey);
+
+        // For uninitialized, it should return 0
+        // (We don't track this in ghost state since it's reserved)
+        assertEq(result, 0, "TEMPO-NON11: Reserved key should return 0 for uninitialized");
+
+        _totalReservedKeyTests++;
+
+        _log(
+            string.concat(
+                "RESERVED_EXPIRING_KEY: ",
+                _getActorIndex(actor),
+                " key=MAX_UINT256 readable, value=",
+                vm.toString(result)
             )
         );
     }
@@ -424,9 +489,10 @@ contract NonceInvariantTest is InvariantBaseTest {
     function _invariantGhostStateConsistency() internal view {
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
-            uint256[] memory keys = _accountNonceKeys[actor];
+            uint256[] storage keys = _accountNonceKeys[actor];
+            uint256 keysLength = keys.length;
 
-            for (uint256 k = 0; k < keys.length; k++) {
+            for (uint256 k = 0; k < keysLength; k++) {
                 uint256 nonceKey = keys[k];
                 uint64 actual = nonce.getNonce(actor, nonceKey);
                 uint64 expected = _ghostNonces[actor][nonceKey];
@@ -439,9 +505,10 @@ contract NonceInvariantTest is InvariantBaseTest {
     function _invariantNonceNeverDecrease() internal view {
         for (uint256 a = 0; a < _actors.length; a++) {
             address actor = _actors[a];
-            uint256[] memory keys = _accountNonceKeys[actor];
+            uint256[] storage keys = _accountNonceKeys[actor];
+            uint256 keysLength = keys.length;
 
-            for (uint256 k = 0; k < keys.length; k++) {
+            for (uint256 k = 0; k < keysLength; k++) {
                 uint256 nonceKey = keys[k];
                 uint64 actual = nonce.getNonce(actor, nonceKey);
                 uint64 lastSeen = _lastSeenNonces[actor][nonceKey];
@@ -450,6 +517,43 @@ contract NonceInvariantTest is InvariantBaseTest {
                 assertGe(actual, lastSeen, "TEMPO-NON1: Nonce decreased from last seen value");
             }
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          AFTER INVARIANT
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Logs final state summary after invariant run
+    function afterInvariant() public {
+        _log("");
+        _log("--------------------------------------------------------------------------------");
+        _log("                              Final State Summary");
+        _log("--------------------------------------------------------------------------------");
+        _log(string.concat("Total increments: ", vm.toString(_totalIncrements)));
+        _log(string.concat("Total reads: ", vm.toString(_totalReads)));
+        _log(
+            string.concat("Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections))
+        );
+        _log(
+            string.concat("Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks))
+        );
+        _log(
+            string.concat("Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks))
+        );
+        _log(string.concat("Large key tests (NON7): ", vm.toString(_totalLargeKeyTests)));
+        _log(string.concat("Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)));
+        _log(string.concat("Overflow tests (NON9): ", vm.toString(_totalOverflowTests)));
+        _log(string.concat("Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)));
+        _log(string.concat("Reserved key tests (NON11): ", vm.toString(_totalReservedKeyTests)));
+        _log("--------------------------------------------------------------------------------");
+
+        // Count total unique nonce keys tracked
+        uint256 totalTrackedKeys = 0;
+        for (uint256 a = 0; a < _actors.length; a++) {
+            totalTrackedKeys += _accountNonceKeys[_actors[a]].length;
+        }
+        _log(string.concat("Total tracked nonce keys: ", vm.toString(totalTrackedKeys)));
+        _log("--------------------------------------------------------------------------------");
     }
 
 }

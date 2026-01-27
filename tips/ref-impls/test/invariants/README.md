@@ -156,13 +156,17 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 
 ### Edge Case Invariants
 
-- **TEMPO-NON7**: Large nonce key support - `type(uint256).max` works correctly as a nonce key.
+- **TEMPO-NON7**: Large nonce key support - `type(uint256).max - 1` works correctly as a nonce key. Note: `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`.
 - **TEMPO-NON8**: Strict monotonicity - multiple sequential increments produce strictly increasing values with no gaps.
 
 ### Overflow Invariants
 
 - **TEMPO-NON9**: Nonce overflow protection - incrementing a nonce at `u64::MAX` reverts with `NonceOverflow`. Rust uses `checked_add(1)` which returns an error on overflow.
 - **TEMPO-NON10**: Invalid key increment rejection - `increment_nonce(key=0)` reverts with `InvalidNonceKey` (distinct from `ProtocolNonceNotSupported` used for reads).
+
+### Reserved Key Invariants
+
+- **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
 
 ## TIP403Registry
 
