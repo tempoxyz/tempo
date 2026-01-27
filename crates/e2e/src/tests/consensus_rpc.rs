@@ -154,7 +154,7 @@ fn get_identity_transition_proof_after_full_dkg() {
     let _ = tempo_eyre::install();
 
     let how_many_signers = 1;
-    let epoch_length = 10;
+    let epoch_length = 20;
     let full_dkg_epoch: u64 = 1;
 
     let setup = Setup::new()

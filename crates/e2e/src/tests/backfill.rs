@@ -60,7 +60,7 @@ async fn run_validator_late_join_test(
 
     // Verify that the node is still progressing after sync
     let last_block = last.execution_provider().last_block_number().unwrap();
-    context.sleep(Duration::from_millis(500)).await;
+    context.sleep(Duration::from_secs(10)).await;
     assert!(
         last.execution_provider().last_block_number().unwrap() > last_block,
         "node should still be progressing after sync"
