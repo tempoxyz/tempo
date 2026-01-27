@@ -19,60 +19,15 @@ use std::{
         btree_map::Entry,
         hash_map,
     },
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 
-type Ordering = CoinbaseTipOrdering<TempoPooledTransaction>;
-
-/// Key for ordering transactions by eviction priority.
-///
-/// Orders by:
-/// 1. Priority ascending (lowest priority evicted first)
-/// 2. Submission ID descending (newer transactions evicted first among same priority)
-///
-/// This is the inverse of the execution order (where highest priority, oldest submission wins).
-/// Newer transactions are evicted first to preserve older transactions that have been waiting longer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EvictionKey {
-    /// The transaction's priority (from `CoinbaseTipOrdering`).
-    priority: Priority<u128>,
-    /// The submission ID when the transaction was added to the pool.
-    submission_id: u64,
-    /// The transaction's unique identifier (for disambiguation).
-    tx_id: AA2dTransactionId,
-}
-
-impl EvictionKey {
-    /// Creates a new eviction key from transaction data.
-    fn new(priority: Priority<u128>, submission_id: u64, tx_id: AA2dTransactionId) -> Self {
-        Self {
-            priority,
-            submission_id,
-            tx_id,
-        }
-    }
-}
-
-impl Ord for EvictionKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Lower priority first (evict lowest priority)
-        self.priority
-            .cmp(&other.priority)
-            // Then newer submission first (evict newer transactions among same priority)
-            // This preserves older transactions that have been waiting longer
-            .then_with(|| other.submission_id.cmp(&self.submission_id))
-            // Finally by tx_id for uniqueness
-            .then_with(|| self.tx_id.cmp(&other.tx_id))
-    }
-}
-
-impl PartialOrd for EvictionKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
+type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
@@ -92,14 +47,14 @@ pub struct AA2dPool {
     /// This way we can determine when transactions were submitted to the pool.
     submission_id: u64,
     /// independent, pending, executable transactions, one per sequence id.
-    independent_transactions: HashMap<AASequenceId, PendingTransaction<Ordering>>,
+    independent_transactions: HashMap<AASequenceId, PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, AA2dInternalTransaction>,
     /// _All_ transactions by hash.
     by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by tx hash (always pending/independent).
     /// These use tx hash for replay protection instead of sequential nonces.
-    expiring_nonce_txs: HashMap<TxHash, PendingTransaction<Ordering>>,
+    expiring_nonce_txs: HashMap<TxHash, PendingTransaction<TxOrdering>>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -118,13 +73,12 @@ pub struct AA2dPool {
     pending_count: usize,
     /// Number of queued (non-executable) transactions
     queued_count: usize,
-    /// Pending transactions ordered by eviction priority (lowest priority first).
+    /// All transactions ordered by eviction priority (lowest priority first).
     ///
     /// Since Tempo has a constant base fee, priority never changes after insertion,
-    /// so we can maintain this ordering incrementally.
-    pending_by_eviction_order: BTreeSet<EvictionKey>,
-    /// Queued transactions ordered by eviction priority (lowest priority first).
-    queued_by_eviction_order: BTreeSet<EvictionKey>,
+    /// so we can maintain this ordering incrementally. At eviction time, we scan
+    /// this set checking `is_pending` to find queued or pending transactions.
+    by_eviction_order: BTreeSet<EvictionKey>,
 }
 
 impl Default for AA2dPool {
@@ -148,8 +102,7 @@ impl AA2dPool {
             metrics: AA2dPoolMetrics::default(),
             pending_count: 0,
             queued_count: 0,
-            pending_by_eviction_order: Default::default(),
-            queued_by_eviction_order: Default::default(),
+            by_eviction_order: Default::default(),
         }
     }
 
@@ -216,7 +169,7 @@ impl AA2dPool {
         }
 
         // assume the transaction is not pending, will get updated later
-        let mut inserted_as_pending = false;
+        let is_pending = Arc::new(AtomicBool::new(false));
         let tx = AA2dInternalTransaction {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
@@ -224,7 +177,7 @@ impl AA2dPool {
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
-            is_pending: inserted_as_pending,
+            is_pending: Arc::clone(&is_pending),
         };
 
         // try to insert the transaction
@@ -245,7 +198,7 @@ impl AA2dPool {
 
                 let old_tx = entry.insert(tx.clone());
                 // counters always mirror actual tx count, so underflow is impossible
-                if old_tx.is_pending {
+                if old_tx.is_pending.load(Ordering::Relaxed) {
                     self.pending_count -= 1;
                 } else {
                     self.queued_count -= 1;
@@ -268,12 +221,9 @@ impl AA2dPool {
                 replaced.inner.priority.clone(),
                 replaced.inner.submission_id,
                 tx_id,
+                Arc::clone(&replaced.is_pending),
             );
-            if replaced.is_pending {
-                self.pending_by_eviction_order.remove(&replaced_key);
-            } else {
-                self.queued_by_eviction_order.remove(&replaced_key);
-            }
+            self.by_eviction_order.remove(&replaced_key);
         }
 
         // insert transaction by hash
@@ -282,8 +232,8 @@ impl AA2dPool {
 
         // contains transactions directly impacted by the new transaction (filled nonce gap)
         let mut promoted = Vec::new();
-        // eviction keys of promoted transactions (to move from queued to pending eviction set)
-        let mut promoted_eviction_keys = Vec::new();
+        // Track whether this transaction was inserted as pending
+        let mut inserted_as_pending = false;
         // now we need to scan the range and mark transactions as pending, if any
         let on_chain_id = AA2dTransactionId::new(tx_id.seq_id, on_chain_nonce);
         // track the next nonce we expect if the transactions are gapless
@@ -298,18 +248,13 @@ impl AA2dPool {
                         // unaffected by our transaction
                     }
                     std::cmp::Ordering::Equal => {
-                        existing_tx.is_pending = true;
+                        existing_tx.is_pending.store(true, Ordering::Relaxed);
                         inserted_as_pending = true;
                     }
                     std::cmp::Ordering::Greater => {
                         // if this was previously not pending we need to promote the transaction
-                        let is_promoted = !std::mem::replace(&mut existing_tx.is_pending, true);
-                        if is_promoted {
-                            promoted_eviction_keys.push(EvictionKey::new(
-                                existing_tx.inner.priority.clone(),
-                                existing_tx.inner.submission_id,
-                                *existing_id,
-                            ));
+                        let was_pending = existing_tx.is_pending.swap(true, Ordering::Relaxed);
+                        if !was_pending {
                             promoted.push(existing_tx.inner.transaction.clone());
                         }
                     }
@@ -322,13 +267,7 @@ impl AA2dPool {
             }
         }
 
-        // Move promoted transactions from queued to pending eviction set
-        for key in promoted_eviction_keys {
-            self.queued_by_eviction_order.remove(&key);
-            self.pending_by_eviction_order.insert(key);
-        }
-
-        // Update counters for promoted transactions
+        // Update counters for promoted transactions (no eviction set manipulation needed)
         let promoted_count = promoted.len();
         if !promoted.is_empty() {
             self.queued_count -= promoted_count;
@@ -338,15 +277,18 @@ impl AA2dPool {
         // Record metrics
         self.metrics.inc_inserted();
 
-        // Create eviction key for the new transaction
-        let new_tx_eviction_key =
-            EvictionKey::new(tx.inner.priority.clone(), tx.inner.submission_id, tx_id);
+        // Create eviction key for the new transaction and add to the single eviction set
+        let new_tx_eviction_key = EvictionKey::new(
+            tx.inner.priority.clone(),
+            tx.inner.submission_id,
+            tx_id,
+            Arc::clone(&is_pending),
+        );
+        self.by_eviction_order.insert(new_tx_eviction_key);
 
         if inserted_as_pending {
             // Increment pending counter for the newly inserted transaction
             self.pending_count += 1;
-            // Add to pending eviction set
-            self.pending_by_eviction_order.insert(new_tx_eviction_key);
 
             if !promoted.is_empty() {
                 self.metrics.inc_promoted(promoted_count);
@@ -366,8 +308,6 @@ impl AA2dPool {
 
         // Increment queued counter for the newly inserted transaction
         self.queued_count += 1;
-        // Add to queued eviction set
-        self.queued_by_eviction_order.insert(new_tx_eviction_key);
 
         // Call discard for queued transactions too
         let _ = self.discard();
@@ -424,7 +364,7 @@ impl AA2dPool {
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         let (pending_2d, queued_2d) = self.by_id.values().fold((0, 0), |mut acc, tx| {
-            if tx.is_pending {
+            if tx.is_pending.load(Ordering::Relaxed) {
                 acc.0 += 1;
             } else {
                 acc.1 += 1;
@@ -468,7 +408,9 @@ impl AA2dPool {
         let regular = self
             .by_id
             .values()
-            .filter(move |tx| tx.is_pending && tx.inner.transaction.origin == origin)
+            .filter(move |tx| {
+                tx.is_pending.load(Ordering::Relaxed) && tx.inner.transaction.origin == origin
+            })
             .map(|tx| tx.inner.transaction.clone());
         // Expiring nonce txs are always pending
         let expiring = self
@@ -508,7 +450,7 @@ impl AA2dPool {
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         self.by_id
             .values()
-            .filter(|tx| !tx.is_pending)
+            .filter(|tx| !tx.is_pending.load(Ordering::Relaxed))
             .map(|tx| tx.inner.transaction.clone())
     }
 
@@ -520,7 +462,7 @@ impl AA2dPool {
         let regular_pending = self
             .by_id
             .values()
-            .filter(|tx| tx.is_pending)
+            .filter(|tx| tx.is_pending.load(Ordering::Relaxed))
             .map(|tx| tx.inner.transaction.clone());
         let expiring_pending = self
             .expiring_nonce_txs
@@ -543,7 +485,7 @@ impl AA2dPool {
             by_id: self
                 .by_id
                 .iter()
-                .filter(|(_, tx)| tx.is_pending)
+                .filter(|(_, tx)| tx.is_pending.load(Ordering::Relaxed))
                 .map(|(id, tx)| (*id, tx.inner.clone()))
                 .collect(),
             invalid: Default::default(),
@@ -655,12 +597,18 @@ impl AA2dPool {
         let tx = self.by_id.remove(id)?;
 
         // Remove from eviction set
-        let eviction_key = EvictionKey::new(tx.inner.priority, tx.inner.submission_id, *id);
-        if tx.is_pending {
-            self.pending_by_eviction_order.remove(&eviction_key);
+        let eviction_key = EvictionKey::new(
+            tx.inner.priority,
+            tx.inner.submission_id,
+            *id,
+            Arc::clone(&tx.is_pending),
+        );
+        self.by_eviction_order.remove(&eviction_key);
+
+        // Update counters based on the removed transaction's pending status
+        if tx.is_pending.load(Ordering::Relaxed) {
             self.pending_count -= 1;
         } else {
-            self.queued_by_eviction_order.remove(&eviction_key);
             self.queued_count -= 1;
         }
 
@@ -680,7 +628,7 @@ impl AA2dPool {
     fn remove_independent(
         &mut self,
         id: &AA2dTransactionId,
-    ) -> Option<PendingTransaction<Ordering>> {
+    ) -> Option<PendingTransaction<TxOrdering>> {
         // Only remove from independent_transactions if this is the independent transaction
         match self.independent_transactions.entry(id.seq_id) {
             hash_map::Entry::Occupied(entry) => {
@@ -895,9 +843,6 @@ impl AA2dPool {
 
         let mut promoted = Vec::new();
         let mut mined_ids = Vec::new();
-        // Track eviction key movements: (key, from_pending_to_queued)
-        // true = demoted (pending -> queued), false = promoted (queued -> pending)
-        let mut eviction_key_moves: Vec<(EvictionKey, bool)> = Vec::new();
 
         // we assume the set of changed senders is smaller than the individual accounts
         'changes: for (sender_id, on_chain_nonce) in on_chain_ids {
@@ -929,19 +874,11 @@ impl AA2dPool {
             for (existing_id, existing_tx) in std::iter::once(current).chain(iter) {
                 if existing_id.nonce == next_nonce {
                     // Promote if transaction was previously queued (not pending)
-                    if !std::mem::replace(&mut existing_tx.is_pending, true) {
+                    let was_pending = existing_tx.is_pending.swap(true, Ordering::Relaxed);
+                    if !was_pending {
                         // Update counters for txs promoted from queued to pending
                         self.queued_count -= 1;
                         self.pending_count += 1;
-                        // Track for eviction set update (queued -> pending)
-                        eviction_key_moves.push((
-                            EvictionKey::new(
-                                existing_tx.inner.priority.clone(),
-                                existing_tx.inner.submission_id,
-                                *existing_id,
-                            ),
-                            false, // promoted: queued -> pending
-                        ));
                         promoted.push(existing_tx.inner.transaction.clone());
                     }
 
@@ -955,18 +892,10 @@ impl AA2dPool {
                 } else {
                     // Gap detected - mark this and all remaining transactions as non-pending
                     // Update counters if tx was previously pending
-                    if std::mem::replace(&mut existing_tx.is_pending, false) {
+                    let was_pending = existing_tx.is_pending.swap(false, Ordering::Relaxed);
+                    if was_pending {
                         self.pending_count -= 1;
                         self.queued_count += 1;
-                        // Track for eviction set update (pending -> queued)
-                        eviction_key_moves.push((
-                            EvictionKey::new(
-                                existing_tx.inner.priority.clone(),
-                                existing_tx.inner.submission_id,
-                                *existing_id,
-                            ),
-                            true, // demoted: pending -> queued
-                        ));
                     }
                 }
             }
@@ -976,19 +905,6 @@ impl AA2dPool {
             // This handles reorgs where the on-chain nonce decreases.
             if next_nonce == on_chain_nonce {
                 self.independent_transactions.remove(&sender_id);
-            }
-        }
-
-        // Apply eviction set movements
-        for (key, demoted) in eviction_key_moves {
-            if demoted {
-                // pending -> queued
-                self.pending_by_eviction_order.remove(&key);
-                self.queued_by_eviction_order.insert(key);
-            } else {
-                // queued -> pending
-                self.queued_by_eviction_order.remove(&key);
-                self.pending_by_eviction_order.insert(key);
             }
         }
 
@@ -1043,26 +959,26 @@ impl AA2dPool {
 
     /// Evicts the lowest-priority transactions from the pool.
     ///
-    /// Uses the pre-sorted eviction sets to efficiently pop the lowest-priority
-    /// transactions without collecting and sorting.
+    /// Scans the single eviction set (ordered by priority) and filters by `is_pending`
+    /// to find queued or pending transactions to evict. This is a best-effort scan
+    /// that checks a bool for each transaction.
     fn evict_lowest_priority(
         &mut self,
         count: usize,
-        is_pending: bool,
+        evict_pending: bool,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         if count == 0 {
             return vec![];
         }
 
-        // Collect tx_ids to evict from the appropriate eviction set
-        let eviction_set = if is_pending {
-            &self.pending_by_eviction_order
-        } else {
-            &self.queued_by_eviction_order
-        };
-
-        // Take the first `count` keys (lowest priority first)
-        let to_remove: Vec<_> = eviction_set.iter().take(count).map(|k| k.tx_id).collect();
+        // Scan the eviction set and collect tx_ids matching the desired pending state
+        let to_remove: Vec<_> = self
+            .by_eviction_order
+            .iter()
+            .filter(|key| key.is_pending.load(Ordering::Relaxed) == evict_pending)
+            .map(|key| key.tx_id)
+            .take(count)
+            .collect();
 
         let mut removed = Vec::with_capacity(to_remove.len());
         for id in to_remove {
@@ -1212,7 +1128,7 @@ impl AA2dPool {
             // Independent transactions must be pending
             let tx_in_pool = self.by_id.get(&tx_id).unwrap();
             assert!(
-                tx_in_pool.is_pending,
+                tx_in_pool.is_pending.load(Ordering::Relaxed),
                 "Independent transaction {tx_id:?} is not pending"
             );
 
@@ -1298,7 +1214,7 @@ impl AA2dPool {
                 && independent_tx.transaction.hash() == tx.inner.transaction.hash()
             {
                 assert!(
-                    tx.is_pending,
+                    tx.is_pending.load(Ordering::Relaxed),
                     "Transaction {id:?} is in independent set but not pending"
                 );
             }
@@ -1376,16 +1292,83 @@ struct AA2dInternalTransaction {
     /// Whether this transaction is pending/executable.
     ///
     /// If it's not pending, it is queued.
-    is_pending: bool,
+    ///
+    /// Uses `Arc<AtomicBool>` so we can mutate this flag without removing/reinserting
+    /// the transaction from the eviction set. This allows a single eviction set for
+    /// all transactions, with pending/queued filtering done at eviction time.
+    is_pending: Arc<AtomicBool>,
+}
+
+/// Key for ordering transactions by eviction priority.
+///
+/// Orders by:
+/// 1. Priority ascending (lowest priority evicted first)
+/// 2. Submission ID descending (newer transactions evicted first among same priority)
+///
+/// This is the inverse of the execution order (where highest priority, oldest submission wins).
+/// Newer transactions are evicted first to preserve older transactions that have been waiting longer.
+#[derive(Debug, Clone)]
+struct EvictionKey {
+    /// The transaction's priority (from `CoinbaseTipOrdering`).
+    priority: Priority<u128>,
+    /// The submission ID when the transaction was added to the pool.
+    /// This is unique per transaction, so it's sufficient for ordering.
+    submission_id: u64,
+    /// The transaction's unique identifier (for lookup during eviction).
+    tx_id: AA2dTransactionId,
+    /// Shared pending state for filtering without lookup.
+    is_pending: Arc<AtomicBool>,
+}
+
+impl EvictionKey {
+    /// Creates a new eviction key from transaction data.
+    fn new(
+        priority: Priority<u128>,
+        submission_id: u64,
+        tx_id: AA2dTransactionId,
+        is_pending: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            priority,
+            submission_id,
+            tx_id,
+            is_pending,
+        }
+    }
+}
+
+impl PartialEq for EvictionKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.submission_id == other.submission_id
+    }
+}
+
+impl Eq for EvictionKey {}
+
+impl Ord for EvictionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Lower priority first (evict lowest priority)
+        self.priority
+            .cmp(&other.priority)
+            // Then newer submission first (evict newer transactions among same priority)
+            // This preserves older transactions that have been waiting longer
+            .then_with(|| other.submission_id.cmp(&self.submission_id))
+    }
+}
+
+impl PartialOrd for EvictionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// A snapshot of the sub-pool containing all executable transactions.
 #[derive(Debug)]
 pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
-    independent: BTreeSet<PendingTransaction<Ordering>>,
+    independent: BTreeSet<PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<Ordering>>,
+    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
@@ -1393,7 +1376,7 @@ pub(crate) struct BestAA2dTransactions {
 
 impl BestAA2dTransactions {
     /// Removes the best transaction from the set
-    fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<Ordering>)> {
+    fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let tx = self.independent.pop_last()?;
         let id = tx
             .transaction
@@ -1628,11 +1611,19 @@ mod tests {
         // Verify both transactions are now pending
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
         assert!(
-            pool.by_id.get(&tx0_id).unwrap().is_pending,
+            pool.by_id
+                .get(&tx0_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 0 should be pending"
         );
         assert!(
-            pool.by_id.get(&tx1_id).unwrap().is_pending,
+            pool.by_id
+                .get(&tx1_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 1 should be pending after promotion"
         );
 
@@ -1786,7 +1777,10 @@ mod tests {
             &tx_high_hash,
             "Transaction in by_id should be tx_high"
         );
-        assert!(tx_in_pool.is_pending, "Transaction should be pending");
+        assert!(
+            tx_in_pool.is_pending.load(Ordering::Relaxed),
+            "Transaction should be pending"
+        );
 
         pool.assert_invariants();
     }
@@ -1906,15 +1900,30 @@ mod tests {
         let tx6_id = AA2dTransactionId::new(seq_id, 6);
 
         assert!(
-            !pool.by_id.get(&tx3_id).unwrap().is_pending,
+            !pool
+                .by_id
+                .get(&tx3_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 3 should be queued (gap at nonce 2)"
         );
         assert!(
-            !pool.by_id.get(&tx4_id).unwrap().is_pending,
+            !pool
+                .by_id
+                .get(&tx4_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 4 should be queued"
         );
         assert!(
-            !pool.by_id.get(&tx6_id).unwrap().is_pending,
+            !pool
+                .by_id
+                .get(&tx6_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 6 should be queued"
         );
 
@@ -1962,17 +1971,30 @@ mod tests {
 
         // Verify transactions 3 and 4 are now pending
         assert!(
-            pool.by_id.get(&tx3_id).unwrap().is_pending,
+            pool.by_id
+                .get(&tx3_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 3 should be pending"
         );
         assert!(
-            pool.by_id.get(&tx4_id).unwrap().is_pending,
+            pool.by_id
+                .get(&tx4_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 4 should be pending"
         );
 
         // Verify transaction 6 is still queued
         assert!(
-            !pool.by_id.get(&tx6_id).unwrap().is_pending,
+            !pool
+                .by_id
+                .get(&tx6_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "Transaction 6 should still be queued (gap at nonce 5)"
         );
 
@@ -2185,7 +2207,11 @@ mod tests {
 
         // Verify tx2 is pending before removal
         assert!(
-            pool.by_id.get(&tx2_id).unwrap().is_pending,
+            pool.by_id
+                .get(&tx2_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed),
             "tx2 should be pending before removal"
         );
 
@@ -2447,13 +2473,20 @@ mod tests {
 
         // Only tx0 should be pending, rest should be queued
         let tx0_id = AA2dTransactionId::new(seq_id, 0);
-        assert!(pool.by_id.get(&tx0_id).unwrap().is_pending);
+        assert!(
+            pool.by_id
+                .get(&tx0_id)
+                .unwrap()
+                .is_pending
+                .load(Ordering::Relaxed)
+        );
         assert!(
             !pool
                 .by_id
                 .get(&AA2dTransactionId::new(seq_id, 5))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
         assert!(
             !pool
@@ -2461,6 +2494,7 @@ mod tests {
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
         assert!(
             !pool
@@ -2468,6 +2502,7 @@ mod tests {
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
         assert_eq!(pool.independent_transactions.len(), 1);
 
@@ -2492,7 +2527,11 @@ mod tests {
         for nonce in 0..=5 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id
+                    .get(&id)
+                    .unwrap()
+                    .is_pending
+                    .load(Ordering::Relaxed),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -2503,6 +2542,7 @@ mod tests {
                 .get(&AA2dTransactionId::new(seq_id, 10))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
         assert!(
             !pool
@@ -2510,6 +2550,7 @@ mod tests {
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
 
         // Fill gap [6,7,8,9]
@@ -2533,7 +2574,11 @@ mod tests {
         for nonce in 0..=10 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id
+                    .get(&id)
+                    .unwrap()
+                    .is_pending
+                    .load(Ordering::Relaxed),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -2544,6 +2589,7 @@ mod tests {
                 .get(&AA2dTransactionId::new(seq_id, 15))
                 .unwrap()
                 .is_pending
+                .load(Ordering::Relaxed)
         );
 
         // Fill final gap [11,12,13,14]
@@ -2567,7 +2613,11 @@ mod tests {
         for nonce in 0..=15 {
             let id = AA2dTransactionId::new(seq_id, nonce);
             assert!(
-                pool.by_id.get(&id).unwrap().is_pending,
+                pool.by_id
+                    .get(&id)
+                    .unwrap()
+                    .is_pending
+                    .load(Ordering::Relaxed),
                 "Nonce {nonce} should be pending"
             );
         }
@@ -2609,6 +2659,7 @@ mod tests {
                     .get(&AA2dTransactionId::new(seq_id, nonce))
                     .unwrap()
                     .is_pending
+                    .load(Ordering::Relaxed)
             );
         }
 
@@ -2769,7 +2820,13 @@ mod tests {
             };
             for nonce in 0..TXS_PER_SENDER {
                 let id = AA2dTransactionId::new(seq_id, nonce);
-                assert!(pool.by_id.get(&id).unwrap().is_pending);
+                assert!(
+                    pool.by_id
+                        .get(&id)
+                        .unwrap()
+                        .is_pending
+                        .load(Ordering::Relaxed)
+                );
             }
         }
 
