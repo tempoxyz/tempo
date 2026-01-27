@@ -2,15 +2,15 @@
 pragma solidity ^0.8.13;
 
 import { TIP20 } from "../../src/TIP20.sol";
+import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
+import { IFeeAMM } from "../../src/interfaces/IFeeAMM.sol";
+import { INonce } from "../../src/interfaces/INonce.sol";
+import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { ITIP20Factory } from "../../src/interfaces/ITIP20Factory.sol";
 import { ITIP20RolesAuth } from "../../src/interfaces/ITIP20RolesAuth.sol";
 import { ITIP403Registry } from "../../src/interfaces/ITIP403Registry.sol";
-import { ITIP20Factory } from "../../src/interfaces/ITIP20Factory.sol";
-import { IAccountKeychain } from "../../src/interfaces/IAccountKeychain.sol";
 import { IValidatorConfig } from "../../src/interfaces/IValidatorConfig.sol";
-import { INonce } from "../../src/interfaces/INonce.sol";
-import { IFeeAMM } from "../../src/interfaces/IFeeAMM.sol";
-import { IStablecoinDEX } from "../../src/interfaces/IStablecoinDEX.sol";
 import { BaseTest } from "../BaseTest.t.sol";
 
 /// @title Invariant Base Test
@@ -360,8 +360,7 @@ abstract contract InvariantBaseTest is BaseTest {
     function _isKnownFactoryError(bytes4 selector) internal pure returns (bool) {
         return selector == ITIP20Factory.AddressReserved.selector
             || selector == ITIP20Factory.InvalidQuoteToken.selector
-            || selector == ITIP20Factory.TokenAlreadyExists.selector
-            || _isKnownTIP20Error(selector);
+            || selector == ITIP20Factory.TokenAlreadyExists.selector || _isKnownTIP20Error(selector);
     }
 
     /// @dev Checks if an error is a known Nonce precompile error
@@ -420,8 +419,7 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == IFeeAMM.DivisionByZero.selector
             || selector == IFeeAMM.InvalidSwapCalculation.selector
             || selector == IFeeAMM.InvalidCurrency.selector
-            || selector == IFeeAMM.InvalidToken.selector
-            || _isKnownTIP20Error(selector);
+            || selector == IFeeAMM.InvalidToken.selector || _isKnownTIP20Error(selector);
     }
 
     /// @dev Checks if an error is a known StablecoinDEX error
@@ -437,8 +435,7 @@ abstract contract InvariantBaseTest is BaseTest {
             || selector == IStablecoinDEX.InvalidToken.selector
             || selector == IStablecoinDEX.OrderDoesNotExist.selector
             || selector == IStablecoinDEX.BelowMinimumOrderSize.selector
-            || selector == IStablecoinDEX.InvalidTick.selector
-            || _isKnownTIP20Error(selector);
+            || selector == IStablecoinDEX.InvalidTick.selector || _isKnownTIP20Error(selector);
     }
 
     /// @dev Asserts a revert is a known TIP20 error
@@ -598,7 +595,7 @@ abstract contract InvariantBaseTest is BaseTest {
         for (uint256 i = 0; i < _actors.length; i++) {
             total += token.balanceOf(_actors[i]);
         }
-        
+
         total += token.balanceOf(address(token));
         total += token.balanceOf(address(amm));
         total += token.balanceOf(address(exchange));
@@ -620,9 +617,7 @@ abstract contract InvariantBaseTest is BaseTest {
         uint8 lastOctet = uint8((seed % 254) + 1);
         uint16 port = uint16((seed % 9000) + 1000);
         return string(
-            abi.encodePacked(
-                "192.168.1.", _uint8ToString(lastOctet), ":", _uint16ToString(port)
-            )
+            abi.encodePacked("192.168.1.", _uint8ToString(lastOctet), ":", _uint16ToString(port))
         );
     }
 

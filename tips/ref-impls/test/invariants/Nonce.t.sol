@@ -381,7 +381,9 @@ contract NonceInvariantTest is InvariantBaseTest {
 
         _log(
             string.concat(
-                "INVALID_KEY_INCREMENT: ", _getActorIndex(actor), " key=0 would return InvalidNonceKey"
+                "INVALID_KEY_INCREMENT: ",
+                _getActorIndex(actor),
+                " key=0 would return InvalidNonceKey"
             )
         );
     }

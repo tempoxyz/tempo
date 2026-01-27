@@ -580,11 +580,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         vm.startPrank(account);
         try keychain.authorizeKey(
-            keyId,
-            IAccountKeychain.SignatureType.Secp256k1,
-            expiryAtNow,
-            false,
-            limits
+            keyId, IAccountKeychain.SignatureType.Secp256k1, expiryAtNow, false, limits
         ) {
             vm.stopPrank();
 
@@ -643,7 +639,10 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         _log(
             string.concat(
-                "INVALID_SIG_TYPE: Testing enum value ", vm.toString(badType), " for ", _getActorIndex(account)
+                "INVALID_SIG_TYPE: Testing enum value ",
+                vm.toString(badType),
+                " for ",
+                _getActorIndex(account)
             )
         );
     }
