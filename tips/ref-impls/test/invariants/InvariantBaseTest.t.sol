@@ -123,6 +123,28 @@ abstract contract InvariantBaseTest is BaseTest {
         return _actors[seed % _actors.length];
     }
 
+    /// @notice Selects an actor that is NOT the excluded address, using bound to avoid discards
+    /// @param seed Random seed
+    /// @param excluded Address to exclude from selection
+    /// @return Selected actor address (guaranteed != excluded if excluded is in the pool)
+    function _selectActorExcluding(uint256 seed, address excluded) internal view returns (address) {
+        uint256 excludedIdx = _actors.length;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            if (_actors[i] == excluded) {
+                excludedIdx = i;
+                break;
+            }
+        }
+
+        if (excludedIdx == _actors.length) {
+            return _selectActor(seed);
+        }
+
+        uint256 idx = bound(seed, 0, _actors.length - 2);
+        if (idx >= excludedIdx) idx++;
+        return _actors[idx];
+    }
+
     /// @notice Creates test actors with initial balances
     /// @dev Each actor gets funded with all tokens
     /// @param noOfActors_ Number of actors to create

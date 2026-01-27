@@ -131,6 +131,95 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 - **TEMPO-FEE5**: Collected fees should not exceed AMM token balance for any token.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
+## TIP403Registry
+
+The TIP403Registry manages transfer policies (whitelists and blacklists) that control which addresses can send or receive tokens.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-REG13**: Special policy existence - policies 0 and 1 always exist (return true for `policyExists`).
+- **TEMPO-REG15**: Counter monotonicity - `policyIdCounter` only increases and equals `2 + totalPoliciesCreated`.
+- **TEMPO-REG16**: Policy type immutability - a policy's type cannot change after creation.
+- **TEMPO-REG19**: Policy membership consistency - ghost policy membership state matches registry `isAuthorized` for all tracked accounts, respecting whitelist/blacklist semantics.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Policy Creation
+
+- **TEMPO-REG1**: Policy ID assignment - newly created policy ID equals `policyIdCounter` before creation.
+- **TEMPO-REG2**: Counter increment - `policyIdCounter` increments by 1 after each policy creation.
+- **TEMPO-REG3**: Policy existence - all created policies return true for `policyExists()`.
+- **TEMPO-REG4**: Policy data accuracy - `policyData()` returns the correct type and admin as specified during creation.
+- **TEMPO-REG5**: Bulk creation - `createPolicyWithAccounts` correctly initializes all provided accounts in the policy.
+
+#### Admin Management
+
+- **TEMPO-REG6**: Admin transfer - `setPolicyAdmin` correctly updates the policy admin.
+- **TEMPO-REG7**: Admin-only enforcement - non-admins cannot modify policy admin (reverts with `Unauthorized`).
+
+#### Policy Modification
+
+- **TEMPO-REG8**: Whitelist modification - adding an account to a whitelist makes `isAuthorized` return true for that account.
+- **TEMPO-REG9**: Blacklist modification - adding an account to a blacklist makes `isAuthorized` return false for that account.
+- **TEMPO-REG10**: Policy type enforcement - `modifyPolicyWhitelist` on a blacklist (or vice versa) reverts with `IncompatiblePolicyType`.
+
+#### Special Policies
+
+- **TEMPO-REG11**: Always-reject policy - policy ID 0 returns false for all `isAuthorized` checks.
+- **TEMPO-REG12**: Always-allow policy - policy ID 1 returns true for all `isAuthorized` checks.
+- **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
+- **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
+- **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+
+
+## ValidatorConfig
+
+The ValidatorConfig precompile manages the set of validators that participate in consensus, including their public keys, addresses, and active status.
+
+### Owner Authorization Invariants
+
+- **TEMPO-VAL1**: Owner-only add - only the owner can add new validators (non-owners revert with `Unauthorized`).
+- **TEMPO-VAL7**: Owner transfer - `changeOwner` correctly updates the owner address.
+- **TEMPO-VAL8**: New owner authority - only the current owner can transfer ownership.
+
+### Validator Index Invariants
+
+- **TEMPO-VAL2**: Index assignment - new validators receive sequential indices starting from 0; indices are unique and within bounds.
+
+### Validator Update Invariants
+
+- **TEMPO-VAL3**: Validator self-update - validators can update their own public key, inbound address, and outbound address.
+- **TEMPO-VAL4**: Update restriction - only the validator themselves can call `updateValidator` (owner cannot update validators).
+
+### Status Management Invariants
+
+- **TEMPO-VAL5**: Owner-only status change - only the owner can change validator active status (validators cannot change their own status).
+- **TEMPO-VAL6**: Status toggle - `changeValidatorStatus` correctly updates the validator's active flag.
+
+### Validator Creation Invariants
+
+- **TEMPO-VAL9**: Duplicate rejection - adding a validator that already exists reverts with `ValidatorAlreadyExists`.
+- **TEMPO-VAL10**: Zero public key rejection - adding a validator with zero public key reverts with `InvalidPublicKey`.
+
+### Validator Rotation Invariants
+
+- **TEMPO-VAL11**: Address rotation - validators can rotate to a new address while preserving their index and active status.
+
+### DKG Ceremony Invariants
+
+- **TEMPO-VAL12**: DKG epoch setting - `setNextFullDkgCeremony` correctly stores the epoch value.
+- **TEMPO-VAL13**: Owner-only DKG - only the owner can set the DKG ceremony epoch.
+
+### Global Invariants
+
+- **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
+- **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
+- **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
 ## TIP20
 
 TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, memo support, pause functionality, and reward distribution.
