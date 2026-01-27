@@ -44,7 +44,6 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev All addresses that may hold token balances (for invariant checks)
     address[] internal _balanceHolders;
 
-
     /*//////////////////////////////////////////////////////////////
                               SETUP
     //////////////////////////////////////////////////////////////*/
