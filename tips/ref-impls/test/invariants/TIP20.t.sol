@@ -585,7 +585,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // so we verify the delta is consistent with the post-transfer optedInSupply
             uint256 globalRPTAfter = token.globalRewardPerToken();
             uint256 actualDelta = globalRPTAfter - globalRPTBefore;
-            
+
             // Verify delta is reasonable (non-zero when amount > 0 and optedInSupply is reasonable)
             // The exact formula verification is complex due to optedInSupply changes during transfer
             assertTrue(
@@ -1113,7 +1113,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
             // TEMPO-TIP16: Authorization status should be updated
             bool afterAuthorized = _isAuthorized(address(token), actor);
-            assertEq(afterAuthorized, !blacklist, "TEMPO-TIP16: Blacklist status not updated correctly");
+            assertEq(
+                afterAuthorized, !blacklist, "TEMPO-TIP16: Blacklist status not updated correctly"
+            );
 
             _log(
                 string.concat(
