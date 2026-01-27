@@ -532,18 +532,32 @@ contract NonceInvariantTest is InvariantBaseTest {
         _log(string.concat("Total increments: ", vm.toString(_totalIncrements)));
         _log(string.concat("Total reads: ", vm.toString(_totalReads)));
         _log(
-            string.concat("Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections))
+            string.concat(
+                "Protocol nonce rejections (NON4): ", vm.toString(_totalProtocolNonceRejections)
+            )
         );
         _log(
-            string.concat("Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks))
+            string.concat(
+                "Account independence checks (NON5): ", vm.toString(_totalAccountIndependenceChecks)
+            )
         );
         _log(
-            string.concat("Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks))
+            string.concat(
+                "Key independence checks (NON6): ", vm.toString(_totalKeyIndependenceChecks)
+            )
         );
         _log(string.concat("Large key tests (NON7): ", vm.toString(_totalLargeKeyTests)));
-        _log(string.concat("Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)));
+        _log(
+            string.concat(
+                "Multiple increment operations (NON8): ", vm.toString(_totalMultipleIncrements)
+            )
+        );
         _log(string.concat("Overflow tests (NON9): ", vm.toString(_totalOverflowTests)));
-        _log(string.concat("Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)));
+        _log(
+            string.concat(
+                "Invalid key rejections (NON10): ", vm.toString(_totalInvalidKeyRejections)
+            )
+        );
         _log(string.concat("Reserved key tests (NON11): ", vm.toString(_totalReservedKeyTests)));
         _log("--------------------------------------------------------------------------------");
 
