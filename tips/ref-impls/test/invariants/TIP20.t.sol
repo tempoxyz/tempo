@@ -13,12 +13,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Log file path for recording actions
     string private constant LOG_FILE = "tip20.log";
 
-    /// @dev Ghost variables for tracking operations
-    uint256 private _totalTransfers;
-    uint256 private _totalMints;
-    uint256 private _totalBurns;
-    uint256 private _totalApprovals;
-
     /// @dev Ghost variables for reward distribution tracking
     uint256 private _totalRewardsDistributed;
     uint256 private _totalRewardsClaimed;
@@ -94,15 +88,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Handler for token transfers
-    /// @dev Tests TEMPO-TIP1 (balance conservation), TEMPO-TIP2 (transfer events)
+    /// @dev Tests TEMPO-TIP1 (balance conservation), TEMPO-TIP2 (total supply unchanged)
     function transfer(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed, uint256 amount)
         external
     {
-        address actor = _selectActor(actorSeed);
-        address recipient = _selectActor(recipientSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(actor != recipient);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        address recipient = _selectActorExcluding(recipientSeed, actor);
 
         uint256 actorBalance = token.balanceOf(actor);
         vm.assume(actorBalance > 0);
@@ -120,10 +112,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.transfer(recipient, amount) returns (bool success) {
             vm.stopPrank();
             assertTrue(success, "TEMPO-TIP1: Transfer should return true");
-
-            _totalTransfers++;
-            _registerHolder(address(token), actor);
-            _registerHolder(address(token), recipient);
 
             // TEMPO-TIP1: Balance conservation
             assertEq(
@@ -167,11 +155,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
     function transferZeroAmount(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
         external
     {
-        address actor = _selectActor(actorSeed);
-        address recipient = _selectActor(recipientSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        address recipient = _selectActorExcluding(recipientSeed, actor);
 
-        vm.assume(actor != recipient);
         vm.assume(_isAuthorized(address(token), actor));
         vm.assume(_isAuthorized(address(token), recipient));
         vm.assume(!token.paused());
@@ -225,13 +212,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 recipientSeed,
         uint256 amount
     ) external {
-        address spender = _selectActor(actorSeed);
-        address owner = _selectActor(ownerSeed);
-        address recipient = _selectActor(recipientSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(owner != spender);
-        vm.assume(owner != recipient);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
 
         uint256 ownerBalance = token.balanceOf(owner);
         vm.assume(ownerBalance > 0);
@@ -252,10 +236,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.transferFrom(owner, recipient, amount) returns (bool success) {
             vm.stopPrank();
             assertTrue(success, "TEMPO-TIP3: TransferFrom should return true");
-
-            _totalTransfers++;
-            _registerHolder(address(token), owner);
-            _registerHolder(address(token), recipient);
 
             // TEMPO-TIP3/TIP4: Allowance handling
             if (isInfiniteAllowance) {
@@ -319,8 +299,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             vm.stopPrank();
             assertTrue(success, "TEMPO-TIP5: Approve should return true");
 
-            _totalApprovals++;
-
             assertEq(
                 token.allowance(actor, spender), amount, "TEMPO-TIP5: Allowance not set correctly"
             );
@@ -347,7 +325,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-TIP6 (supply increase), TEMPO-TIP7 (supply cap)
     function mint(uint256 tokenSeed, uint256 recipientSeed, uint256 amount) external {
         TIP20 token = _selectBaseToken(tokenSeed);
-        address recipient = _selectActor(recipientSeed);
+        address recipient = _selectAuthorizedActor(recipientSeed, address(token));
 
         uint256 currentSupply = token.totalSupply();
         uint256 supplyCap = token.supplyCap();
@@ -364,9 +342,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.mint(recipient, amount) {
             vm.stopPrank();
 
-            _totalMints++;
             _tokenMintSum[address(token)] += amount;
-            _registerHolder(address(token), recipient);
 
             // TEMPO-TIP6: Total supply should increase
             assertEq(
@@ -416,9 +392,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.burn(amount) {
             vm.stopPrank();
 
-            _totalBurns++;
             _tokenBurnSum[address(token)] += amount;
-            _registerHolder(address(token), admin);
 
             // TEMPO-TIP8: Total supply should decrease
             assertEq(
@@ -449,11 +423,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 amount,
         bytes32 memo
     ) external {
-        address actor = _selectActor(actorSeed);
-        address recipient = _selectActor(recipientSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(actor != recipient);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
+        address recipient = _selectActorExcluding(recipientSeed, actor);
 
         uint256 actorBalance = token.balanceOf(actor);
         vm.assume(actorBalance > 0);
@@ -470,10 +442,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.startPrank(actor);
         try token.transferWithMemo(recipient, amount, memo) {
             vm.stopPrank();
-
-            _totalTransfers++;
-            _registerHolder(address(token), actor);
-            _registerHolder(address(token), recipient);
 
             // TEMPO-TIP9: Balance changes same as regular transfer
             assertEq(
@@ -516,13 +484,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 amount,
         bytes32 memo
     ) external {
-        address spender = _selectActor(actorSeed);
-        address owner = _selectActor(ownerSeed);
-        address recipient = _selectActor(recipientSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
-
-        vm.assume(owner != spender);
-        vm.assume(owner != recipient);
+        address owner = _selectAuthorizedActor(ownerSeed, address(token));
+        address spender = _selectActorExcluding(actorSeed, owner);
+        address recipient = _selectActorExcluding(recipientSeed, owner);
 
         uint256 ownerBalance = token.balanceOf(owner);
         vm.assume(ownerBalance > 0);
@@ -544,10 +509,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.transferFromWithMemo(owner, recipient, amount, memo) returns (bool success) {
             vm.stopPrank();
             assertTrue(success, "TEMPO-TIP9: TransferFromWithMemo should return true");
-
-            _totalTransfers++;
-            _registerHolder(address(token), owner);
-            _registerHolder(address(token), recipient);
 
             // Balance changes same as regular transferFrom
             assertEq(
@@ -602,8 +563,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     function setRewardRecipient(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
         external
     {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         // 0 = opt-out, 1 = opt-in to self, 2+ = delegate to another actor
         uint256 choice = recipientSeed % 3;
@@ -689,8 +650,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for distributing rewards
     /// @dev Tests TEMPO-TIP12, TEMPO-TIP13
     function distributeReward(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         uint256 actorBalance = token.balanceOf(actor);
         vm.assume(actorBalance > 0);
@@ -757,10 +718,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for distributing tiny rewards where delta == 0
     /// @dev Tests TEMPO-TIP12 edge case: when amount << optedInSupply, delta is 0
     function distributeRewardTiny(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
+        vm.assume(_isAuthorized(address(token), address(token))); // Token contract must be authorized as recipient
         vm.assume(!token.paused());
 
         uint128 optedInSupply = token.optedInSupply();
@@ -814,8 +776,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for attempting to distribute rewards when optedInSupply == 0
     /// @dev Tests TEMPO-TIP12 edge case: must revert with NoOptedInSupply when nobody is opted in
     function distributeRewardZeroOptedIn(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
         vm.assume(_isAuthorized(address(token), address(token))); // Token contract must be authorized as recipient
@@ -853,8 +815,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for claiming rewards
     /// @dev Tests TEMPO-TIP14, TEMPO-TIP15
     function claimRewards(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
         vm.assume(_isAuthorized(address(token), address(token)));
@@ -915,8 +877,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Handler for reward claim with detailed verification
     /// @dev Tests TEMPO-TIP14/TIP15: verifies claim is bounded by contract balance and stored rewards
     function claimRewardsVerified(uint256 actorSeed, uint256 tokenSeed) external {
-        address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
+        address actor = _selectAuthorizedActor(actorSeed, address(token));
 
         vm.assume(_isAuthorized(address(token), actor));
         vm.assume(_isAuthorized(address(token), address(token)));
@@ -1005,9 +967,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         try token.burnBlocked(target, amount) {
             vm.stopPrank();
 
-            _totalBurns++;
             _tokenBurnSum[address(token)] += amount;
-            _registerHolder(address(token), target);
 
             // TEMPO-TIP23: Balance should decrease
             assertEq(
@@ -1450,18 +1410,17 @@ contract TIP20InvariantTest is InvariantBaseTest {
         _log(string.concat("TOGGLE_PAUSE: ", token.symbol(), " ", pause ? "PAUSED" : "UNPAUSED"));
     }
 
-    /// @notice Handler that verifies paused tokens reject transfers
-    /// @dev Tests that pause actually blocks operations
+    /// @notice Handler that verifies paused tokens reject transfers with ContractPaused
+    /// @dev Tests TEMPO-TIP17: pause enforcement - transfers revert with ContractPaused
     function tryTransferWhilePaused(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
         external
     {
         address actor = _selectActor(actorSeed);
-        address recipient = _selectActor(recipientSeed);
+        address recipient = _selectActorExcluding(recipientSeed, actor);
         TIP20 token = _selectBaseToken(tokenSeed);
 
         // Only test when token is paused
         vm.assume(token.paused());
-        vm.assume(actor != recipient);
 
         uint256 actorBalance = token.balanceOf(actor);
         vm.assume(actorBalance > 0);
@@ -1469,7 +1428,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         vm.startPrank(actor);
         try token.transfer(recipient, 1) {
             vm.stopPrank();
-            revert("Transfer should fail when paused");
+            revert("TEMPO-TIP17: Transfer should fail when paused");
         } catch (bytes memory reason) {
             vm.stopPrank();
             assertTrue(_isKnownTIP20Error(bytes4(reason)), "Unknown error encountered");
@@ -1496,7 +1455,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         _invariantSupplyCapEnforced();
         _invariantRewardsConservation();
         _invariantQuoteTokenAcyclic();
-        _invariantPauseBlocksTransfers();
         _invariantSupplyConservation();
         _invariantBalanceSumEqualsSupply();
     }
@@ -1584,19 +1542,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice When paused, token state should reflect pause
-    function _invariantPauseBlocksTransfers() internal view {
-        for (uint256 i = 0; i < _tokens.length; i++) {
-            TIP20 token = _tokens[i];
-
-            // If paused, verify pause state is consistent
-            if (token.paused()) {
-                // Pause state should be true
-                assertTrue(token.paused(), "Paused token reports unpaused");
-            }
-        }
-    }
-
     /// @notice TEMPO-TIP18: Supply conservation - totalSupply = mints - burns per token
     function _invariantSupplyConservation() internal view {
         for (uint256 i = 0; i < _tokens.length; i++) {
@@ -1631,17 +1576,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 "TEMPO-TIP20: Balance sum does not equal totalSupply"
             );
         }
-    }
-
-    /// @notice Verify operation counters are consistent
-    /// @dev Counters should reflect operations that were successfully executed
-    function _invariantOperationCountersPositive() internal view {
-        // At minimum, we should have some operations from setup
-        // This just validates the counters are being maintained
-        assertTrue(
-            _totalTransfers + _totalMints + _totalBurns + _totalApprovals >= 0,
-            "Operation counters should be non-negative"
-        );
     }
 
 }
