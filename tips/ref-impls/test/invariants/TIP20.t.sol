@@ -33,9 +33,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
     mapping(address => uint256) private _tokenRewardsDistributed;
     mapping(address => uint256) private _tokenRewardsClaimed;
 
-    /// @dev Track distribution count and opted-in holder count for tighter dust bounds
+    /// @dev Track distribution count for dust bounds
     mapping(address => uint256) private _tokenDistributionCount;
-    mapping(address => uint256) private _tokenOptedInHolderCount;
 
     /// @dev Track all addresses that have held tokens (per token)
     mapping(address => mapping(address => bool)) private _tokenHolderSeen;
@@ -652,16 +651,12 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     optedInSupplyBefore + uint128(actorBalance),
                     "Opted-in supply not increased"
                 );
-                _tokenOptedInHolderCount[address(token)]++;
             } else if (currentRecipient != address(0) && newRecipient == address(0)) {
                 assertEq(
                     optedInSupplyAfter,
                     optedInSupplyBefore - uint128(actorBalance),
                     "Opted-in supply not decreased"
                 );
-                if (_tokenOptedInHolderCount[address(token)] > 0) {
-                    _tokenOptedInHolderCount[address(token)]--;
-                }
             }
 
             if (isDelegation) {
@@ -1007,10 +1002,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
         uint256 totalSupplyBefore = token.totalSupply();
 
-        // Check if target was opted-in before burn (for ghost variable tracking)
-        (address targetRewardRecipient,,) = token.userRewardInfo(target);
-        bool wasOptedIn = targetRewardRecipient != address(0);
-
         vm.startPrank(admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
         try token.burnBlocked(target, amount) {
@@ -1019,13 +1010,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _totalBurns++;
             _tokenBurnSum[address(token)] += amount;
             _registerHolder(address(token), target);
-
-            // Track opted-in holder count: if burning entire balance of opted-in user
-            if (wasOptedIn && token.balanceOf(target) == 0) {
-                if (_tokenOptedInHolderCount[address(token)] > 0) {
-                    _tokenOptedInHolderCount[address(token)]--;
-                }
-            }
 
             // TEMPO-TIP23: Balance should decrease
             assertEq(
