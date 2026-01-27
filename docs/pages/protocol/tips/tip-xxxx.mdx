@@ -479,7 +479,7 @@ The following functions trigger initialization if `initialized == false`:
 When any triggering function is called and `initialized == false`:
 
 1. Read all validators from ValidatorConfig V1 at
-   `0xCCCCCCCC00000000000000000000000000000001`
+   `0xCCCCCCCC00000000000000000000000000000000`
 2. For each V1 validator where `active == true`:
    - Create a V2 validator entry with:
      - `publicKey`: copied from V1
