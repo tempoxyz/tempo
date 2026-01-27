@@ -111,8 +111,11 @@ pub struct AccountKeychain {
 }
 
 impl AccountKeychain {
-    /// Create a hash key for spending limits mapping from account and keyId
-    fn spending_limit_key(account: Address, key_id: Address) -> B256 {
+    /// Create a hash key for spending limits mapping from account and keyId.
+    ///
+    /// This is used to access `spending_limits[key][token]` where `key` is the result
+    /// of this function. The hash combines account and key_id to avoid triple nesting.
+    pub fn spending_limit_key(account: Address, key_id: Address) -> B256 {
         use alloy::primitives::keccak256;
         let mut data = [0u8; 40];
         data[..20].copy_from_slice(account.as_slice());
