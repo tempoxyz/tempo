@@ -155,7 +155,7 @@ fn joins_from_snapshot() {
         );
 
         loop {
-            context.sleep(Duration::from_secs(1)).await;
+            context.sleep(Duration::from_millis(50)).await;
 
             let metrics = context.encode();
             let mut validators_at_epoch = 0;
@@ -329,7 +329,7 @@ fn can_restart_after_joining_from_snapshot() {
         );
 
         loop {
-            context.sleep(Duration::from_secs(1)).await;
+            context.sleep(Duration::from_millis(50)).await;
 
             let metrics = context.encode();
             let mut validators_at_epoch = 0;
@@ -382,7 +382,7 @@ fn can_restart_after_joining_from_snapshot() {
         );
 
         'progress: loop {
-            context.sleep(Duration::from_secs(1)).await;
+            context.sleep(Duration::from_millis(50)).await;
 
             let metrics = context.encode();
 
@@ -426,6 +426,6 @@ async fn wait_for_participants(context: &Context, target: u32) {
                 return;
             }
         }
-        context.sleep(Duration::from_secs(1)).await;
+        context.sleep(Duration::from_millis(50)).await;
     }
 }

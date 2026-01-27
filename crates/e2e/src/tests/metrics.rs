@@ -41,7 +41,7 @@ fn no_duplicate_metrics() {
                     break 'wait_for_epoch;
                 }
             }
-            context.sleep(Duration::from_secs(1)).await;
+            context.sleep(Duration::from_millis(50)).await;
         }
 
         let mut dupes = HashSet::new();

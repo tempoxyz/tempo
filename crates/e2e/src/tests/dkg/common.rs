@@ -54,7 +54,7 @@ pub(crate) async fn wait_for_outcome(
     tracing::info!(epoch, %height, "Waiting for DKG outcome");
 
     loop {
-        context.sleep(Duration::from_secs(1)).await;
+        context.sleep(Duration::from_millis(50)).await;
 
         if let Some(outcome) = read_outcome_from_validator(&validators[0], height) {
             tracing::info!(
@@ -92,7 +92,7 @@ pub(crate) async fn wait_for_epoch(context: &Context, target_epoch: u64, min_val
     tracing::info!(target_epoch, min_validators, "Waiting for epoch");
 
     loop {
-        context.sleep(Duration::from_secs(1)).await;
+        context.sleep(Duration::from_millis(50)).await;
 
         if count_validators_at_epoch(context, target_epoch) >= min_validators {
             tracing::info!(target_epoch, "Validators reached epoch");
