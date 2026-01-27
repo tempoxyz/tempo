@@ -60,11 +60,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         _actors = _buildActors(20);
 
-        // Track initial mints from _buildActors
-        // _ensureFundsAll mints (amount + 100_000_000) per actor when balance < amount
-        // = 1_000_000_000_000 + 100_000_000 = 1_000_100_000_000 per actor
+        // Snapshot initial supply after _buildActors mints tokens to actors
         for (uint256 i = 0; i < _tokens.length; i++) {
-            _tokenMintSum[address(_tokens[i])] = 20 * 1_000_100_000_000;
+            _tokenMintSum[address(_tokens[i])] = _tokens[i].totalSupply();
         }
 
         // Register all initially known addresses for each token
@@ -915,7 +913,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Handler for reward claim with detailed verification
-    /// @dev Tests TEMPO-TIP14/TIP15: verifies claim amount is min(pendingRewards, contractBalance)
+    /// @dev Tests TEMPO-TIP14/TIP15: verifies claim is bounded by contract balance and stored rewards
     function claimRewardsVerified(uint256 actorSeed, uint256 tokenSeed) external {
         address actor = _selectActor(actorSeed);
         TIP20 token = _selectBaseToken(tokenSeed);
