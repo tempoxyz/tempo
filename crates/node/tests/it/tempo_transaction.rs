@@ -6624,3 +6624,63 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
     println!("\n=== Test passed: Transaction was correctly evicted ===");
     Ok(())
 }
+
+/// Test eth_fillTransaction RPC method for Tempo transactions
+#[tokio::test(flavor = "multi_thread")]
+async fn test_eth_fill_transaction() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    println!("\n=== Testing eth_fillTransaction ===\n");
+
+    let (mut setup, provider, _alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let valid_before = current_timestamp + 20;
+    let valid_after = current_timestamp - 10;
+
+    let recipient = Address::random();
+
+    let request = serde_json::json!({
+        "from": alice_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x1", "data": "0x"}],
+        "validBefore": format!("0x{:x}", valid_before),
+        "validAfter": format!("0x{:x}", valid_after),
+        "nonceKey": format!("{:#x}", TEMPO_EXPIRING_NONCE_KEY),
+        "keyType": "secp256k1"
+    });
+
+    println!("Request: {}", serde_json::to_string_pretty(&request)?);
+
+    let result: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    println!("Response: {}", serde_json::to_string_pretty(&result)?);
+
+    let tx = result.get("tx").expect("response should contain 'tx' field");
+
+    assert_eq!(
+        tx.get("from").and_then(|v| v.as_str()),
+        Some(format!("{:#x}", alice_addr).as_str()),
+        "tx.from should match"
+    );
+    assert!(tx.get("nonce").is_some(), "tx should have nonce filled");
+    assert!(tx.get("gas").is_some(), "tx should have gas filled");
+    assert!(
+        tx.get("maxFeePerGas").is_some(),
+        "tx should have maxFeePerGas filled"
+    );
+
+    println!("✓ eth_fillTransaction returned valid filled transaction");
+
+    Ok(())
+}
