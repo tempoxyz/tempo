@@ -6,7 +6,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title ValidatorConfig Invariant Tests
 /// @notice Fuzz-based invariant tests for the ValidatorConfig precompile
-/// @dev Tests invariants TEMPO-VAL1 through TEMPO-VAL15 for validator management
+/// @dev Tests invariants TEMPO-VAL1 through TEMPO-VAL16 for validator management
 contract ValidatorConfigInvariantTest is InvariantBaseTest {
 
     /// @dev Starting offset for validator address pool (distinct from zero address)
@@ -28,11 +28,9 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
     /// @dev Ghost tracking for DKG ceremony
     uint64 private _ghostNextDkgCeremony;
 
-    /// @dev Counters for operations
-    uint256 private _totalValidatorsAdded;
-    uint256 private _totalValidatorsUpdated;
-    uint256 private _totalStatusChanges;
-    uint256 private _totalOwnerChanges;
+    /// @dev Ghost tracking for inbound/outbound addresses
+    mapping(address => string) private _ghostValidatorInbound;
+    mapping(address => string) private _ghostValidatorOutbound;
 
     /*//////////////////////////////////////////////////////////////
                                SETUP
@@ -95,13 +93,13 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         try validatorConfig.addValidator(validatorAddr, publicKey, active, inbound, outbound) {
             vm.stopPrank();
 
-            _totalValidatorsAdded++;
-
             // Update ghost state
             _ghostValidatorExists[validatorAddr] = true;
             _ghostValidatorActive[validatorAddr] = active;
             _ghostValidatorPublicKey[validatorAddr] = publicKey;
             _ghostValidatorIndex[validatorAddr] = uint64(countBefore);
+            _ghostValidatorInbound[validatorAddr] = inbound;
+            _ghostValidatorOutbound[validatorAddr] = outbound;
             _ghostValidatorList.push(validatorAddr);
 
             // TEMPO-VAL2: Index should be count before addition
@@ -182,10 +180,10 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         try validatorConfig.updateValidator(validatorAddr, newPublicKey, newInbound, newOutbound) {
             vm.stopPrank();
 
-            _totalValidatorsUpdated++;
-
             // Update ghost state
             _ghostValidatorPublicKey[validatorAddr] = newPublicKey;
+            _ghostValidatorInbound[validatorAddr] = newInbound;
+            _ghostValidatorOutbound[validatorAddr] = newOutbound;
 
             // TEMPO-VAL3: Verify update persisted
             IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
@@ -259,8 +257,6 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         try validatorConfig.changeValidatorStatus(validatorAddr, newStatus) {
             vm.stopPrank();
 
-            _totalStatusChanges++;
-
             // Update ghost state
             _ghostValidatorActive[validatorAddr] = newStatus;
 
@@ -328,7 +324,6 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         try validatorConfig.changeOwner(newOwner) {
             vm.stopPrank();
 
-            _totalOwnerChanges++;
             address oldOwner = _ghostOwner;
             _ghostOwner = newOwner;
 
@@ -457,14 +452,20 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         try validatorConfig.updateValidator(newAddr, newPublicKey, newInbound, newOutbound) {
             vm.stopPrank();
 
-            _totalValidatorsUpdated++;
-
             // Update ghost state
             _ghostValidatorExists[oldAddr] = false;
+            delete _ghostValidatorActive[oldAddr];
+            delete _ghostValidatorPublicKey[oldAddr];
+            delete _ghostValidatorIndex[oldAddr];
+            delete _ghostValidatorInbound[oldAddr];
+            delete _ghostValidatorOutbound[oldAddr];
+
             _ghostValidatorExists[newAddr] = true;
             _ghostValidatorActive[newAddr] = oldActive;
             _ghostValidatorPublicKey[newAddr] = newPublicKey;
             _ghostValidatorIndex[newAddr] = oldIndex;
+            _ghostValidatorInbound[newAddr] = newInbound;
+            _ghostValidatorOutbound[newAddr] = newOutbound;
             _ghostValidatorList[oldIndex] = newAddr;
 
             // TEMPO-VAL11: Verify rotation
@@ -576,7 +577,7 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
         );
     }
 
-    /// @notice TEMPO-VAL15: Validator data matches ghost state
+    /// @notice TEMPO-VAL15 & TEMPO-VAL16: Validator data and indices match ghost state
     function _invariantValidatorDataConsistency() internal view {
         IValidatorConfig.Validator[] memory validators = validatorConfig.getValidators();
 
@@ -596,9 +597,19 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
                 "TEMPO-VAL15: Public key should match"
             );
             assertEq(
+                validators[i].inboundAddress,
+                _ghostValidatorInbound[addr],
+                "TEMPO-VAL15: Inbound should match"
+            );
+            assertEq(
+                validators[i].outboundAddress,
+                _ghostValidatorOutbound[addr],
+                "TEMPO-VAL15: Outbound should match"
+            );
+            assertEq(
                 validators[i].index,
                 _ghostValidatorIndex[addr],
-                "TEMPO-VAL15: Index should match ghost state"
+                "TEMPO-VAL16: Index should match ghost state"
             );
         }
     }
@@ -622,17 +633,6 @@ contract ValidatorConfigInvariantTest is InvariantBaseTest {
             validatorConfig.getNextFullDkgCeremony(),
             _ghostNextDkgCeremony,
             "TEMPO-VAL12: DKG epoch should match ghost state"
-        );
-    }
-
-    /// @notice TEMPO-VAL16: Operation counters are consistent
-    /// @dev Validates that validator operations are being tracked
-    function _invariantOperationCountersConsistent() internal view {
-        // Basic sanity check that counters are being maintained
-        assertTrue(
-            _totalValidatorsAdded + _totalValidatorsUpdated + _totalStatusChanges
-                    + _totalOwnerChanges >= 0,
-            "Operation counters should be non-negative"
         );
     }
 
