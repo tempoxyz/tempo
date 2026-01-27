@@ -212,6 +212,11 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 _createdTokens.push(tokenAddr);
                 _isCreatedToken[tokenAddr] = true;
 
+                bytes32 uniqueKey = keccak256(abi.encode(actor, salt));
+                _saltToToken[uniqueKey] = tokenAddr;
+                _tokenToSalt[tokenAddr] = salt;
+                _senderSalts[actor].push(salt);
+
                 TIP20 newToken = TIP20(tokenAddr);
                 assertEq(
                     keccak256(bytes(newToken.currency())),
@@ -245,6 +250,14 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             address addr
         ) {
             eurToken = addr;
+
+            _createdTokens.push(addr);
+            _isCreatedToken[addr] = true;
+
+            bytes32 uniqueKey = keccak256(abi.encode(actor, eurSalt));
+            _saltToToken[uniqueKey] = addr;
+            _tokenToSalt[addr] = eurSalt;
+            _senderSalts[actor].push(eurSalt);
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -290,8 +303,8 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         } else {
             // Check a random non-TIP20 address
             checkAddr = address(uint160(addrSeed));
-            // Skip addresses in TIP20 range
-            if ((uint160(checkAddr) >> 64) != 0x20C000000000000000000000) {
+            // Exclude addresses that were actually created by the factory
+            if (!_isCreatedToken[checkAddr] && checkAddr != address(pathUSD)) {
                 assertFalse(
                     factory.isTIP20(checkAddr), "TEMPO-FAC8: Random address should not be TIP20"
                 );
@@ -301,7 +314,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for verifying getTokenAddress determinism
     /// @dev Tests TEMPO-FAC9 (address prediction is deterministic)
-    function verifyAddressDeterminism(uint256 actorSeed, bytes32 salt) external view {
+    function verifyAddressDeterminism(uint256 actorSeed, bytes32 salt) external {
         address actor = _selectActor(actorSeed);
 
         try factory.getTokenAddress(actor, salt) returns (address addr1) {
@@ -311,16 +324,19 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             assertEq(addr1, addr2, "TEMPO-FAC9: getTokenAddress not deterministic");
 
             // TEMPO-FAC10: Different senders produce different addresses
-            address otherActor = _selectActor(actorSeed + 1);
-            if (actor != otherActor) {
-                try factory.getTokenAddress(otherActor, salt) returns (address otherAddr) {
-                    assertTrue(
-                        addr1 != otherAddr,
-                        "TEMPO-FAC10: Different senders should produce different addresses"
-                    );
-                } catch (bytes memory reason) {
-                    _assertKnownError(reason);
-                }
+            address otherActor;
+            unchecked {
+                otherActor = _selectActor(actorSeed + 1);
+            }
+            vm.assume(actor != otherActor);
+
+            try factory.getTokenAddress(otherActor, salt) returns (address otherAddr) {
+                assertTrue(
+                    addr1 != otherAddr,
+                    "TEMPO-FAC10: Different senders should produce different addresses"
+                );
+            } catch (bytes memory reason) {
+                _assertKnownError(reason);
             }
         } catch (bytes memory reason) {
             _assertKnownError(reason);
@@ -426,16 +442,6 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 }
             }
         }
-    }
-
-    /// @notice Verify rejection counters are being tracked
-    /// @dev Ensures edge cases (reserved, duplicate, invalid quote) are being exercised
-    function _invariantRejectionCountersTracked() internal view {
-        // These counters validate that edge cases are being tested
-        // No specific assertion needed - just confirm they exist and are accessible
-        uint256 total =
-            _totalReservedAttempts + _totalDuplicateAttempts + _totalInvalidQuoteAttempts;
-        assertTrue(total >= 0, "Rejection counters should be non-negative");
     }
 
     /*//////////////////////////////////////////////////////////////
