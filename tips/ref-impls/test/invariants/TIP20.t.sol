@@ -7,7 +7,7 @@ import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
 
 /// @title TIP20 Invariant Tests
 /// @notice Fuzz-based invariant tests for the TIP20 token implementation
-/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP22 as documented in README.md
+/// @dev Tests invariants TEMPO-TIP1 through TEMPO-TIP29
 contract TIP20InvariantTest is InvariantBaseTest {
 
     /// @dev Log file path for recording actions
@@ -156,6 +156,50 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     " ",
                     vm.toString(amount),
                     " ",
+                    token.symbol()
+                )
+            );
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownError(reason);
+        }
+    }
+
+    /// @notice Handler for zero-amount transfer edge case
+    /// @dev Tests that zero-amount transfers are handled correctly
+    function transferZeroAmount(uint256 actorSeed, uint256 tokenSeed, uint256 recipientSeed)
+        external
+    {
+        address actor = _selectActor(actorSeed);
+        address recipient = _selectActor(recipientSeed);
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        vm.assume(actor != recipient);
+        vm.assume(_isAuthorized(address(token), actor));
+        vm.assume(_isAuthorized(address(token), recipient));
+        vm.assume(!token.paused());
+
+        uint256 actorBalanceBefore = token.balanceOf(actor);
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+        uint256 totalSupplyBefore = token.totalSupply();
+
+        vm.startPrank(actor);
+        try token.transfer(recipient, 0) returns (bool success) {
+            vm.stopPrank();
+            assertTrue(success, "Zero transfer should return true");
+
+            // Balances should remain unchanged
+            assertEq(token.balanceOf(actor), actorBalanceBefore, "Sender balance changed on zero transfer");
+            assertEq(token.balanceOf(recipient), recipientBalanceBefore, "Recipient balance changed on zero transfer");
+            assertEq(token.totalSupply(), totalSupplyBefore, "Total supply changed on zero transfer");
+
+            _log(
+                string.concat(
+                    "TRANSFER_ZERO: ",
+                    _getActorIndex(actor),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " 0 ",
                     token.symbol()
                 )
             );
@@ -443,6 +487,97 @@ contract TIP20InvariantTest is InvariantBaseTest {
                     _getActorIndex(actor),
                     " -> ",
                     _getActorIndex(recipient),
+                    " ",
+                    vm.toString(amount),
+                    " ",
+                    token.symbol()
+                )
+            );
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownError(reason);
+        }
+    }
+
+    /// @notice Handler for transferFrom with memo
+    /// @dev Tests TEMPO-TIP9 (memo transfers work like regular transfers with allowance)
+    function transferFromWithMemo(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 ownerSeed,
+        uint256 recipientSeed,
+        uint256 amount,
+        bytes32 memo
+    ) external {
+        address spender = _selectActor(actorSeed);
+        address owner = _selectActor(ownerSeed);
+        address recipient = _selectActor(recipientSeed);
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        vm.assume(owner != spender);
+        vm.assume(owner != recipient);
+
+        uint256 ownerBalance = token.balanceOf(owner);
+        vm.assume(ownerBalance > 0);
+
+        uint256 allowance = token.allowance(owner, spender);
+        vm.assume(allowance > 0);
+
+        amount = bound(amount, 1, ownerBalance < allowance ? ownerBalance : allowance);
+
+        vm.assume(_isAuthorized(address(token), owner));
+        vm.assume(_isAuthorized(address(token), recipient));
+        vm.assume(!token.paused());
+
+        uint256 recipientBalanceBefore = token.balanceOf(recipient);
+        uint256 totalSupplyBefore = token.totalSupply();
+        bool isInfiniteAllowance = allowance == type(uint256).max;
+
+        vm.startPrank(spender);
+        try token.transferFromWithMemo(owner, recipient, amount, memo) returns (bool success) {
+            vm.stopPrank();
+            assertTrue(success, "TEMPO-TIP9: TransferFromWithMemo should return true");
+
+            _totalTransfers++;
+            _registerHolder(address(token), owner);
+            _registerHolder(address(token), recipient);
+
+            // Balance changes same as regular transferFrom
+            assertEq(
+                token.balanceOf(owner),
+                ownerBalance - amount,
+                "TEMPO-TIP9: Owner balance not decreased"
+            );
+            assertEq(
+                token.balanceOf(recipient),
+                recipientBalanceBefore + amount,
+                "TEMPO-TIP9: Recipient balance not increased"
+            );
+            assertEq(token.totalSupply(), totalSupplyBefore, "TEMPO-TIP9: Total supply changed");
+
+            // Allowance handling same as transferFrom
+            if (isInfiniteAllowance) {
+                assertEq(
+                    token.allowance(owner, spender),
+                    type(uint256).max,
+                    "TEMPO-TIP4: Infinite allowance should remain infinite"
+                );
+            } else {
+                assertEq(
+                    token.allowance(owner, spender),
+                    allowance - amount,
+                    "TEMPO-TIP3: Allowance not decreased correctly"
+                );
+            }
+
+            _log(
+                string.concat(
+                    "TRANSFER_FROM_MEMO: ",
+                    _getActorIndex(owner),
+                    " -> ",
+                    _getActorIndex(recipient),
+                    " via ",
+                    _getActorIndex(spender),
                     " ",
                     vm.toString(amount),
                     " ",
@@ -769,6 +904,76 @@ contract TIP20InvariantTest is InvariantBaseTest {
         }
     }
 
+    /// @notice Handler for reward claim with detailed verification
+    /// @dev Tests TEMPO-TIP14/TIP15: verifies claim amount is min(pendingRewards, contractBalance)
+    function claimRewardsVerified(uint256 actorSeed, uint256 tokenSeed) external {
+        address actor = _selectActor(actorSeed);
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        vm.assume(_isAuthorized(address(token), actor));
+        vm.assume(_isAuthorized(address(token), address(token)));
+        vm.assume(!token.paused());
+
+        uint256 contractBalance = token.balanceOf(address(token));
+        uint256 actorBalanceBefore = token.balanceOf(actor);
+
+        // Use contract's getPendingRewards view to get expected claimable amount
+        uint256 pendingRewards = token.getPendingRewards(actor);
+        uint256 expectedClaim = contractBalance > pendingRewards ? pendingRewards : contractBalance;
+
+        vm.startPrank(actor);
+        try token.claimRewards() returns (uint256 claimed) {
+            vm.stopPrank();
+
+            _registerHolder(address(token), actor);
+            _registerHolder(address(token), address(token));
+
+            if (claimed > 0) {
+                _totalRewardsClaimed++;
+                _ghostRewardClaimSum += claimed;
+                _tokenRewardsClaimed[address(token)] += claimed;
+            }
+
+            // TEMPO-TIP15: Claimed should be min(pendingRewards, contractBalance)
+            assertEq(claimed, expectedClaim, "TEMPO-TIP15: Claimed amount incorrect");
+
+            // TEMPO-TIP15: Claimed should not exceed contract balance
+            assertLe(claimed, contractBalance, "TEMPO-TIP15: Claimed more than contract balance");
+
+            // TEMPO-TIP14: Actor should receive exactly the claimed amount
+            assertEq(
+                token.balanceOf(actor),
+                actorBalanceBefore + claimed,
+                "TEMPO-TIP14: Actor balance not increased correctly"
+            );
+
+            // Contract balance should decrease by claimed amount
+            assertEq(
+                token.balanceOf(address(token)),
+                contractBalance - claimed,
+                "TEMPO-TIP14: Contract balance not decreased correctly"
+            );
+
+            if (claimed > 0) {
+                _log(
+                    string.concat(
+                        "CLAIM_VERIFIED: ",
+                        _getActorIndex(actor),
+                        " claimed ",
+                        vm.toString(claimed),
+                        "/",
+                        vm.toString(pendingRewards),
+                        " ",
+                        token.symbol()
+                    )
+                );
+            }
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownError(reason);
+        }
+    }
+
     /// @notice Handler for burning tokens from blocked accounts
     /// @dev Tests TEMPO-TIP23 (burnBlocked functionality)
     function burnBlocked(uint256 tokenSeed, uint256 targetSeed, uint256 amount) external {
@@ -787,6 +992,10 @@ contract TIP20InvariantTest is InvariantBaseTest {
 
         uint256 totalSupplyBefore = token.totalSupply();
 
+        // Check if target was opted-in before burn (for ghost variable tracking)
+        (address targetRewardRecipient,,) = token.userRewardInfo(target);
+        bool wasOptedIn = targetRewardRecipient != address(0);
+
         vm.startPrank(admin);
         token.grantRole(_BURN_BLOCKED_ROLE, admin);
         try token.burnBlocked(target, amount) {
@@ -795,6 +1004,13 @@ contract TIP20InvariantTest is InvariantBaseTest {
             _totalBurns++;
             _tokenBurnSum[address(token)] += amount;
             _registerHolder(address(token), target);
+
+            // Track opted-in holder count: if burning entire balance of opted-in user
+            if (wasOptedIn && token.balanceOf(target) == 0) {
+                if (_tokenOptedInHolderCount[address(token)] > 0) {
+                    _tokenOptedInHolderCount[address(token)]--;
+                }
+            }
 
             // TEMPO-TIP23: Balance should decrease
             assertEq(
@@ -1082,6 +1298,91 @@ contract TIP20InvariantTest is InvariantBaseTest {
         } catch {
             vm.stopPrank();
             // Expected - access control enforced
+        }
+    }
+
+    /// @notice Handler for setting supply cap
+    /// @dev Tests TEMPO-TIP22 (supply cap enforcement)
+    function setSupplyCap(uint256 tokenSeed, uint256 newCap) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        uint256 currentSupply = token.totalSupply();
+        uint256 currentCap = token.supplyCap();
+
+        // Bound new cap between current supply and max uint128
+        newCap = bound(newCap, currentSupply, type(uint128).max);
+
+        vm.startPrank(admin);
+        try token.setSupplyCap(newCap) {
+            vm.stopPrank();
+
+            // TEMPO-TIP22: New cap should be set
+            assertEq(token.supplyCap(), newCap, "TEMPO-TIP22: Supply cap not updated");
+
+            // TEMPO-TIP22: Cap must be >= current supply
+            assertGe(
+                token.supplyCap(),
+                token.totalSupply(),
+                "TEMPO-TIP22: Supply cap below total supply"
+            );
+
+            _log(
+                string.concat(
+                    "SET_SUPPLY_CAP: ",
+                    token.symbol(),
+                    " cap ",
+                    vm.toString(currentCap),
+                    " -> ",
+                    vm.toString(newCap)
+                )
+            );
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            _assertKnownError(reason);
+        }
+    }
+
+    /// @notice Handler for unauthorized supply cap change attempts
+    /// @dev Tests that non-admin cannot change supply cap
+    function setSupplyCapUnauthorized(uint256 actorSeed, uint256 tokenSeed, uint256 newCap)
+        external
+    {
+        address attacker = _selectActor(actorSeed);
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        vm.assume(!token.hasRole(attacker, bytes32(0))); // DEFAULT_ADMIN_ROLE
+
+        vm.startPrank(attacker);
+        try token.setSupplyCap(newCap) {
+            vm.stopPrank();
+            revert("Non-admin should not change supply cap");
+        } catch {
+            vm.stopPrank();
+            // Expected - access control enforced
+        }
+    }
+
+    /// @notice Handler for attempting to set supply cap below current supply
+    /// @dev Tests that supply cap cannot be set below current supply
+    function setSupplyCapBelowSupply(uint256 tokenSeed) external {
+        TIP20 token = _selectBaseToken(tokenSeed);
+
+        uint256 currentSupply = token.totalSupply();
+        vm.assume(currentSupply > 1);
+
+        uint256 invalidCap = currentSupply - 1;
+
+        vm.startPrank(admin);
+        try token.setSupplyCap(invalidCap) {
+            vm.stopPrank();
+            revert("TEMPO-TIP22: Should revert when cap < supply");
+        } catch (bytes memory reason) {
+            vm.stopPrank();
+            assertEq(
+                bytes4(reason),
+                ITIP20.InvalidSupplyCap.selector,
+                "TEMPO-TIP22: Should revert with InvalidSupplyCap"
+            );
         }
     }
 
