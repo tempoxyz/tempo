@@ -162,11 +162,50 @@ abstract contract InvariantBaseTest is BaseTest {
         return address(_tokens[index - 1]);
     }
 
+    /// @dev Selects a pair of distinct tokens using a single seed
+    /// @param pairSeed Random seed - lower bits for first token, upper bits for offset
+    /// @return userToken First token
+    /// @return validatorToken Second token (guaranteed different from first)
+    function _selectTokenPair(uint256 pairSeed)
+        internal
+        view
+        returns (address userToken, address validatorToken)
+    {
+        uint256 totalTokens = _tokens.length + 1;
+        uint256 idx1 = bound(pairSeed, 0, totalTokens - 1);
+
+        // Pick from [0, N-2] then skip over idx1 to guarantee idx2 != idx1
+        uint256 idx2 = bound(pairSeed >> 128, 0, totalTokens - 2);
+        if (idx2 >= idx1) idx2++;
+
+        userToken = idx1 == 0 ? address(pathUSD) : address(_tokens[idx1 - 1]);
+        validatorToken = idx2 == 0 ? address(pathUSD) : address(_tokens[idx2 - 1]);
+    }
+
     /// @dev Selects a base token only (excludes pathUSD)
     /// @param rnd Random seed for selection
     /// @return The selected token
     function _selectBaseToken(uint256 rnd) internal view returns (TIP20) {
         return _tokens[rnd % _tokens.length];
+    }
+
+    /// @dev Selects an actor authorized for the given token's policy
+    /// @param seed Random seed for selection
+    /// @param token Token to check authorization for
+    /// @return The selected authorized actor
+    function _selectAuthorizedActor(uint256 seed, address token) internal view returns (address) {
+        uint64 policyId = token == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[token];
+
+        address[] memory authorized = new address[](_actors.length);
+        uint256 count = 0;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            if (registry.isAuthorized(policyId, _actors[i])) {
+                authorized[count++] = _actors[i];
+            }
+        }
+
+        vm.assume(count > 0);
+        return authorized[bound(seed, 0, count - 1)];
     }
 
     /// @dev Gets token symbol for logging
