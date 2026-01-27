@@ -2175,7 +2175,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev Selects a pending fee entry from the list
     /// @return validator The validator address
     /// @return token The token address
-    function _selectPendingFee(uint256 seed) internal view returns (address validator, address token) {
+    function _selectPendingFee(uint256 seed)
+        internal
+        view
+        returns (address validator, address token)
+    {
         uint256 count = _pendingFeesList.length;
         vm.assume(count > 0);
         uint256 index = bound(seed, 0, count - 1);
