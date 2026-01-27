@@ -149,7 +149,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
             assertEq(info.keyId, keyId, "TEMPO-KEY1: KeyId should match");
             assertEq(info.expiry, expiry, "TEMPO-KEY1: Expiry should match");
             assertEq(info.enforceLimits, enforceLimits, "TEMPO-KEY1: EnforceLimits should match");
-            assertEq(uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match");
+            assertEq(
+                uint8(info.signatureType), uint8(sigType), "TEMPO-KEY1: SignatureType should match"
+            );
             assertFalse(info.isRevoked, "TEMPO-KEY1: Should not be revoked");
 
             _log(
@@ -437,7 +439,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
         _log(
             string.concat(
-                wasRevoked ? "TRY_REVOKE_ALREADY_REVOKED: account=" : "TRY_REVOKE_NONEXISTENT: account=",
+                wasRevoked
+                    ? "TRY_REVOKE_ALREADY_REVOKED: account="
+                    : "TRY_REVOKE_NONEXISTENT: account=",
                 _getActorIndex(account),
                 " keyId=",
                 vm.toString(keyId),
@@ -640,7 +644,9 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Handler for testing operations on expired keys
     /// @dev Tests TEMPO-KEY18 (operations on expired keys fail with KeyExpired)
-    function testExpiredKeyOperations(uint256 accountSeed, uint256 keyIdSeed, uint256 warpAmount) external {
+    function testExpiredKeyOperations(uint256 accountSeed, uint256 keyIdSeed, uint256 warpAmount)
+        external
+    {
         address account = _selectActor(accountSeed);
 
         // Get an existing key for this account
@@ -707,7 +713,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         bytes memory callData = abi.encodeWithSelector(
             IAccountKeychain.authorizeKey.selector,
             keyId,
-            badType,  // Raw uint8 instead of enum
+            badType, // Raw uint8 instead of enum
             expiry,
             false,
             limits
@@ -765,8 +771,14 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
                     assertTrue(info.isRevoked, "TEMPO-KEY13: Revoked key should show isRevoked");
                     assertEq(info.keyId, address(0), "TEMPO-KEY13: Revoked key keyId should be 0");
                     assertEq(info.expiry, 0, "TEMPO-KEY13: Revoked key expiry should be 0");
-                    assertFalse(info.enforceLimits, "TEMPO-KEY13: Revoked key enforceLimits should be false");
-                    assertEq(uint8(info.signatureType), 0, "TEMPO-KEY13: Revoked key signatureType should be 0");
+                    assertFalse(
+                        info.enforceLimits, "TEMPO-KEY13: Revoked key enforceLimits should be false"
+                    );
+                    assertEq(
+                        uint8(info.signatureType),
+                        0,
+                        "TEMPO-KEY13: Revoked key signatureType should be 0"
+                    );
                 } else if (_ghostKeyExists[account][keyId]) {
                     // Active key should match ghost state
                     assertEq(info.keyId, keyId, "TEMPO-KEY13: Active key keyId should match");
