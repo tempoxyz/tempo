@@ -92,6 +92,7 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
 
+
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 
@@ -340,6 +341,8 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
 
+=======
+>>>>>>> 185278e4 (feat: add base invariant test plumbing/logic)
 ## TIP20
 
 TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, memo support, pause functionality, and reward distribution.
