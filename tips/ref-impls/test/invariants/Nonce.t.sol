@@ -94,6 +94,33 @@ contract NonceInvariantTest is InvariantBaseTest {
         return (seed % MAX_NORMAL_NONCE_KEY) + 1;
     }
 
+    /// @dev Selects a nonce key that is NOT the excluded key, using bound to avoid discards
+    /// @param seed Random seed
+    /// @param excluded Key to exclude from selection
+    /// @return Selected nonce key (guaranteed != excluded)
+    function _selectNonceKeyExcluding(uint256 seed, uint256 excluded)
+        internal
+        pure
+        returns (uint256)
+    {
+        uint256 idx = bound(seed, 0, MAX_NORMAL_NONCE_KEY - 2);
+        uint256 key = idx + 1;
+        if (key >= excluded) {
+            key += 1;
+        }
+        return key;
+    }
+
+    /// @dev Tracks a nonce key for an actor in ghost state (for invariant iteration)
+    /// @param actor The actor address
+    /// @param nonceKey The nonce key to track
+    function _trackNonceKey(address actor, uint256 nonceKey) internal {
+        if (!_nonceKeyUsed[actor][nonceKey]) {
+            _nonceKeyUsed[actor][nonceKey] = true;
+            _accountNonceKeys[actor].push(nonceKey);
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                           STORAGE HELPERS
     //////////////////////////////////////////////////////////////*/
@@ -154,10 +181,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         _lastSeenNonces[actor][nonceKey] = newNonce;
 
         // Track nonce key usage
-        if (!_nonceKeyUsed[actor][nonceKey]) {
-            _nonceKeyUsed[actor][nonceKey] = true;
-            _accountNonceKeys[actor].push(nonceKey);
-        }
+        _trackNonceKey(actor, nonceKey);
 
         // TEMPO-NON1: Nonce should increment by exactly 1
         assertEq(newNonce, expectedBefore + 1, "TEMPO-NON1: Nonce should increment by 1");
@@ -222,10 +246,8 @@ contract NonceInvariantTest is InvariantBaseTest {
         external
     {
         address actor1 = _selectActor(actor1Seed);
-        address actor2 = _selectActor(actor2Seed);
+        address actor2 = _selectActorExcluding(actor2Seed, actor1);
         uint256 nonceKey = _selectNonceKey(keySeed);
-
-        vm.assume(actor1 != actor2);
 
         uint64 nonce2Before = nonce.getNonce(actor2, nonceKey);
 
@@ -233,11 +255,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 newNonce1 = _incrementNonceViaStorage(actor1, nonceKey);
         _ghostNonces[actor1][nonceKey] = newNonce1;
         _lastSeenNonces[actor1][nonceKey] = newNonce1;
-
-        if (!_nonceKeyUsed[actor1][nonceKey]) {
-            _nonceKeyUsed[actor1][nonceKey] = true;
-            _accountNonceKeys[actor1].push(nonceKey);
-        }
+        _trackNonceKey(actor1, nonceKey);
 
         // TEMPO-NON5: Actor2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor2, nonceKey);
@@ -262,9 +280,7 @@ contract NonceInvariantTest is InvariantBaseTest {
     function verifyKeyIndependence(uint256 actorSeed, uint256 key1Seed, uint256 key2Seed) external {
         address actor = _selectActor(actorSeed);
         uint256 key1 = _selectNonceKey(key1Seed);
-        uint256 key2 = _selectNonceKey(key2Seed);
-
-        vm.assume(key1 != key2);
+        uint256 key2 = _selectNonceKeyExcluding(key2Seed, key1);
 
         uint64 nonce2Before = nonce.getNonce(actor, key2);
 
@@ -272,11 +288,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 newNonce1 = _incrementNonceViaStorage(actor, key1);
         _ghostNonces[actor][key1] = newNonce1;
         _lastSeenNonces[actor][key1] = newNonce1;
-
-        if (!_nonceKeyUsed[actor][key1]) {
-            _nonceKeyUsed[actor][key1] = true;
-            _accountNonceKeys[actor].push(key1);
-        }
+        _trackNonceKey(actor, key1);
 
         // TEMPO-NON6: Key2's nonce should be unchanged
         uint64 nonce2After = nonce.getNonce(actor, key2);
@@ -313,11 +325,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         uint64 newNonce = _incrementNonceViaStorage(actor, largeKey);
         _ghostNonces[actor][largeKey] = newNonce;
         _lastSeenNonces[actor][largeKey] = newNonce;
-
-        if (!_nonceKeyUsed[actor][largeKey]) {
-            _nonceKeyUsed[actor][largeKey] = true;
-            _accountNonceKeys[actor].push(largeKey);
-        }
+        _trackNonceKey(actor, largeKey);
 
         uint64 afterIncrement = nonce.getNonce(actor, largeKey);
         assertEq(afterIncrement, newNonce, "TEMPO-NON7: Large key should increment correctly");
@@ -355,10 +363,7 @@ contract NonceInvariantTest is InvariantBaseTest {
             );
         }
 
-        if (!_nonceKeyUsed[actor][nonceKey]) {
-            _nonceKeyUsed[actor][nonceKey] = true;
-            _accountNonceKeys[actor].push(nonceKey);
-        }
+        _trackNonceKey(actor, nonceKey);
 
         uint64 endNonce = nonce.getNonce(actor, nonceKey);
         assertEq(endNonce, startNonce + uint64(count), "TEMPO-NON8: Total increment should match");
@@ -403,11 +408,7 @@ contract NonceInvariantTest is InvariantBaseTest {
         // Update ghost state to reflect the storage manipulation
         _ghostNonces[actor][nonceKey] = type(uint64).max;
         _lastSeenNonces[actor][nonceKey] = type(uint64).max;
-
-        if (!_nonceKeyUsed[actor][nonceKey]) {
-            _nonceKeyUsed[actor][nonceKey] = true;
-            _accountNonceKeys[actor].push(nonceKey);
-        }
+        _trackNonceKey(actor, nonceKey);
 
         // TEMPO-NON9: Attempting to increment at max should revert with NonceOverflow
         vm.expectRevert(INonce.NonceOverflow.selector);
