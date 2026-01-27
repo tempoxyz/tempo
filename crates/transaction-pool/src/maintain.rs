@@ -1,7 +1,7 @@
 //! Transaction pool maintenance tasks.
 
 use crate::{
-    RevokedKey, SpendingLimitUpdate, TempoTransactionPool,
+    RevokedKey, SpendingLimitUpdates, TempoTransactionPool,
     metrics::TempoPoolMaintenanceMetrics,
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
@@ -44,8 +44,8 @@ pub struct TempoPoolUpdates {
     /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
-    /// Stored as a set for O(1) lookup when checking transactions.
-    pub spending_limit_changes: HashSet<SpendingLimitUpdate>,
+    /// Indexed by account for efficient lookup.
+    pub spending_limit_changes: SpendingLimitUpdates,
     /// Validator token preference changes: (validator, new_token).
     pub validator_token_changes: Vec<(Address, Address)>,
     /// TIP403 blacklist additions: (policy_id, account).
@@ -92,13 +92,11 @@ impl TempoPoolUpdates {
                         .revoked_keys
                         .insert(RevokedKey::new(event.account, event.publicKey));
                 } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
-                    updates
-                        .spending_limit_changes
-                        .insert(SpendingLimitUpdate::new(
-                            event.account,
-                            event.publicKey,
-                            event.token,
-                        ));
+                    updates.spending_limit_changes.insert(
+                        event.account,
+                        event.publicKey,
+                        event.token,
+                    );
                 }
             }
             // Validator token changes

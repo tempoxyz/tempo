@@ -16,7 +16,7 @@ use reth_transaction_pool::{
     error::PoolTransactionError,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     fmt::Debug,
     sync::{Arc, OnceLock},
@@ -921,28 +921,47 @@ impl RevokedKey {
     }
 }
 
-/// Represents a spending limit update event.
+/// Index of spending limit updates, keyed by account for efficient lookup.
 ///
-/// This struct provides clear semantics for the three addresses involved in a spending
-/// limit change, rather than using an anonymous tuple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpendingLimitUpdate {
-    /// The account that owns the keychain key.
-    pub account: Address,
-    /// The key ID whose spending limit changed.
-    pub key_id: Address,
-    /// The fee token for which the spending limit changed.
-    pub token: Address,
+/// Uses account as the primary key with a list of (key_id, token) pairs,
+/// avoiding the need to construct full keys during lookup.
+#[derive(Debug, Clone, Default)]
+pub struct SpendingLimitUpdates {
+    /// Map from account to list of (key_id, token) pairs that had limit changes.
+    by_account: HashMap<Address, Vec<(Address, Address)>>,
 }
 
-impl SpendingLimitUpdate {
-    /// Creates a new spending limit update.
-    pub fn new(account: Address, key_id: Address, token: Address) -> Self {
-        Self {
-            account,
-            key_id,
-            token,
-        }
+impl SpendingLimitUpdates {
+    /// Creates a new empty index.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inserts a spending limit update.
+    pub fn insert(&mut self, account: Address, key_id: Address, token: Address) {
+        self.by_account
+            .entry(account)
+            .or_default()
+            .push((key_id, token));
+    }
+
+    /// Returns true if the index is empty.
+    pub fn is_empty(&self) -> bool {
+        self.by_account.is_empty()
+    }
+
+    /// Returns the total number of spending limit updates.
+    pub fn len(&self) -> usize {
+        self.by_account.values().map(Vec::len).sum()
+    }
+
+    /// Returns true if the given (account, key_id, token) combination is in the index.
+    pub fn contains(&self, account: Address, key_id: Address, token: Address) -> bool {
+        self.by_account
+            .get(&account)
+            .is_some_and(|pairs: &Vec<(Address, Address)>| {
+                pairs.iter().any(|&(k, t)| k == key_id && t == token)
+            })
     }
 }
 
@@ -970,15 +989,12 @@ impl KeychainSubject {
 
     /// Returns true if this subject is affected by any of the spending limit updates.
     ///
-    /// Uses a pre-built set for O(1) lookup instead of linear scan.
+    /// Uses account-keyed index for O(1) account lookup, then linear scan over
+    /// the typically small list of (key_id, token) pairs for that account.
     pub fn matches_spending_limit_update(
         &self,
-        spending_limit_updates: &HashSet<SpendingLimitUpdate>,
+        spending_limit_updates: &SpendingLimitUpdates,
     ) -> bool {
-        spending_limit_updates.contains(&SpendingLimitUpdate::new(
-            self.account,
-            self.key_id,
-            self.fee_token,
-        ))
+        spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
     }
 }
