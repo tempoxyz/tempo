@@ -267,7 +267,9 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
                 eurToken = predictedEurAddr;
             } else {
                 vm.startPrank(actor);
-                try factory.createToken("EUR Token", "EUR", "EUR", pathUSD, admin, eurSalt) returns (
+                try factory.createToken(
+                    "EUR Token", "EUR", "EUR", pathUSD, admin, eurSalt
+                ) returns (
                     address addr
                 ) {
                     eurToken = addr;
@@ -289,7 +291,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         // Try to create a USD token with EUR quote - should fail
         bytes32 usdSalt = keccak256(abi.encode(salt, "USD_WITH_EUR"));
 
-        try factory.getTokenAddress(actor, usdSalt) returns (address) {} 
+        try factory.getTokenAddress(actor, usdSalt) returns (address) { }
         catch (bytes memory reason) {
             if (bytes4(reason) == ITIP20Factory.AddressReserved.selector) {
                 return;
@@ -355,7 +357,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-FAC8 (isTIP20 consistency) - only checks known addresses to avoid false positives
     function checkIsTIP20(uint256 addrSeed) external {
         _totalIsTIP20Checks++;
-        
+
         if (addrSeed % 4 == 0 && _createdTokens.length > 0) {
             // Check a created token - must be TIP20
             address checkAddr = _createdTokens[addrSeed % _createdTokens.length];
@@ -365,7 +367,9 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
             assertTrue(factory.isTIP20(address(pathUSD)), "TEMPO-FAC8: pathUSD should be TIP20");
         } else if (addrSeed % 4 == 2) {
             // Check factory address - should NOT be TIP20
-            assertFalse(factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20");
+            assertFalse(
+                factory.isTIP20(address(factory)), "TEMPO-FAC8: Factory should not be TIP20"
+            );
         } else {
             // Check a known non-TIP20 system address
             assertFalse(factory.isTIP20(address(amm)), "TEMPO-FAC8: AMM should not be TIP20");
@@ -521,12 +525,24 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
         _log("                              Final State Summary");
         _log("--------------------------------------------------------------------------------");
         _log(string.concat("Tokens created: ", vm.toString(_totalTokensCreated)));
-        _log(string.concat("Reserved attempts (getTokenAddress): ", vm.toString(_totalReservedAttempts)));
-        _log(string.concat("Reserved attempts (createToken): ", vm.toString(_totalReservedCreateAttempts)));
+        _log(
+            string.concat(
+                "Reserved attempts (getTokenAddress): ", vm.toString(_totalReservedAttempts)
+            )
+        );
+        _log(
+            string.concat(
+                "Reserved attempts (createToken): ", vm.toString(_totalReservedCreateAttempts)
+            )
+        );
         _log(string.concat("Duplicate attempts: ", vm.toString(_totalDuplicateAttempts)));
         _log(string.concat("Invalid quote attempts: ", vm.toString(_totalInvalidQuoteAttempts)));
         _log(string.concat("Non-USD currency created: ", vm.toString(_totalNonUsdCurrencyCreated)));
-        _log(string.concat("USD with non-USD quote rejected: ", vm.toString(_totalUsdWithNonUsdQuoteRejected)));
+        _log(
+            string.concat(
+                "USD with non-USD quote rejected: ", vm.toString(_totalUsdWithNonUsdQuoteRejected)
+            )
+        );
         _log(string.concat("isTIP20 checks: ", vm.toString(_totalIsTIP20Checks)));
         _log("--------------------------------------------------------------------------------");
     }
@@ -542,10 +558,12 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     function _recordCreatedToken(address actor, bytes32 salt, address tokenAddr) internal {
         // Defensive: ensure we're not recording duplicates
         assertFalse(_isCreatedToken[tokenAddr], "TEMPO-FAC3: Duplicate token address detected");
-        
+
         bytes32 uniqueKey = keccak256(abi.encode(actor, salt));
-        assertEq(_saltToToken[uniqueKey], address(0), "Ghost state: salt already used for this actor");
-        
+        assertEq(
+            _saltToToken[uniqueKey], address(0), "Ghost state: salt already used for this actor"
+        );
+
         _createdTokens.push(tokenAddr);
         _isCreatedToken[tokenAddr] = true;
         _saltToToken[uniqueKey] = tokenAddr;
