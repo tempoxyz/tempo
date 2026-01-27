@@ -41,6 +41,9 @@ abstract contract InvariantBaseTest is BaseTest {
     /// @dev Log file path - must be set by child contract
     string internal _logFile;
 
+    /// @dev All addresses that may hold token balances (for invariant checks)
+    address[] internal _balanceHolders;
+
     /*//////////////////////////////////////////////////////////////
                               SETUP
     //////////////////////////////////////////////////////////////*/
@@ -79,6 +82,20 @@ abstract contract InvariantBaseTest is BaseTest {
         _pathUsdPolicyId = registry.createPolicy(pathUSDAdmin, ITIP403Registry.PolicyType.BLACKLIST);
         pathUSD.changeTransferPolicyId(_pathUsdPolicyId);
         vm.stopPrank();
+
+        // Register known balance holders for invariant checks
+        _registerBalanceHolder(address(amm));
+        _registerBalanceHolder(address(exchange));
+        _registerBalanceHolder(admin);
+        _registerBalanceHolder(alice);
+        _registerBalanceHolder(bob);
+        _registerBalanceHolder(charlie);
+        _registerBalanceHolder(pathUSDAdmin);
+    }
+
+    /// @dev Registers an address as a potential balance holder
+    function _registerBalanceHolder(address holder) internal {
+        _balanceHolders.push(holder);
     }
 
     /// @notice Initialize log file with header
@@ -116,6 +133,9 @@ abstract contract InvariantBaseTest is BaseTest {
         for (uint256 i = 0; i < noOfActors_; i++) {
             address actor = makeAddr(string(abi.encodePacked("Actor", vm.toString(i))));
             actorsAddress[i] = actor;
+
+            // Register actor as balance holder for invariant checks
+            _registerBalanceHolder(actor);
 
             // Initial actor balance for all tokens
             _ensureFundsAll(actor, 1_000_000_000_000);
@@ -230,14 +250,13 @@ abstract contract InvariantBaseTest is BaseTest {
         return _tokenPolicyIds[token];
     }
 
-    /// @dev Gets the policy admin for a token
+    /// @dev Gets the policy admin for a token by querying the registry
     /// @param token Token address
     /// @return The policy admin address
     function _getPolicyAdmin(address token) internal view returns (address) {
-        if (token == address(pathUSD)) {
-            return pathUSDAdmin;
-        }
-        return admin;
+        uint64 policyId = _getPolicyId(token);
+        (, address policyAdmin) = registry.policyData(policyId);
+        return policyAdmin;
     }
 
     /// @dev Checks if an actor is authorized for a token
@@ -588,22 +607,15 @@ abstract contract InvariantBaseTest is BaseTest {
         return sysAddrs;
     }
 
-    /// @dev Computes sum of balances for a token across all actors and system addresses
+    /// @dev Computes sum of balances for a token across all tracked balance holders
     /// @param token The token to sum balances for
     /// @return total The sum of all balances
     function _sumAllBalances(TIP20 token) internal view returns (uint256 total) {
-        for (uint256 i = 0; i < _actors.length; i++) {
-            total += token.balanceOf(_actors[i]);
+        for (uint256 i = 0; i < _balanceHolders.length; i++) {
+            total += token.balanceOf(_balanceHolders[i]);
         }
-
+        // Also include the token contract itself (for locked/burned tokens)
         total += token.balanceOf(address(token));
-        total += token.balanceOf(address(amm));
-        total += token.balanceOf(address(exchange));
-        total += token.balanceOf(admin);
-        total += token.balanceOf(alice);
-        total += token.balanceOf(bob);
-        total += token.balanceOf(charlie);
-        total += token.balanceOf(pathUSDAdmin);
     }
 
     /*//////////////////////////////////////////////////////////////
