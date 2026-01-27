@@ -432,7 +432,7 @@ impl ConsensusFeed for FeedStateHandle {
                                 merged.push(t.clone());
                             }
                         }
-                        merged.sort_by(|a, b| b.transition_epoch.cmp(&a.transition_epoch));
+                        merged.sort_by_key(|t| std::cmp::Reverse(t.transition_epoch));
                         Arc::new(merged)
                     } else {
                         Arc::new(transitions.clone())
