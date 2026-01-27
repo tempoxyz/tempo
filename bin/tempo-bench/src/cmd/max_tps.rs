@@ -674,6 +674,7 @@ async fn send_transactions<F: TxFiller<TempoNetwork> + 'static>(
 }
 
 /// Same as `send_transactions` but uses external counters for batch mode.
+#[allow(clippy::too_many_arguments)]
 async fn send_transactions_with_counters<F: TxFiller<TempoNetwork> + 'static>(
     transactions: Vec<Vec<u8>>,
     signer_provider_manager: SignerProviderManager<F>,
