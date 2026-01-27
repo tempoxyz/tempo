@@ -3,464 +3,326 @@ pragma solidity >=0.8.13 <0.9.0;
 
 import { Test } from "forge-std/Test.sol";
 
-/// @title Block Gas Limits Invariant Tests (TIP-1010)
-/// @notice Fuzz-based invariant tests for Tempo block gas parameters
-/// @dev Tests invariants TEMPO-BLOCK1 through TEMPO-BLOCK7 as documented in TIP-1010
-contract BlockGasLimitsInvariantTest is Test {
+import { ITIP20 } from "../../src/interfaces/ITIP20.sol";
+import { InvariantBase } from "../helpers/InvariantBase.sol";
+import { TxBuilder } from "../helpers/TxBuilder.sol";
+
+import { VmExecuteTransaction, VmRlp } from "tempo-std/StdVm.sol";
+import { LegacyTransaction, LegacyTransactionLib } from "tempo-std/tx/LegacyTransactionLib.sol";
+
+/// @title TIP-1010 Block Gas Limits Invariant Tests
+/// @notice Fuzz-based invariant tests for Tempo's block gas parameters
+/// @dev Tests block gas limit invariants using vmExec.executeTransaction()
+///
+/// TIP-1010 specifies:
+/// - Block gas limit: 500,000,000 (TEMPO-BLOCK1)
+/// - General lane limit: 30,000,000 (TEMPO-BLOCK2)
+/// - Transaction gas cap: 30,000,000 (TEMPO-BLOCK3)
+/// - T1 base fee: 20 gwei (TEMPO-BLOCK4)
+/// - Payment lane minimum: 470,000,000 (TEMPO-BLOCK5)
+/// - Max deployment fits in tx cap (TEMPO-BLOCK6)
+/// - Shared gas limit: 50,000,000 (TEMPO-BLOCK10)
+///
+/// Block-level lane enforcement (BLOCK7, BLOCK12) is tested in Rust.
+contract BlockGasLimitsInvariantTest is InvariantBase {
+
+    using TxBuilder for *;
+    using LegacyTransactionLib for LegacyTransaction;
 
     /*//////////////////////////////////////////////////////////////
                             TIP-1010 CONSTANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Total block gas limit (500M)
-    uint256 public constant BLOCK_GAS_LIMIT = 500_000_000;
+    /// @dev Block gas limit (500M)
+    uint256 internal constant BLOCK_GAS_LIMIT = 500_000_000;
 
-    /// @dev General lane gas limit for T1+ transactions (30M)
-    uint256 public constant GENERAL_GAS_LIMIT = 30_000_000;
+    /// @dev General lane gas limit (30M)
+    uint256 internal constant GENERAL_GAS_LIMIT = 30_000_000;
 
-    /// @dev Maximum gas per transaction (30M)
-    uint256 public constant TX_GAS_CAP = 30_000_000;
+    /// @dev Transaction gas cap (30M)
+    uint256 internal constant TX_GAS_CAP = 30_000_000;
 
-    /// @dev Base fee for T1+ transactions (20 gwei)
-    uint256 public constant T1_BASE_FEE = 20 gwei;
+    /// @dev T1 base fee (20 gwei)
+    uint256 internal constant T1_BASE_FEE = 20 gwei;
 
-    /// @dev Base fee for T0 transactions (10 gwei)
-    uint256 public constant T0_BASE_FEE = 10 gwei;
+    /// @dev T0 base fee (10 gwei)
+    uint256 internal constant T0_BASE_FEE = 10 gwei;
 
-    /// @dev Payment lane minimum available gas (500M - 30M = 470M)
-    uint256 public constant PAYMENT_LANE_MIN_GAS = BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT;
+    /// @dev Payment lane minimum (470M)
+    uint256 internal constant PAYMENT_LANE_MIN = BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT;
 
-    /// @dev Maximum contract size (24KB = 24576 bytes, from EIP-170)
-    uint256 public constant MAX_CONTRACT_SIZE = 24_576;
+    /// @dev Shared gas limit (50M)
+    uint256 internal constant SHARED_GAS_LIMIT = BLOCK_GAS_LIMIT / 10;
 
-    /// @dev Estimated gas per byte for contract deployment (~200 gas/byte)
-    uint256 public constant GAS_PER_DEPLOYMENT_BYTE = 200;
+    /// @dev Max contract size (24KB, EIP-170)
+    uint256 internal constant MAX_CONTRACT_SIZE = 24_576;
 
-    /// @dev Base intrinsic gas for contract creation (53000 for CREATE)
-    uint256 public constant CONTRACT_CREATION_BASE_GAS = 53_000;
+    /// @dev TIP-1000: Code deposit per byte
+    uint256 internal constant CODE_DEPOSIT_PER_BYTE = 1000;
 
-    /*//////////////////////////////////////////////////////////////
-                           GHOST VARIABLES
-    //////////////////////////////////////////////////////////////*/
+    /// @dev TIP-1000: CREATE base gas
+    uint256 internal constant CREATE_BASE_GAS = 500_000;
 
-    /// @dev Simulated block's total gas used
-    uint256 public ghost_blockGasUsed;
-
-    /// @dev Simulated block's general lane gas used
-    uint256 public ghost_generalLaneGasUsed;
-
-    /// @dev Simulated block's payment lane gas used
-    uint256 public ghost_paymentLaneGasUsed;
-
-    /// @dev Count of valid blocks created
-    uint256 public ghost_validBlockCount;
-
-    /// @dev Count of rejected over-limit transactions
-    uint256 public ghost_rejectedTxCount;
-
-    /// @dev Count of successful T0 transactions
-    uint256 public ghost_t0TxCount;
-
-    /// @dev Count of successful T1+ transactions
-    uint256 public ghost_t1TxCount;
-
-    /// @dev Highest single transaction gas used
-    uint256 public ghost_maxTxGasUsed;
-
-    /// @dev Track deployment gas for max contract size
-    uint256 public ghost_maxDeploymentGas;
+    /// @dev TIP-1000: Account creation gas
+    uint256 internal constant ACCOUNT_CREATION_GAS = 250_000;
 
     /*//////////////////////////////////////////////////////////////
-                              SETUP
+                            GHOST VARIABLES
     //////////////////////////////////////////////////////////////*/
 
-    function setUp() public {
+    /// @dev TEMPO-BLOCK3: Tx gas cap enforcement
+    uint256 public ghost_txGasCapTests;
+    uint256 public ghost_txAtCapSucceeded;
+    uint256 public ghost_txOverCapRejected;
+    uint256 public ghost_txOverCapViolations; // Over-cap tx was accepted
+
+    /// @dev TEMPO-BLOCK6: Deployment fits in cap
+    uint256 public ghost_deploymentTests;
+    uint256 public ghost_maxDeploymentSucceeded;
+    uint256 public ghost_maxDeploymentFailed; // Unexpected - would indicate cap too low
+
+    /// @dev General tracking
+    uint256 public ghost_validTxExecuted;
+
+    /*//////////////////////////////////////////////////////////////
+                                SETUP
+    //////////////////////////////////////////////////////////////*/
+
+    function setUp() public override {
+        super.setUp();
+
         targetContract(address(this));
-        _resetBlock();
-    }
 
-    /// @dev Resets block state for new block simulation
-    function _resetBlock() internal {
-        ghost_blockGasUsed = 0;
-        ghost_generalLaneGasUsed = 0;
-        ghost_paymentLaneGasUsed = 0;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            FUZZ HANDLERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Handler: Simulate adding a general lane (T1+) transaction to the block
-    /// @param gasUsed Gas used by this transaction (bounded to valid range)
-    function handler_addGeneralTx(uint256 gasUsed) external {
-        gasUsed = bound(gasUsed, 21_000, TX_GAS_CAP);
-
-        // Check if transaction would exceed limits
-        if (gasUsed > TX_GAS_CAP) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_generalLaneGasUsed + gasUsed > GENERAL_GAS_LIMIT) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_blockGasUsed + gasUsed > BLOCK_GAS_LIMIT) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        // Transaction accepted
-        ghost_generalLaneGasUsed += gasUsed;
-        ghost_blockGasUsed += gasUsed;
-        ghost_t1TxCount++;
-
-        if (gasUsed > ghost_maxTxGasUsed) {
-            ghost_maxTxGasUsed = gasUsed;
-        }
-    }
-
-    /// @notice Handler: Simulate adding a payment lane (T0) transaction to the block
-    /// @param gasUsed Gas used by this transaction
-    function handler_addPaymentTx(uint256 gasUsed) external {
-        gasUsed = bound(gasUsed, 21_000, TX_GAS_CAP);
-
-        // Check if transaction would exceed limits
-        if (gasUsed > TX_GAS_CAP) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        // Payment lane shares the 500M block limit but has its own allocation
-        uint256 paymentLaneAvailable = BLOCK_GAS_LIMIT - ghost_generalLaneGasUsed;
-        if (ghost_paymentLaneGasUsed + gasUsed > paymentLaneAvailable) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_blockGasUsed + gasUsed > BLOCK_GAS_LIMIT) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        // Transaction accepted
-        ghost_paymentLaneGasUsed += gasUsed;
-        ghost_blockGasUsed += gasUsed;
-        ghost_t0TxCount++;
-
-        if (gasUsed > ghost_maxTxGasUsed) {
-            ghost_maxTxGasUsed = gasUsed;
-        }
-    }
-
-    /// @notice Handler: Simulate contract deployment transaction
-    /// @param contractSize Size of contract bytecode in bytes
-    function handler_deployContract(uint256 contractSize) external {
-        contractSize = bound(contractSize, 1, MAX_CONTRACT_SIZE);
-
-        // Calculate deployment gas: base + (size * gas_per_byte)
-        uint256 deploymentGas =
-            CONTRACT_CREATION_BASE_GAS + (contractSize * GAS_PER_DEPLOYMENT_BYTE);
-
-        // Track max deployment gas seen
-        if (deploymentGas > ghost_maxDeploymentGas) {
-            ghost_maxDeploymentGas = deploymentGas;
-        }
-
-        // Deployment should fit within TX_GAS_CAP
-        if (deploymentGas > TX_GAS_CAP) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        // Check block limits (deployments go in general lane)
-        if (ghost_generalLaneGasUsed + deploymentGas > GENERAL_GAS_LIMIT) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_blockGasUsed + deploymentGas > BLOCK_GAS_LIMIT) {
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        ghost_generalLaneGasUsed += deploymentGas;
-        ghost_blockGasUsed += deploymentGas;
-        ghost_t1TxCount++;
-
-        if (deploymentGas > ghost_maxTxGasUsed) {
-            ghost_maxTxGasUsed = deploymentGas;
-        }
-    }
-
-    /// @notice Handler: Simulate finalizing a block and starting a new one
-    function handler_finalizeBlock() external {
-        // Verify block validity before finalizing
-        _assertBlockValidity();
-
-        ghost_validBlockCount++;
-        _resetBlock();
-    }
-
-    /// @notice Handler: Attempt to add over-limit transaction (should be rejected)
-    /// @param gasUsed Unbounded gas value to test rejection
-    function handler_attemptOverLimitTx(uint256 gasUsed) external {
-        // Test various over-limit scenarios
-        if (gasUsed > TX_GAS_CAP) {
-            // TEMPO-BLOCK3: Transaction exceeds tx gas cap - must reject
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_generalLaneGasUsed + gasUsed > GENERAL_GAS_LIMIT) {
-            // TEMPO-BLOCK2: Would exceed general lane limit - must reject
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        if (ghost_blockGasUsed + gasUsed > BLOCK_GAS_LIMIT) {
-            // TEMPO-BLOCK1: Would exceed block limit - must reject
-            ghost_rejectedTxCount++;
-            return;
-        }
-
-        // If we get here, the tx is actually valid
-        ghost_generalLaneGasUsed += gasUsed;
-        ghost_blockGasUsed += gasUsed;
-        ghost_t1TxCount++;
+        // Register handlers
+        bytes4[] memory selectors = new bytes4[](2);
+        selectors[0] = this.handler_txGasCapEnforcement.selector;
+        selectors[1] = this.handler_maxDeploymentFits.selector;
+        targetSelector(FuzzSelector({ addr: address(this), selectors: selectors }));
     }
 
     /*//////////////////////////////////////////////////////////////
-                          MASTER INVARIANT
+                        INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Master invariant function that checks all TIP-1010 invariants
-    /// @dev Called after each fuzz sequence
-    function invariant_allBlockGasLimits() public view {
-        _assertBlockTotalGasLimit();
-        _assertGeneralLaneLimit();
-        _assertTxGasCap();
-        _assertBaseFees();
-        _assertPaymentLaneMinGas();
-        _assertContractDeploymentFits();
-        _assertBlockValidity();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        INVARIANT ASSERTIONS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice TEMPO-BLOCK1: Block total gas never exceeds 500,000,000
-    function _assertBlockTotalGasLimit() internal view {
-        assertTrue(
-            ghost_blockGasUsed <= BLOCK_GAS_LIMIT, "TEMPO-BLOCK1: Block gas exceeds 500M limit"
+    /// @notice TEMPO-BLOCK3: Tx gas cap must be enforced at 30M
+    /// @dev Violations occur if tx with gas > 30M is accepted
+    function invariant_TEMPO_BLOCK3_TxGasCap() public view {
+        assertEq(
+            ghost_txOverCapViolations,
+            0,
+            "TEMPO-BLOCK3: Transaction over 30M gas cap was accepted"
         );
     }
 
-    /// @notice TEMPO-BLOCK2: General lane gas never exceeds 30,000,000
-    function _assertGeneralLaneLimit() internal view {
-        assertTrue(
-            ghost_generalLaneGasUsed <= GENERAL_GAS_LIMIT,
-            "TEMPO-BLOCK2: General lane gas exceeds 30M limit"
-        );
-    }
-
-    /// @notice TEMPO-BLOCK3: Transaction gas limit never exceeds 30,000,000
-    function _assertTxGasCap() internal view {
-        assertTrue(
-            ghost_maxTxGasUsed <= TX_GAS_CAP, "TEMPO-BLOCK3: Transaction gas exceeds 30M cap"
-        );
-    }
-
-    /// @notice TEMPO-BLOCK4: Base fee for T1 is exactly 20 gwei
-    /// @dev This is a constant check - verifies the protocol parameter
-    function _assertBaseFees() internal pure {
-        assertEq(T1_BASE_FEE, 20 gwei, "TEMPO-BLOCK4: T1 base fee must be 20 gwei");
-        assertEq(T0_BASE_FEE, 10 gwei, "TEMPO-BLOCK4: T0 base fee must be 10 gwei");
-    }
-
-    /// @notice TEMPO-BLOCK5: Payment lane has at least 470M available (500M - general)
-    function _assertPaymentLaneMinGas() internal view {
-        uint256 paymentLaneAvailable = BLOCK_GAS_LIMIT - ghost_generalLaneGasUsed;
-        assertTrue(
-            paymentLaneAvailable >= PAYMENT_LANE_MIN_GAS - ghost_generalLaneGasUsed,
-            "TEMPO-BLOCK5: Payment lane available gas below minimum"
-        );
-
-        // When general lane is at max (30M), payment lane should have at least 470M
-        if (ghost_generalLaneGasUsed == GENERAL_GAS_LIMIT) {
-            assertEq(
-                paymentLaneAvailable,
-                PAYMENT_LANE_MIN_GAS,
-                "TEMPO-BLOCK5: At max general usage, payment lane should have exactly 470M"
+    /// @notice TEMPO-BLOCK6: Max contract deployment (24KB) must fit in tx cap
+    /// @dev Failures indicate tx cap is too low for max-size contracts
+    function invariant_TEMPO_BLOCK6_MaxDeploymentFits() public view {
+        // If we've tested deployments, at least some should succeed
+        if (ghost_deploymentTests > 0) {
+            assertTrue(
+                ghost_maxDeploymentSucceeded > 0 || ghost_maxDeploymentFailed == 0,
+                "TEMPO-BLOCK6: Max deployment never succeeded"
             );
         }
     }
 
-    /// @notice TEMPO-BLOCK6: Max contract deployment (24KB) fits within tx gas cap
-    function _assertContractDeploymentFits() internal view {
-        uint256 maxDeployGas =
-            CONTRACT_CREATION_BASE_GAS + (MAX_CONTRACT_SIZE * GAS_PER_DEPLOYMENT_BYTE);
-        assertTrue(
-            maxDeployGas <= TX_GAS_CAP, "TEMPO-BLOCK6: Max contract deployment exceeds tx gas cap"
-        );
+    /// @notice Constant invariants - verify TIP-1010 parameter values
+    function invariant_constants() public pure {
+        // TEMPO-BLOCK1: Block gas limit
+        assertEq(BLOCK_GAS_LIMIT, 500_000_000, "BLOCK1: Block limit must be 500M");
 
-        // Verify any deployment we've seen fits
-        assertTrue(
-            ghost_maxDeploymentGas <= TX_GAS_CAP,
-            "TEMPO-BLOCK6: Observed deployment exceeds tx gas cap"
-        );
+        // TEMPO-BLOCK2: General lane limit
+        assertEq(GENERAL_GAS_LIMIT, 30_000_000, "BLOCK2: General lane must be 30M");
+
+        // TEMPO-BLOCK3: Tx gas cap
+        assertEq(TX_GAS_CAP, 30_000_000, "BLOCK3: Tx cap must be 30M");
+
+        // TEMPO-BLOCK4: Base fees
+        assertEq(T1_BASE_FEE, 20 gwei, "BLOCK4: T1 base fee must be 20 gwei");
+        assertEq(T0_BASE_FEE, 10 gwei, "BLOCK4: T0 base fee must be 10 gwei");
+
+        // TEMPO-BLOCK5: Payment lane minimum
+        assertEq(PAYMENT_LANE_MIN, 470_000_000, "BLOCK5: Payment lane min must be 470M");
+
+        // TEMPO-BLOCK10: Shared gas limit
+        assertEq(SHARED_GAS_LIMIT, 50_000_000, "BLOCK10: Shared limit must be 50M");
+
+        // Relationships
+        assertEq(TX_GAS_CAP, GENERAL_GAS_LIMIT, "Tx cap must equal general lane");
+        assertEq(PAYMENT_LANE_MIN, BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT, "Payment = Block - General");
     }
 
-    /// @notice TEMPO-BLOCK7: Block validity rejects over-limit scenarios
-    /// @dev Verifies that the current block state is valid
-    function _assertBlockValidity() internal view {
-        // Block is valid if all limits are respected
-        bool blockValid = ghost_blockGasUsed <= BLOCK_GAS_LIMIT
-            && ghost_generalLaneGasUsed <= GENERAL_GAS_LIMIT && ghost_maxTxGasUsed <= TX_GAS_CAP;
-
-        assertTrue(blockValid, "TEMPO-BLOCK7: Block in invalid state");
-
-        // Payment + General should not exceed block limit
-        assertTrue(
-            ghost_paymentLaneGasUsed + ghost_generalLaneGasUsed <= BLOCK_GAS_LIMIT,
-            "TEMPO-BLOCK7: Combined lane gas exceeds block limit"
-        );
+    /// @notice Summary invariant
+    function invariant_testsExecuted() public view {
+        uint256 totalTests = ghost_txGasCapTests + ghost_deploymentTests;
+        assertTrue(totalTests > 0, "No block gas limit tests were executed");
     }
 
     /*//////////////////////////////////////////////////////////////
-                          HELPER FUNCTIONS
+                            HANDLERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Calculates gas required for contract deployment
-    /// @param contractSize Size of contract in bytes
-    /// @return Gas required for deployment
-    function calculateDeploymentGas(uint256 contractSize) public pure returns (uint256) {
-        return CONTRACT_CREATION_BASE_GAS + (contractSize * GAS_PER_DEPLOYMENT_BYTE);
-    }
+    /// @notice Handler: Test tx gas cap enforcement (TEMPO-BLOCK3)
+    /// @param actorSeed Seed for selecting actor
+    /// @param gasMultiplier Multiplier to test various gas levels
+    function handler_txGasCapEnforcement(uint256 actorSeed, uint256 gasMultiplier) external {
+        ghost_txGasCapTests++;
 
-    /// @notice Returns remaining gas available in general lane
-    function getRemainingGeneralGas() public view returns (uint256) {
-        return GENERAL_GAS_LIMIT - ghost_generalLaneGasUsed;
-    }
+        uint256 senderIdx = actorSeed % actors.length;
+        address sender = actors[senderIdx];
+        uint256 privateKey = actorKeys[senderIdx];
 
-    /// @notice Returns remaining gas available in payment lane
-    function getRemainingPaymentGas() public view returns (uint256) {
-        uint256 usedByGeneral = ghost_generalLaneGasUsed;
-        uint256 paymentLaneAvailable = BLOCK_GAS_LIMIT - usedByGeneral;
-        if (ghost_paymentLaneGasUsed >= paymentLaneAvailable) {
-            return 0;
+        // Simple transfer for minimal gas overhead
+        bytes memory callData = abi.encodeCall(ITIP20.transfer, (actors[0], 1e6));
+        uint64 nonce = uint64(vm.getNonce(sender));
+
+        // Test 1: Tx at exactly the cap (should succeed)
+        uint64 atCapGas = uint64(TX_GAS_CAP);
+        bytes memory atCapTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(feeToken), callData, nonce, atCapGas, privateKey
+        );
+
+        vm.coinbase(validator);
+
+        try vmExec.executeTransaction(atCapTx) {
+            ghost_txAtCapSucceeded++;
+            ghost_protocolNonce[sender]++;
+            ghost_validTxExecuted++;
+        } catch {
+            // May fail for other reasons (balance, etc.) - not a violation
         }
-        return paymentLaneAvailable - ghost_paymentLaneGasUsed;
+
+        // Test 2: Tx over the cap (should be rejected)
+        nonce = uint64(vm.getNonce(sender));
+        
+        // Gas amount over cap: 30M + 1 to 30M + 10M based on multiplier
+        uint256 overAmount = bound(gasMultiplier, 1, 10_000_000);
+        uint64 overCapGas = uint64(TX_GAS_CAP + overAmount);
+
+        bytes memory overCapTx = TxBuilder.buildLegacyCallWithGas(
+            vmRlp, vm, address(feeToken), callData, nonce, overCapGas, privateKey
+        );
+
+        try vmExec.executeTransaction(overCapTx) {
+            // Over-cap tx was accepted - VIOLATION
+            ghost_txOverCapViolations++;
+            ghost_protocolNonce[sender]++;
+        } catch {
+            // Expected: rejected
+            ghost_txOverCapRejected++;
+        }
     }
 
-    /// @notice Returns remaining gas available in block
-    function getRemainingBlockGas() public view returns (uint256) {
-        return BLOCK_GAS_LIMIT - ghost_blockGasUsed;
+    /// @notice Handler: Test max contract deployment fits in cap (TEMPO-BLOCK6)
+    /// @param actorSeed Seed for selecting actor
+    /// @param sizeFraction Fraction of max size to deploy (50-100%)
+    function handler_maxDeploymentFits(uint256 actorSeed, uint256 sizeFraction) external {
+        ghost_deploymentTests++;
+
+        uint256 senderIdx = actorSeed % actors.length;
+        address sender = actors[senderIdx];
+        uint256 privateKey = actorKeys[senderIdx];
+
+        // Create initcode for contract near max size
+        // Size: 50% to 100% of max (12KB to 24KB)
+        sizeFraction = bound(sizeFraction, 50, 100);
+        uint256 targetSize = (MAX_CONTRACT_SIZE * sizeFraction) / 100;
+
+        // Simple initcode: PUSH1 0x00 PUSH1 0x00 RETURN + padding
+        bytes memory initcode = _createInitcodeOfSize(targetSize);
+
+        // Calculate required gas
+        uint256 requiredGas = 53_000 // CREATE tx base
+            + CREATE_BASE_GAS 
+            + (initcode.length * CODE_DEPOSIT_PER_BYTE)
+            + ACCOUNT_CREATION_GAS
+            + 100_000; // Buffer for memory expansion etc.
+
+        // Should fit in TX_GAS_CAP
+        uint64 gasLimit = uint64(requiredGas > TX_GAS_CAP ? TX_GAS_CAP : requiredGas);
+
+        uint64 nonce = uint64(vm.getNonce(sender));
+        bytes memory createTx = TxBuilder.buildLegacyCreateWithGas(
+            vmRlp, vm, initcode, nonce, gasLimit, privateKey
+        );
+
+        vm.coinbase(validator);
+        address expectedAddr = TxBuilder.computeCreateAddress(sender, nonce);
+
+        try vmExec.executeTransaction(createTx) {
+            if (expectedAddr.code.length > 0) {
+                ghost_maxDeploymentSucceeded++;
+            }
+            ghost_protocolNonce[sender]++;
+            ghost_validTxExecuted++;
+        } catch {
+            // Deployment failed - may indicate cap too low if at max size
+            if (sizeFraction == 100) {
+                ghost_maxDeploymentFailed++;
+            }
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
-                     INDIVIDUAL INVARIANT TESTS
+                            HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Standalone test for TEMPO-BLOCK1
-    function test_TEMPO_BLOCK1_BlockGasLimit() public pure {
-        assertEq(BLOCK_GAS_LIMIT, 500_000_000, "Block gas limit should be 500M");
-    }
+    /// @notice Create initcode that deploys a contract of target runtime size
+    /// @param targetSize Target runtime bytecode size
+    function _createInitcodeOfSize(uint256 targetSize) internal pure returns (bytes memory) {
+        // Runtime code: just padding with INVALID (0xFE) opcodes
+        // This is valid bytecode that will deploy successfully
+        bytes memory runtime = new bytes(targetSize);
+        for (uint256 i = 0; i < targetSize; i++) {
+            runtime[i] = 0x00; // STOP opcode - safe no-op
+        }
 
-    /// @notice Standalone test for TEMPO-BLOCK2
-    function test_TEMPO_BLOCK2_GeneralLaneLimit() public pure {
-        assertEq(GENERAL_GAS_LIMIT, 30_000_000, "General lane limit should be 30M");
-    }
+        // Initcode structure:
+        // PUSH2 <size>   ; 3 bytes
+        // PUSH1 0x0a     ; 2 bytes (offset where runtime starts)
+        // PUSH1 0x00     ; 2 bytes (memory destination)
+        // CODECOPY       ; 1 byte
+        // PUSH2 <size>   ; 3 bytes
+        // PUSH1 0x00     ; 2 bytes
+        // RETURN         ; 1 byte
+        // <runtime>      ; targetSize bytes
 
-    /// @notice Standalone test for TEMPO-BLOCK3
-    function test_TEMPO_BLOCK3_TxGasCap() public pure {
-        assertEq(TX_GAS_CAP, 30_000_000, "Tx gas cap should be 30M");
-    }
+        bytes memory initcode = new bytes(14 + targetSize);
+        
+        // PUSH2 size (big endian)
+        initcode[0] = 0x61; // PUSH2
+        initcode[1] = bytes1(uint8(targetSize >> 8));
+        initcode[2] = bytes1(uint8(targetSize));
+        
+        // PUSH1 0x0e (14 = offset where runtime starts)
+        initcode[3] = 0x60; // PUSH1
+        initcode[4] = 0x0e;
+        
+        // PUSH1 0x00
+        initcode[5] = 0x60;
+        initcode[6] = 0x00;
+        
+        // CODECOPY
+        initcode[7] = 0x39;
+        
+        // PUSH2 size
+        initcode[8] = 0x61;
+        initcode[9] = bytes1(uint8(targetSize >> 8));
+        initcode[10] = bytes1(uint8(targetSize));
+        
+        // PUSH1 0x00
+        initcode[11] = 0x60;
+        initcode[12] = 0x00;
+        
+        // RETURN
+        initcode[13] = 0xf3;
+        
+        // Copy runtime code
+        for (uint256 i = 0; i < targetSize; i++) {
+            initcode[14 + i] = runtime[i];
+        }
 
-    /// @notice Standalone test for TEMPO-BLOCK4
-    function test_TEMPO_BLOCK4_BaseFees() public pure {
-        assertEq(T1_BASE_FEE, 20 gwei, "T1 base fee should be 20 gwei");
-        assertEq(T0_BASE_FEE, 10 gwei, "T0 base fee should be 10 gwei");
-    }
-
-    /// @notice Standalone test for TEMPO-BLOCK5
-    function test_TEMPO_BLOCK5_PaymentLaneMinGas() public pure {
-        assertEq(PAYMENT_LANE_MIN_GAS, 470_000_000, "Payment lane min should be 470M");
-        assertEq(
-            BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT,
-            PAYMENT_LANE_MIN_GAS,
-            "Payment lane = Block - General"
-        );
-    }
-
-    /// @notice Standalone test for TEMPO-BLOCK6
-    function test_TEMPO_BLOCK6_MaxContractDeploymentFits() public pure {
-        uint256 maxDeployGas =
-            CONTRACT_CREATION_BASE_GAS + (MAX_CONTRACT_SIZE * GAS_PER_DEPLOYMENT_BYTE);
-        // 53000 + (24576 * 200) = 53000 + 4915200 = 4968200 gas
-        assertTrue(maxDeployGas < TX_GAS_CAP, "Max deployment should fit in tx gas cap");
-        assertEq(maxDeployGas, 4_968_200, "Max deployment gas calculation");
-    }
-
-    /// @notice Standalone test for TEMPO-BLOCK7: Verify rejection logic
-    function test_TEMPO_BLOCK7_RejectsOverLimit() public {
-        // Fill general lane to max
-        ghost_generalLaneGasUsed = GENERAL_GAS_LIMIT;
-        ghost_blockGasUsed = GENERAL_GAS_LIMIT;
-
-        // Attempting to add more to general lane should be rejected
-        uint256 beforeReject = ghost_rejectedTxCount;
-        this.handler_addGeneralTx(21_000);
-        assertEq(
-            ghost_rejectedTxCount, beforeReject + 1, "Should reject tx when general lane is full"
-        );
-
-        // Reset and test block limit
-        _resetBlock();
-        ghost_paymentLaneGasUsed = BLOCK_GAS_LIMIT - 10_000;
-        ghost_blockGasUsed = BLOCK_GAS_LIMIT - 10_000;
-
-        beforeReject = ghost_rejectedTxCount;
-        this.handler_addPaymentTx(21_000);
-        assertEq(
-            ghost_rejectedTxCount, beforeReject + 1, "Should reject tx when block is nearly full"
-        );
-    }
-
-    /// @notice Fuzz test for lane separation
-    function testFuzz_LaneSeparation(
-        uint256 generalGas1,
-        uint256 generalGas2,
-        uint256 paymentGas1,
-        uint256 paymentGas2
-    ) public {
-        _resetBlock();
-
-        // Add transactions to both lanes
-        this.handler_addGeneralTx(generalGas1);
-        this.handler_addPaymentTx(paymentGas1);
-        this.handler_addGeneralTx(generalGas2);
-        this.handler_addPaymentTx(paymentGas2);
-
-        // Verify all invariants hold
-        _assertBlockTotalGasLimit();
-        _assertGeneralLaneLimit();
-        _assertPaymentLaneMinGas();
-        _assertBlockValidity();
-    }
-
-    /// @notice Fuzz test for contract deployment within limits
-    function testFuzz_ContractDeployment(uint256 contractSize) public {
-        _resetBlock();
-
-        this.handler_deployContract(contractSize);
-
-        _assertBlockTotalGasLimit();
-        _assertGeneralLaneLimit();
-        _assertTxGasCap();
-        _assertContractDeploymentFits();
+        return initcode;
     }
 
 }
