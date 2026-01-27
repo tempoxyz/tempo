@@ -164,6 +164,50 @@ The Nonce precompile manages 2D nonces for accounts, enabling multiple independe
 - **TEMPO-NON9**: Nonce overflow protection - incrementing a nonce at `u64::MAX` reverts with `NonceOverflow`. Rust uses `checked_add(1)` which returns an error on overflow.
 - **TEMPO-NON10**: Invalid key increment rejection - `increment_nonce(key=0)` reverts with `InvalidNonceKey` (distinct from `ProtocolNonceNotSupported` used for reads).
 
+## TIP403Registry
+
+The TIP403Registry manages transfer policies (whitelists and blacklists) that control which addresses can send or receive tokens.
+
+### Global Invariants
+
+These are checked after every fuzz run:
+
+- **TEMPO-REG13**: Special policy existence - policies 0 and 1 always exist (return true for `policyExists`).
+- **TEMPO-REG15**: Counter monotonicity - `policyIdCounter` only increases and equals `2 + totalPoliciesCreated`.
+- **TEMPO-REG16**: Policy type immutability - a policy's type cannot change after creation.
+- **TEMPO-REG19**: Policy membership consistency - ghost policy membership state matches registry `isAuthorized` for all tracked accounts, respecting whitelist/blacklist semantics.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+#### Policy Creation
+
+- **TEMPO-REG1**: Policy ID assignment - newly created policy ID equals `policyIdCounter` before creation.
+- **TEMPO-REG2**: Counter increment - `policyIdCounter` increments by 1 after each policy creation.
+- **TEMPO-REG3**: Policy existence - all created policies return true for `policyExists()`.
+- **TEMPO-REG4**: Policy data accuracy - `policyData()` returns the correct type and admin as specified during creation.
+- **TEMPO-REG5**: Bulk creation - `createPolicyWithAccounts` correctly initializes all provided accounts in the policy.
+
+#### Admin Management
+
+- **TEMPO-REG6**: Admin transfer - `setPolicyAdmin` correctly updates the policy admin.
+- **TEMPO-REG7**: Admin-only enforcement - non-admins cannot modify policy admin (reverts with `Unauthorized`).
+
+#### Policy Modification
+
+- **TEMPO-REG8**: Whitelist modification - adding an account to a whitelist makes `isAuthorized` return true for that account.
+- **TEMPO-REG9**: Blacklist modification - adding an account to a blacklist makes `isAuthorized` return false for that account.
+- **TEMPO-REG10**: Policy type enforcement - `modifyPolicyWhitelist` on a blacklist (or vice versa) reverts with `IncompatiblePolicyType`.
+
+#### Special Policies
+
+- **TEMPO-REG11**: Always-reject policy - policy ID 0 returns false for all `isAuthorized` checks.
+- **TEMPO-REG12**: Always-allow policy - policy ID 1 returns true for all `isAuthorized` checks.
+- **TEMPO-REG14**: Non-existent policies - policy IDs >= `policyIdCounter` return false for `policyExists()`.
+- **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
+- **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
+
 ## ValidatorConfig
 
 The ValidatorConfig precompile manages the set of validators that participate in consensus, including their public keys, addresses, and active status.
