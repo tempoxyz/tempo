@@ -92,10 +92,6 @@ The FeeAMM is a constant-rate AMM used for converting user fee tokens to validat
 - **TEMPO-AMM21**: Spread between fee swap (M) and rebalance (N) prevents arbitrage - M < N with 15 bps spread.
 - **TEMPO-AMM22**: Rebalance swap rounding always favors the pool - the +1 in the formula ensures pool never loses to rounding, even when `(amountOut * N) % SCALE == 0` (exact division case).
 
-### First Mint Boundary Invariants
-
-- **TEMPO-AMM35**: First mint requires `half_amount > MIN_LIQUIDITY`, not `>=`. The boundary case where `amount == 2 * MIN_LIQUIDITY` (i.e., `half_amount == MIN_LIQUIDITY`) must revert with `InsufficientLiquidity`.
-- **TEMPO-AMM36**: First mint with `amount == 2 * MIN_LIQUIDITY + 2` should succeed with `liquidity == 1`.
 - **TEMPO-AMM23**: Burn rounding dust accumulates in pool - integer division rounds down, so users receive <= theoretical amount.
 - **TEMPO-AMM24**: All participants can exit with solvency guaranteed. After distributing all fees and burning all LP positions:
 
@@ -237,6 +233,7 @@ These verify correct behavior when the specific function is called:
 - **TEMPO-REG17**: Special policy immutability - policies 0 and 1 cannot be modified via `modifyPolicyWhitelist` or `modifyPolicyBlacklist`.
 - **TEMPO-REG18**: Special policy admin immutability - the admin of policies 0 and 1 cannot be changed (attempts revert with `Unauthorized` since admin is `address(0)`).
 
+
 ## ValidatorConfig
 
 The ValidatorConfig precompile manages the set of validators that participate in consensus, including their public keys, addresses, and active status.
@@ -280,3 +277,60 @@ The ValidatorConfig precompile manages the set of validators that participate in
 - **TEMPO-VAL14**: Owner consistency - contract owner always matches ghost state.
 - **TEMPO-VAL15**: Validator data consistency - all validator data (active status, public key, index) matches ghost state.
 - **TEMPO-VAL16**: Index consistency - each validator's index matches the ghost-tracked index assigned at creation.
+
+## TIP20
+
+TIP20 is the Tempo token standard that extends ERC-20 with transfer policies, memo support, pause functionality, and reward distribution.
+
+### Transfer Invariants
+
+- **TEMPO-TIP1**: Balance conservation - sender balance decreases by exactly `amount`, recipient balance increases by exactly `amount`. Transfer returns `true` on success.
+- **TEMPO-TIP2**: Total supply unchanged after transfer - transfers only move tokens between accounts.
+- **TEMPO-TIP3**: Allowance consumption - `transferFrom` decreases allowance by exactly `amount` transferred.
+- **TEMPO-TIP4**: Infinite allowance preserved - `type(uint256).max` allowance remains infinite after `transferFrom`.
+- **TEMPO-TIP9**: Memo transfers behave identically to regular transfers for balance accounting.
+
+### Approval Invariants
+
+- **TEMPO-TIP5**: Allowance setting - `approve` sets exact allowance amount, returns `true`.
+
+### Mint/Burn Invariants
+
+- **TEMPO-TIP6**: Minting increases total supply and recipient balance by exactly `amount`.
+- **TEMPO-TIP7**: Supply cap enforcement - minting reverts if `totalSupply + amount > supplyCap`.
+- **TEMPO-TIP8**: Burning decreases total supply and burner balance by exactly `amount`.
+- **TEMPO-TIP23**: Burn blocked - `burnBlocked` decreases target balance and total supply by exactly `amount` when target is blacklisted.
+
+### Reward Distribution Invariants
+
+- **TEMPO-TIP10**: Reward recipient setting - `setRewardRecipient` updates the stored recipient correctly.
+- **TEMPO-TIP11**: Opted-in supply tracking - `optedInSupply` increases when opting in (by holder's balance) and decreases when opting out.
+- **TEMPO-TIP25**: Reward delegation - users can delegate their rewards to another address via `setRewardRecipient`.
+- **TEMPO-TIP12**: Global reward per token updates - `distributeReward` increases `globalRewardPerToken` by `(amount * ACC_PRECISION) / optedInSupply`.
+- **TEMPO-TIP13**: Reward token custody - distributed rewards are transferred to the token contract.
+- **TEMPO-TIP14**: Reward claiming - `claimRewards` transfers owed amount from contract to caller, updates balances correctly.
+- **TEMPO-TIP15**: Claim bounded by available - claimed amount cannot exceed contract's token balance.
+
+### Policy Invariants
+
+- **TEMPO-TIP16**: Blacklist enforcement - transfers to/from blacklisted addresses revert with `PolicyForbids`.
+- **TEMPO-TIP17**: Pause enforcement - transfers revert with `ContractPaused` when paused.
+
+### Global Invariants
+
+- **TEMPO-TIP18**: Supply conservation - `totalSupply = initialSupply + totalMints - totalBurns`.
+- **TEMPO-TIP19**: Opted-in supply bounded - `optedInSupply <= totalSupply`.
+- **TEMPO-TIP20**: Balance sum equals supply - sum of all holder balances equals `totalSupply`.
+- **TEMPO-TIP21**: Decimals constant - `decimals()` always returns 6.
+- **TEMPO-TIP22**: Supply cap enforced - `totalSupply <= supplyCap` always holds.
+
+### Protected Address Invariants
+
+- **TEMPO-TIP24**: Protected address enforcement - `burnBlocked` cannot be called on FeeManager or DEX addresses (reverts with `ProtectedAddress`).
+
+### Access Control Invariants
+
+- **TEMPO-TIP26**: Issuer-only minting - only accounts with `ISSUER_ROLE` can call `mint` (non-issuers revert with `Unauthorized`).
+- **TEMPO-TIP27**: Pause-role enforcement - only accounts with `PAUSE_ROLE` can call `pause` (non-role holders revert with `Unauthorized`).
+- **TEMPO-TIP28**: Unpause-role enforcement - only accounts with `UNPAUSE_ROLE` can call `unpause` (non-role holders revert with `Unauthorized`).
+- **TEMPO-TIP29**: Burn-blocked-role enforcement - only accounts with `BURN_BLOCKED_ROLE` can call `burnBlocked` (non-role holders revert with `Unauthorized`).
