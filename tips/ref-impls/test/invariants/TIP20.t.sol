@@ -925,8 +925,9 @@ contract TIP20InvariantTest is InvariantBaseTest {
         uint256 contractBalance = token.balanceOf(address(token));
         uint256 actorBalanceBefore = token.balanceOf(actor);
 
-        // Get stored reward balance (note: pending accrual from delegation is added during claim)
-        (,, uint256 storedRewardBalance) = token.userRewardInfo(actor);
+        // Use contract's getPendingRewards view to get expected claimable amount
+        uint256 pendingRewards = token.getPendingRewards(actor);
+        uint256 expectedClaim = contractBalance > pendingRewards ? pendingRewards : contractBalance;
 
         vm.startPrank(actor);
         try token.claimRewards() returns (uint256 claimed) {
@@ -941,12 +942,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
                 _tokenRewardsClaimed[address(token)] += claimed;
             }
 
-            // TEMPO-TIP15: Claimed should be at least storedRewardBalance (may be more due to pending accrual)
-            assertGe(
-                claimed,
-                storedRewardBalance > contractBalance ? contractBalance : storedRewardBalance,
-                "TEMPO-TIP15: Claimed less than stored reward balance"
-            );
+            // TEMPO-TIP15: Claimed should be min(pendingRewards, contractBalance)
+            assertEq(claimed, expectedClaim, "TEMPO-TIP15: Claimed amount incorrect");
 
             // TEMPO-TIP15: Claimed should not exceed contract balance
             assertLe(claimed, contractBalance, "TEMPO-TIP15: Claimed more than contract balance");
