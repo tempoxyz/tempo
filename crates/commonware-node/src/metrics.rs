@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
 use jiff::SignedDuration;
 
@@ -16,6 +16,7 @@ use opentelemetry_sdk::{
     Resource,
     metrics::{PeriodicReader, SdkMeterProvider},
 };
+use parking_lot::Mutex;
 use tokio::net::TcpListener;
 
 /// Installs a metrics server so that commonware can publish its metrics.
@@ -64,18 +65,24 @@ pub struct OtlpConfig {
     pub endpoint: String,
     /// The interval at which to export metrics.
     pub interval: SignedDuration,
-    /// Labels to add to all metrics (e.g., node_id, consensus_pubkey).
+    /// Labels to add to all metrics as resource attributes (e.g., node_id, consensus_pubkey).
     pub labels: HashMap<String, String>,
+}
+
+/// Handle to the OTLP metrics exporter that must be held for the lifetime of the export.
+pub struct OtlpMetricsHandle {
+    _meter_provider: SdkMeterProvider,
+    _task: tokio::task::JoinHandle<()>,
 }
 
 /// Installs an OTLP metrics exporter that periodically pushes consensus metrics.
 ///
-/// This creates an OpenTelemetry MeterProvider with an OTLP exporter and periodically
-/// reads metrics from the commonware context, converting them to OpenTelemetry format.
+/// This bridges commonware's Prometheus-format metrics to OTLP by polling
+/// `context.encode()` and recording values via dynamically-created gauges.
+/// Each metric preserves its original name from the Prometheus output.
 ///
-/// Returns the meter provider which must be kept alive for metrics to be exported.
-pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<SdkMeterProvider> {
-    // Build resource attributes from labels
+/// Returns an `OtlpMetricsHandle` that must be held for the lifetime of the export.
+pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMetricsHandle> {
     let resource_attributes: Vec<KeyValue> = config
         .labels
         .iter()
@@ -90,19 +97,21 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<SdkMet
         .with_attributes(resource_attributes)
         .build();
 
-    // Configure OTLP exporter
     let exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         .with_endpoint(&config.endpoint)
         .build()
         .wrap_err("failed to build OTLP metrics exporter")?;
 
-    // Create periodic reader with configured interval
+    let interval: std::time::Duration = config
+        .interval
+        .try_into()
+        .wrap_err("metrics interval must be positive")?;
+
     let reader = PeriodicReader::builder(exporter)
-        .with_interval(config.interval.unsigned_abs())
+        .with_interval(interval)
         .build();
 
-    // Build meter provider
     let meter_provider = SdkMeterProvider::builder()
         .with_resource(resource)
         .with_reader(reader)
@@ -110,38 +119,55 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<SdkMet
 
     let meter = meter_provider.meter("tempo-consensus");
 
-    // Create an observable gauge that reads from the context on each export
-    let _gauge = meter
-        .f64_observable_gauge("consensus_metrics")
-        .with_description("Consensus layer metrics from commonware runtime")
-        .with_callback(move |observer| {
+    // Cache for dynamically created gauges - created on first encounter
+    let gauges: Arc<Mutex<HashMap<String, opentelemetry::metrics::Gauge<f64>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // Poll at half the export interval to ensure fresh data for each export
+    let poll_interval = interval / 2;
+    let task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(poll_interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            ticker.tick().await;
+
             let encoded = context.encode();
-            // Parse prometheus format and report individual metrics
+
             for line in encoded.lines() {
                 if line.starts_with('#') || line.is_empty() {
                     continue;
                 }
+
                 if let Some((name_labels, value_str)) = line.rsplit_once(' ')
                     && let Ok(value) = value_str.parse::<f64>()
                 {
-                    // Extract metric name and labels
-                    let (name, labels) = parse_prometheus_metric(name_labels);
+                    let (metric_name, labels) = parse_prometheus_metric(name_labels);
+
+                    // Get or create gauge for this metric (preserving original name)
+                    let gauge = {
+                        let mut cache = gauges.lock();
+                        cache
+                            .entry(metric_name.clone())
+                            .or_insert_with(|| meter.f64_gauge(metric_name).build())
+                            .clone()
+                    };
+
                     let attributes: Vec<KeyValue> = labels
                         .into_iter()
                         .map(|(k, v)| KeyValue::new(k, v))
                         .collect();
-                    observer.observe(value, &attributes);
 
-                    // Also record with the original metric name as an attribute
-                    let mut attrs_with_name = attributes.clone();
-                    attrs_with_name.push(KeyValue::new("metric_name", name));
-                    observer.observe(value, &attrs_with_name);
+                    gauge.record(value, &attributes);
                 }
             }
-        })
-        .build();
+        }
+    });
 
-    Ok(meter_provider)
+    Ok(OtlpMetricsHandle {
+        _meter_provider: meter_provider,
+        _task: task,
+    })
 }
 
 /// Parse a prometheus metric line like `metric_name{label="value"} 123`
