@@ -583,10 +583,7 @@ where
         } else {
             // validate intrinsic gas with additional TIP-1000 and T1 checks
             if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
-                return TransactionValidationOutcome::Invalid(
-                    transaction,
-                    InvalidPoolTransactionError::other(err),
-                );
+                return TransactionValidationOutcome::Invalid(transaction, err);
             }
         }
 
@@ -816,7 +813,7 @@ where
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
     spec: TempoHardfork,
-) -> Result<(), TempoPoolTransactionError> {
+) -> Result<(), InvalidPoolTransactionError> {
     let gas_params = tempo_gas_params(spec);
 
     let mut gas = gas_params.initial_tx_gas(
@@ -852,10 +849,7 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 
     let gas_limit = tx.gas_limit();
     if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
-        Err(TempoPoolTransactionError::InsufficientGasForIntrinsicCost {
-            gas_limit,
-            intrinsic_gas: gas.initial_gas,
-        })
+        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
     } else {
         Ok(())
     }
@@ -2868,7 +2862,7 @@ mod tests {
     }
 
     /// Non-AA transaction with insufficient gas should be rejected with Invalid outcome
-    /// and InsufficientGasForIntrinsicCost error.
+    /// and IntrinsicGasTooLow error.
     #[tokio::test]
     async fn test_non_aa_intrinsic_gas_insufficient_rejected() {
         let current_time = std::time::SystemTime::now()
@@ -2889,17 +2883,14 @@ mod tests {
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
                 assert!(
-                    matches!(
-                        err.downcast_other_ref::<TempoPoolTransactionError>(),
-                        Some(TempoPoolTransactionError::InsufficientGasForIntrinsicCost { .. })
-                    ),
-                    "Expected InsufficientGasForIntrinsicCost error, got: {err:?}"
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
                 );
             }
             TransactionValidationOutcome::Error(_, _) => {
                 panic!("Expected Invalid outcome, got Error - this was the bug we fixed!")
             }
-            _ => panic!("Expected Invalid outcome with InsufficientGasForIntrinsicCost, got: {outcome:?}"),
+            _ => panic!("Expected Invalid outcome with IntrinsicGasTooLow, got: {outcome:?}"),
         }
     }
 
@@ -2964,7 +2955,7 @@ mod tests {
         }
     }
 
-    /// Verify error message contains useful gas information for debugging.
+    /// Verify intrinsic gas error is returned for insufficient gas.
     #[tokio::test]
     async fn test_intrinsic_gas_error_contains_gas_details() {
         let current_time = std::time::SystemTime::now()
@@ -2984,19 +2975,10 @@ mod tests {
 
         match outcome {
             TransactionValidationOutcome::Invalid(_, ref err) => {
-                if let Some(TempoPoolTransactionError::InsufficientGasForIntrinsicCost {
-                    gas_limit: err_gas_limit,
-                    intrinsic_gas,
-                }) = err.downcast_other_ref::<TempoPoolTransactionError>()
-                {
-                    assert_eq!(*err_gas_limit, gas_limit, "Error should contain the actual gas limit");
-                    assert!(
-                        *intrinsic_gas > gas_limit,
-                        "Intrinsic gas ({intrinsic_gas}) should be greater than gas limit ({gas_limit})"
-                    );
-                } else {
-                    panic!("Expected InsufficientGasForIntrinsicCost error, got: {err:?}");
-                }
+                assert!(
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
+                );
             }
             _ => panic!("Expected Invalid outcome, got: {outcome:?}"),
         }
