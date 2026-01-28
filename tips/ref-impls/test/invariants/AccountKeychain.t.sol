@@ -456,9 +456,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         external
     {
         address account1 = _selectActor(account1Seed);
-        address account2 = _selectActor(account2Seed);
-
-        vm.assume(account1 != account2);
+        address account2 = _selectActorExcluding(account2Seed, account1);
 
         address keyId = _selectKeyId(keyIdSeed);
 
