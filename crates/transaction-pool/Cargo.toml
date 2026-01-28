@@ -49,6 +49,7 @@ test-utils = [
   "reth-chainspec/test-utils",
   "reth-ethereum-primitives/test-utils",
   "reth-evm/test-utils",
+  "reth-evm-ethereum/test-utils",
   "reth-primitives-traits/test-utils",
   "reth-provider/test-utils",
   "reth-transaction-pool/test-utils",
@@ -57,6 +58,7 @@ test-utils = [
 
 [dev-dependencies]
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
+reth-evm-ethereum.workspace = true
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true
