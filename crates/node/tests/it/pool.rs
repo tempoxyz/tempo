@@ -293,8 +293,11 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 
     // Instead, let's verify the eviction function works correctly by checking that
     // the function runs without error when there are no transactions.
-    let validator_token_changes = vec![(user_addr, new_validator_token)];
-    pool.evict_invalidated_transactions(&[], &validator_token_changes);
+    let updates = tempo_transaction_pool::TempoPoolUpdates {
+        validator_token_changes: vec![(user_addr, new_validator_token)],
+        ..Default::default()
+    };
+    pool.evict_invalidated_transactions(&updates);
 
     // The eviction ran successfully (no panic)
     // Now let's test with a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
@@ -333,8 +336,11 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
 
     // Now simulate a validator changing to a token that has no pool with PATH_USD
     // This should evict the transaction because pool(PATH_USD, new_validator_token) doesn't exist
-    let validator_token_changes = vec![(user_addr, new_validator_token)];
-    pool.evict_invalidated_transactions(&[], &validator_token_changes);
+    let updates = tempo_transaction_pool::TempoPoolUpdates {
+        validator_token_changes: vec![(user_addr, new_validator_token)],
+        ..Default::default()
+    };
+    pool.evict_invalidated_transactions(&updates);
 
     // Give time for the eviction to complete
     tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
