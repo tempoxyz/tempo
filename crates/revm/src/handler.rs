@@ -3033,4 +3033,159 @@ mod tests {
             EXPIRING_NONCE_GAS
         );
     }
+
+    /// Test that T1 hardfork correctly charges 250k gas for new 2D nonce key creation.
+    ///
+    /// This test validates that TIP-1000's requirement is properly implemented:
+    /// "Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas"
+    ///
+    /// The test proves the audit finding (claiming only 22,100 gas is charged) is a false positive.
+    #[test]
+    fn test_t1_2d_nonce_key_charges_250k_gas() {
+        use crate::gas_params::tempo_gas_params;
+        use revm::context_interface::cfg::GasId;
+        use revm::handler::Handler;
+
+        const BASE_INTRINSIC_GAS: u64 = 21_000;
+        const TIP1000_NEW_ACCOUNT_COST: u64 = 250_000;
+
+        // Create T1 config with TIP-1000 gas params
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        // Verify gas params are correctly configured
+        assert_eq!(
+            cfg.gas_params.get(GasId::new_account_cost()),
+            TIP1000_NEW_ACCOUNT_COST,
+            "T1 gas params should have 250k new_account_cost"
+        );
+
+        // Test case 1: T1 + nonce_key != 0 + nonce == 0 (NEW 2D nonce key)
+        // This should charge 250k gas per TIP-1000, NOT 22,100 (pre-T1 NEW_NONCE_KEY_GAS)
+        {
+            let db = CacheDB::new(EmptyDB::default());
+            let journal = Journal::new(db);
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg.clone())
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 1_000_000,
+                        nonce: 0, // First use of this nonce key
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(Address::random()),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key: U256::from(42), // Non-zero 2D nonce key
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+            // T1 charges 250k for new nonce key (nonce == 0), not the pre-T1 22,100 gas
+            assert_eq!(
+                gas.initial_gas,
+                BASE_INTRINSIC_GAS + TIP1000_NEW_ACCOUNT_COST,
+                "T1 with new 2D nonce key (nonce_key=42, nonce=0) should charge 250k, not 22,100"
+            );
+
+            // Explicitly verify it's NOT charging the old pre-T1 cost
+            assert_ne!(
+                gas.initial_gas,
+                BASE_INTRINSIC_GAS + NEW_NONCE_KEY_GAS,
+                "T1 should NOT use pre-T1 NEW_NONCE_KEY_GAS (22,100) for new 2D nonce keys"
+            );
+        }
+
+        // Test case 2: T1 + nonce_key != 0 + nonce > 0 (EXISTING 2D nonce key)
+        // This should NOT charge additional gas (per TIP-1000 intrinsic gas rules)
+        {
+            let db = CacheDB::new(EmptyDB::default());
+            let journal = Journal::new(db);
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg.clone())
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 1_000_000,
+                        nonce: 5, // Existing nonce key (already used)
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(Address::random()),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key: U256::from(42), // Non-zero 2D nonce key
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+            // T1 with existing 2D nonce key (nonce > 0) should NOT charge additional gas
+            // per TIP-1000 intrinsic gas rules (only nonce == 0 gets the 250k charge)
+            assert_eq!(
+                gas.initial_gas, BASE_INTRINSIC_GAS,
+                "T1 with existing 2D nonce key (nonce_key=42, nonce=5) should not charge extra gas"
+            );
+        }
+
+        // Test case 3: T1 + nonce_key == 0 + nonce == 0 (regular nonce, new account)
+        // This should also charge 250k for account creation
+        {
+            let db = CacheDB::new(EmptyDB::default());
+            let journal = Journal::new(db);
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg.clone())
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 1_000_000,
+                        nonce: 0, // First transaction from account
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(Address::random()),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key: U256::ZERO, // Regular protocol nonce
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+
+            let mut evm: TempoEvm<_, ()> = TempoEvm::new(ctx, ());
+            let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+            let gas = handler.validate_initial_tx_gas(&mut evm).unwrap();
+
+            // T1 with regular nonce and nonce == 0 should also charge 250k
+            assert_eq!(
+                gas.initial_gas,
+                BASE_INTRINSIC_GAS + TIP1000_NEW_ACCOUNT_COST,
+                "T1 with regular nonce (nonce_key=0, nonce=0) should charge 250k for account creation"
+            );
+        }
+    }
 }
