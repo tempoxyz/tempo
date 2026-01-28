@@ -140,6 +140,11 @@ pub struct Args {
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: OnceLock<Option<SigningKey>>,
+
+    /// Where to store consensus data. If not set, this will be derived from
+    /// `--datadir`.
+    #[arg(long = "consensus.datadir", value_name = "PATH")]
+    pub storage_dir: Option<PathBuf>,
 }
 
 impl Args {

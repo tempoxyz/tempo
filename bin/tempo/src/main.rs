@@ -145,18 +145,14 @@ fn main() -> eyre::Result<()> {
                 Ok(())
             })
         } else {
-            let consensus_storage = &node
-                .config
-                .datadir
-                .clone()
-                .resolve_datadir(node.chain_spec().chain())
-                .data_dir()
-                .join("consensus");
-            let runtime_config = commonware_runtime::tokio::Config::default()
-                .with_tcp_nodelay(Some(true))
-                .with_worker_threads(args.consensus.worker_threads)
-                .with_storage_directory(consensus_storage)
-                .with_catch_panics(true);
+            let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
+                node.config
+                    .datadir
+                    .clone()
+                    .resolve_datadir(node.chain_spec().chain())
+                    .data_dir()
+                    .join("consensus")
+            });
 
             info_span!("prepare_consensus").in_scope(|| {
                 info!(
@@ -164,6 +160,12 @@ fn main() -> eyre::Result<()> {
                     "determined directory for consensus data",
                 )
             });
+
+            let runtime_config = commonware_runtime::tokio::Config::default()
+                .with_tcp_nodelay(Some(true))
+                .with_worker_threads(args.consensus.worker_threads)
+                .with_storage_directory(consensus_storage)
+                .with_catch_panics(true);
 
             let runner = commonware_runtime::tokio::Runner::new(runtime_config);
 
