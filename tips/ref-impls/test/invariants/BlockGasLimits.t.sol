@@ -174,9 +174,7 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
                 ghost_txAtCapSucceeded > 0,
                 "Tx at gas cap never succeeded - cap may be misconfigured"
             );
-            assertTrue(
-                ghost_txOverCapRejected > 0, "Over-cap tx rejection never observed"
-            );
+            assertTrue(ghost_txOverCapRejected > 0, "Over-cap tx rejection never observed");
         }
     }
 
