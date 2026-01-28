@@ -238,9 +238,10 @@ fn main() -> eyre::Result<()> {
             }
         }
 
-        // Gracefully shutdown consensus
+        // Gracefully shutdown consensus and wait for it to finish
         if let Some(handle) = consensus_handle {
             handle.shutdown();
+            handle.join()?;
         }
 
         #[cfg(feature = "pyroscope")]
