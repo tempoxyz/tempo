@@ -753,6 +753,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
         _invariantKeyConsistency();
         _invariantSpendingLimitConsistency();
         _invariantRevokedKeyState();
+        _invariantCoverageSanity();
     }
 
     /// @notice TEMPO-KEY13 & TEMPO-KEY16: Key data matches ghost state for all tracked keys
@@ -859,7 +860,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Verify that key invariant paths were actually exercised
     /// @dev This invariant ensures the fuzzer is testing meaningful scenarios
-    function invariant_coverageSanity() public view {
+    function _invariantCoverageSanity() internal view {
         // After sufficient runs, we expect some activity
         uint256 totalOps = _totalKeysAuthorized + _totalKeysRevoked + _totalLimitUpdates;
         if (totalOps >= 10) {
