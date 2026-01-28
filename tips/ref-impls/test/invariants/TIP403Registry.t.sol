@@ -41,7 +41,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     uint8 internal constant ANY_POLICY = type(uint8).max;
 
     /*//////////////////////////////////////////////////////////////
-                      FALLBACK CREATION HELPERS
+                         CORE CREATION HELPERS
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Core policy creation with ghost state updates. Does NOT include assertions.
