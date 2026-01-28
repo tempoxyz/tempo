@@ -285,7 +285,9 @@ The following TIP-20 functions use the `transferAuthorized` modifier and will no
 
 ### Mint Behavior
 
-Minting checks the token-level policy on the recipient but does NOT check account-level policies. Rationale: minting is an issuer-controlled operation, and the issuer's token-level policy should be sufficient. The recipient's receive policy is intended to restrict peer-to-peer transfers, not issuer mints.
+Minting checks both the token-level policy AND the recipient's account-level receive policy. This is important because TIP-20 creation is permissionless — anyone can create a token and attempt to mint to any address. A regulated entity with a receive policy can block mints from unauthorized issuers.
+
+For account-level policy purposes, the **issuer** (msg.sender calling mint) is treated as the "from" address. If the recipient has a whitelist receive policy, the issuer must be on the whitelist.
 
 ```solidity
 function _mint(address to, uint256 amount) internal {
@@ -293,10 +295,24 @@ function _mint(address to, uint256 amount) internal {
     if (!TIP403_REGISTRY.isAuthorized(transferPolicyId, to)) {
         revert PolicyForbids();
     }
-    // Account-level policy NOT checked for mints
+    
+    // Account-level receive policy check (new)
+    // Treat issuer (msg.sender) as "from" for policy purposes
+    (, , uint64 toReceivePolicy, PolicyType toReceiveType) = 
+        TIP403_REGISTRY.decodeAccountPolicies(TIP403_REGISTRY.accountPolicies(to));
+    if (toReceivePolicy != 0) {
+        bool inSet = TIP403_REGISTRY.policySet(toReceivePolicy, msg.sender);
+        bool authorized = (toReceiveType == PolicyType.WHITELIST) ? inSet : !inSet;
+        if (!authorized) {
+            revert PolicyForbids();
+        }
+    }
+    
     // ... rest of mint logic
 }
 ```
+
+**Rationale:** A regulated entity (e.g., bank) may only want to receive tokens from approved issuers. Without this check, anyone could spam regulated accounts with unwanted tokens from malicious TIP-20 contracts.
 
 ### Burn Behavior
 
@@ -435,7 +451,7 @@ The following invariants must always hold:
    - Account-level send policy authorizes `to`: `from.sendPolicyId == 0 OR isAuthorized(from.sendPolicyId, to)`
    - Account-level receive policy authorizes `from`: `to.receivePolicyId == 0 OR isAuthorized(to.receivePolicyId, from)`
 
-5. **Mint Exemption**: Minting operations MUST NOT check account-level policies. Only token-level policy on the recipient is checked.
+5. **Mint Receive Policy Check**: Minting operations MUST check the recipient's account-level receive policy. The issuer (msg.sender calling mint) is treated as the "from" address for policy purposes.
 
 6. **Burn Exemption**: Burn operations MUST NOT check account-level policies.
 
@@ -456,7 +472,7 @@ The following invariants must always hold:
 5. **Policy ID 0**: Setting either policy to 0 removes that restriction
 6. **Token + account policies**: Both token-level AND account-level policies must pass
 7. **Self-transfer**: Account with policies can transfer to itself if authorized under its own policies
-8. **Mint exemption**: Minting to an account with receive policy does NOT check the receive policy
+8. **Mint receive policy**: Minting to an account with receive policy checks the issuer against the policy
 9. **Burn exemption**: Burning from an account with send policy does NOT check the send policy
 10. **Fee transfer exemption**: Fee transfers bypass account-level policies
 11. **Policy update**: Account can update its policies; new policies take effect immediately
