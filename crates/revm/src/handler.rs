@@ -3043,8 +3043,7 @@ mod tests {
     #[test]
     fn test_t1_2d_nonce_key_charges_250k_gas() {
         use crate::gas_params::tempo_gas_params;
-        use revm::context_interface::cfg::GasId;
-        use revm::handler::Handler;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
 
         const BASE_INTRINSIC_GAS: u64 = 21_000;
         const TIP1000_NEW_ACCOUNT_COST: u64 = 250_000;
@@ -3156,7 +3155,7 @@ mod tests {
             let ctx = Context::mainnet()
                 .with_db(CacheDB::new(EmptyDB::default()))
                 .with_block(TempoBlockEnv::default())
-                .with_cfg(cfg.clone())
+                .with_cfg(cfg)
                 .with_tx(TempoTxEnv {
                     inner: revm::context::TxEnv {
                         gas_limit: 1_000_000,
