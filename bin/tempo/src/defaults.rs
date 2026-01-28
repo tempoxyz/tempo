@@ -82,7 +82,7 @@ fn extract_telemetry_url(args: &[String]) -> Option<String> {
         }
     }
 
-    return None;
+    None
 }
 
 /// Expands `--telemetry-url` (or `TELEMETRY_URL` env var) into the equivalent telemetry arguments.
