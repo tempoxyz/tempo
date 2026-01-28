@@ -47,7 +47,7 @@ use tempo_primitives::transaction::{
 use crate::{
     TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction,
     common::TempoStateAccess,
-    error::{FeePaymentError, TempoHaltReason},
+    error::{FeePaymentError, TempoHaltReason, extract_selector},
     evm::TempoContext,
     gas_params::TempoGasParams,
 };
@@ -846,18 +846,59 @@ where
                     limits: precompile_limits,
                 };
 
-                // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(*root_account, authorize_call) {
-                    // all is good, we can do execution.
-                    Ok(_) => Ok(false),
-                    // on out of gas we are skipping execution but not invalidating the transaction.
-                    Err(TempoPrecompileError::OutOfGas) => Ok(true),
-                    Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-                    Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
-                        reason: err.to_string(),
+                // Helper to convert precompile errors
+                let handle_precompile_err = |err: TempoPrecompileError| -> Result<bool, EVMError<DB::Error, TempoInvalidTransaction>> {
+                    match err {
+                        TempoPrecompileError::OutOfGas => Ok(true),
+                        TempoPrecompileError::Fatal(err) => Err(EVMError::Custom(err)),
+                        err => Err(TempoInvalidTransaction::KeychainPrecompileError {
+                            reason: err.to_string(),
+                        }.into()),
                     }
-                    .into()),
+                };
+
+                // Call precompile to authorize the key (same phase as nonce increment)
+                if let Err(err) = keychain.authorize_key(*root_account, authorize_call) {
+                    return handle_precompile_err(err);
                 }
+
+                // TIP-1011: Store periodic limit data for each limit with period > 0
+                if let Some(limits) = &key_auth.limits {
+                    for limit in limits {
+                        if limit.is_periodic() {
+                            if let Err(err) = keychain.set_periodic_limit(
+                                *root_account,
+                                access_key_addr,
+                                limit.token,
+                                limit.limit,
+                                limit.period,
+                                limit.period_end,
+                            ) {
+                                return handle_precompile_err(err);
+                            }
+                        }
+                    }
+                }
+
+                // TIP-1011: Store allowed call scopes if specified
+                if let Some(calls) = &key_auth.allowed_calls {
+                    if !calls.is_empty() {
+                        // Convert CallScope to (Address, Selector) tuples for precompile storage
+                        let call_tuples: Vec<_> = calls
+                            .iter()
+                            .map(|c| (c.target, c.selector))
+                            .collect();
+                        if let Err(err) = keychain.set_allowed_calls(
+                            *root_account,
+                            access_key_addr,
+                            &call_tuples,
+                        ) {
+                            return handle_precompile_err(err);
+                        }
+                    }
+                }
+
+                Ok(false)
             })?;
 
             if spec.is_t1() {
@@ -942,7 +983,44 @@ where
                     // The TIP20 precompile will read this during execution to enforce spending limits
                     keychain
                         .set_transaction_key(access_key_addr)
-                        .map_err(|e| EVMError::Custom(e.to_string()))
+                        .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: e.to_string(),
+                        })?;
+
+                    // TIP-1011: Validate call scopes (address + selector) for all calls
+                    // Skip if authorizing this key in the same tx (call scopes not stored yet)
+                    if !is_authorizing_this_key {
+                        let caller = tx.caller();
+
+                        // For AA transactions with batch calls, validate each call
+                        if let Some(tempo_env) = tx.tempo_tx_env.as_ref() {
+                            for call in &tempo_env.aa_calls {
+                                if let alloy_primitives::TxKind::Call(to) = call.to {
+                                    keychain
+                                        .validate_call(caller, to, call.input.as_ref())
+                                        .map_err(|_| {
+                                            TempoInvalidTransaction::CallNotAllowed {
+                                                destination: to,
+                                                selector: extract_selector(call.input.as_ref()),
+                                            }
+                                        })?;
+                                }
+                            }
+                        }
+
+                        // For single-call transactions, validate the main call
+                        if let alloy_primitives::TxKind::Call(to) = tx.kind() {
+                            let input = tx.input();
+                            keychain.validate_call(caller, to, input).map_err(|_| {
+                                TempoInvalidTransaction::CallNotAllowed {
+                                    destination: to,
+                                    selector: extract_selector(input),
+                                }
+                            })?;
+                        }
+                    }
+
+                    Ok::<_, TempoInvalidTransaction>(())
                 },
             )?;
         }
