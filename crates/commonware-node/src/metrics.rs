@@ -119,7 +119,11 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
 
     let meter = meter_provider.meter("tempo-consensus");
 
-    // Cache for dynamically created gauges - created on first encounter
+    // Cache for dynamically created counters
+    let counters: Arc<Mutex<HashMap<String, opentelemetry::metrics::Counter<f64>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // Cache for dynamically created gauges (including histograms)
     let gauges: Arc<Mutex<HashMap<String, opentelemetry::metrics::Gauge<f64>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -128,11 +132,26 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
     let task = context.spawn(move |context| async move {
         use commonware_runtime::Clock as _;
 
+        // Track last counter values to compute deltas (OTLP counters expect deltas, not absolutes)
+        let mut last_counter_values: HashMap<(String, Vec<(String, String)>), f64> =
+            HashMap::new();
+
         loop {
             context.sleep(poll_interval).await;
 
             let encoded = context.encode();
 
+            // First pass: parse TYPE comments to determine metric types
+            let mut metric_types: HashMap<String, &str> = HashMap::new();
+            for line in encoded.lines() {
+                if let Some(rest) = line.strip_prefix("# TYPE ") {
+                    if let Some((name, type_str)) = rest.split_once(' ') {
+                        metric_types.insert(name.to_string(), type_str);
+                    }
+                }
+            }
+
+            // Second pass: process metric values
             for line in encoded.lines() {
                 if line.starts_with('#') || line.is_empty() {
                     continue;
@@ -143,21 +162,51 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
                 {
                     let (metric_name, labels) = parse_prometheus_metric(name_labels);
 
-                    // Get or create gauge for this metric (preserving original name)
-                    let gauge = {
-                        let mut cache = gauges.lock();
-                        cache
-                            .entry(metric_name.clone())
-                            .or_insert_with(|| meter.f64_gauge(metric_name).build())
-                            .clone()
-                    };
+                    // Strip known suffixes to find base metric name for type lookup
+                    let base_name = metric_name
+                        .strip_suffix("_total")
+                        .or_else(|| metric_name.strip_suffix("_count"))
+                        .or_else(|| metric_name.strip_suffix("_sum"))
+                        .or_else(|| metric_name.strip_suffix("_bucket"))
+                        .unwrap_or(&metric_name);
 
                     let attributes: Vec<KeyValue> = labels
-                        .into_iter()
-                        .map(|(k, v)| KeyValue::new(k, v))
+                        .iter()
+                        .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                         .collect();
 
-                    gauge.record(value, &attributes);
+                    // Treat as counter if TYPE is "counter" or "histogram" (histogram components are monotonic)
+                    let metric_type = metric_types.get(base_name).copied();
+                    if metric_type == Some("counter") || metric_type == Some("histogram") {
+                        let counter = {
+                            let mut cache = counters.lock();
+                            cache
+                                .entry(metric_name.clone())
+                                .or_insert_with(|| meter.f64_counter(metric_name.clone()).build())
+                                .clone()
+                        };
+
+                        // Compute delta from last value (counters are cumulative in Prometheus)
+                        let key = (metric_name, labels);
+                        let last_value = last_counter_values.get(&key).copied().unwrap_or(0.0);
+                        let delta = (value - last_value).max(0.0);
+                        last_counter_values.insert(key, value);
+
+                        if delta > 0.0 {
+                            counter.add(delta, &attributes);
+                        }
+                    } else {
+                        // Gauge or histogram bucket - use gauge
+                        let gauge = {
+                            let mut cache = gauges.lock();
+                            cache
+                                .entry(metric_name.clone())
+                                .or_insert_with(|| meter.f64_gauge(metric_name).build())
+                                .clone()
+                        };
+
+                        gauge.record(value, &attributes);
+                    }
                 }
             }
         }
