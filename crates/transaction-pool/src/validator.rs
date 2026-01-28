@@ -2915,10 +2915,7 @@ mod tests {
         // Should NOT fail with InsufficientGasForIntrinsicCost
         if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
             assert!(
-                !matches!(
-                    err.downcast_other_ref::<TempoPoolTransactionError>(),
-                    Some(TempoPoolTransactionError::InsufficientGasForIntrinsicCost { .. })
-                ),
+                matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
                 "Non-AA tx with 100k gas should NOT fail intrinsic gas check, got: {err:?}"
             );
         }

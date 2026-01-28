@@ -239,12 +239,6 @@ pub enum TempoPoolTransactionError {
     )]
     InsufficientGasForAAIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
 
-    /// Thrown when an transaction's gas limit is insufficient for the calculated intrinsic gas.
-    #[error(
-        "Insufficient gas for transaction: gas limit {gas_limit} is less than intrinsic gas {intrinsic_gas}"
-    )]
-    InsufficientGasForIntrinsicCost { gas_limit: u64, intrinsic_gas: u64 },
-
     /// Thrown when an AA transaction has too many authorizations in its authorization list.
     #[error(
         "Too many authorizations in AA transaction: {count} exceeds maximum allowed {max_allowed}"
@@ -346,7 +340,6 @@ impl PoolTransactionError for TempoPoolTransactionError {
             Self::NonZeroValue
             | Self::SubblockNonceKey
             | Self::InsufficientGasForAAIntrinsicCost { .. }
-            | Self::InsufficientGasForIntrinsicCost { .. }
             | Self::TooManyAuthorizations { .. }
             | Self::TooManyCalls { .. }
             | Self::CallInputTooLarge { .. }
