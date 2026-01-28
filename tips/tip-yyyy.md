@@ -23,10 +23,10 @@ TIP-1000 increased storage creation costs to 250,000 gas per operation and 1,000
    - Keep general gas limit at 30M (would prefer lower)
    - Limit contract code to 1,000 gas/byte (would prefer 2,500)
 
-2. **New account throughput penalty**: TIP-20 transfer to new address costs 300,000 gas (vs 50,000 to existing). At 500M payment lane gas limit:
-   - Existing accounts: 10,000 transfers/block = 20,000 TPS
-   - New accounts: 1,667 transfers/block = 3,334 TPS
-   - 6x throughput reduction despite execution stack handling it fine
+2. **New account throughput penalty**: TIP-20 transfer to new address costs 271,000 gas total (26k execution + 245k storage) vs 24,000 gas to existing. At 500M payment lane gas limit:
+   - With storage gas: only 1,847 new account transfers/block = 3,694 TPS
+   - Without storage gas: ~19,000 new account transfers/block = ~38,000 TPS
+   - ~5x throughput improvement by exempting storage gas from limits
 
 The root cause: storage creation gas counts against limits designed for execution time constraints. Storage creation is permanent (disk) not ephemeral (CPU), and shouldn't be bounded by per-block execution limits.
 
@@ -36,10 +36,14 @@ The root cause: storage creation gas counts against limits designed for executio
 
 ## Gas Accounting
 
-All operations continue to consume gas as specified in TIP-1000. Gas is now categorized into two types for accounting purposes:
+All operations consume gas, but storage creation operations now split their cost into two components:
 
-- **Execution gas**: Compute, memory, storage reads/updates, calldata
-- **Storage gas**: New state elements, account creation, contract code storage
+- **Execution gas**: Compute, memory, calldata, and the computational cost of storage operations (writing, hashing)
+  - Counts toward protocol limits (transaction and block)
+
+- **Storage gas**: The permanent storage burden of storage creation
+  - Does NOT count toward protocol limits
+  - Still counts toward user's `gas_limit`
 
 ## Gas Limits
 
@@ -67,50 +71,63 @@ Cost:
 
 ## Storage Gas Operations
 
-The following operations consume storage gas (not counted against limits):
+Storage creation operations split their cost between execution gas (computational overhead) and storage gas (permanent storage burden):
 
-| Operation | Gas Cost | Counted Against Limits |
-|-----------|----------|------------------------|
-| New state element (SSTORE zero → non-zero) | 250,000 | No |
-| Account creation (nonce 0 → 1) | 250,000 | No |
-| Contract code storage (per byte) | 2,500 | No |
-| Contract metadata (keccak + nonce) | 500,000 | No |
+| Operation | Execution Gas | Storage Gas | Total | Against Limits |
+|-----------|---------------|-------------|-------|----------------|
+| Cold SSTORE (zero → non-zero) | 5,000 | 245,000 | 250,000 | 5,000 |
+| Hot SSTORE (non-zero → non-zero) | 2,900 | 0 | 2,900 | 2,900 |
+| Account creation (nonce 0 → 1) | 5,000 | 245,000 | 250,000 | 5,000 |
+| Contract code storage (per byte) | 200 | 2,300 | 2,500 | 200 |
+| Contract metadata (keccak + nonce) | 5,000 | 495,000 | 500,000 | 5,000 |
 
-All other operations consume execution gas (counted against limits).
+**Notes:**
+- Execution gas reflects computational cost (writing, hashing) and counts toward protocol limits
+- Storage gas reflects permanent storage burden and does NOT count toward protocol limits
+- All gas (execution + storage) counts toward user's `gas_limit` and is charged at `base_fee_per_gas`
 
 ## Contract Creation Pricing
 
-Contract code storage cost increases from 1,000 to **2,500 gas/byte**.
+Contract code storage cost increases from 1,000 to **2,500 gas/byte** (200 execution + 2,300 storage).
 
 Example for 24KB contract:
-- Contract code: `24,576 × 2,500 = 61,440,000` storage gas
-- Contract metadata: `500,000` storage gas
-- Execution gas for deployment: ~2M
-- Total gas: ~64M
-- User must set `transaction.gas_limit >= 64M` (authorizes cost)
-- But only ~2M execution gas counts against protocol's max_transaction_gas_limit (e.g. 16M)
-- **Can deploy even with protocol max_transaction_gas_limit = 16M**
+- Contract code execution gas: `24,576 × 200 = 4,915,200`
+- Contract code storage gas: `24,576 × 2,300 = 56,524,800`
+- Contract metadata execution gas: `5,000`
+- Contract metadata storage gas: `495,000`
+- Account creation execution gas: `5,000`
+- Account creation storage gas: `245,000`
+- Deployment logic execution gas: ~2M
+
+**Totals:**
+- Execution gas: ~7M (counts toward protocol limits)
+- Storage gas: ~57M (doesn't count toward protocol limits)
+- Total gas: ~64M (user must authorize with `gas_limit >= 64M`)
+- **Can deploy with protocol max_transaction_gas_limit = 16M** (only ~7M counts)
 
 ## Examples
 
 ### TIP-20 Transfer to New Address
-- Execution gas: ~50,000 (transfer logic)
-- Storage gas: ~250,000 (new balance slot)
-- User must authorize: `gas_limit >= 300,000`
-- Counts toward block limit: ~50,000 execution gas
-- Total cost: 300,000 gas
+- Transfer logic: ~21,000 execution gas
+- New balance slot: 5,000 execution gas + 245,000 storage gas
+- **Total**: 26,000 execution gas + 245,000 storage gas = 271,000 gas
+- User must authorize: `gas_limit >= 271,000`
+- Counts toward block limit: 26,000 execution gas
+- Total cost: 271,000 gas
 
 ### TIP-20 Transfer to Existing Address
-- Execution gas: ~50,000 (transfer logic)
-- Storage gas: 0
-- User must authorize: `gas_limit >= 50,000`
-- Counts toward block limit: ~50,000 execution gas
-- Total cost: 50,000 gas
+- Transfer logic: ~21,000 execution gas
+- Update existing slot: ~2,900 execution gas (hot SSTORE)
+- **Total**: ~24,000 execution gas
+- User must authorize: `gas_limit >= 24,000`
+- Counts toward block limit: ~24,000 execution gas
+- Total cost: ~24,000 gas
 
 ### Block Throughput
 At 500M payment lane execution gas limit:
-- Each transfer (new or existing) consumes ~50k execution gas
-- 10,000 transfers per block = 20,000 TPS (regardless of new vs existing accounts)
+- New account transfers: ~26k execution gas each → ~19,000 transfers/block
+- Existing account transfers: ~24k execution gas each → ~21,000 transfers/block
+- ~20,000 TPS on average (vs 3,334 TPS in TIP-1000)
 - Storage gas doesn't reduce block capacity
 
 ---
@@ -122,10 +139,11 @@ At 500M payment lane execution gas limit:
 3. **Protocol Block Limits**: Block `execution_gas` MUST NOT exceed applicable limit:
    - General transactions: `general_gas_limit` (25M target, currently 30M)
    - Payment lane transactions: `payment_lane_limit` (500M)
-4. **Storage Gas Exemption**: Storage gas MUST NOT count toward protocol limits (transaction and block)
-5. **Total Cost**: Transaction cost MUST equal `(execution_gas + storage_gas) × (base_fee_per_gas + priority_fee)`
-6. **Classification**: Every operation MUST be classified as either execution gas or storage gas, not both
-7. **Storage Gas Operations**: Storage creation MUST consume storage gas; compute/memory/reads MUST consume execution gas
+4. **Storage Gas Exemption**: Storage gas component MUST NOT count toward protocol limits (transaction and block)
+5. **Execution Gas Component**: Storage creation operations MUST charge execution gas for computational overhead (writing, hashing)
+6. **Total Cost**: Transaction cost MUST equal `(execution_gas + storage_gas) × (base_fee_per_gas + priority_fee)`
+7. **Gas Split**: Storage creation operations MUST split cost into execution gas (computational) and storage gas (permanent burden)
+8. **Hot vs Cold**: Hot SSTORE (non-zero → non-zero) has NO storage gas component; cold SSTORE (zero → non-zero) has both
 
 ---
 
@@ -133,9 +151,12 @@ At 500M payment lane execution gas limit:
 
 | Parameter | TIP-1000 | TIP-YYYY |
 |-----------|----------|----------|
-| Contract code pricing | 1,000 gas/byte | 2,500 gas/byte |
+| Contract code pricing | 1,000 gas/byte | 2,500 gas/byte (200 exec + 2,300 storage) |
+| Cold SSTORE pricing | 250,000 gas | 250,000 gas (5,000 exec + 245,000 storage) |
+| Account creation pricing | 250,000 gas | 250,000 gas (5,000 exec + 245,000 storage) |
 | Storage gas counts toward user's gas_limit | Yes | Yes (no change) |
 | Storage gas counts toward protocol limits | Yes | No (exempted) |
+| Execution gas counts toward protocol limits | Yes | Yes (no change) |
 | Max transaction gas limit (EIP-7825) | 30M | Can reduce to 16M |
 | Block gas limit for execution | 30M | 25M (ideal target) |
 | Block gas limit for payments lane | 500M | 500M (unchanged) |
@@ -145,19 +166,22 @@ At 500M payment lane execution gas limit:
 
 # Key Benefits
 
-1. **Higher contract code pricing**: 2,500 gas/byte provides better state growth protection ($50M for 1TB vs $20M)
-2. **Lower protocol transaction limit**: Can use 16M max_transaction_gas_limit (better for execution safety) while still deploying 24KB contracts
-3. **Full throughput for new accounts**: 20,000 TPS regardless of new vs existing accounts (storage doesn't consume block capacity)
-4. **No surprise costs**: User's `gas_limit` still bounds total cost (no griefing)
-5. **No complexity**: Single gas unit, one basefee, existing transaction format works
+1. **Higher contract code pricing**: 2,500 gas/byte (vs 1,000) provides better state growth protection ($50M for 1TB vs $20M)
+2. **Lower protocol transaction limit**: Can use 16M max_transaction_gas_limit while deploying 24KB contracts (~7M execution gas counts)
+3. **Better throughput for new accounts**: ~19,000 new account transfers/block vs 1,847 in TIP-1000 (~10x improvement)
+4. **Accounts for computational cost**: Storage operations still charge execution gas for writing/hashing (not completely free)
+5. **No surprise costs**: User's `gas_limit` still bounds total cost (no griefing)
+6. **No complexity**: Single gas unit, one basefee, existing transaction format works
 
 ## Economic Impact
 
 | Operation | TIP-1000 Cost | TIP-YYYY Cost |
 |-----------|---------------|---------------|
-| TIP-20 transfer (existing) | 0.1 cent | 0.1 cent |
-| TIP-20 transfer (new) | 0.6 cent | 0.6 cent |
-| 1KB contract | 3.5 cents | 6.5 cents |
-| 24KB contract | 60 cents | 130 cents |
+| TIP-20 transfer (existing) | ~50k gas = 0.1 cent | ~24k gas = 0.05 cent |
+| TIP-20 transfer (new) | ~300k gas = 0.6 cent | ~271k gas = 0.54 cent |
+| 1KB contract | ~1.75M gas = 3.5 cents | ~3.25M gas = 6.5 cents |
+| 24KB contract | ~30M gas = 60 cents | ~64M gas = 128 cents |
 
 Cost calculations assume base_fee = 2 × 10^10 attodollars (1 token unit = 1 microdollar = 10^-6 USD).
+
+**Note**: Costs are similar to TIP-1000, but protocol limits now only count execution gas, enabling higher contract code pricing and better throughput.
