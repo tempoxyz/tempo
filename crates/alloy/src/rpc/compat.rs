@@ -303,5 +303,3 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
         }
     }
 }
-
-
