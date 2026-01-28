@@ -210,17 +210,12 @@ abstract contract HandlerBase is InvariantBase {
         return feeToken.balanceOf(account) >= required;
     }
 
-    /// @notice Check balance and record skip reason if insufficient
+    /// @notice Check balance and return whether sufficient
     /// @param account The account to check
     /// @param required The required balance
     /// @return True if account has sufficient balance
-    function _checkBalanceWithTracking(address account, uint256 required) internal returns (bool) {
-        if (feeToken.balanceOf(account) >= required) {
-            return true;
-        }
-        _recordSkipInsufficientBalance();
-        _logSkip("balance", "insufficient");
-        return false;
+    function _checkBalanceWithTracking(address account, uint256 required) internal view returns (bool) {
+        return feeToken.balanceOf(account) >= required;
     }
 
     // ============ Access Key Helpers ============
@@ -241,35 +236,17 @@ abstract contract HandlerBase is InvariantBase {
         return true;
     }
 
-    /// @notice Check if an access key can be used, with skip reason tracking
+    /// @notice Check if an access key can be used
     /// @param owner The owner address
     /// @param keyId The access key ID
     /// @param amount The amount to transfer
     /// @return canUse True if the key is authorized, not expired, and within spending limit
     function _canUseKeyWithTracking(address owner, address keyId, uint256 amount)
         internal
+        view
         returns (bool)
     {
-        if (!ghost_keyAuthorized[owner][keyId]) {
-            _recordSkipKeyNotAuthorized();
-            _logSkip("key", "not_authorized");
-            return false;
-        }
-        if (ghost_keyExpiry[owner][keyId] <= block.timestamp) {
-            _recordSkipKeyExpired();
-            _logSkip("key", "expired");
-            return false;
-        }
-        if (ghost_keyEnforceLimits[owner][keyId]) {
-            uint256 limit = ghost_keySpendingLimit[owner][keyId][address(feeToken)];
-            uint256 spent = ghost_keySpentAmount[owner][keyId][address(feeToken)];
-            if (spent + amount > limit) {
-                _recordSkipKeySpendingLimit();
-                _logSkip("key", "spending_limit");
-                return false;
-            }
-        }
-        return true;
+        return _canUseKey(owner, keyId, amount);
     }
 
     /// @notice Setup context for using a secp256k1 access key
@@ -441,17 +418,15 @@ abstract contract HandlerBase is InvariantBase {
     }
 
     /// @notice Unified handler for protocol nonce transaction reverts
-    /// @dev Logs the revert, syncs nonce, and increments revert counter
-    function _handleRevertProtocol(string memory handlerName, address account) internal {
-        _logRevert(handlerName);
+    /// @dev Syncs nonce and increments revert counter
+    function _handleRevertProtocol(address account) internal {
         _syncNonceAfterFailure(account);
         ghost_totalTxReverted++;
     }
 
     /// @notice Unified handler for 2D nonce transaction reverts
-    /// @dev Logs the revert, syncs 2D nonce, and increments revert counter
-    function _handleRevert2d(string memory handlerName, address account, uint64 nonceKey) internal {
-        _logRevert(handlerName);
+    /// @dev Syncs 2D nonce and increments revert counter
+    function _handleRevert2d(address account, uint64 nonceKey) internal {
         _sync2dNonceAfterFailure(account, nonceKey);
         ghost_totalTxReverted++;
     }
@@ -462,12 +437,8 @@ abstract contract HandlerBase is InvariantBase {
     function _noop() internal { }
 
     /// @notice Handle expected rejection with optional counter update
-    /// @param handlerName Name for logging
     /// @param updateFn Counter update function (use _noop for no update)
-    function _handleExpectedReject(string memory handlerName, function() internal updateFn)
-        internal
-    {
-        _logExpectedReject(handlerName);
+    function _handleExpectedReject(function() internal updateFn) internal {
         updateFn();
     }
 

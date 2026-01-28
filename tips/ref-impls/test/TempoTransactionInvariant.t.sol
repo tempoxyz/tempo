@@ -54,8 +54,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function setUp() public override {
         super.setUp();
 
-        // Initialize file-based logging (persists across Foundry state resets)
-        _initTxLog();
 
         // Target this contract for handler functions
         targetContract(address(this));
@@ -177,8 +175,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Called after invariant testing for final checks
     function afterInvariant() public view {
-        // Report skip statistics for debugging slow runs
-        _reportSkipStats();
 
         // Existing check
         assertEq(
@@ -384,11 +380,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 sigTypeSeed
     ) external {
-        ghost_handlerAttempts++; // Track that handler was called
         (TxContext memory ctx, bool skip) =
             _setupTransferContext(actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6);
         if (skip) {
-            ghost_skipInsufficientBalance++;
             return;
         }
 
@@ -399,13 +393,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         ghost_previousProtocolNonce[ctx.sender] = ghost_protocolNonce[ctx.sender];
         vm.coinbase(validator);
-        ghost_handlerAttempts++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_transfer");
             _recordProtocolNonceTxSuccess(ctx.sender);
         } catch {
-            _logRevert("handler_transfer");
             _syncNonceAfterFailure(ctx.sender);
             ghost_totalTxReverted++;
         }
@@ -444,10 +435,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             vm.coinbase(validator);
 
             try vmExec.executeTransaction(signedTx) {
-                _logSuccess("handler_sequentialTransfers");
                 _recordProtocolNonceTxSuccess(ctx.sender);
             } catch {
-                _logRevert("handler_sequentialTransfers");
                 _syncNonceAfterFailure(ctx.sender);
                 ghost_totalTxReverted++;
                 break;
@@ -487,7 +476,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Nonce is consumed when tx is included, regardless of execution success/revert
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_create");
             ghost_protocolNonce[actualSender]++;
             ghost_totalTxExecuted++;
             ghost_totalCreatesExecuted++;
@@ -498,7 +486,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_createAddresses[key] = expectedAddress;
             ghost_createCount[actualSender]++;
         } catch {
-            _logRevert("handler_create");
             _syncNonceAfterFailure(actualSender);
             ghost_totalTxReverted++;
         }
@@ -536,7 +523,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 nonceBefore = vm.getNonce(actualSender);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createReverting");
             uint256 nonceAfter = vm.getNonce(actualSender);
             // CREATE tx that reverts internally still consumes nonce when tx is included
             assertEq(nonceAfter, nonceBefore + 1, "C7: Nonce must burn even when create reverts");
@@ -545,7 +531,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCreatesExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logRevert("handler_createReverting");
             uint256 nonceAfter = vm.getNonce(actualSender);
             // Two cases:
             // 1. Tx rejected (invalid sig format, etc.) - nonce unchanged
@@ -624,10 +609,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_2dNonceIncrement");
             _record2dNonceTxSuccess(actor, uint64(nonceKey), currentNonce);
         } catch {
-            _handleRevert2d("handler_2dNonceIncrement", actor, uint64(nonceKey));
+            _handleRevert2d(actor, uint64(nonceKey));
         }
     }
 
@@ -672,10 +656,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         );
 
         try vmExec.executeTransaction(signedTx1) {
-            _logSuccess("handler_multipleNonceKeys");
             _record2dNonceTxSuccess(actor, uint64(key1), nonce1);
         } catch {
-            _handleRevert2d("handler_multipleNonceKeys", actor, uint64(key1));
+            _handleRevert2d(actor, uint64(key1));
             return;
         }
 
@@ -688,10 +671,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         );
 
         try vmExec.executeTransaction(signedTx2) {
-            _logSuccess("handler_multipleNonceKeys");
             _record2dNonceTxSuccess(actor, uint64(key2), nonce2);
         } catch {
-            _handleRevert2d("handler_multipleNonceKeys", actor, uint64(key2));
+            _handleRevert2d(actor, uint64(key2));
         }
     }
 
@@ -722,10 +704,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoTransfer");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
         } catch {
-            _handleRevert2d("handler_tempoTransfer", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -752,10 +733,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoTransferProtocolNonce");
             _recordProtocolNonceTxSuccess(sender);
         } catch {
-            _logRevert("handler_tempoTransferProtocolNonce");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -798,13 +777,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoUseAccessKey");
             _record2dNonceTxSuccess(ctx.owner, nonceKey, currentNonce);
             if (ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) {
                 _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
             }
         } catch {
-            _handleRevert2d("handler_tempoUseAccessKey", ctx.owner, nonceKey);
+            _handleRevert2d(ctx.owner, nonceKey);
         }
     }
 
@@ -847,13 +825,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoUseP256AccessKey");
             _record2dNonceTxSuccess(ctx.owner, nonceKey, currentNonce);
             if (ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) {
                 _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
             }
         } catch {
-            _handleRevert2d("handler_tempoUseP256AccessKey", ctx.owner, nonceKey);
+            _handleRevert2d(ctx.owner, nonceKey);
         }
     }
 
@@ -871,8 +848,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     ) external {
         AccessKeyContext memory ctx = _setupRandomKeyContext(actorSeed, keySeed);
         if (ghost_keyAuthorized[ctx.owner][ctx.keyId]) {
-            _recordSkipKeyAlreadyAuthorized();
-            _logSkip("handler_authorizeKey", "key_already_authorized");
             return;
         }
 
@@ -888,14 +863,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         vm.prank(ctx.owner);
         try keychain.authorizeKey(ctx.keyId, keyType, expiry, true, limits) {
-            _logSuccess("handler_authorizeKey");
             address[] memory tokens = new address[](1);
             tokens[0] = address(feeToken);
             uint256[] memory amounts = new uint256[](1);
             amounts[0] = limit;
             _authorizeKey(ctx.owner, ctx.keyId, expiry, true, tokens, amounts);
         } catch {
-            _logRevert("handler_authorizeKey");
         }
     }
 
@@ -904,17 +877,13 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function handler_revokeKey(uint256 actorSeed, uint256 keySeed) external {
         AccessKeyContext memory ctx = _setupRandomKeyContext(actorSeed, keySeed);
         if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) {
-            _recordSkipKeyNotAuthorized();
-            _logSkip("handler_revokeKey", "key_not_authorized");
             return;
         }
 
         vm.prank(ctx.owner);
         try keychain.revokeKey(ctx.keyId) {
-            _logSuccess("handler_revokeKey");
             _revokeKey(ctx.owner, ctx.keyId);
         } catch {
-            _logRevert("handler_revokeKey");
         }
     }
 
@@ -930,16 +899,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Skip if key is still authorized (not revoked)
         if (ghost_keyAuthorized[ctx.owner][ctx.keyId]) {
-            _recordSkipKeyAlreadyAuthorized();
-            _logSkip("handler_useRevokedKey", "key still authorized");
             return;
         }
 
         // We need the key to have been revoked (was authorized, now isn't)
         // Check if this key was previously used by looking at expiry being set
         if (ghost_keyExpiry[ctx.owner][ctx.keyId] == 0) {
-            _recordSkipKeyNeverAuthorized();
-            _logSkip("handler_useRevokedKey", "key never authorized");
             return;
         }
 
@@ -965,7 +930,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_useRevokedKey");
             // Revoked key was allowed - this is a K7/K8 violation!
             ghost_keyWrongSignerAllowed++;
             ghost_protocolNonce[ctx.owner]++;
@@ -973,7 +937,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject("handler_useRevokedKey", _recordKeyWrongSigner);
+            _handleExpectedReject(_recordKeyWrongSigner);
         }
     }
 
@@ -990,13 +954,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Need an authorized key with an expiry in the past
         if (!ghost_keyAuthorized[ctx.owner][ctx.keyId]) {
-            _recordSkipKeyNotAuthorized();
-            _logSkip("handler_useExpiredKey", "key not authorized");
             return;
         }
         if (ghost_keyExpiry[ctx.owner][ctx.keyId] == 0) {
-            _recordSkipKeyNeverAuthorized();
-            _logSkip("handler_useExpiredKey", "key never authorized");
             return;
         }
 
@@ -1029,7 +989,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_useExpiredKey");
             // Expired key was allowed - this is a K7 violation!
             ghost_keyWrongSignerAllowed++;
             ghost_protocolNonce[ctx.owner]++;
@@ -1037,7 +996,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject("handler_useExpiredKey", _recordKeyWrongSigner);
+            _handleExpectedReject(_recordKeyWrongSigner);
         }
     }
 
@@ -1075,13 +1034,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_useAccessKey");
             _recordProtocolNonceTxSuccess(ctx.owner);
             if (ghost_keyEnforceLimits[ctx.owner][ctx.keyId]) {
                 _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
             }
         } catch {
-            _logRevert("handler_useAccessKey");
             _syncNonceAfterFailure(ctx.owner);
             ghost_totalTxReverted++;
         }
@@ -1118,7 +1075,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Legacy tx uses protocol nonce - nonce is consumed even if inner call reverts
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_insufficientBalanceTransfer");
             uint256 nonceAfter = vm.getNonce(sender);
             // Tx was included, nonce consumed
             assertEq(nonceAfter, nonceBefore + 1, "F9: Legacy tx must consume nonce on success");
@@ -1127,7 +1083,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logRevert("handler_insufficientBalanceTransfer");
             uint256 nonceAfter = vm.getNonce(sender);
             // Transaction was rejected or reverted:
             // - If nonce unchanged: tx was rejected before inclusion (invalid sig, nonce mismatch)
@@ -1185,12 +1140,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoCreate");
             _record2dNonceCreateSuccess(
                 ctx.sender, ctx.nonceKey, ctx.protocolNonce, expectedAddress
             );
         } catch {
-            _handleRevert2d("handler_tempoCreate", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -1223,12 +1177,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_createNotFirstAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createNotFirst");
             // Unexpected success - this is a protocol bug that will be caught by invariant
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.current2dNonce);
             ghost_createNotFirstAllowed++;
         } catch {
-            _logRevert("handler_createNotFirst");
             _recordCreateRejectedStructure();
             ghost_totalTxReverted++;
         }
@@ -1263,12 +1215,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_createMultipleAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createMultiple");
             // Unexpected success - this is a protocol bug that will be caught by invariant
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.current2dNonce);
             ghost_createMultipleAllowed++;
         } catch {
-            _logRevert("handler_createMultiple");
             _recordCreateRejectedStructure();
             ghost_totalTxReverted++;
         }
@@ -1308,12 +1258,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_createWithAuthAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createWithAuthList");
             // Unexpected success - this is a protocol bug that will be caught by invariant
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.current2dNonce);
             ghost_createWithAuthAllowed++;
         } catch {
-            _logRevert("handler_createWithAuthList");
             // Tx was rejected - do NOT increment ghost_protocolNonce here
             // The tx should be rejected before nonce consumption
             _recordCreateRejectedStructure();
@@ -1343,12 +1291,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_createWithValueAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createWithValue");
             // Unexpected success - this is a protocol bug that will be caught by invariant
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.current2dNonce);
             ghost_createWithValueAllowed++;
         } catch {
-            _logRevert("handler_createWithValue");
             _recordCreateRejectedStructure();
             ghost_totalTxReverted++;
         }
@@ -1375,12 +1321,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_createOversizedAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createOversized");
             // Unexpected success - this is a protocol bug that will be caught by invariant
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.current2dNonce);
             ghost_createOversizedAllowed++;
         } catch {
-            _logRevert("handler_createOversized");
             _recordCreateRejectedSize();
             ghost_totalTxReverted++;
         }
@@ -1405,11 +1349,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_createGasScaling");
             _recordProtocolNonceCreateSuccess(sender, currentNonce, expectedAddress);
             _recordCreateGasTracked();
         } catch {
-            _logRevert("handler_createGasScaling");
             // Only update ghost nonce if actual nonce was consumed (tx included but reverted)
             // If tx was rejected at validation, nonce is NOT consumed
             uint256 actualNonce = vm.getNonce(sender);
@@ -1439,8 +1381,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount * 2) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_replayProtocolNonce", "insufficient balance for replay test");
             return;
         }
 
@@ -1457,7 +1397,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // First execution should succeed and consume exactly 1 nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_replayProtocolNonce");
             uint256 nonce1 = vm.getNonce(sender);
             assertEq(nonce1, nonce0 + 1, "N12: First tx must consume exactly one nonce");
             ghost_protocolNonce[sender] = nonce1;
@@ -1465,7 +1404,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logRevert("handler_replayProtocolNonce");
             // First tx failed - skip replay test
             ghost_totalTxReverted++;
             return;
@@ -1474,11 +1412,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Replay should fail - nonce already consumed
         ghost_replayProtocolAttempted++;
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_replayProtocolNonce");
             // Replay unexpectedly succeeded - this is a BUG in the protocol!
             ghost_replayProtocolAllowed++;
         } catch {
-            _handleExpectedReject("handler_replayProtocolNonce", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -1504,8 +1441,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount * 2) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_replay2dNonce", "insufficient balance for replay test");
             return;
         }
 
@@ -1542,7 +1477,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_replay2dNonce");
             // Verify on-chain nonce actually incremented before updating ghost
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
@@ -1553,18 +1487,16 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_replay2dNonce");
             ghost_totalTxReverted++;
             return;
         }
 
         ghost_replay2dAttempted++;
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_replay2dNonce");
             // Replay unexpectedly succeeded - this is a BUG in the protocol!
             ghost_replay2dAllowed++;
         } catch {
-            _handleExpectedReject("handler_replay2dNonce", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -1598,11 +1530,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_nonceTooHighAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_nonceTooHigh");
             // Tx with future nonce unexpectedly succeeded - this is a BUG!
             ghost_nonceTooHighAllowed++;
         } catch {
-            _handleExpectedReject("handler_nonceTooHigh", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -1628,8 +1559,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Use actual on-chain nonce, not ghost state
         uint64 currentNonce = uint64(vm.getNonce(sender));
         if (currentNonce == 0) {
-            _recordSkipOther();
-            _logSkip("handler_nonceTooLow", "nonce is zero, cannot test too low");
             return;
         }
 
@@ -1642,10 +1571,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_nonceTooLowAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_nonceTooLow");
             ghost_nonceTooLowAllowed++;
         } catch {
-            _logRevert("handler_nonceTooLow");
             ghost_totalTxReverted++;
         }
     }
@@ -1672,8 +1599,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount * 2) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_2dNonceGasCost", "insufficient balance");
             return;
         }
 
@@ -1712,7 +1637,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_2dNonceGasCost");
             uint256 gasUsed = gasBefore - gasleft();
 
             // Verify on-chain nonce actually incremented before updating ghost
@@ -1731,7 +1655,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 }
             }
         } catch {
-            _handleRevert2d("handler_2dNonceGasCost", sender, nonceKey);
+            _handleRevert2d(sender, nonceKey);
         }
     }
 
@@ -1780,7 +1704,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Skip if key is already authorized - we want to test unauthorized key usage
         if (ghost_keyAuthorized[owner][keyId]) {
             ghost_keyAuthRejectedWrongSigner++;
-            _logSkip("handler_keyAuthWrongSigner", "key already authorized");
             return;
         }
 
@@ -1807,7 +1730,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keyAuthWrongSigner");
             // Unauthorized key was allowed - this is a K1 violation!
             ghost_keyWrongSignerAllowed++;
             ghost_protocolNonce[owner]++;
@@ -1815,7 +1737,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject("handler_keyAuthWrongSigner", _recordKeyWrongSigner);
+            _handleExpectedReject(_recordKeyWrongSigner);
         }
     }
 
@@ -1831,8 +1753,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyIdB,) = _getActorAccessKey(actorIdx, keyBSeed);
 
         if (keyIdA == keyIdB) {
-            _recordSkipOther();
-            _logSkip("handler_keyAuthNotSelf", "keyA == keyB");
             return;
         }
 
@@ -1852,8 +1772,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         }
 
         if (ghost_keyAuthorized[owner][keyIdB]) {
-            _recordSkipKeyAlreadyAuthorized();
-            _logSkip("handler_keyAuthNotSelf", "keyB already authorized");
             return;
         }
 
@@ -1878,13 +1796,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keyAuthNotSelf");
             ghost_protocolNonce[owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logRevert("handler_keyAuthNotSelf");
             ghost_keyAuthRejectedNotSelf++;
         }
     }
@@ -1902,8 +1818,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyId, uint256 keyPk) = _getActorAccessKey(actorIdx, keySeed);
 
         if (!ghost_keyAuthorized[owner][keyId]) {
-            _recordSkipKeyNotAuthorized();
-            _logSkip("handler_keyAuthWrongChainId", "key not authorized");
             return;
         }
 
@@ -1915,8 +1829,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount = 1e6;
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keyAuthWrongChainId", "insufficient balance");
             return;
         }
 
@@ -1950,10 +1862,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keyAuthWrongChainId");
             ghost_keyWrongChainAllowed++;
         } catch {
-            _logRevert("handler_keyAuthWrongChainId");
             ghost_keyAuthRejectedChainId++;
         }
     }
@@ -1970,16 +1880,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyId,) = _getActorAccessKey(actorIdx, keySeed);
 
         if (ghost_keyAuthorized[owner][keyId]) {
-            _recordSkipKeyAlreadyAuthorized();
-            _logSkip("handler_keySameTxAuthorizeAndUse", "key already authorized");
             return;
         }
 
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keySameTxAuthorizeAndUse", "insufficient balance");
             return;
         }
 
@@ -2015,7 +1921,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keySameTxAuthorizeAndUse");
             // Verify on-chain nonce actually incremented before updating ghost
             uint64 actualNonce = nonce.getNonce(owner, nonceKey);
             if (actualNonce > currentNonce) {
@@ -2040,7 +1945,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 }
             }
         } catch {
-            _handleRevert2d("handler_keySameTxAuthorizeAndUse", owner, nonceKey);
+            _handleRevert2d(owner, nonceKey);
         }
     }
 
@@ -2059,20 +1964,14 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyId, uint256 keyPk) = _getActorAccessKey(actorIdx, keySeed);
 
         if (!ghost_keyAuthorized[owner][keyId]) {
-            _recordSkipKeyNotAuthorized();
-            _logSkip("handler_keySpendingPeriodReset", "key not authorized");
             return;
         }
 
         if (ghost_keyExpiry[owner][keyId] <= block.timestamp) {
-            _recordSkipKeyExpired();
-            _logSkip("handler_keySpendingPeriodReset", "key expired");
             return;
         }
 
         if (!ghost_keyEnforceLimits[owner][keyId]) {
-            _recordSkipOther();
-            _logSkip("handler_keySpendingPeriodReset", "limits not enforced");
             return;
         }
 
@@ -2081,14 +1980,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Need limit > 2e6 to have valid bound range (1e6, limit/2)
         if (limit < 2e6) {
-            _recordSkipOther();
-            _logSkip("handler_keySpendingPeriodReset", "limit too low");
             return;
         }
 
         if (spent < limit / 2) {
-            _recordSkipOther();
-            _logSkip("handler_keySpendingPeriodReset", "spent < limit/2");
             return;
         }
 
@@ -2103,8 +1998,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, limit / 2);
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keySpendingPeriodReset", "insufficient balance");
             return;
         }
 
@@ -2123,14 +2016,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keySpendingPeriodReset");
             ghost_protocolNonce[owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
             ghost_keyPeriodReset++;
         } catch {
-            _logRevert("handler_keySpendingPeriodReset");
             _syncNonceAfterFailure(owner);
             ghost_totalTxReverted++;
         }
@@ -2148,8 +2039,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyId, uint256 keyPk) = _getActorAccessKey(actorIdx, keySeed);
 
         if (ghost_keyAuthorized[owner][keyId] && ghost_keyEnforceLimits[owner][keyId]) {
-            _recordSkipOther();
-            _logSkip("handler_keyUnlimitedSpending", "key already authorized with limits");
             return;
         }
 
@@ -2165,23 +2054,17 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _authorizeKey(owner, keyId, expiry, false, tokens, amounts);
                 ghost_keyUnlimitedSpending[owner][keyId] = true;
             } catch {
-                _recordSkipOther();
-                _logSkip("handler_keyUnlimitedSpending", "key authorization failed");
                 return;
             }
         }
 
         if (ghost_keyExpiry[owner][keyId] <= block.timestamp) {
-            _recordSkipKeyExpired();
-            _logSkip("handler_keyUnlimitedSpending", "key expired");
             return;
         }
 
         amount = bound(amount, 10e6, 1000e6);
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keyUnlimitedSpending", "insufficient balance");
             return;
         }
 
@@ -2200,14 +2083,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keyUnlimitedSpending");
             ghost_protocolNonce[owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
             ghost_keyUnlimitedUsed++;
         } catch {
-            _logRevert("handler_keyUnlimitedSpending");
             _syncNonceAfterFailure(owner);
             ghost_totalTxReverted++;
         }
@@ -2235,35 +2116,25 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 uint256[] memory amounts = new uint256[](0);
                 _authorizeKey(owner, keyId, expiry, true, tokens, amounts);
             } catch {
-                _recordSkipOther();
-                _logSkip("handler_keyZeroSpendingLimit", "key authorization failed");
                 return;
             }
         }
 
         if (!ghost_keyEnforceLimits[owner][keyId]) {
-            _recordSkipOther();
-            _logSkip("handler_keyZeroSpendingLimit", "limits not enforced");
             return;
         }
 
         if (ghost_keySpendingLimit[owner][keyId][address(feeToken)] > 0) {
-            _recordSkipOther();
-            _logSkip("handler_keyZeroSpendingLimit", "has spending limit");
             return;
         }
 
         if (ghost_keyExpiry[owner][keyId] <= block.timestamp) {
-            _recordSkipKeyExpired();
-            _logSkip("handler_keyZeroSpendingLimit", "key expired");
             return;
         }
 
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keyZeroSpendingLimit", "insufficient balance");
             return;
         }
 
@@ -2282,7 +2153,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keyZeroSpendingLimit");
             // Zero-limit key was allowed to spend - K12 violation!
             ghost_keyZeroLimitAllowed++;
             ghost_protocolNonce[owner]++;
@@ -2290,7 +2160,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject("handler_keyZeroSpendingLimit", _recordKeyZeroLimit);
+            _handleExpectedReject(_recordKeyZeroLimit);
         }
     }
 
@@ -2319,31 +2189,23 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_keySignatureType[owner][keyId] =
                     uint8(IAccountKeychain.SignatureType.Secp256k1);
             } catch {
-                _recordSkipOther();
-                _logSkip("handler_keySigTypeMismatch", "key authorization failed");
                 return;
             }
         }
 
         if (ghost_keyExpiry[owner][keyId] <= block.timestamp) {
-            _recordSkipKeyExpired();
-            _logSkip("handler_keySigTypeMismatch", "key expired");
             return;
         }
 
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(owner);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_keySigTypeMismatch", "insufficient balance");
             return;
         }
 
         (address p256KeyId, uint256 p256Pk, bytes32 pubKeyX, bytes32 pubKeyY) =
             _getActorP256AccessKey(actorIdx, keySeed);
         if (p256KeyId == keyId) {
-            _recordSkipOther();
-            _logSkip("handler_keySigTypeMismatch", "p256 key matches secp256k1 key");
             return;
         }
 
@@ -2364,13 +2226,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_keySigTypeMismatch");
             ghost_protocolNonce[owner]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logRevert("handler_keySigTypeMismatch");
             ghost_keySigMismatchRejected++;
         }
     }
@@ -2399,7 +2259,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (TxContext memory ctx, bool skip, uint256 totalAmount) =
             _setupMulticallContext(actorSeed, recipientSeed, amount1, amount2, nonceKeySeed);
         if (skip) {
-            _logSkip("handler_tempoMulticall", "setup context failed");
             return;
         }
 
@@ -2424,7 +2283,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoMulticall");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey);
             ghost_totalMulticallsExecuted++;
             uint256 recipientBalanceAfter = feeToken.balanceOf(ctx.recipient);
@@ -2434,7 +2292,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 "M4: Multicall transfers not applied"
             );
         } catch {
-            _handleRevert2d("handler_tempoMulticall", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -2450,7 +2308,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
         if (skip) {
-            _logSkip("handler_tempoMulticallWithFailure", "setup context failed");
             return;
         }
 
@@ -2478,10 +2335,8 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoMulticallWithFailure");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey);
         } catch {
-            _logRevert("handler_tempoMulticallWithFailure");
             // Tx reverted during execution - nonce may or may not be consumed depending on when revert happened
             // Only update ghost state if on-chain nonce actually changed (verified, not assumed)
             uint64 actualNonce = nonce.getNonce(ctx.sender, ctx.nonceKey);
@@ -2519,12 +2374,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             actorSeed, recipientSeed, amount, nonceKeySeed, 0, 1e6, 10e6
         );
         if (skip) {
-            _logSkip("handler_tempoMulticallStateVisibility", "setup context failed");
             return;
         }
         if (feeToken.balanceOf(ctx.recipient) < ctx.amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_tempoMulticallStateVisibility", "recipient insufficient balance");
             return;
         }
 
@@ -2553,7 +2405,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoMulticallStateVisibility");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey);
             ghost_totalMulticallsWithStateVisibility++;
 
@@ -2570,7 +2421,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 "M8/M9: State visibility - recipient balance should be unchanged after round-trip"
             );
         } catch {
-            _handleRevert2d("handler_tempoMulticallStateVisibility", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -2644,7 +2495,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_feeCollection");
             uint256 balanceAfter = feeToken.balanceOf(sender);
             ghost_balanceAfterTx[sender] = balanceAfter;
 
@@ -2669,7 +2519,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_feeTrackingTransactions++;
             }
         } catch {
-            _logRevert("handler_feeCollection");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -2741,7 +2590,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_feeRefundSuccess");
             uint256 balanceAfter = feeToken.balanceOf(sender);
             uint256 actualDecrease = balanceBefore - balanceAfter;
             uint256 transferAmount = amount;
@@ -2760,7 +2608,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_feeRefundSuccess");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -2817,7 +2664,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_feeNoRefundFailure");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -2827,7 +2673,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_feeNoRefundFailure");
             _sync2dNonceAfterFailure(sender, nonceKey);
             uint256 balanceAfter = feeToken.balanceOf(sender);
             if (balanceAfter < balanceBefore) {
@@ -2845,7 +2690,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < 1e6) {
-            _recordSkipInsufficientBalance();
             return;
         }
 
@@ -2873,7 +2717,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_feeOnRevert");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -2883,7 +2726,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_feeOnRevert");
             _sync2dNonceAfterFailure(sender, nonceKey);
             uint256 balanceAfter = feeToken.balanceOf(sender);
             if (balanceAfter < balanceBefore) {
@@ -2949,7 +2791,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_invalidFeeToken");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -2959,7 +2800,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_invalidFeeToken");
             _sync2dNonceAfterFailure(sender, nonceKey);
             _recordInvalidFeeTokenRejected();
             ghost_totalTxReverted++;
@@ -3022,7 +2862,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_explicitFeeToken");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -3033,7 +2872,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _recordExplicitFeeTokenUsed();
             }
         } catch {
-            _logRevert("handler_explicitFeeToken");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -3095,7 +2933,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_feeTokenFallback");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -3106,7 +2943,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _recordFeeTokenFallbackUsed();
             }
         } catch {
-            _logRevert("handler_feeTokenFallback");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -3173,7 +3009,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Tempo txs with nonceKey > 0 only increment 2D nonce, not protocol nonce
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_insufficientLiquidity");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -3183,7 +3018,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ghost_total2dNonceTxs++;
             }
         } catch {
-            _logRevert("handler_insufficientLiquidity");
             _sync2dNonceAfterFailure(sender, nonceKey);
             _recordInsufficientLiquidityRejected();
             ghost_totalTxReverted++;
@@ -3250,7 +3084,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ctx.nonceKey = 1;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
         if (skip) {
-            _logSkip("handler_timeBoundValidAfter", "skip_context_setup");
             return;
         }
 
@@ -3263,15 +3096,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_timeBoundValidAfter");
             // T1 VIOLATION: Tx with validAfter in future should have been rejected!
             ghost_timeBoundValidAfterAllowed++;
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _handleExpectedReject(
-                "handler_timeBoundValidAfter", _recordTimeBoundValidAfterRejection
-            );
+            _handleExpectedReject(_recordTimeBoundValidAfterRejection);
         }
     }
 
@@ -3289,7 +3119,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ctx.nonceKey = 2;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
         if (skip) {
-            _logSkip("handler_timeBoundValidBefore", "skip_context_setup");
             return;
         }
 
@@ -3303,15 +3132,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_timeBoundValidBefore");
             // T2 VIOLATION: Tx with validBefore in past should have been rejected!
             ghost_timeBoundValidBeforeAllowed++;
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _handleExpectedReject(
-                "handler_timeBoundValidBefore", _recordTimeBoundValidBeforeRejection
-            );
+            _handleExpectedReject(_recordTimeBoundValidBeforeRejection);
         }
     }
 
@@ -3329,7 +3155,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ctx.nonceKey = 3;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
         if (skip) {
-            _logSkip("handler_timeBoundValid", "skip_context_setup");
             return;
         }
 
@@ -3349,11 +3174,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_timeBoundValid");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _handleRevert2d("handler_timeBoundValid", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -3368,7 +3192,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ctx.nonceKey = 4;
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
         if (skip) {
-            _logSkip("handler_timeBoundOpen", "skip_context_setup");
             return;
         }
 
@@ -3378,11 +3201,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_timeBoundOpen");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_openWindowTxsExecuted++;
         } catch {
-            _handleRevert2d("handler_timeBoundOpen", ctx.sender, ctx.nonceKey);
+            _handleRevert2d(ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -3435,14 +3257,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_eip1559Transfer");
             ghost_protocolNonce[sender]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
             ghost_totalEip1559Txs++;
         } catch {
-            _logRevert("handler_eip1559Transfer");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -3487,14 +3307,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_eip1559BaseFeeRejection");
             ghost_protocolNonce[sender]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
             ghost_totalEip1559Txs++;
         } catch {
-            _logRevert("handler_eip1559BaseFeeRejection");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
             ghost_totalEip1559BaseFeeRejected++;
@@ -3568,7 +3386,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_eip7702WithAuth");
             ghost_protocolNonce[sender]++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
@@ -3587,7 +3404,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 }
             }
         } catch {
-            _logRevert("handler_eip7702WithAuth");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -3640,7 +3456,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_eip7702CreateRejection");
             // CREATE with authorization list unexpectedly succeeded - TX7 violation!
             ghost_eip7702CreateWithAuthAllowed++;
             ghost_protocolNonce[sender]++;
@@ -3648,7 +3463,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCreatesExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _handleExpectedReject("handler_eip7702CreateRejection", _recordEip7702CreateRejection);
+            _handleExpectedReject(_recordEip7702CreateRejection);
         }
     }
 
@@ -3686,8 +3501,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 senderBalance = feeToken.balanceOf(sender);
         uint256 feePayerBalance = feeToken.balanceOf(feePayer);
         if (senderBalance < amount || feePayerBalance < 1e6) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_tempoFeeSponsor", "insufficient_balance");
             return;
         }
 
@@ -3737,7 +3550,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_tempoFeeSponsor");
             uint64 actualNonce = nonce.getNonce(sender, nonceKey);
             if (actualNonce > currentNonce) {
                 ghost_2dNonce[sender][nonceKey] = actualNonce;
@@ -3771,7 +3583,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 );
             }
         } catch {
-            _logRevert("handler_tempoFeeSponsor");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -3823,7 +3634,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_gasTrackingBasic");
             uint256 gasUsed = gasBefore - gasleft();
             ghost_basicGasUsed[sender] = gasUsed;
 
@@ -3838,7 +3648,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalProtocolNonceTxs++;
             _recordGasTrackingBasic();
         } catch {
-            _logRevert("handler_gasTrackingBasic");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -3862,8 +3671,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 totalAmount = numCalls * amount;
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < totalAmount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_gasTrackingMulticall", "insufficient balance");
             return;
         }
 
@@ -3889,7 +3696,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_gasTrackingMulticall");
             uint256 gasUsed = gasBefore - gasleft();
             ghost_multicallGasUsed[sender] = gasUsed;
             ghost_numCallsInMulticall[sender] = numCalls;
@@ -3905,7 +3711,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_total2dNonceTxs++;
             _recordGasTrackingMulticall();
         } catch {
-            _logRevert("handler_gasTrackingMulticall");
             _sync2dNonceAfterFailure(sender, nonceKey);
             ghost_totalTxReverted++;
         }
@@ -3934,7 +3739,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_gasTrackingCreate");
             uint256 gasUsed = gasBefore - gasleft();
             ghost_createGasUsed[sender] = gasUsed;
 
@@ -3952,7 +3756,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_createCount[sender]++;
             _recordGasTrackingCreate();
         } catch {
-            _logRevert("handler_gasTrackingCreate");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -4000,7 +3803,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         uint256 gasBefore = gasleft();
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_gasTrackingSignatureTypes");
             uint256 gasUsed = gasBefore - gasleft();
             ghost_signatureGasUsed[sender] = gasUsed;
 
@@ -4016,7 +3818,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalProtocolNonceTxs++;
             _recordGasTrackingSignature();
         } catch {
-            _logRevert("handler_gasTrackingSignatureTypes");
             _syncNonceAfterFailure(sender);
             ghost_totalTxReverted++;
         }
@@ -4033,8 +3834,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         (address keyId,) = _getActorAccessKey(actorIdx, keySeed);
 
         if (ghost_keyAuthorized[owner][keyId]) {
-            _recordSkipKeyAlreadyAuthorized();
-            _logSkip("handler_gasTrackingKeyAuth", "key already authorized");
             return;
         }
 
@@ -4059,14 +3858,12 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         try keychain.authorizeKey(
             keyId, IAccountKeychain.SignatureType.Secp256k1, expiry, numLimits > 0, limits
         ) {
-            _logSuccess("handler_gasTrackingKeyAuth");
             uint256 gasUsed = gasBefore - gasleft();
             ghost_keyAuthGasUsed[owner] = gasUsed;
 
             _authorizeKey(owner, keyId, expiry, numLimits > 0, tokens, amounts);
             _recordGasTrackingKeyAuth();
         } catch {
-            _logRevert("handler_gasTrackingKeyAuth");
         }
     }
 
@@ -4193,8 +3990,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceBasic", "insufficient balance");
             return;
         }
 
@@ -4206,13 +4001,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceBasic");
             ghost_expiringNonceExecuted[txHash] = true;
             ghost_expiringNonceTxsExecuted++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
         } catch {
-            _logRevert("handler_expiringNonceBasic");
             ghost_totalTxReverted++;
         }
     }
@@ -4234,8 +4027,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount * 2) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceReplay", "insufficient balance");
             return;
         }
 
@@ -4248,13 +4039,11 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // First execution should succeed
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceReplay");
             ghost_expiringNonceExecuted[txHash] = true;
             ghost_expiringNonceTxsExecuted++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
         } catch {
-            _logRevert("handler_expiringNonceReplay");
             ghost_totalTxReverted++;
             return;
         }
@@ -4262,11 +4051,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         // Replay attempt - should fail
         ghost_expiringNonceReplayAttempted++;
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceReplay");
             // E1 VIOLATION: Replay within validity window succeeded!
             ghost_expiringNonceReplayAllowed++;
         } catch {
-            _handleExpectedReject("handler_expiringNonceReplay", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -4287,8 +4075,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceExpired", "insufficient balance");
             return;
         }
 
@@ -4301,11 +4087,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_expiringNonceExpiredAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceExpired");
             // E2 VIOLATION: Expired tx was allowed!
             ghost_expiringNonceExpiredAllowed++;
         } catch {
-            _handleExpectedReject("handler_expiringNonceExpired", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -4329,8 +4114,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceWindowTooFar", "insufficient balance");
             return;
         }
 
@@ -4344,11 +4127,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_expiringNonceWindowAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceWindowTooFar");
             // E3 VIOLATION: validBefore exceeds max window but was allowed!
             ghost_expiringNonceWindowAllowed++;
         } catch {
-            _handleExpectedReject("handler_expiringNonceWindowTooFar", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -4372,8 +4154,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceNonZeroNonce", "insufficient balance");
             return;
         }
 
@@ -4387,11 +4167,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_expiringNonceNonZeroAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceNonZeroNonce");
             // E4 VIOLATION: Non-zero nonce was allowed!
             ghost_expiringNonceNonZeroAllowed++;
         } catch {
-            _handleExpectedReject("handler_expiringNonceNonZeroNonce", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -4414,8 +4193,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceMissingValidBefore", "insufficient balance");
             return;
         }
 
@@ -4425,11 +4202,10 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         ghost_expiringNonceMissingVBAttempted++;
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceMissingValidBefore");
             // E5 VIOLATION: Missing validBefore was allowed!
             ghost_expiringNonceMissingVBAllowed++;
         } catch {
-            _handleExpectedReject("handler_expiringNonceMissingValidBefore", _noop);
+            _handleExpectedReject(_noop);
         }
     }
 
@@ -4452,8 +4228,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount = bound(amount, 1e6, 10e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceNoNonceMutation", "insufficient balance");
             return;
         }
 
@@ -4469,7 +4243,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(signedTx) {
-            _logSuccess("handler_expiringNonceNoNonceMutation");
             ghost_expiringNonceExecuted[txHash] = true;
             ghost_expiringNonceTxsExecuted++;
             ghost_totalTxExecuted++;
@@ -4491,7 +4264,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 nonce2dAfter, nonce2dBefore, "E6: 2D nonce should not change for expiring nonce tx"
             );
         } catch {
-            _logRevert("handler_expiringNonceNoNonceMutation");
             ghost_totalTxReverted++;
         }
     }
@@ -4517,8 +4289,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         amount2 = bound(amount2, 1e6, 5e6);
         uint256 balance = feeToken.balanceOf(sender);
         if (balance < amount1 + amount2) {
-            _recordSkipInsufficientBalance();
-            _logSkip("handler_expiringNonceConcurrent", "insufficient balance");
             return;
         }
 
@@ -4532,8 +4302,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Ensure they have different hashes
         if (txHash1 == txHash2) {
-            _recordSkipOther();
-            _logSkip("handler_expiringNonceConcurrent", "identical tx hashes");
             return;
         }
 
@@ -4543,27 +4311,23 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
         // Execute first tx
         try vmExec.executeTransaction(signedTx1) {
-            _logSuccess("handler_expiringNonceConcurrent");
             ghost_expiringNonceExecuted[txHash1] = true;
             ghost_expiringNonceTxsExecuted++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             successCount++;
         } catch {
-            _logRevert("handler_expiringNonceConcurrent");
             ghost_totalTxReverted++;
         }
 
         // Execute second tx (should also succeed - no nonce dependency)
         try vmExec.executeTransaction(signedTx2) {
-            _logSuccess("handler_expiringNonceConcurrent");
             ghost_expiringNonceExecuted[txHash2] = true;
             ghost_expiringNonceTxsExecuted++;
             ghost_totalTxExecuted++;
             ghost_totalCallsExecuted++;
             successCount++;
         } catch {
-            _logRevert("handler_expiringNonceConcurrent");
             ghost_totalTxReverted++;
         }
 

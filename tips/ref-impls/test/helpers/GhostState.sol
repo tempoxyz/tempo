@@ -1,44 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import { Vm } from "forge-std/Vm.sol";
-
 /// @title GhostState - Ghost Variable Tracking for Invariant Tests
 /// @dev Ghost variables mirror what we expect on-chain state to be
 abstract contract GhostState {
-
-    // ============ File-based Logging (persists across Foundry state resets) ============
-
-    string internal constant TEMPO_TX_LOG = "tempo_tx_invariant.log";
-
-    /// @dev Foundry VM interface for file operations (uses standard cheatcode address)
-    Vm private constant _ghostVm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
-
-    /// @dev Initialize the log file (call in setUp)
-    function _initTxLog() internal {
-        try _ghostVm.removeFile(TEMPO_TX_LOG) { } catch { }
-        _ghostVm.writeLine(TEMPO_TX_LOG, "=== TempoTransaction Invariant Log ===");
-    }
-
-    /// @dev Log a handler skip with reason
-    function _logSkip(string memory handler, string memory reason) internal {
-        _ghostVm.writeLine(TEMPO_TX_LOG, string.concat(handler, ":SKIP:", reason));
-    }
-
-    /// @dev Log a handler success
-    function _logSuccess(string memory handler) internal {
-        _ghostVm.writeLine(TEMPO_TX_LOG, string.concat(handler, ":SUCCESS"));
-    }
-
-    /// @dev Log a handler revert
-    function _logRevert(string memory handler) internal {
-        _ghostVm.writeLine(TEMPO_TX_LOG, string.concat(handler, ":REVERT"));
-    }
-
-    /// @dev Log an expected rejection (for negative test cases)
-    function _logExpectedReject(string memory handler) internal {
-        _ghostVm.writeLine(TEMPO_TX_LOG, string.concat(handler, ":EXPECTED_REJECT"));
-    }
 
     // ============ Nonce Tracking ============
 
@@ -293,55 +258,6 @@ abstract contract GhostState {
 
     function _recordSubblockKeychainRejected() internal {
         ghost_subblockKeychainRejected++;
-    }
-
-    // ============ Handler Skip Tracking (for debugging slow invariant runs) ============
-
-    uint256 public ghost_skipInsufficientBalance;
-    uint256 public ghost_skipKeyNotAuthorized;
-    uint256 public ghost_skipKeyExpired;
-    uint256 public ghost_skipKeySpendingLimit;
-    uint256 public ghost_skipNoPolicies;
-    uint256 public ghost_skipNoKeys;
-    uint256 public ghost_skipKeyAlreadyAuthorized;
-    uint256 public ghost_skipKeyNeverAuthorized;
-    uint256 public ghost_skipOther;
-    uint256 public ghost_handlerAttempts;
-
-    function _recordSkipInsufficientBalance() internal {
-        ghost_skipInsufficientBalance++;
-    }
-
-    function _recordSkipKeyNotAuthorized() internal {
-        ghost_skipKeyNotAuthorized++;
-    }
-
-    function _recordSkipKeyExpired() internal {
-        ghost_skipKeyExpired++;
-    }
-
-    function _recordSkipKeySpendingLimit() internal {
-        ghost_skipKeySpendingLimit++;
-    }
-
-    function _recordSkipNoPolicies() internal {
-        ghost_skipNoPolicies++;
-    }
-
-    function _recordSkipNoKeys() internal {
-        ghost_skipNoKeys++;
-    }
-
-    function _recordSkipKeyAlreadyAuthorized() internal {
-        ghost_skipKeyAlreadyAuthorized++;
-    }
-
-    function _recordSkipKeyNeverAuthorized() internal {
-        ghost_skipKeyNeverAuthorized++;
-    }
-
-    function _recordSkipOther() internal {
-        ghost_skipOther++;
     }
 
     // ============ Gas Recording Functions ============
