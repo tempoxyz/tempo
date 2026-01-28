@@ -216,14 +216,7 @@ fn main() -> eyre::Result<()> {
         // Spawn consensus after execution node is ready
         // Handle is kept alive - consensus panics on failure (like spawn_critical)
         let consensus_handle = if args.consensus.is_enabled(is_dev_mode, is_follow_mode) {
-            Some(
-                ConsensusNode::builder(args.consensus)
-                    .with_execution_node(node)
-                    .with_feed_state(feed_state)
-                    .build()
-                    .wrap_err("failed to build consensus node")?
-                    .spawn(),
-            )
+            Some(ConsensusNode::new(args.consensus, node, feed_state).spawn())
         } else {
             info!(
                 dev_mode = is_dev_mode,

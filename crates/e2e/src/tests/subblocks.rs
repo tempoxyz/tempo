@@ -52,11 +52,10 @@ fn subblocks_are_included() {
         for node in &mut nodes {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut()
-                .set_new_payload_wait_time_duration(Duration::from_millis(500));
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
 
             let fee_recipient = Address::random();
-            node.consensus_config_mut().set_fee_recipient(fee_recipient);
+            node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
         }
 
@@ -159,11 +158,10 @@ fn subblocks_are_included_with_failing_txs() {
         for node in &mut nodes {
             // Due to how Commonware deterministic runtime behaves in CI, we need to bump this timeout
             // to ensure that payload builder has enough time to accumulate subblocks.
-            node.consensus_config_mut()
-                .set_new_payload_wait_time_duration(Duration::from_millis(500));
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
 
             let fee_recipient = Address::random();
-            node.consensus_config_mut().set_fee_recipient(fee_recipient);
+            node.consensus_config_mut().fee_recipient = fee_recipient;
             fee_recipients.push(fee_recipient);
         }
 
@@ -335,8 +333,7 @@ fn oversized_subblock_txs_are_removed() {
         let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup.clone()).await;
 
         for node in &mut nodes {
-            node.consensus_config_mut()
-                .set_new_payload_wait_time_duration(Duration::from_millis(500));
+            node.consensus_config_mut().new_payload_wait_time = Duration::from_millis(500);
         }
 
         join_all(nodes.iter_mut().map(|node| node.start(&context))).await;

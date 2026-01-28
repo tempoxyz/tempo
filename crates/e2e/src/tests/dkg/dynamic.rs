@@ -64,7 +64,7 @@ impl AssertValidatorIsAdded {
             let mut new_validator = {
                 let idx = validators
                     .iter()
-                    .position(|node| node.consensus_config().share().is_none())
+                    .position(|node| node.consensus_config().share.is_none())
                     .expect("at least one node must be a verifier, i.e. not have a share");
                 validators.remove(idx)
             };
@@ -72,7 +72,7 @@ impl AssertValidatorIsAdded {
             assert!(
                 validators
                     .iter()
-                    .all(|node| node.consensus_config().share().is_some()),
+                    .all(|node| node.consensus_config().share.is_some()),
                 "must have removed the one non-signer node; must be left with only signers",
             );
 
