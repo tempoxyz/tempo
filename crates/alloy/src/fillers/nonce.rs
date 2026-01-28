@@ -116,7 +116,10 @@ impl ExpiringNonceFiller {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0)
+            .unwrap_or_else(|_| {
+                tracing::warn!("system clock before UNIX_EPOCH, using 0");
+                0
+            })
     }
 }
 
