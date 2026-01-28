@@ -953,7 +953,7 @@ mod tests {
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::TempoTxEnvelope;
+    use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
     use tempo_revm::TempoStateAccess;
 
     /// Helper to create a mock sealed block with the given timestamp.
@@ -2872,8 +2872,6 @@ mod tests {
     /// CREATE calls (contract deployments) must be the first call in an AA transaction.
     #[tokio::test]
     async fn test_aa_create_call_not_first_rejected() {
-        use tempo_primitives::transaction::tempo_transaction::Call;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -2920,8 +2918,6 @@ mod tests {
     /// CREATE call as the first call should be accepted.
     #[tokio::test]
     async fn test_aa_create_call_first_accepted() {
-        use tempo_primitives::transaction::tempo_transaction::Call;
-
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
