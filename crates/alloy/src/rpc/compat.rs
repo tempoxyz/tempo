@@ -43,6 +43,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_authorization,
                     valid_before,
                     valid_after,
+                    fee_payer_signature,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -61,6 +62,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             valid_before,
                             valid_after,
+                            fee_payer_signature,
                         }));
                     }
                 };
@@ -79,6 +81,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_authorization,
                             valid_before,
                             valid_after,
+                            fee_payer_signature,
                         })
                     },
                 )?)
@@ -106,6 +109,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             key_authorization,
             valid_before,
             valid_after,
+            fee_payer_signature: _,
         } = self;
         Ok(TempoTxEnv {
             fee_token,
