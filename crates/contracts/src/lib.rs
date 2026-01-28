@@ -117,6 +117,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn multicall3_bytecode_matches_mainnet() {
         // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&Multicall3::DEPLOYED_BYTECODE);
@@ -140,6 +141,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn createx_bytecode_matches_mainnet() {
         // Verify our hash constant matches our bytecode
         let computed_hash = keccak256(&CreateX::DEPLOYED_BYTECODE);
@@ -163,6 +165,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn arachnid_create2_factory_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(ARACHNID_CREATE2_FACTORY_ADDRESS).await;
         let our_hash = keccak256(&contracts::ARACHNID_CREATE2_FACTORY_BYTECODE);
@@ -177,6 +180,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires mainnet RPC access - not needed after mainnet launch"]
     async fn safe_deployer_bytecode_matches_mainnet() {
         let mainnet_hash = get_mainnet_code_hash(SAFE_DEPLOYER_ADDRESS).await;
         let our_hash = keccak256(&SafeDeployer::DEPLOYED_BYTECODE);

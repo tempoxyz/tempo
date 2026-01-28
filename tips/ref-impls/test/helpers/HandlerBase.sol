@@ -110,6 +110,47 @@ abstract contract HandlerBase is InvariantBase {
         ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
     }
 
+    /// @notice Setup a transfer context with skip tracking (non-view version)
+    /// @dev Use this when you need to track why handlers skip
+    function _setupTransferContextWithTracking(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 sigTypeSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx, bool skip) {
+        ctx.senderIdx = actorSeed % actors.length;
+        uint256 recipientIdx = recipientSeed % actors.length;
+        if (ctx.senderIdx == recipientIdx) {
+            recipientIdx = (recipientIdx + 1) % actors.length;
+        }
+
+        ctx.sigType = _getRandomSignatureType(sigTypeSeed);
+        ctx.sender = _getSenderForSigType(ctx.senderIdx, ctx.sigType);
+        ctx.recipient = actors[recipientIdx];
+        ctx.amount = bound(amountSeed, minAmount, maxAmount);
+
+        skip = !_checkBalanceWithTracking(ctx.sender, ctx.amount);
+    }
+
+    /// @notice Setup a 2D nonce transfer context with skip tracking
+    function _setup2dNonceTransferContextWithTracking(
+        uint256 actorSeed,
+        uint256 recipientSeed,
+        uint256 amountSeed,
+        uint256 nonceKeySeed,
+        uint256 sigTypeSeed,
+        uint256 minAmount,
+        uint256 maxAmount
+    ) internal returns (TxContext memory ctx, bool skip) {
+        (ctx, skip) = _setupTransferContextWithTracking(
+            actorSeed, recipientSeed, amountSeed, sigTypeSeed, minAmount, maxAmount
+        );
+        ctx.nonceKey = uint64(bound(nonceKeySeed, 1, 100));
+        ctx.currentNonce = uint64(ghost_2dNonce[ctx.sender][ctx.nonceKey]);
+    }
+
     // ============ Nonce Assertion Helpers ============
 
     /// @notice Assert protocol nonce matches ghost state (for debugging)
@@ -169,6 +210,18 @@ abstract contract HandlerBase is InvariantBase {
         return feeToken.balanceOf(account) >= required;
     }
 
+    /// @notice Check balance and return whether sufficient
+    /// @param account The account to check
+    /// @param required The required balance
+    /// @return True if account has sufficient balance
+    function _checkBalanceWithTracking(address account, uint256 required)
+        internal
+        view
+        returns (bool)
+    {
+        return feeToken.balanceOf(account) >= required;
+    }
+
     // ============ Access Key Helpers ============
 
     /// @notice Check if an access key can be used for a transfer
@@ -185,6 +238,19 @@ abstract contract HandlerBase is InvariantBase {
             if (spent + amount > limit) return false;
         }
         return true;
+    }
+
+    /// @notice Check if an access key can be used
+    /// @param owner The owner address
+    /// @param keyId The access key ID
+    /// @param amount The amount to transfer
+    /// @return canUse True if the key is authorized, not expired, and within spending limit
+    function _canUseKeyWithTracking(address owner, address keyId, uint256 amount)
+        internal
+        view
+        returns (bool)
+    {
+        return _canUseKey(owner, keyId, amount);
     }
 
     /// @notice Setup context for using a secp256k1 access key
@@ -353,6 +419,31 @@ abstract contract HandlerBase is InvariantBase {
             ghost_2dNonceUsed[account][nonceKey] = true;
             ghost_total2dNonceTxs++;
         }
+    }
+
+    /// @notice Unified handler for protocol nonce transaction reverts
+    /// @dev Syncs nonce and increments revert counter
+    function _handleRevertProtocol(address account) internal {
+        _syncNonceAfterFailure(account);
+        ghost_totalTxReverted++;
+    }
+
+    /// @notice Unified handler for 2D nonce transaction reverts
+    /// @dev Syncs 2D nonce and increments revert counter
+    function _handleRevert2d(address account, uint64 nonceKey) internal {
+        _sync2dNonceAfterFailure(account, nonceKey);
+        ghost_totalTxReverted++;
+    }
+
+    // ============ Consolidated Catch Block Helpers ============
+
+    /// @notice No-op function for expected rejections that don't need counter updates
+    function _noop() internal { }
+
+    /// @notice Handle expected rejection with optional counter update
+    /// @param updateFn Counter update function (use _noop for no update)
+    function _handleExpectedReject(function() internal updateFn) internal {
+        updateFn();
     }
 
     // ============ CREATE Context Helpers ============

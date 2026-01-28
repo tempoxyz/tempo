@@ -75,12 +75,20 @@ pub struct TempoTransactionRequest {
 
     /// Transaction valid before timestamp (for expiring nonces, TIP-1009).
     /// Transaction can only be included in a block before this timestamp.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "alloy_serde::quantity::opt"
+    )]
     pub valid_before: Option<u64>,
 
     /// Transaction valid after timestamp (for expiring nonces, TIP-1009).
     /// Transaction can only be included in a block after this timestamp.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "alloy_serde::quantity::opt"
+    )]
     pub valid_after: Option<u64>,
 }
 
