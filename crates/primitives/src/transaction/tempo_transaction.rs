@@ -1628,6 +1628,8 @@ mod tests {
             )]),
             key_id: address!("0000000000000000000000000000000000000004"),
             allowed_destinations: None,
+            valid_after: None,
+            activation_delay: None,
         }
         .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature()));
 

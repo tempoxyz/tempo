@@ -1673,6 +1673,7 @@ mod tests {
                 expiry: u64::MAX,  // never expires
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -1706,6 +1707,7 @@ mod tests {
                 expiry: 0, // revoked keys have expiry=0
                 enforce_limits: false,
                 is_revoked: true,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -1743,6 +1745,7 @@ mod tests {
                 expiry: 0, // expiry = 0 means key doesn't exist
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -1807,6 +1810,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // never expires
                 limits: None, // unlimited
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -1851,6 +1857,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -1898,6 +1907,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -1942,6 +1954,9 @@ mod tests {
                 key_id: different_key_id, // Different from access_key_address
                 expiry: None,
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -1991,6 +2006,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None,
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2088,6 +2106,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
             let validator = setup_validator_with_keychain_storage(
@@ -2181,6 +2200,7 @@ mod tests {
                 expiry: current_time - 1, // Expired (in the past)
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -2219,6 +2239,7 @@ mod tests {
                 expiry: current_time, // Expiry at exactly current time should be rejected
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -2256,6 +2277,7 @@ mod tests {
                 expiry: current_time + 100, // Valid (in the future)
                 enforce_limits: false,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 
@@ -2289,6 +2311,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time - 1), // Expired
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2337,6 +2362,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time), // Expired at exactly current time
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2384,6 +2412,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: Some(current_time + 100), // Valid (in the future)
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2429,6 +2460,9 @@ mod tests {
                 key_id: access_key_address,
                 expiry: None, // Never expires
                 limits: None,
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             };
 
             let auth_sig_hash = key_auth.signature_hash();
@@ -2487,6 +2521,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforce_limits,
                 is_revoked: false,
+                activates_at: 0,
             }
             .encode_to_slot();
 

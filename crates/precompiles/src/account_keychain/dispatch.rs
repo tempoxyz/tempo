@@ -35,6 +35,15 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::getAllowedDestinations(call) => {
                     view(call, |c| self.get_allowed_destinations_sol(c))
                 }
+                // TIP-1013: Activation window functions
+                IAccountKeychainCalls::getActivationWindow(call) => {
+                    view(call, |c| self.get_activation_window(c))
+                }
+                IAccountKeychainCalls::extendActivation(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.extend_activation(sender, c)
+                    })
+                }
             },
         )
     }

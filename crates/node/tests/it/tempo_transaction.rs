@@ -254,10 +254,7 @@ fn create_signed_key_authorization(
     } else {
         Some(
             (0..num_limits)
-                .map(|_| TokenLimit {
-                    token: Address::ZERO,
-                    limit: U256::ZERO,
-                })
+                .map(|_| TokenLimit::one_time(Address::ZERO, U256::ZERO))
                 .collect(),
         )
     };
@@ -268,6 +265,9 @@ fn create_signed_key_authorization(
         key_id: Address::random(), // Random key being authorized
         expiry: None,              // Never expires
         limits,
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     };
 
     // Sign the key authorization
@@ -594,6 +594,9 @@ fn create_key_authorization(
         key_id: access_key_addr,
         expiry,
         limits: spending_limits,
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     };
 
     // Root key signs the authorization
@@ -694,10 +697,10 @@ fn create_mock_p256_sig(pub_key_x: B256, pub_key_y: B256) -> TempoSignature {
 fn create_default_token_limit() -> Vec<tempo_primitives::transaction::TokenLimit> {
     use tempo_primitives::transaction::TokenLimit;
 
-    vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
-        limit: U256::from(100u64) * U256::from(10).pow(U256::from(18)),
-    }]
+    vec![TokenLimit::one_time(
+        DEFAULT_FEE_TOKEN,
+        U256::from(100u64) * U256::from(10).pow(U256::from(18)),
+    )]
 }
 
 // ===== Transaction Creation Helper Functions =====
@@ -3383,10 +3386,7 @@ async fn test_aa_access_key() -> eyre::Result<()> {
     // Define spending limits for the access key
     // Allow spending up to 10 tokens from DEFAULT_FEE_TOKEN
     let spending_limit_amount = U256::from(10u64) * U256::from(10).pow(U256::from(18)); // 10 tokens
-    let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
-        limit: spending_limit_amount,
-    }];
+    let spending_limits = vec![TokenLimit::one_time(DEFAULT_FEE_TOKEN, spending_limit_amount)];
 
     println!("\nCreating key authorization:");
     println!("  - Token: {DEFAULT_FEE_TOKEN}");
@@ -3403,6 +3403,9 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         key_id: access_key_addr,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     }
     .signature_hash();
 
@@ -3416,6 +3419,9 @@ async fn test_aa_access_key() -> eyre::Result<()> {
         key_id: access_key_addr, // Address derived from P256 public key
         expiry: None,            // Never expires
         limits: Some(spending_limits),
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     }
     .into_signed(PrimitiveSignature::Secp256k1(root_auth_signature));
 
@@ -3803,6 +3809,7 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         expiry: u64::MAX,
         enforceLimits: true,
         limits: vec![],
+        activatesAt: 0,
     };
     let tx = TempoTransaction {
         chain_id,
@@ -3854,10 +3861,10 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         mock_p256_sig,
         chain_id,
         None, // Never expires
-        Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN,
-            limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
-        }]),
+        Some(vec![TokenLimit::one_time(
+            DEFAULT_FEE_TOKEN,
+            U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+        )]),
     )?;
 
     // First authorization should succeed
@@ -3978,10 +3985,10 @@ async fn test_aa_keychain_negative_cases() -> eyre::Result<()> {
         mock_p256_sig_1,
         chain_id,
         None, // Never expires
-        Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN,
-            limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
-        }]),
+        Some(vec![TokenLimit::one_time(
+            DEFAULT_FEE_TOKEN,
+            U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+        )]),
     )?;
 
     // Authorize access_key_1 with root key (should succeed)
@@ -4129,10 +4136,7 @@ async fn test_transaction_key_authorization_and_spending_limits() -> eyre::Resul
         mock_p256_sig,
         chain_id,
         None, // Never expires
-        Some(vec![TokenLimit {
-            token: DEFAULT_FEE_TOKEN,
-            limit: spending_limit,
-        }]),
+        Some(vec![TokenLimit::one_time(DEFAULT_FEE_TOKEN, spending_limit)]),
     )?;
 
     let mut nonce = provider.get_transaction_count(root_addr).await?;
@@ -5008,10 +5012,10 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
     // STEP 1: Authorize the first access key (same-tx auth+use)
     println!("=== STEP 1: Authorize Access Key (same-tx auth+use) ===");
 
-    let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
-        limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)), // 10 tokens
-    }];
+    let spending_limits = vec![TokenLimit::one_time(
+        DEFAULT_FEE_TOKEN,
+        U256::from(10u64) * U256::from(10).pow(U256::from(18)), // 10 tokens
+    )];
 
     let mock_p256_sig =
         TempoSignature::Primitive(PrimitiveSignature::P256(P256SignatureWithPreHash {
@@ -5254,6 +5258,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         key_id: addr_3,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     }
     .signature_hash();
 
@@ -5270,6 +5277,9 @@ async fn test_aa_keychain_rpc_validation() -> eyre::Result<()> {
         key_id: addr_3,
         expiry: None, // Never expires
         limits: Some(spending_limits.clone()),
+        valid_after: None,
+        activation_delay: None,
+        allowed_destinations: None,
     }
     .into_signed(PrimitiveSignature::P256(P256SignatureWithPreHash {
         r: B256::from_slice(&wrong_sig_bytes[0..32]),
@@ -5453,10 +5463,10 @@ async fn test_aa_key_authorization_chain_id_validation() -> eyre::Result<()> {
         },
     ));
 
-    let spending_limits = vec![TokenLimit {
-        token: DEFAULT_FEE_TOKEN,
-        limit: U256::from(10u64) * U256::from(10).pow(U256::from(18)),
-    }];
+    let spending_limits = vec![TokenLimit::one_time(
+        DEFAULT_FEE_TOKEN,
+        U256::from(10u64) * U256::from(10).pow(U256::from(18)),
+    )];
 
     // Test 1: Wrong chain_id should be rejected
     println!("\nTest 1: KeyAuthorization with wrong chain_id should be rejected");
@@ -6443,10 +6453,10 @@ async fn test_aa_keychain_spending_limit_toctou_dos() -> eyre::Result<()> {
         create_mock_p256_sig(access_pub_x, access_pub_y),
         chain_id,
         None, // Never expires
-        Some(vec![tempo_primitives::transaction::TokenLimit {
-            token: DEFAULT_FEE_TOKEN,
-            limit: initial_spending_limit,
-        }]),
+        Some(vec![tempo_primitives::transaction::TokenLimit::one_time(
+            DEFAULT_FEE_TOKEN,
+            initial_spending_limit,
+        )]),
     )?;
 
     let mut auth_tx = create_basic_aa_tx(

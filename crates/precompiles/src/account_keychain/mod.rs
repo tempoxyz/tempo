@@ -1,13 +1,14 @@
 pub mod dispatch;
 
 use __packing_authorized_key::{
-    ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
+    ACTIVATES_AT_LOC, ENFORCE_LIMITS_LOC, EXPIRY_LOC, IS_REVOKED_LOC, SIGNATURE_TYPE_LOC,
 };
 use tempo_contracts::precompiles::{AccountKeychainError, AccountKeychainEvent};
 pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
-        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, getAllowedDestinationsCall,
+        KeyInfo, SignatureType, TokenLimit, authorizeKeyCall, extendActivationCall,
+        getActivationWindowCall, getActivationWindowReturn, getAllowedDestinationsCall,
         getKeyCall, getRemainingLimitCall, getTransactionKeyCall, revokeKeyCall,
         updateSpendingLimitCall,
     },
@@ -28,6 +29,7 @@ use tempo_precompiles_macros::{Storable, contract};
 /// - bytes 1-8: expiry (u64, little-endian)
 /// - byte 9: enforce_limits (bool)
 /// - byte 10: is_revoked (bool)
+/// - bytes 11-18: activates_at (u64, little-endian) - TIP-1013
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
     /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
@@ -39,6 +41,10 @@ pub struct AuthorizedKey {
     /// Whether this key has been revoked. Once revoked, a key cannot be re-authorized
     /// with the same key_id. This prevents replay attacks.
     pub is_revoked: bool,
+    /// TIP-1013: Block timestamp when key becomes usable.
+    /// Computed as max(valid_after, authorization_time + activation_delay).
+    /// A value of 0 means the key is immediately usable (no activation delay).
+    pub activates_at: u64,
 }
 
 // TODO(rusowsky): remove this and create a read-only wrapper that is callable from read-only ctx with db access
@@ -83,13 +89,21 @@ impl AuthorizedKey {
         )
         .expect("unable to insert 'enforce_limits'");
 
-        insert_into_word(
+        let encoded = insert_into_word(
             encoded,
             &self.is_revoked,
             IS_REVOKED_LOC.offset_bytes,
             IS_REVOKED_LOC.size,
         )
-        .expect("unable to insert 'is_revoked'")
+        .expect("unable to insert 'is_revoked'");
+
+        insert_into_word(
+            encoded,
+            &self.activates_at,
+            ACTIVATES_AT_LOC.offset_bytes,
+            ACTIVATES_AT_LOC.size,
+        )
+        .expect("unable to insert 'activates_at'")
     }
 }
 
@@ -186,12 +200,21 @@ impl AccountKeychain {
             _ => return Err(AccountKeychainError::invalid_signature_type().into()),
         };
 
+        // TIP-1013: Get activatesAt (pre-computed by handler from validAfter + activationDelay)
+        let activates_at = call.activatesAt;
+
+        // TIP-1013: Validate activatesAt doesn't exceed expiry
+        if activates_at > 0 && call.expiry != u64::MAX && activates_at >= call.expiry {
+            return Err(AccountKeychainError::activation_exceeds_expiry().into());
+        }
+
         // Create and store the new key
         let new_key = AuthorizedKey {
             signature_type,
             expiry: call.expiry,
             enforce_limits: call.enforceLimits,
             is_revoked: false,
+            activates_at,
         };
 
         self.keys[msg_sender][call.keyId].write(new_key)?;
@@ -310,6 +333,7 @@ impl AccountKeychain {
                 expiry: 0,
                 enforceLimits: false,
                 isRevoked: key.is_revoked,
+                activatesAt: 0,
             });
         }
 
@@ -327,6 +351,7 @@ impl AccountKeychain {
             expiry: key.expiry,
             enforceLimits: key.enforce_limits,
             isRevoked: key.is_revoked,
+            activatesAt: key.activates_at,
         })
     }
 
@@ -342,6 +367,68 @@ impl AccountKeychain {
         call: getAllowedDestinationsCall,
     ) -> Result<Vec<Address>> {
         self.get_allowed_destinations(call.account, call.keyId)
+    }
+
+    /// TIP-1013: Get the activation window for a key
+    pub fn get_activation_window(
+        &self,
+        call: getActivationWindowCall,
+    ) -> Result<getActivationWindowReturn> {
+        let key = self.keys[call.account][call.keyId].read()?;
+
+        // Key doesn't exist if expiry == 0
+        if key.expiry == 0 {
+            return Ok(getActivationWindowReturn {
+                activatesAt: 0,
+                expiry: 0,
+            });
+        }
+
+        Ok(getActivationWindowReturn {
+            activatesAt: key.activates_at,
+            expiry: key.expiry,
+        })
+    }
+
+    /// TIP-1013: Extend the activation time for an existing key
+    ///
+    /// Can only increase activatesAt (push activation further into the future).
+    /// This allows account owners to delay guardian key activation.
+    pub fn extend_activation(
+        &mut self,
+        msg_sender: Address,
+        call: extendActivationCall,
+    ) -> Result<()> {
+        // Only main key can extend activation
+        let transaction_key = self.transaction_key.t_read()?;
+        if transaction_key != Address::ZERO {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
+        // Load the key
+        let mut key = self.load_active_key(msg_sender, call.keyId)?;
+
+        // Check expiry hasn't passed
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        if current_timestamp >= key.expiry {
+            return Err(AccountKeychainError::key_expired().into());
+        }
+
+        // Cannot reduce activatesAt (security constraint)
+        if call.newActivatesAt <= key.activates_at {
+            return Err(AccountKeychainError::cannot_reduce_activation().into());
+        }
+
+        // activatesAt must be less than expiry
+        if key.expiry != u64::MAX && call.newActivatesAt >= key.expiry {
+            return Err(AccountKeychainError::activation_exceeds_expiry().into());
+        }
+
+        // Update activatesAt
+        key.activates_at = call.newActivatesAt;
+        self.keys[msg_sender][call.keyId].write(key)?;
+
+        Ok(())
     }
 
     /// Get the transaction key used in the current transaction
@@ -397,7 +484,7 @@ impl AccountKeychain {
         Ok(key)
     }
 
-    /// Validate keychain authorization (existence, revocation, expiry, and signature type)
+    /// Validate keychain authorization (existence, revocation, activation, expiry, and signature type)
     ///
     /// This consolidates all validation checks into one method.
     /// Returns Ok(()) if the key is valid and authorized, Err otherwise.
@@ -405,7 +492,7 @@ impl AccountKeychain {
     /// # Arguments
     /// * `account` - The account that owns the key
     /// * `key_id` - The key identifier to validate
-    /// * `current_timestamp` - Current block timestamp for expiry check
+    /// * `current_timestamp` - Current block timestamp for expiry and activation check
     /// * `expected_sig_type` - The signature type from the actual signature (0=Secp256k1, 1=P256, 2=WebAuthn)
     pub fn validate_keychain_authorization(
         &self,
@@ -416,6 +503,12 @@ impl AccountKeychain {
     ) -> Result<()> {
         let key = self.load_active_key(account, key_id)?;
 
+        // TIP-1013: Check activation time first (key must be active)
+        if key.activates_at > 0 && current_timestamp < key.activates_at {
+            return Err(AccountKeychainError::key_not_yet_active(key.activates_at).into());
+        }
+
+        // Check expiry
         if current_timestamp >= key.expiry {
             return Err(AccountKeychainError::key_expired().into());
         }
@@ -786,6 +879,7 @@ mod tests {
                 keyId: existing_key,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![],
             };
@@ -799,6 +893,7 @@ mod tests {
                 keyId: other,
                 signatureType: SignatureType::P256,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![],
             };
@@ -854,6 +949,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -919,6 +1015,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: 0, // Zero expiry is in the past - should fail
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -944,6 +1041,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: 1, // Very old timestamp - should fail
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -980,6 +1078,7 @@ mod tests {
                 keyId: key_id_1,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -993,6 +1092,7 @@ mod tests {
                 keyId: key_id_2,
                 signatureType: SignatureType::P256,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![],
             };
@@ -1031,6 +1131,7 @@ mod tests {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
                     token,
@@ -1143,6 +1244,7 @@ mod tests {
                 keyId: access_key,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
                     token,
@@ -1235,6 +1337,7 @@ mod tests {
         let original = AuthorizedKey {
             signature_type: 2,  // WebAuthn
             expiry: 1234567890, // some timestamp
+            activates_at: 0,
             enforce_limits: true,
             is_revoked: false,
         };
@@ -1251,6 +1354,7 @@ mod tests {
         let revoked = AuthorizedKey {
             signature_type: 0,
             expiry: 0,
+            activates_at: 0,
             enforce_limits: false,
             is_revoked: true,
         };
@@ -1276,6 +1380,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::P256,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -1344,6 +1449,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
                     token,
@@ -1406,6 +1512,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
                     token,
@@ -1459,6 +1566,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -1510,6 +1618,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -1547,6 +1656,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -1585,6 +1695,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: true,
                 limits: vec![TokenLimit {
                     token,
@@ -1638,6 +1749,7 @@ mod tests {
                 keyId: key_id,
                 signatureType: SignatureType::Secp256k1,
                 expiry: u64::MAX,
+                activatesAt: 0,
                 enforceLimits: false,
                 limits: vec![],
             };
@@ -1654,6 +1766,236 @@ mod tests {
                 result.is_ok(),
                 "Main key should bypass destination restrictions"
             );
+
+            Ok(())
+        })
+    }
+
+    // ==================== TIP-1013 Tests ====================
+
+    #[test]
+    fn test_tip1013_key_with_activation_delay() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+        let current_timestamp = 1700000000u64;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key with activatesAt in the future
+            let activates_at = current_timestamp + 86400; // 1 day later
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                activatesAt: activates_at,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Verify key was stored with correct activatesAt
+            let key_info = keychain.get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(key_info.activatesAt, activates_at);
+
+            // Validate should fail before activatesAt
+            let result = keychain.validate_keychain_authorization(
+                account,
+                key_id,
+                current_timestamp, // Before activatesAt
+                0,                 // Secp256k1
+            );
+            assert!(result.is_err(), "Key should not be usable before activatesAt");
+
+            // Validate should succeed after activatesAt
+            let result = keychain.validate_keychain_authorization(
+                account,
+                key_id,
+                activates_at + 1, // After activatesAt
+                0,                // Secp256k1
+            );
+            assert!(result.is_ok(), "Key should be usable after activatesAt");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1013_key_immediately_active() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+        let current_timestamp = 1700000000u64;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key with activatesAt = 0 (immediately active)
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                activatesAt: 0,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Validate should succeed immediately
+            let result = keychain.validate_keychain_authorization(
+                account,
+                key_id,
+                current_timestamp,
+                0, // Secp256k1
+            );
+            assert!(result.is_ok(), "Key with activatesAt=0 should be immediately usable");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1013_extend_activation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key with activatesAt in the future
+            let initial_activates_at = 1700100000u64;
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                activatesAt: initial_activates_at,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Extend activation time
+            let new_activates_at = 1700200000u64;
+            let extend_call = extendActivationCall {
+                keyId: key_id,
+                newActivatesAt: new_activates_at,
+            };
+            keychain.extend_activation(account, extend_call)?;
+
+            // Verify new activatesAt
+            let result = keychain.get_activation_window(getActivationWindowCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(result.activatesAt, new_activates_at);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1013_cannot_reduce_activation() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Authorize key with activatesAt in the future
+            let initial_activates_at = 1700100000u64;
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: u64::MAX,
+                activatesAt: initial_activates_at,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Attempt to reduce activation time (should fail)
+            let extend_call = extendActivationCall {
+                keyId: key_id,
+                newActivatesAt: 1700050000u64, // Earlier than current
+            };
+            let result = keychain.extend_activation(account, extend_call);
+            assert!(result.is_err(), "Should not be able to reduce activatesAt");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1013_activation_exceeds_expiry() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            // Try to authorize key where activatesAt >= expiry (should fail)
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry: 1700100000,      // Expiry
+                activatesAt: 1700200000, // After expiry
+                enforceLimits: false,
+                limits: vec![],
+            };
+            let result = keychain.authorize_key(account, auth_call);
+            assert!(result.is_err(), "Should not allow activatesAt >= expiry");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_tip1013_get_activation_window() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let account = Address::random();
+        let key_id = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            let activates_at = 1700100000u64;
+            let expiry = 1800000000u64;
+            let auth_call = authorizeKeyCall {
+                keyId: key_id,
+                signatureType: SignatureType::Secp256k1,
+                expiry,
+                activatesAt: activates_at,
+                enforceLimits: false,
+                limits: vec![],
+            };
+            keychain.authorize_key(account, auth_call)?;
+
+            // Get activation window
+            let result = keychain.get_activation_window(getActivationWindowCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(result.activatesAt, activates_at);
+            assert_eq!(result.expiry, expiry);
 
             Ok(())
         })

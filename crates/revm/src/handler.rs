@@ -837,6 +837,10 @@ where
                     })
                     .unwrap_or_default();
 
+                // TIP-1013: Compute activatesAt from validAfter and activationDelay
+                // activatesAt = max(validAfter, current_timestamp + activationDelay)
+                let activates_at = key_auth.compute_activates_at(current_timestamp);
+
                 // Create the authorize key call
                 let authorize_call = authorizeKeyCall {
                     keyId: access_key_addr,
@@ -844,6 +848,7 @@ where
                     expiry,
                     enforceLimits: enforce_limits,
                     limits: precompile_limits,
+                    activatesAt: activates_at,
                 };
 
                 // Helper to convert precompile errors
@@ -2078,14 +2083,8 @@ mod tests {
         let key_id = Address::random();
         let expiry = 1000u64;
         let limits = vec![
-            TokenLimit {
-                token: Address::random(),
-                limit: U256::from(100),
-            },
-            TokenLimit {
-                token: Address::random(),
-                limit: U256::from(200),
-            },
+            TokenLimit::one_time(Address::random(), U256::from(100)),
+            TokenLimit::one_time(Address::random(), U256::from(200)),
         ];
 
         // Compute hash using the helper function
@@ -2095,6 +2094,9 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            valid_after: None,
+            activation_delay: None,
+            allowed_destinations: None,
         }
         .signature_hash();
 
@@ -2105,6 +2107,9 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits.clone()),
+            valid_after: None,
+            activation_delay: None,
+            allowed_destinations: None,
         }
         .signature_hash();
 
@@ -2117,6 +2122,9 @@ mod tests {
             key_id,
             expiry: Some(expiry),
             limits: Some(limits),
+            valid_after: None,
+            activation_delay: None,
+            allowed_destinations: None,
         }
         .signature_hash();
         assert_ne!(
@@ -2213,10 +2221,7 @@ mod tests {
             } else {
                 Some(
                     (0..num_limits)
-                        .map(|_| TokenLimit {
-                            token: Address::random(),
-                            limit: U256::from(1000),
-                        })
+                        .map(|_| TokenLimit::one_time(Address::random(), U256::from(1000)))
                         .collect(),
                 )
             };
@@ -2228,6 +2233,9 @@ mod tests {
                     key_id: Address::random(),
                     expiry: None,
                     limits,
+                    valid_after: None,
+                    activation_delay: None,
+                    allowed_destinations: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(
                     alloy_primitives::Signature::test_signature(),
@@ -2294,15 +2302,12 @@ mod tests {
                 key_id: Address::random(),
                 expiry: None,
                 limits: Some(vec![
-                    TokenLimit {
-                        token: Address::random(),
-                        limit: U256::from(1000),
-                    },
-                    TokenLimit {
-                        token: Address::random(),
-                        limit: U256::from(2000),
-                    },
+                    TokenLimit::one_time(Address::random(), U256::from(1000)),
+                    TokenLimit::one_time(Address::random(), U256::from(2000)),
                 ]),
+                valid_after: None,
+                activation_delay: None,
+                allowed_destinations: None,
             },
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
@@ -2978,10 +2983,10 @@ mod tests {
                 let limits = if num_limits == 0 {
                     None
                 } else {
-                    Some((0..num_limits).map(|i| PrimTokenLimit {
-                        token: Address::with_last_byte(i as u8),
-                        limit: U256::from(1000),
-                    }).collect())
+                    Some((0..num_limits).map(|i| PrimTokenLimit::one_time(
+                        Address::with_last_byte(i as u8),
+                        U256::from(1000),
+                    )).collect())
                 };
 
                 SignedKeyAuthorization {
@@ -2991,6 +2996,9 @@ mod tests {
                         key_id: Address::ZERO,
                         expiry: None,
                         limits,
+                        valid_after: None,
+                        activation_delay: None,
+                        allowed_destinations: None,
                     },
                     signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
                 }
@@ -3040,11 +3048,14 @@ mod tests {
                     key_id: Address::ZERO,
                     expiry: None,
                     limits: if num_limits == 0 { None } else {
-                        Some((0..num_limits).map(|i| PrimTokenLimit {
-                            token: Address::with_last_byte(i as u8),
-                            limit: U256::from(1000),
-                        }).collect())
+                        Some((0..num_limits).map(|i| PrimTokenLimit::one_time(
+                            Address::with_last_byte(i as u8),
+                            U256::from(1000),
+                        )).collect())
                     },
+                    valid_after: None,
+                    activation_delay: None,
+                    allowed_destinations: None,
                 },
                 signature,
             };
