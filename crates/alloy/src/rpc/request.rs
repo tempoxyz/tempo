@@ -87,12 +87,6 @@ pub struct TempoTransactionRequest {
     /// The sponsor signs fee_payer_signature_hash(sender) to commit to paying gas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_signature: Option<alloy_primitives::Signature>,
-
-    /// Fee payer address hint for gas estimation.
-    /// When provided, indicates the transaction is sponsored and this address will pay for gas.
-    /// Use this for `eth_call`/`eth_estimateGas` to simulate sponsored transactions.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_payer: Option<Address>,
 }
 
 impl TempoTransactionRequest {
@@ -143,17 +137,6 @@ impl TempoTransactionRequest {
     /// Builder-pattern method for setting fee payer signature.
     pub fn with_fee_payer_signature(mut self, signature: alloy_primitives::Signature) -> Self {
         self.fee_payer_signature = Some(signature);
-        self
-    }
-
-    /// Set the fee payer address hint for gas estimation.
-    pub fn set_fee_payer(&mut self, fee_payer: Address) {
-        self.fee_payer = Some(fee_payer);
-    }
-
-    /// Builder-pattern method for setting fee payer address hint.
-    pub fn with_fee_payer(mut self, fee_payer: Address) -> Self {
-        self.fee_payer = Some(fee_payer);
         self
     }
 
@@ -336,7 +319,6 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
-            fee_payer: None,
         }
     }
 }

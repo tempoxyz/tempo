@@ -44,7 +44,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     valid_before,
                     valid_after,
                     fee_payer_signature,
-                    fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -64,7 +63,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
-                            fee_payer,
                         }));
                     }
                 };
@@ -84,7 +82,6 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
-                            fee_payer,
                         })
                     },
                 )?)
@@ -108,9 +105,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
                 .ok()
                 .and_then(|tx| tx.recover_fee_payer(caller_addr).ok())
                 .map(Some)
-                .or_else(|| self.fee_payer.map(Some))
         } else {
-            self.fee_payer.map(Some)
+            None
         };
 
         let Self {
@@ -126,7 +122,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             valid_before,
             valid_after,
             fee_payer_signature: _,
-            fee_payer: _,
         } = self;
 
         Ok(TempoTxEnv {
@@ -309,42 +304,4 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy_primitives::address;
 
-    #[test]
-    fn test_fee_payer_field_with_value() {
-        let fee_payer_addr = address!("0x1234567890123456789012345678901234567890");
-
-        let request = TempoTransactionRequest::default().with_fee_payer(fee_payer_addr);
-
-        assert_eq!(request.fee_payer, Some(fee_payer_addr));
-
-        // Verify that fee_payer.map(Some) produces the expected TempoTxEnv structure
-        let fee_payer_for_env: Option<Option<Address>> = request.fee_payer.map(Some);
-        assert_eq!(fee_payer_for_env, Some(Some(fee_payer_addr)));
-    }
-
-    #[test]
-    fn test_fee_payer_field_without_value() {
-        let request = TempoTransactionRequest::default();
-
-        assert_eq!(request.fee_payer, None);
-
-        // Verify that None.map(Some) produces None for TempoTxEnv
-        let fee_payer_for_env: Option<Option<Address>> = request.fee_payer.map(Some);
-        assert_eq!(fee_payer_for_env, None);
-    }
-
-    #[test]
-    fn test_set_fee_payer() {
-        let fee_payer_addr = address!("0x1234567890123456789012345678901234567890");
-        let mut request = TempoTransactionRequest::default();
-
-        request.set_fee_payer(fee_payer_addr);
-
-        assert_eq!(request.fee_payer, Some(fee_payer_addr));
-    }
-}
