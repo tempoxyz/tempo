@@ -100,17 +100,23 @@ impl ExpiringNonceFiller {
         Self { expiry_secs }
     }
 
-    /// Returns `true` if the nonce key is already set to the expiring nonce key.
+    /// Returns `true` if all expiring nonce fields are properly set:
+    /// - `nonce_key` is `TEMPO_EXPIRING_NONCE_KEY`
+    /// - `nonce` is `0`
+    /// - `valid_before` is set
     fn is_filled(tx: &TempoTransactionRequest) -> bool {
         tx.nonce_key == Some(TEMPO_EXPIRING_NONCE_KEY)
+            && tx.nonce() == Some(0)
+            && tx.valid_before.is_some()
     }
 
-    /// Returns the current unix timestamp.
+    /// Returns the current unix timestamp, saturating to 0 if system time is before UNIX_EPOCH
+    /// (which can occur due to NTP adjustments or VM clock drift).
     fn current_timestamp() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs()
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     }
 }
 
