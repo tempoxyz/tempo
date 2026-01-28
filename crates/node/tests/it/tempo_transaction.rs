@@ -6651,10 +6651,10 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
     let request = serde_json::json!({
         "from": alice_addr,
         "type": "0x76",
-        "calls": [{"to": recipient, "data": "0x"}],
-        "validBefore": format!("0x{:x}", valid_before),
-        "validAfter": format!("0x{:x}", valid_after),
-        "nonceKey": format!("{:#x}", TEMPO_EXPIRING_NONCE_KEY),
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "validBefore": format!("0x{valid_before:x}"),
+        "validAfter": format!("0x{valid_after:x}"),
+        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
         "keyType": "secp256k1"
     });
 
@@ -6672,7 +6672,7 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
 
     assert_eq!(
         tx.get("from").and_then(|v| v.as_str()),
-        Some(format!("{:#x}", alice_addr).as_str()),
+        Some(format!("{alice_addr:#x}").as_str()),
         "tx.from should match"
     );
     assert!(tx.get("nonce").is_some(), "tx should have nonce filled");
