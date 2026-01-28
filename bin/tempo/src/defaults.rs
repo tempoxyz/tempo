@@ -98,6 +98,9 @@ fn extract_telemetry_url(args: &[String]) -> Option<String> {
 /// Also sets `OTEL_EXPORTER_OTLP_HEADERS` with the base64-encoded credentials for OTLP auth.
 ///
 /// The URL must include credentials in the format `https://user:pass@host`.
+///
+/// **Note:** The expanded flags are appended to the argument list and will override any
+/// explicitly provided values for the same flags (clap uses "last wins" semantics).
 pub(crate) fn expand_telemetry_args(args: Vec<String>) -> eyre::Result<Vec<String>> {
     let telemetry_url = match extract_telemetry_url(&args) {
         Some(url) => url,
