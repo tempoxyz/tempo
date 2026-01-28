@@ -1,5 +1,5 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
-use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_consensus::{Transaction, TransactionEnvelope, transaction::TxHashRef};
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
@@ -408,6 +408,7 @@ where
             is_payment,
             tx,
         } = output;
+
 
         let gas_used = self.inner.commit_transaction(inner)?;
 

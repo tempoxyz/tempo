@@ -6,6 +6,7 @@ use alloy_consensus::Transaction;
 
 use alloy_primitives::U256;
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
+use reth_evm::ConfigureEvm;
 use reth_primitives_traits::{
     GotExpected, SealedBlock, transaction::error::InvalidTransactionError,
 };
@@ -72,7 +73,7 @@ pub const DEFAULT_AA_VALID_AFTER_MAX_SECS: u64 = 120;
 
 /// Validator for Tempo transactions.
 #[derive(Debug)]
-pub struct TempoTransactionValidator<Client> {
+pub struct TempoTransactionValidator<Client, Evm> {
     /// Inner validator that performs default Ethereum tx validation.
     pub(crate) inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
     /// Maximum allowed `valid_after` offset for AA txs.
@@ -83,9 +84,10 @@ pub struct TempoTransactionValidator<Client> {
     pub(crate) amm_liquidity_cache: AmmLiquidityCache,
 }
 
-impl<Client> TempoTransactionValidator<Client>
+impl<Client, Evm> TempoTransactionValidator<Client, Evm>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Evm: ConfigureEvm,
 {
     pub fn new(
         inner: EthTransactionValidator<Client, TempoPooledTransaction, TempoEvmConfig>,
@@ -958,9 +960,10 @@ pub fn ensure_intrinsic_gas_tempo_tx(
     }
 }
 
-impl<Client> TransactionValidator for TempoTransactionValidator<Client>
+impl<Client, Evm> TransactionValidator for TempoTransactionValidator<Client, Evm>
 where
     Client: ChainSpecProvider<ChainSpec = TempoChainSpec> + StateProviderFactory,
+    Evm: ConfigureEvm,
 {
     type Transaction = TempoPooledTransaction;
     type Block = Block;
@@ -982,8 +985,12 @@ where
 
     async fn validate_transactions(
         &self,
-        transactions: Vec<(TransactionOrigin, Self::Transaction)>,
+        transactions: impl IntoIterator<
+                Item = (TransactionOrigin, Self::Transaction),
+                IntoIter: Send,
+            > + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions: Vec<_> = transactions.into_iter().collect();
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {
@@ -1005,8 +1012,9 @@ where
     async fn validate_transactions_with_origin(
         &self,
         origin: TransactionOrigin,
-        transactions: impl IntoIterator<Item = Self::Transaction> + Send,
+        transactions: impl IntoIterator<Item = Self::Transaction, IntoIter: Send> + Send,
     ) -> Vec<TransactionValidationOutcome<Self::Transaction>> {
+        let transactions: Vec<_> = transactions.into_iter().collect();
         let state_provider = match self.inner.client().latest() {
             Ok(provider) => provider,
             Err(err) => {

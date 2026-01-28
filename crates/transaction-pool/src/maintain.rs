@@ -373,13 +373,14 @@ impl KeyExpiryTracker {
 ///
 /// Consolidates these operations into a single event loop to avoid multiple tasks
 /// competing for canonical state updates and to minimize contention on pool locks.
-pub async fn maintain_tempo_pool<Client>(pool: TempoTransactionPool<Client>)
+pub async fn maintain_tempo_pool<Client, Evm>(pool: TempoTransactionPool<Client, Evm>)
 where
     Client: StateProviderFactory
         + reth_provider::HeaderProvider<Header: reth_primitives_traits::BlockHeader>
         + ChainSpecProvider<ChainSpec = TempoChainSpec>
         + CanonStateSubscriptions<Primitives = TempoPrimitives>
         + 'static,
+    Evm: reth_evm::ConfigureEvm + 'static,
 {
     let mut state = TempoPoolState::default();
     let metrics = TempoPoolMaintenanceMetrics::default();

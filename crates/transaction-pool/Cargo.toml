@@ -59,6 +59,7 @@ test-utils = [
 
 [dev-dependencies]
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
+reth-evm-ethereum.workspace = true
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 alloy-eips.workspace = true

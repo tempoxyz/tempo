@@ -418,7 +418,7 @@ impl<Node> PoolBuilder<Node, TempoEvmConfig> for TempoPoolBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
 {
-    type Pool = TempoTransactionPool<Node::Provider>;
+    type Pool = TempoTransactionPool<Node::Provider, TempoEvmConfig>;
 
     async fn build_pool(
         self,
@@ -493,7 +493,7 @@ pub struct TempoPayloadBuilderBuilder {
     pub disable_state_cache: bool,
 }
 
-impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
+impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider, TempoEvmConfig>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
 where
     Node: FullNodeTypes<Types = TempoNode>,
@@ -503,7 +503,7 @@ where
     async fn build_payload_builder(
         self,
         ctx: &BuilderContext<Node>,
-        pool: TempoTransactionPool<Node::Provider>,
+        pool: TempoTransactionPool<Node::Provider, TempoEvmConfig>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
         Ok(TempoPayloadBuilder::new(
