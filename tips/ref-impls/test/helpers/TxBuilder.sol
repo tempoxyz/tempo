@@ -94,13 +94,17 @@ library TxBuilder {
     }
 
     /// @notice Estimate gas for multicall (TIP-1000)
-    /// @param numCalls Number of calls in the batch
+    /// @param calls The calls in the batch
     /// @param nonce The sender's current nonce (0 = first tx, account creation cost applies)
-    function multicallGas(uint64 numCalls, uint64 nonce) internal pure returns (uint64) {
-        uint64 gas = DEFAULT_GAS_LIMIT * numCalls;
+    function multicallGas(TempoCall[] memory calls, uint64 nonce) internal pure returns (uint64) {
+        uint64 gas = TX_BASE_COST;
 
         if (nonce == 0) {
             gas += ACCOUNT_CREATION_COST;
+        }
+
+        for (uint256 i = 0; i < calls.length; i++) {
+            gas += calldataGas(calls[i].data);
         }
 
         return gas;
@@ -364,7 +368,7 @@ library TxBuilder {
         uint64 txNonce,
         uint256 privateKey
     ) internal view returns (bytes memory) {
-        uint64 gasLimit = multicallGas(uint64(calls.length), txNonce);
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
@@ -409,7 +413,7 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY
     ) internal view returns (bytes memory) {
-        uint64 gasLimit = multicallGas(uint64(calls.length), txNonce);
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
@@ -454,7 +458,7 @@ library TxBuilder {
         bytes32 pubKeyX,
         bytes32 pubKeyY
     ) internal view returns (bytes memory) {
-        uint64 gasLimit = multicallGas(uint64(calls.length), txNonce);
+        uint64 gasLimit = multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
@@ -497,7 +501,8 @@ library TxBuilder {
         uint256 accessKeyPrivateKey,
         address userAddress
     ) internal view returns (bytes memory) {
-        uint64 gasLimit = multicallGas(uint64(calls.length), txNonce);
+        uint64 gasLimit =
+            multicallGas(calls, txNonce) + GAS_LIMIT_BUFFER;
 
         TempoTransaction memory tx_ = TempoTransactionLib.create()
             .withChainId(uint64(block.chainid)).withMaxFeePerGas(DEFAULT_GAS_PRICE)
