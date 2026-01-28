@@ -2,9 +2,7 @@
 //!
 //! # Usage
 //! ```rust,ignore
-//! let handle = ConsensusNode::builder(args.consensus)
-//!     .with_execution_node(node)
-//!     .build()?
+//! let handle = ConsensusNode::new(args.consensus, node, feed_state)
 //!     .spawn();
 //!
 //! // Handle can be used to trigger graceful shutdown
@@ -14,16 +12,15 @@
 use commonware_runtime::{Metrics, Runner};
 use eyre::{WrapErr as _, eyre};
 use futures::{FutureExt as _, future::FusedFuture as _};
+use reth_ethereum::chainspec::EthChainSpec as _;
 use std::{path::PathBuf, thread};
 use tracing::{error, info, info_span};
 
 use crate::{args::Args, feed::FeedStateHandle, run_consensus_stack};
 use tempo_node::TempoFullNode;
 
-pub(crate) mod builder;
 pub(crate) mod handle;
 
-pub use builder::ConsensusNodeBuilder;
 pub use handle::ConsensusNodeHandle;
 
 /// Consensus node that can be spawned in a dedicated thread.
@@ -38,9 +35,27 @@ pub struct ConsensusNode {
 }
 
 impl ConsensusNode {
-    /// Create a new builder with the consensus CLI arguments.
-    pub fn builder(args: Args) -> ConsensusNodeBuilder {
-        ConsensusNodeBuilder::new(args)
+    /// Create a new consensus node.
+    ///
+    /// The storage directory is derived from the execution node's datadir
+    /// unless explicitly set in the CLI args.
+    pub fn new(args: Args, execution_node: TempoFullNode, feed_state: FeedStateHandle) -> Self {
+        let storage_directory = args.storage_dir.clone().unwrap_or_else(|| {
+            execution_node
+                .config
+                .datadir
+                .clone()
+                .resolve_datadir(execution_node.chain_spec().chain())
+                .data_dir()
+                .join("consensus")
+        });
+
+        Self {
+            args,
+            execution_node,
+            feed_state,
+            storage_directory,
+        }
     }
 
     /// Spawns the consensus node in a dedicated thread and returns a handle.
