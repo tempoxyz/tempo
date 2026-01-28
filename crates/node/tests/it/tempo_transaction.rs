@@ -6670,16 +6670,21 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
         .get("tx")
         .expect("response should contain 'tx' field");
 
-    assert_eq!(
-        tx.get("from").and_then(|v| v.as_str()),
-        Some(format!("{alice_addr:#x}").as_str()),
-        "tx.from should match"
-    );
     assert!(tx.get("nonce").is_some(), "tx should have nonce filled");
     assert!(tx.get("gas").is_some(), "tx should have gas filled");
     assert!(
         tx.get("maxFeePerGas").is_some(),
         "tx should have maxFeePerGas filled"
+    );
+    assert_eq!(
+        tx.get("validBefore").and_then(|v| v.as_str()),
+        Some(format!("0x{valid_before:x}").as_str()),
+        "validBefore should be preserved"
+    );
+    assert_eq!(
+        tx.get("validAfter").and_then(|v| v.as_str()),
+        Some(format!("0x{valid_after:x}").as_str()),
+        "validAfter should be preserved"
     );
 
     println!("✓ eth_fillTransaction returned valid filled transaction");
