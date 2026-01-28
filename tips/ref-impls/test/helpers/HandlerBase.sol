@@ -459,12 +459,14 @@ abstract contract HandlerBase is InvariantBase {
     // ============ Consolidated Catch Block Helpers ============
 
     /// @notice No-op function for expected rejections that don't need counter updates
-    function _noop() internal {}
+    function _noop() internal { }
 
     /// @notice Handle expected rejection with optional counter update
     /// @param handlerName Name for logging
     /// @param updateFn Counter update function (use _noop for no update)
-    function _handleExpectedReject(string memory handlerName, function() internal updateFn) internal {
+    function _handleExpectedReject(string memory handlerName, function() internal updateFn)
+        internal
+    {
         _logExpectedReject(handlerName);
         updateFn();
     }

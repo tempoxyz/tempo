@@ -3269,7 +3269,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _handleExpectedReject("handler_timeBoundValidAfter", _recordTimeBoundValidAfterRejection);
+            _handleExpectedReject(
+                "handler_timeBoundValidAfter", _recordTimeBoundValidAfterRejection
+            );
         }
     }
 
@@ -3307,7 +3309,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _handleExpectedReject("handler_timeBoundValidBefore", _recordTimeBoundValidBeforeRejection);
+            _handleExpectedReject(
+                "handler_timeBoundValidBefore", _recordTimeBoundValidBeforeRejection
+            );
         }
     }
 
