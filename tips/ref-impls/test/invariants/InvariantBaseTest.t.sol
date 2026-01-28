@@ -301,14 +301,11 @@ abstract contract InvariantBaseTest is BaseTest {
                           POLICY HELPERS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Gets the policy ID for a token
+    /// @dev Gets the policy ID for a token by reading from the token contract
     /// @param token Token address
     /// @return policyId The policy ID
     function _getPolicyId(address token) internal view returns (uint64) {
-        if (token == address(pathUSD)) {
-            return _pathUsdPolicyId;
-        }
-        return _tokenPolicyIds[token];
+        return TIP20(token).transferPolicyId();
     }
 
     /// @dev Gets the policy admin for a token by querying the registry
