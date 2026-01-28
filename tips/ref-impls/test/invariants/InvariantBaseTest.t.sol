@@ -343,6 +343,28 @@ abstract contract InvariantBaseTest is BaseTest {
         vm.writeLine(_logFile, message);
     }
 
+    /// @dev Logs a handler entry to the log file
+    function _logHandlerEntry(string memory handler) internal {
+        vm.writeLine(_logFile, string.concat("CALL: ", handler));
+    }
+
+    /// @dev Logs a skip reason to the log file
+    function _logSkip(string memory reason) internal {
+        vm.writeLine(_logFile, string.concat("SKIP: ", reason));
+    }
+
+    /// @dev Logs a successful handler completion
+    function _logHandlerSuccess(string memory handler) internal {
+        vm.writeLine(_logFile, string.concat("SUCCESS: ", handler));
+    }
+
+    /// @dev Logs a handler revert
+    function _logHandlerRevert(string memory handler, bytes4 selector) internal {
+        vm.writeLine(
+            _logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector))
+        );
+    }
+
     /// @dev Gets actor index from address for logging
     function _getActorIndex(address actor) internal view returns (string memory) {
         for (uint256 i = 0; i < _actors.length; i++) {
