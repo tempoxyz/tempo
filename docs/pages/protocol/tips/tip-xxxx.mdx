@@ -189,7 +189,7 @@ interface IValidatorConfigV2 {
         address validatorAddress,
         bytes32 publicKey,
         string calldata inboundAddress,
-        string caaaaalldata outboundAddress,
+        string calldata outboundAddress,
         bytes calldata signature
     ) external;
 
@@ -199,6 +199,32 @@ interface IValidatorConfigV2 {
     ///      The address and public key remain reserved and cannot be reused.
     /// @param validatorAddress The validator address to delete
     function deleteValidator(address validatorAddress) external;
+
+    /// @notice Rotate a validator to a new identity (caller must be existing validator)
+    /// @dev Atomically deletes the caller's validator entry and adds a new one. This is equivalent
+    ///      to calling deleteValidator followed by addValidator, but executed atomically.
+    ///      The caller (msg.sender) must be an existing active validator.
+    ///      The same validation rules as addValidator apply:
+    ///      - The new public key must not already exist
+    ///      - The new validator address must not already exist
+    ///      - The signature must prove ownership of the new public key
+    ///      The signature must be an Ed25519 signature over:
+    ///      keccak256(abi.encodePacked(
+    ///          "TEMPO_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR",
+    ///          chainId, contractAddress, validatorAddress, inboundAddress, outboundAddress
+    ///      ))
+    /// @param validatorAddress The address of the new validator
+    /// @param publicKey The new validator's Ed25519 communication public key
+    /// @param inboundAddress The new validator's inbound address `<hostname|ip>:<port>` for incoming connections
+    /// @param outboundAddress The new validator's outbound IP address `<ip>:<port>` for firewall whitelisting
+    /// @param signature Ed25519 signature (64 bytes) proving ownership of the new public key
+    function rotateValidator(
+        address validatorAddress,
+        bytes32 publicKey,
+        string calldata inboundAddress,
+        string calldata outboundAddress,
+        bytes calldata signature
+    ) external;
 
     /// @notice Change owner (owner only)
     /// @param newOwner The new owner address
@@ -262,6 +288,22 @@ message = keccak256(abi.encodePacked(
 
 The signature must be exactly 64 bytes and must verify against the provided
 public key.
+
+When rotating a validator, the signature message format is identical to `addValidator`:
+
+```
+message = keccak256(abi.encodePacked(
+    b"TEMPO",                                  // bytes: global namespace prefix 
+    b"_VALIDATOR_CONFIG_V2_ROTATE_VALIDATOR"  // bytes: contract specific namespace
+    chainId,                                   // uint64: Prevents cross-chain replay
+    contractAddress,                           // address: Prevents cross-contract replay
+    validatorAddress,                          // address: Binds to specific new validator address
+    inboundAddress,                            // string: Binds network configuration
+    outboundAddress                            // string: Binds network configuration
+))
+```
+
+The old validator is identified by `msg.sender`, which must be an existing active validator.
 
 ### DKG Player Selection
 
@@ -425,6 +467,13 @@ The following invariants must always hold:
 11. **Initialized once**: The `initialized` bit (bit 255 of slot 0) can only
     transition from 0 to 1, never back to 0.
 
+12. **Validator self-rotation**: Only an existing active validator can call
+    `rotateValidator` on themselves (caller must be the validator being rotated).
+
+13. **Atomic rotation**: `rotateValidator` atomically deletes the old validator
+    (setting its `deletedAtHeight`) and adds a new validator entry. Both
+    operations occur in the same transaction with the same block height.
+
 ---
 
 # Migration from V1
@@ -577,38 +626,44 @@ The test suite must cover:
 2. **Delete validator**: Successfully marks validator as deleted
 3. **Change owner**: Successfully transfers ownership
 4. **Set next DKG ceremony**: Successfully sets the epoch
+5. **Rotate validator**: Successfully deletes old validator and adds new one atomically
 
 ### Query Functions
 
-5. **getValidators**: Returns all validators including deleted with correct
+6. **getValidators**: Returns all validators including deleted with correct
    `addedAtHeight` and `deletedAtHeight`
-6. **getActiveValidators**: Returns only validators with `deletedAtHeight == 0`
-7. **validatorByPublicKey**: Returns validator by public key lookup
-8. **validatorCount**: Returns total count including deleted
+7. **getActiveValidators**: Returns only validators with `deletedAtHeight == 0`
+8. **validatorByPublicKey**: Returns validator by public key lookup
+9. **validatorCount**: Returns total count including deleted
 
 ### Error Conditions
 
-9. **Unauthorized**: Non-owner cannot call protected functions
-10. **ValidatorAlreadyExists**: Cannot re-add same address
-11. **PublicKeyAlreadyExists**: Cannot re-use same public key
-12. **ValidatorNotFound**: Cannot query/delete non-existent validator
-13. **ValidatorAlreadyDeleted**: Cannot delete twice
-14. **InvalidPublicKey**: Rejects zero public key
-15. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
+10. **Unauthorized**: Non-owner cannot call protected functions
+11. **ValidatorAlreadyExists**: Cannot re-add same address
+12. **PublicKeyAlreadyExists**: Cannot re-use same public key
+13. **ValidatorNotFound**: Cannot query/delete non-existent validator
+14. **ValidatorAlreadyDeleted**: Cannot delete twice
+15. **InvalidPublicKey**: Rejects zero public key
+16. **InvalidSignature**: Rejects wrong signature, wrong length, wrong signer
+17. **RotateValidator caller not validator**: Non-validator cannot call rotateValidator
+18. **RotateValidator caller already deleted**: Cannot rotate already-deleted validator
+19. **RotateValidator new address exists**: Cannot rotate to existing address
+20. **RotateValidator new pubkey exists**: Cannot rotate to existing public key
+21. **RotateValidator invalid signature**: Rejects invalid signature for rotation
 
 ### Address Validation
 
-16. **Valid IPv4:port**: Accepts `192.168.1.1:8080`
-17. **Valid IPv6:port**: Accepts `[2001:db8::1]:8080`
-18. **Invalid format**: Rejects malformed addresses
+22. **Valid IPv4:port**: Accepts `192.168.1.1:8080`
+23. **Valid IPv6:port**: Accepts `[2001:db8::1]:8080`
+24. **Invalid format**: Rejects malformed addresses
 
 ### Historical Filtering (Caller-side)
 
-19. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
+25. **addedAtHeight correctness**: Validators have correct `addedAtHeight` set
     at creation
-20. **deletedAtHeight correctness**: Deleted validators have correct
+26. **deletedAtHeight correctness**: Deleted validators have correct
     `deletedAtHeight` set
-21. **Filter logic**: Caller can correctly filter by
+27. **Filter logic**: Caller can correctly filter by
     `addedAtHeight <= H && (deletedAtHeight == 0 || deletedAtHeight > H)`
 
 ### Lazy Initialization
