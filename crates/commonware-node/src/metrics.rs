@@ -72,7 +72,7 @@ pub struct OtlpConfig {
 /// Handle to the OTLP metrics exporter that must be held for the lifetime of the export.
 pub struct OtlpMetricsHandle {
     _meter_provider: SdkMeterProvider,
-    _task: tokio::task::JoinHandle<()>,
+    _task: Handle<()>,
 }
 
 /// Installs an OTLP metrics exporter that periodically pushes consensus metrics.
@@ -125,12 +125,11 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
 
     // Poll at half the export interval to ensure fresh data for each export
     let poll_interval = interval / 2;
-    let task = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(poll_interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let task = context.spawn(move |context| async move {
+        use commonware_runtime::Clock as _;
 
         loop {
-            ticker.tick().await;
+            context.sleep(poll_interval).await;
 
             let encoded = context.encode();
 
