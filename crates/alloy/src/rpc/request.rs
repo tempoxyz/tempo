@@ -508,7 +508,7 @@ mod tests {
         use alloy_primitives::Signature;
 
         let sig = Signature::test_signature();
-        let mut request = TempoTransactionRequest::default().with_fee_payer_signature(sig.clone());
+        let mut request = TempoTransactionRequest::default().with_fee_payer_signature(sig);
 
         request.inner.nonce = Some(0);
         request.inner.gas = Some(21000);
@@ -528,7 +528,7 @@ mod tests {
         let tx = TempoTransaction {
             chain_id: 1,
             nonce: 0,
-            fee_payer_signature: Some(sig.clone()),
+            fee_payer_signature: Some(sig),
             valid_before: None,
             valid_after: None,
             gas_limit: 21000,
