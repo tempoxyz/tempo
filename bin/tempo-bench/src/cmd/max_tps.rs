@@ -170,6 +170,16 @@ pub struct MaxTpsArgs {
     /// Disable 2D nonces
     #[arg(long)]
     disable_2d_nonces: bool,
+
+    /// Run in Reth-compatible mode (vanilla Ethereum).
+    ///
+    /// This mode:
+    /// - Disables 2D nonces (uses standard Ethereum nonces)
+    /// - Forces ERC-20 only transactions (no TIP-20, DEX)
+    /// - Skips Tempo-specific setup (fee manager, DEX)
+    /// - Requires accounts to be pre-funded (--faucet won't work)
+    #[arg(long)]
+    reth_mode: bool,
 }
 
 impl MaxTpsArgs {
@@ -177,6 +187,45 @@ impl MaxTpsArgs {
 
     pub async fn run(self) -> eyre::Result<()> {
         RethTracer::new().init()?;
+
+        // In reth mode, use the separate reth_bench module with standard Ethereum network
+        if self.reth_mode {
+            info!("Running in Reth-compatible mode (using standard Ethereum network)");
+
+            if self.faucet {
+                eyre::bail!(
+                    "--faucet is not supported in --reth-mode. Pre-fund accounts using genesis or dev mode."
+                );
+            }
+
+            // Set file descriptor limit if provided
+            if let Some(fd_limit) = self.fd_limit {
+                increase_nofile_limit(fd_limit).context("Failed to increase nofile limit")?;
+            }
+
+            let report = super::reth_bench::run_reth_benchmark(
+                self.target_urls,
+                self.tps,
+                self.duration,
+                self.accounts.get(),
+                self.mnemonic.resolve(),
+                self.from_mnemonic_index,
+                self.max_concurrent_requests,
+            )
+            .await?;
+
+            // Write report to file
+            let path = "report.json";
+            let file = std::fs::File::create(path)?;
+            let writer = std::io::BufWriter::new(file);
+            serde_json::to_writer_pretty(writer, &report)?;
+            info!(path, "Generated report");
+
+            // Also print to stdout
+            println!("{}", serde_json::to_string_pretty(&report)?);
+
+            return Ok(());
+        }
 
         let accounts = self.accounts.get();
 
@@ -282,33 +331,39 @@ impl MaxTpsArgs {
             .context("Failed to fund accounts from faucet")?;
         }
 
-        info!(fee_token = %self.fee_token, "Setting default fee token");
-        join_all(
-            signer_providers
-                .iter()
-                .map(async |(_, provider)| {
-                    IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
-                        .setUserToken(self.fee_token)
-                        .send()
-                        .await
-                })
-                .progress(),
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await
-        .context("Failed to set default fee token")?;
+        // Skip Tempo-specific setup in reth mode
+        let (quote_token, user_tokens) = if self.reth_mode {
+            info!("Skipping Tempo-specific setup (fee manager, DEX) in reth mode");
+            (Address::ZERO, Vec::new())
+        } else {
+            info!(fee_token = %self.fee_token, "Setting default fee token");
+            join_all(
+                signer_providers
+                    .iter()
+                    .map(async |(_, provider)| {
+                        IFeeManagerInstance::new(TIP_FEE_MANAGER_ADDRESS, provider.clone())
+                            .setUserToken(self.fee_token)
+                            .send()
+                            .await
+                    })
+                    .progress(),
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await
+            .context("Failed to set default fee token")?;
 
-        // Setup DEX
-        let user_tokens = 2;
-        info!(user_tokens, "Setting up DEX");
-        let (quote_token, user_tokens) = dex::setup(
-            signer_providers,
-            user_tokens,
-            self.max_concurrent_requests,
-            self.max_concurrent_transactions,
-        )
-        .await?;
+            // Setup DEX
+            let user_tokens_count = 2;
+            info!(user_tokens = user_tokens_count, "Setting up DEX");
+            dex::setup(
+                signer_providers,
+                user_tokens_count,
+                self.max_concurrent_requests,
+                self.max_concurrent_transactions,
+            )
+            .await?
+        };
 
         let erc20_tokens = if self.erc20_weight > 0.0 {
             let num_erc20_tokens = 1;
