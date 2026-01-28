@@ -141,17 +141,10 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
 
             let encoded = context.encode();
 
-            // First pass: parse TYPE comments to determine metric types
-            let mut metric_types: HashMap<String, &str> = HashMap::new();
-            for line in encoded.lines() {
-                if let Some(rest) = line.strip_prefix("# TYPE ") {
-                    if let Some((name, type_str)) = rest.split_once(' ') {
-                        metric_types.insert(name.to_string(), type_str);
-                    }
-                }
-            }
+            // Parse TYPE comments to determine metric types
+            let metric_types = parse_prometheus_types(&encoded);
 
-            // Second pass: process metric values
+            // Process metric values
             for line in encoded.lines() {
                 if line.starts_with('#') || line.is_empty() {
                     continue;
@@ -161,23 +154,15 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
                     && let Ok(value) = value_str.parse::<f64>()
                 {
                     let (metric_name, labels) = parse_prometheus_metric(name_labels);
-
-                    // Strip known suffixes to find base metric name for type lookup
-                    let base_name = metric_name
-                        .strip_suffix("_total")
-                        .or_else(|| metric_name.strip_suffix("_count"))
-                        .or_else(|| metric_name.strip_suffix("_sum"))
-                        .or_else(|| metric_name.strip_suffix("_bucket"))
-                        .unwrap_or(&metric_name);
+                    let base_name = strip_prometheus_suffix(&metric_name);
 
                     let attributes: Vec<KeyValue> = labels
                         .iter()
                         .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                         .collect();
 
-                    // Treat as counter if TYPE is "counter" or "histogram" (histogram components are monotonic)
                     let metric_type = metric_types.get(base_name).copied();
-                    if metric_type == Some("counter") || metric_type == Some("histogram") {
+                    if is_counter_type(metric_type) {
                         let counter = {
                             let mut cache = counters.lock();
                             cache
@@ -239,9 +224,59 @@ fn parse_prometheus_metric(name_labels: &str) -> (String, Vec<(String, String)>)
     }
 }
 
+/// Parse `# TYPE metric_name type` lines from Prometheus text format.
+/// Returns a map of metric base name -> type string.
+fn parse_prometheus_types(text: &str) -> HashMap<String, &str> {
+    let mut types = HashMap::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# TYPE ")
+            && let Some((name, type_str)) = rest.split_once(' ')
+        {
+            types.insert(name.to_string(), type_str);
+        }
+    }
+    types
+}
+
+/// Strip known Prometheus suffixes to find the base metric name for type lookup.
+fn strip_prometheus_suffix(metric_name: &str) -> &str {
+    metric_name
+        .strip_suffix("_total")
+        .or_else(|| metric_name.strip_suffix("_count"))
+        .or_else(|| metric_name.strip_suffix("_sum"))
+        .or_else(|| metric_name.strip_suffix("_bucket"))
+        .unwrap_or(metric_name)
+}
+
+/// Determine if a metric should be treated as a counter based on its type.
+/// Counters and histograms (which are collections of counters) return true.
+fn is_counter_type(metric_type: Option<&str>) -> bool {
+    matches!(metric_type, Some("counter") | Some("histogram"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SAMPLE_PROMETHEUS_OUTPUT: &str = r#"# HELP runtime_tasks_spawned Total number of tasks spawned.
+# TYPE runtime_tasks_spawned counter
+runtime_tasks_spawned_total{name="",kind="Root",execution="Shared"} 42
+# HELP runtime_tasks_running Number of tasks currently running.
+# TYPE runtime_tasks_running gauge
+runtime_tasks_running{name="worker",kind="Task",execution="Dedicated"} 5
+# HELP http_request_duration Request duration histogram.
+# TYPE http_request_duration histogram
+http_request_duration_bucket{le="0.1"} 10
+http_request_duration_bucket{le="0.5"} 25
+http_request_duration_bucket{le="1.0"} 30
+http_request_duration_bucket{le="+Inf"} 35
+http_request_duration_sum 42.5
+http_request_duration_count 35
+# HELP runtime_process_rss Resident set size.
+# TYPE runtime_process_rss gauge
+runtime_process_rss 8224768
+# EOF
+"#;
 
     #[test]
     fn test_parse_prometheus_metric_no_labels() {
@@ -265,5 +300,73 @@ mod tests {
         assert_eq!(name, "counter");
         assert_eq!(labels.len(), 1);
         assert_eq!(labels[0], ("id".to_string(), "123".to_string()));
+    }
+
+    #[test]
+    fn test_parse_prometheus_metric_histogram_bucket() {
+        let (name, labels) = parse_prometheus_metric(r#"http_request_duration_bucket{le="0.5"}"#);
+        assert_eq!(name, "http_request_duration_bucket");
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0], ("le".to_string(), "0.5".to_string()));
+    }
+
+    #[test]
+    fn test_parse_prometheus_types() {
+        let types = parse_prometheus_types(SAMPLE_PROMETHEUS_OUTPUT);
+
+        assert_eq!(types.get("runtime_tasks_spawned"), Some(&"counter"));
+        assert_eq!(types.get("runtime_tasks_running"), Some(&"gauge"));
+        assert_eq!(types.get("http_request_duration"), Some(&"histogram"));
+        assert_eq!(types.get("runtime_process_rss"), Some(&"gauge"));
+        assert_eq!(types.get("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_strip_prometheus_suffix() {
+        assert_eq!(strip_prometheus_suffix("requests_total"), "requests");
+        assert_eq!(strip_prometheus_suffix("http_duration_count"), "http_duration");
+        assert_eq!(strip_prometheus_suffix("http_duration_sum"), "http_duration");
+        assert_eq!(strip_prometheus_suffix("http_duration_bucket"), "http_duration");
+        assert_eq!(strip_prometheus_suffix("memory_usage"), "memory_usage");
+        assert_eq!(strip_prometheus_suffix("total_requests"), "total_requests");
+    }
+
+    #[test]
+    fn test_is_counter_type() {
+        assert!(is_counter_type(Some("counter")));
+        assert!(is_counter_type(Some("histogram")));
+        assert!(!is_counter_type(Some("gauge")));
+        assert!(!is_counter_type(Some("summary")));
+        assert!(!is_counter_type(None));
+    }
+
+    #[test]
+    fn test_counter_detection_from_prometheus_output() {
+        let types = parse_prometheus_types(SAMPLE_PROMETHEUS_OUTPUT);
+
+        // Counter metric
+        let base = strip_prometheus_suffix("runtime_tasks_spawned_total");
+        assert_eq!(base, "runtime_tasks_spawned");
+        assert!(is_counter_type(types.get(base).copied()));
+
+        // Gauge metric
+        let base = strip_prometheus_suffix("runtime_tasks_running");
+        assert_eq!(base, "runtime_tasks_running");
+        assert!(!is_counter_type(types.get(base).copied()));
+
+        // Histogram bucket -> should be treated as counter
+        let base = strip_prometheus_suffix("http_request_duration_bucket");
+        assert_eq!(base, "http_request_duration");
+        assert!(is_counter_type(types.get(base).copied()));
+
+        // Histogram count -> should be treated as counter
+        let base = strip_prometheus_suffix("http_request_duration_count");
+        assert_eq!(base, "http_request_duration");
+        assert!(is_counter_type(types.get(base).copied()));
+
+        // Histogram sum -> should be treated as counter
+        let base = strip_prometheus_suffix("http_request_duration_sum");
+        assert_eq!(base, "http_request_duration");
+        assert!(is_counter_type(types.get(base).copied()));
     }
 }
