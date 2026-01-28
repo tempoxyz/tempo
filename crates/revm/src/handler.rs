@@ -3104,15 +3104,13 @@ mod tests {
         let gas_delta = gas_nonce_zero.initial_gas - gas_nonce_five.initial_gas;
         assert_eq!(
             gas_delta, new_account_cost,
-            "T1 gas difference between nonce=0 and nonce>0 should be exactly {} (new_account_cost), got {}",
-            new_account_cost, gas_delta
+            "T1 gas difference between nonce=0 and nonce>0 should be exactly {new_account_cost} (new_account_cost), got {gas_delta}"
         );
 
         // Verify it's NOT using the pre-T1 NEW_NONCE_KEY_GAS (22,100)
         assert_ne!(
             gas_delta, NEW_NONCE_KEY_GAS,
-            "T1 should NOT use pre-T1 NEW_NONCE_KEY_GAS ({}) for nonce=0 transactions",
-            NEW_NONCE_KEY_GAS
+            "T1 should NOT use pre-T1 NEW_NONCE_KEY_GAS ({NEW_NONCE_KEY_GAS}) for nonce=0 transactions"
         );
 
         // Case 3: nonce == 0 with regular nonce (nonce_key=0) -> same +250k charge
