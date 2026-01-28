@@ -491,7 +491,7 @@ The migration uses a two-pronged approach:
 
 1. **New hardfork ("Allegro")**: Timestamp-based activation that switches
    consensus from reading V1 to V2
-2. **Lazy initialization**: On first access (read or write), V2 automatically
+2. **Lazy initialization**: On first write, V2 automatically
    populates itself from V1 state
 
 ## Hardfork-Based Switching
