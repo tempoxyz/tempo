@@ -925,11 +925,9 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let sig_type: Option<u8> = if spec.is_t1() {
-                            Some(keychain_sig.signature.signature_type().into())
-                        } else {
-                            None
-                        };
+                        let sig_type = spec
+                            .is_t1()
+                            .then_some(keychain_sig.signature.signature_type().into());
 
                         keychain
                             .validate_keychain_authorization(
