@@ -569,15 +569,25 @@ where
             );
         }
 
-        // Validate AA transaction intrinsic gas.
-        // This ensures the gas limit covers all AA-specific costs (per-call overhead,
-        // signature verification, etc.) to prevent mempool DoS attacks where transactions
-        // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
+        if transaction.inner().is_aa() {
+            // Validate AA transaction intrinsic gas.
+            // This ensures the gas limit covers all AA-specific costs (per-call overhead,
+            // signature verification, etc.) to prevent mempool DoS attacks where transactions
+            // pass pool validation but fail at execution time.
+            if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
+        } else {
+            // validate intrinsic gas with additional TIP-1000 and T1 checks
+            if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
         }
 
         // Validate AA transaction field limits (calls, access list, token limits).
@@ -698,11 +708,6 @@ where
             }
         }
 
-        // validate intrinsic gas with additional TIP-1000 and T1 checks
-        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
-            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
-        }
-
         match self
             .inner
             .validate_one_with_state_provider(origin, transaction, &state_provider)
@@ -811,7 +816,7 @@ where
 pub fn ensure_intrinsic_gas_tempo_tx(
     tx: &TempoPooledTransaction,
     spec: TempoHardfork,
-) -> Result<(), InvalidPoolTransactionError> {
+) -> Result<(), TempoPoolTransactionError> {
     let gas_params = tempo_gas_params(spec);
 
     let mut gas = gas_params.initial_tx_gas(
@@ -847,7 +852,10 @@ pub fn ensure_intrinsic_gas_tempo_tx(
 
     let gas_limit = tx.gas_limit();
     if gas_limit < gas.initial_gas || gas_limit < gas.floor_gas {
-        Err(InvalidPoolTransactionError::IntrinsicGasTooLow)
+        Err(TempoPoolTransactionError::InsufficientGasForIntrinsicCost {
+            gas_limit,
+            intrinsic_gas: gas.initial_gas,
+        })
     } else {
         Ok(())
     }
