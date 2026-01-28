@@ -30,7 +30,6 @@ use commonware_utils::{NZU64, ordered::Map};
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::future::try_join_all;
 use rand::{CryptoRng, Rng};
-use tempo_commonware_node_config::SigningKey;
 use tempo_node::TempoFullNode;
 use tracing::info;
 
@@ -67,272 +66,46 @@ const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero
 // XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
 // because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
-pub struct EngineBuilder<TBlocker, TPeerManager> {
-    fee_recipient: Option<alloy_primitives::Address>,
-    execution_node: Option<TempoFullNode>,
-    blocker: Option<TBlocker>,
-    peer_manager: Option<TPeerManager>,
-    partition_prefix: Option<String>,
-    signer: Option<PrivateKey>,
-    share: Option<Share>,
-    mailbox_size: Option<usize>,
-    deque_size: Option<usize>,
-    time_to_propose: Option<Duration>,
-    time_to_collect_notarizations: Option<Duration>,
-    time_to_retry_nullify_broadcast: Option<Duration>,
-    time_for_peer_response: Option<Duration>,
-    views_to_track: Option<u64>,
-    views_until_leader_skip: Option<u64>,
-    new_payload_wait_time: Option<Duration>,
-    time_to_build_subblock: Option<Duration>,
-    subblock_broadcast_interval: Option<Duration>,
-    fcu_heartbeat_interval: Option<Duration>,
-    feed_state: Option<crate::feed::FeedStateHandle>,
+pub struct Builder<TBlocker, TPeerManager> {
+    pub fee_recipient: alloy_primitives::Address,
+
+    pub execution_node: Option<TempoFullNode>,
+
+    pub blocker: TBlocker,
+    pub peer_manager: TPeerManager,
+
+    pub partition_prefix: String,
+    pub signer: PrivateKey,
+    pub share: Option<Share>,
+
+    pub mailbox_size: usize,
+    pub deque_size: usize,
+
+    pub time_to_propose: Duration,
+    pub time_to_collect_notarizations: Duration,
+    pub time_to_retry_nullify_broadcast: Duration,
+    pub time_for_peer_response: Duration,
+    pub views_to_track: u64,
+    pub views_until_leader_skip: u64,
+    pub new_payload_wait_time: Duration,
+    pub time_to_build_subblock: Duration,
+    pub subblock_broadcast_interval: Duration,
+    pub fcu_heartbeat_interval: Duration,
+
+    pub feed_state: crate::feed::FeedStateHandle,
 }
 
-impl<TBlocker, TPeerManager> Default for EngineBuilder<TBlocker, TPeerManager> {
-    fn default() -> Self {
-        Self {
-            fee_recipient: None,
-            execution_node: None,
-            blocker: None,
-            peer_manager: None,
-            partition_prefix: None,
-            signer: None,
-            share: None,
-            mailbox_size: None,
-            deque_size: None,
-            time_to_propose: None,
-            time_to_collect_notarizations: None,
-            time_to_retry_nullify_broadcast: None,
-            time_for_peer_response: None,
-            views_to_track: None,
-            views_until_leader_skip: None,
-            new_payload_wait_time: None,
-            time_to_build_subblock: None,
-            subblock_broadcast_interval: None,
-            fcu_heartbeat_interval: None,
-            feed_state: None,
-        }
-    }
-}
-
-impl<O> EngineBuilder<O, O>
-where
-    O: Blocker<PublicKey = PublicKey>
-        + commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>>
-        + Sync
-        + Clone,
-{
-    /// Sets both `blocker` and `peer_manager` to the same oracle.
-    #[must_use]
-    pub fn with_oracle(mut self, oracle: O) -> Self {
-        self.blocker = Some(oracle.clone());
-        self.peer_manager = Some(oracle);
-        self
-    }
-}
-
-impl<TBlocker, TPeerManager> EngineBuilder<TBlocker, TPeerManager>
+impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
 where
     TBlocker: Blocker<PublicKey = PublicKey>,
     TPeerManager:
         commonware_p2p::Manager<PublicKey = PublicKey, Peers = Map<PublicKey, Address>> + Sync,
 {
-    #[must_use]
-    pub fn with_fee_recipient(mut self, fee_recipient: alloy_primitives::Address) -> Self {
-        self.fee_recipient = Some(fee_recipient);
-        self
-    }
-
-    #[must_use]
     pub fn with_execution_node(mut self, execution_node: TempoFullNode) -> Self {
         self.execution_node = Some(execution_node);
         self
     }
 
-    #[must_use]
-    pub fn with_blocker(mut self, blocker: TBlocker) -> Self {
-        self.blocker = Some(blocker);
-        self
-    }
-
-    #[must_use]
-    pub fn with_peer_manager(mut self, peer_manager: TPeerManager) -> Self {
-        self.peer_manager = Some(peer_manager);
-        self
-    }
-
-    #[must_use]
-    pub fn with_partition_prefix(mut self, partition_prefix: impl Into<String>) -> Self {
-        self.partition_prefix = Some(partition_prefix.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_signer(mut self, signing_key: impl Into<SigningKey>) -> Self {
-        self.signer = Some(signing_key.into().into_inner());
-        self
-    }
-
-    #[must_use]
-    pub fn with_share(mut self, share: Option<Share>) -> Self {
-        self.share = share;
-        self
-    }
-
-    /// Returns a reference to the BLS share, if set.
-    #[must_use]
-    pub fn share(&self) -> Option<&Share> {
-        self.share.as_ref()
-    }
-
-    /// Takes the BLS share, leaving `None` in its place.
-    pub fn take_share(&mut self) -> Option<Share> {
-        self.share.take()
-    }
-
-    /// Sets the fee recipient (for in-place mutation).
-    pub fn set_fee_recipient(&mut self, fee_recipient: alloy_primitives::Address) {
-        self.fee_recipient = Some(fee_recipient);
-    }
-
-    /// Sets the new-payload wait time (for in-place mutation).
-    pub fn set_new_payload_wait_time_duration(&mut self, d: Duration) {
-        self.new_payload_wait_time = Some(d);
-    }
-
-    #[must_use]
-    pub fn with_mailbox_size(mut self, mailbox_size: usize) -> Self {
-        self.mailbox_size = Some(mailbox_size);
-        self
-    }
-
-    #[must_use]
-    pub fn with_deque_size(mut self, deque_size: usize) -> Self {
-        self.deque_size = Some(deque_size);
-        self
-    }
-
-    pub fn with_time_to_propose(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_to_propose = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_time_to_propose_duration(mut self, d: Duration) -> Self {
-        self.time_to_propose = Some(d);
-        self
-    }
-
-    pub fn with_time_to_collect_notarizations(
-        mut self,
-        d: jiff::SignedDuration,
-    ) -> eyre::Result<Self> {
-        self.time_to_collect_notarizations = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_time_to_collect_notarizations_duration(mut self, d: Duration) -> Self {
-        self.time_to_collect_notarizations = Some(d);
-        self
-    }
-
-    pub fn with_time_to_retry_nullify_broadcast(
-        mut self,
-        d: jiff::SignedDuration,
-    ) -> eyre::Result<Self> {
-        self.time_to_retry_nullify_broadcast = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_time_to_retry_nullify_broadcast_duration(mut self, d: Duration) -> Self {
-        self.time_to_retry_nullify_broadcast = Some(d);
-        self
-    }
-
-    pub fn with_time_for_peer_response(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_for_peer_response = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_time_for_peer_response_duration(mut self, d: Duration) -> Self {
-        self.time_for_peer_response = Some(d);
-        self
-    }
-
-    #[must_use]
-    pub fn with_views_to_track(mut self, views_to_track: u64) -> Self {
-        self.views_to_track = Some(views_to_track);
-        self
-    }
-
-    #[must_use]
-    pub fn with_views_until_leader_skip(mut self, views_until_leader_skip: u64) -> Self {
-        self.views_until_leader_skip = Some(views_until_leader_skip);
-        self
-    }
-
-    pub fn with_new_payload_wait_time(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.new_payload_wait_time = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_new_payload_wait_time_duration(mut self, d: Duration) -> Self {
-        self.new_payload_wait_time = Some(d);
-        self
-    }
-
-    pub fn with_time_to_build_subblock(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_to_build_subblock = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_time_to_build_subblock_duration(mut self, d: Duration) -> Self {
-        self.time_to_build_subblock = Some(d);
-        self
-    }
-
-    pub fn with_subblock_broadcast_interval(
-        mut self,
-        d: jiff::SignedDuration,
-    ) -> eyre::Result<Self> {
-        self.subblock_broadcast_interval = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_subblock_broadcast_interval_duration(mut self, d: Duration) -> Self {
-        self.subblock_broadcast_interval = Some(d);
-        self
-    }
-
-    pub fn with_fcu_heartbeat_interval(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.fcu_heartbeat_interval = Some(d.try_into()?);
-        Ok(self)
-    }
-
-    #[must_use]
-    pub fn with_fcu_heartbeat_interval_duration(mut self, d: Duration) -> Self {
-        self.fcu_heartbeat_interval = Some(d);
-        self
-    }
-
-    #[must_use]
-    pub fn with_feed_state(mut self, feed_state: crate::feed::FeedStateHandle) -> Self {
-        self.feed_state = Some(feed_state);
-        self
-    }
-
-    /// Validates required fields and initializes the [`Engine`].
-    ///
-    /// # Errors
-    /// Returns an error if any required field is missing.
     pub async fn try_init<TContext>(
         self,
         context: TContext,
@@ -348,62 +121,10 @@ where
             + Metrics
             + Network,
     {
-        let fee_recipient = self
-            .fee_recipient
-            .ok_or_eyre("fee_recipient is required - call with_fee_recipient()")?;
         let execution_node = self
             .execution_node
-            .ok_or_eyre("execution_node is required - call with_execution_node()")?;
-        let blocker = self
-            .blocker
-            .ok_or_eyre("blocker is required - call with_blocker() or with_oracle()")?;
-        let peer_manager = self
-            .peer_manager
-            .ok_or_eyre("peer_manager is required - call with_peer_manager() or with_oracle()")?;
-        let partition_prefix = self.partition_prefix.unwrap_or_else(|| "engine".into());
-        let signer = self
-            .signer
-            .ok_or_eyre("signer is required - call with_signer()")?;
-        let share = self.share;
-        let mailbox_size = self
-            .mailbox_size
-            .ok_or_eyre("mailbox_size is required - call with_mailbox_size()")?;
-        let deque_size = self
-            .deque_size
-            .ok_or_eyre("deque_size is required - call with_deque_size()")?;
-        let time_to_propose = self
-            .time_to_propose
-            .ok_or_eyre("time_to_propose is required - call with_time_to_propose()")?;
-        let time_to_collect_notarizations = self.time_to_collect_notarizations.ok_or_eyre(
-            "time_to_collect_notarizations is required - call with_time_to_collect_notarizations()",
-        )?;
-        let time_to_retry_nullify_broadcast = self
-            .time_to_retry_nullify_broadcast
-            .ok_or_eyre("time_to_retry_nullify_broadcast is required - call with_time_to_retry_nullify_broadcast()")?;
-        let time_for_peer_response = self.time_for_peer_response.ok_or_eyre(
-            "time_for_peer_response is required - call with_time_for_peer_response()",
-        )?;
-        let views_to_track = self
-            .views_to_track
-            .ok_or_eyre("views_to_track is required - call with_views_to_track()")?;
-        let views_until_leader_skip = self.views_until_leader_skip.ok_or_eyre(
-            "views_until_leader_skip is required - call with_views_until_leader_skip()",
-        )?;
-        let new_payload_wait_time = self
-            .new_payload_wait_time
-            .ok_or_eyre("new_payload_wait_time is required - call with_new_payload_wait_time()")?;
-        let time_to_build_subblock = self.time_to_build_subblock.ok_or_eyre(
-            "time_to_build_subblock is required - call with_time_to_build_subblock()",
-        )?;
-        let subblock_broadcast_interval = self.subblock_broadcast_interval.ok_or_eyre(
-            "subblock_broadcast_interval is required - call with_subblock_broadcast_interval()",
-        )?;
-        let fcu_heartbeat_interval = self.fcu_heartbeat_interval.ok_or_eyre(
-            "fcu_heartbeat_interval is required - call with_fcu_heartbeat_interval()",
-        )?;
-        let feed_state = self
-            .feed_state
-            .ok_or_eyre("feed_state is required - call with_feed_state()")?;
+            .clone()
+            .ok_or_eyre("execution_node must be set using with_execution_node()")?;
 
         let epoch_length = execution_node
             .chain_spec()
@@ -412,16 +133,16 @@ where
             .ok_or_eyre("chainspec did not contain epochLength; cannot go on without it")?;
 
         info!(
-            identity = %signer.public_key(),
+            identity = %self.signer.public_key(),
             "using public ed25519 verifying key derived from provided private ed25519 signing key",
         );
 
         let (broadcast, broadcast_mailbox) = buffered::Engine::new(
             context.with_label("broadcast"),
             buffered::Config {
-                public_key: signer.public_key(),
-                mailbox_size,
-                deque_size,
+                public_key: self.signer.public_key(),
+                mailbox_size: self.mailbox_size,
+                deque_size: self.deque_size,
                 priority: true,
                 codec_config: (),
             },
@@ -434,10 +155,10 @@ where
         // making the resolver configurable in
         // https://github.com/commonwarexyz/monorepo/commit/92870f39b4a9e64a28434b3729ebff5aba67fb4e
         let resolver_config = commonware_consensus::marshal::resolver::p2p::Config {
-            public_key: signer.public_key(),
-            manager: peer_manager.clone(),
-            mailbox_size,
-            blocker: blocker.clone(),
+            public_key: self.signer.public_key(),
+            manager: self.peer_manager.clone(),
+            mailbox_size: self.mailbox_size,
+            blocker: self.blocker.clone(),
             initial: Duration::from_secs(1),
             timeout: Duration::from_secs(2),
             fetch_retry_timeout: Duration::from_millis(100),
@@ -453,12 +174,12 @@ where
             immutable::Config {
                 metadata_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-metadata",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
 
                 freezer_table_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-table",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
 
                 freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -467,20 +188,20 @@ where
 
                 freezer_key_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-key",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
                 freezer_key_buffer_pool: buffer_pool.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-freezer-value",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
                 freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
                 freezer_value_compression: FREEZER_VALUE_COMPRESSION,
 
                 ordinal_partition: format!(
                     "{}-{FINALIZATIONS_BY_HEIGHT}-ordinal",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
 
                 items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
@@ -501,11 +222,14 @@ where
         let finalized_blocks = immutable::Archive::init(
             context.with_label("finalized_blocks"),
             immutable::Config {
-                metadata_partition: format!("{}-{FINALIZED_BLOCKS}-metadata", partition_prefix,),
+                metadata_partition: format!(
+                    "{}-{FINALIZED_BLOCKS}-metadata",
+                    self.partition_prefix,
+                ),
 
                 freezer_table_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-freezer-table",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
 
                 freezer_table_initial_size: BLOCKS_FREEZER_TABLE_INITIAL_SIZE_BYTES,
@@ -514,18 +238,18 @@ where
 
                 freezer_key_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-freezer-key",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
                 freezer_key_buffer_pool: buffer_pool.clone(),
 
                 freezer_value_partition: format!(
                     "{}-{FINALIZED_BLOCKS}-freezer-value",
-                    partition_prefix,
+                    self.partition_prefix,
                 ),
                 freezer_value_target_size: FREEZER_VALUE_TARGET_SIZE,
                 freezer_value_compression: FREEZER_VALUE_COMPRESSION,
 
-                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", partition_prefix,),
+                ordinal_partition: format!("{}-{FINALIZED_BLOCKS}-ordinal", self.partition_prefix,),
                 items_per_section: IMMUTABLE_ITEMS_PER_SECTION,
                 codec_config: (),
 
@@ -549,10 +273,11 @@ where
             marshal::Config {
                 provider: scheme_provider.clone(),
                 epocher: epoch_strategy.clone(),
-                partition_prefix: partition_prefix.clone(),
-                mailbox_size,
+                partition_prefix: self.partition_prefix.clone(),
+                mailbox_size: self.mailbox_size,
                 view_retention_timeout: ViewDelta::new(
-                    views_to_track.saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
+                    self.views_to_track
+                        .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
                 prunable_items_per_section: PRUNABLE_ITEMS_PER_SECTION,
 
@@ -571,12 +296,12 @@ where
 
         let subblocks = subblocks::Actor::new(subblocks::Config {
             context: context.clone(),
-            signer: signer.clone(),
+            signer: self.signer.clone(),
             scheme_provider: scheme_provider.clone(),
             node: execution_node.clone(),
-            fee_recipient,
-            time_to_build_subblock,
-            subblock_broadcast_interval,
+            fee_recipient: self.fee_recipient,
+            time_to_build_subblock: self.time_to_build_subblock,
+            subblock_broadcast_interval: self.subblock_broadcast_interval,
             epoch_strategy: epoch_strategy.clone(),
         });
 
@@ -584,7 +309,7 @@ where
             context.with_label("feed"),
             marshal_mailbox.clone(),
             epoch_strategy.clone(),
-            feed_state,
+            self.feed_state,
         );
 
         let (executor, executor_mailbox) = crate::executor::init(
@@ -593,19 +318,19 @@ where
                 execution_node: execution_node.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
-                fcu_heartbeat_interval,
+                fcu_heartbeat_interval: self.fcu_heartbeat_interval,
             },
         )
         .wrap_err("failed initialization executor actor")?;
 
         let (application, application_mailbox) = application::init(super::application::Config {
             context: context.with_label("application"),
-            fee_recipient,
-            mailbox_size,
+            fee_recipient: self.fee_recipient,
+            mailbox_size: self.mailbox_size,
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
-            new_payload_wait_time,
+            new_payload_wait_time: self.new_payload_wait_time,
             subblocks: subblocks.mailbox(),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
@@ -617,21 +342,21 @@ where
             context.with_label("epoch_manager"),
             epoch::manager::Config {
                 application: application_mailbox.clone(),
-                blocker: blocker.clone(),
+                blocker: self.blocker.clone(),
                 buffer_pool: buffer_pool.clone(),
                 epoch_strategy: epoch_strategy.clone(),
-                time_for_peer_response,
-                time_to_propose,
-                mailbox_size,
+                time_for_peer_response: self.time_for_peer_response,
+                time_to_propose: self.time_to_propose,
+                mailbox_size: self.mailbox_size,
                 subblocks: subblocks.mailbox(),
                 marshal: marshal_mailbox.clone(),
                 feed: feed_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
-                time_to_collect_notarizations,
-                time_to_retry_nullify_broadcast,
-                partition_prefix: format!("{}_epoch_manager", partition_prefix),
-                views_to_track: ViewDelta::new(views_to_track),
-                views_until_leader_skip: ViewDelta::new(views_until_leader_skip),
+                time_to_collect_notarizations: self.time_to_collect_notarizations,
+                time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
+                partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
+                views_to_track: ViewDelta::new(self.views_to_track),
+                views_until_leader_skip: ViewDelta::new(self.views_until_leader_skip),
             },
         );
 
@@ -641,13 +366,13 @@ where
                 epoch_manager: epoch_manager_mailbox.clone(),
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
-                initial_share: share.clone(),
-                mailbox_size,
+                initial_share: self.share.clone(),
+                mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),
-                me: signer.clone(),
-                partition_prefix: format!("{}_dkg_manager", partition_prefix),
-                peer_manager: peer_manager.clone(),
+                me: self.signer.clone(),
+                partition_prefix: format!("{}_dkg_manager", self.partition_prefix),
+                peer_manager: self.peer_manager.clone(),
             },
         )
         .await

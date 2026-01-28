@@ -37,7 +37,7 @@ where
     pub oracle: Oracle<PublicKey, TClock>,
     /// Consensus configuration used to start the consensus engine
     pub consensus_config:
-        consensus::EngineBuilder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
+        consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>,
     /// Running consensus handle (None if consensus is stopped)
     pub consensus_handle: Option<Handle<eyre::Result<()>>>,
     /// Path to the execution node's data directory
@@ -78,7 +78,7 @@ where
         uid: String,
         public_key: PublicKey,
         oracle: Oracle<PublicKey, TClock>,
-        consensus_config: consensus::EngineBuilder<
+        consensus_config: consensus::Builder<
             Control<PublicKey, TClock>,
             SocketManager<PublicKey, TClock>,
         >,
@@ -125,16 +125,14 @@ where
     /// Get a reference to the consensus config.
     pub fn consensus_config(
         &self,
-    ) -> &consensus::EngineBuilder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>
-    {
+    ) -> &consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &self.consensus_config
     }
 
     /// Get a mutable reference to the consensus config.
     pub fn consensus_config_mut(
         &mut self,
-    ) -> &mut consensus::EngineBuilder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>>
-    {
+    ) -> &mut consensus::Builder<Control<PublicKey, TClock>, SocketManager<PublicKey, TClock>> {
         &mut self.consensus_config
     }
 
