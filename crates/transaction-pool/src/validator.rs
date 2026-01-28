@@ -446,7 +446,7 @@ where
 
         let tx = aa_tx.tx();
 
-        if tx.calls.len() == 0 {
+        if tx.calls.is_empty() {
             return Err(TempoPoolTransactionError::NoCalls);
         }
 
