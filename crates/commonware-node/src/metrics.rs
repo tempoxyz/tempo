@@ -180,7 +180,7 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
                             counter.add(delta, &attributes);
                         }
                     } else {
-                        // Gauge or histogram bucket - use gauge
+                        // Gauge - use gauge (histograms are handled as counters above)
                         let gauge = {
                             let mut cache = gauges.lock();
                             cache
