@@ -3037,4 +3037,99 @@ mod tests {
             EXPIRING_NONCE_GAS
         );
     }
+
+    /// Test that T1 hardfork correctly charges 250k gas for nonce == 0.
+    ///
+    /// This test validates TIP-1000's requirement:
+    /// "Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas"
+    ///
+    /// The test proves the audit finding (claiming only 22,100 gas is charged) is a false positive
+    /// by using delta-based assertions: gas(nonce=0) - gas(nonce>0) == new_account_cost.
+    #[test]
+    fn test_t1_2d_nonce_key_charges_250k_gas() {
+        use crate::gas_params::tempo_gas_params;
+        use revm::{context_interface::cfg::GasId, handler::Handler};
+
+        // Deterministic test addresses
+        const TEST_TARGET: Address = Address::new([0xAA; 20]);
+        const TEST_NONCE_KEY: U256 = U256::from_limbs([42, 0, 0, 0]);
+
+        // Create T1 config with TIP-1000 gas params
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T1;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T1);
+
+        // Get the expected new_account_cost dynamically from gas params
+        let new_account_cost = cfg.gas_params.get(GasId::new_account_cost());
+        assert_eq!(
+            new_account_cost, 250_000,
+            "T1 gas params should have 250k new_account_cost"
+        );
+
+        // Helper to create EVM context for testing
+        let make_evm = |cfg: CfgEnv<TempoHardfork>, nonce: u64, nonce_key: U256| {
+            let journal = Journal::new(CacheDB::new(EmptyDB::default()));
+            let ctx = Context::mainnet()
+                .with_db(CacheDB::new(EmptyDB::default()))
+                .with_block(TempoBlockEnv::default())
+                .with_cfg(cfg)
+                .with_tx(TempoTxEnv {
+                    inner: revm::context::TxEnv {
+                        gas_limit: 1_000_000,
+                        nonce,
+                        ..Default::default()
+                    },
+                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        aa_calls: vec![Call {
+                            to: TxKind::Call(TEST_TARGET),
+                            value: U256::ZERO,
+                            input: Bytes::new(),
+                        }],
+                        nonce_key,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .with_new_journal(journal);
+            TempoEvm::<_, ()>::new(ctx, ())
+        };
+
+        // Case 1: nonce == 0 with 2D nonce key -> should include new_account_cost
+        let mut evm_nonce_zero = make_evm(cfg.clone(), 0, TEST_NONCE_KEY);
+        let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
+        let gas_nonce_zero = handler
+            .validate_initial_tx_gas(&mut evm_nonce_zero)
+            .unwrap();
+
+        // Case 2: nonce > 0 with same 2D nonce key -> should NOT include new_account_cost
+        // This tests that only nonce == 0 triggers the +250k charge, regardless of nonce_key state
+        let mut evm_nonce_five = make_evm(cfg.clone(), 5, TEST_NONCE_KEY);
+        let gas_nonce_five = handler
+            .validate_initial_tx_gas(&mut evm_nonce_five)
+            .unwrap();
+
+        // Delta-based assertion: the difference should be exactly new_account_cost
+        let gas_delta = gas_nonce_zero.initial_gas - gas_nonce_five.initial_gas;
+        assert_eq!(
+            gas_delta, new_account_cost,
+            "T1 gas difference between nonce=0 and nonce>0 should be exactly {new_account_cost} (new_account_cost), got {gas_delta}"
+        );
+
+        // Verify it's NOT using the pre-T1 NEW_NONCE_KEY_GAS (22,100)
+        assert_ne!(
+            gas_delta, NEW_NONCE_KEY_GAS,
+            "T1 should NOT use pre-T1 NEW_NONCE_KEY_GAS ({NEW_NONCE_KEY_GAS}) for nonce=0 transactions"
+        );
+
+        // Case 3: nonce == 0 with regular nonce (nonce_key=0) -> same +250k charge
+        let mut evm_regular_nonce = make_evm(cfg, 0, U256::ZERO);
+        let gas_regular = handler
+            .validate_initial_tx_gas(&mut evm_regular_nonce)
+            .unwrap();
+
+        assert_eq!(
+            gas_nonce_zero.initial_gas, gas_regular.initial_gas,
+            "nonce=0 should charge the same regardless of nonce_key (2D vs regular)"
+        );
+    }
 }
