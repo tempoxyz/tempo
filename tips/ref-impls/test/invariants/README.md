@@ -193,6 +193,39 @@ The following are enforced in the block builder and tested in Rust:
 - **TEMPO-BLOCK11**: Constant base fee within epoch → `crates/chainspec/`
 - **TEMPO-BLOCK12**: General lane enforcement (30M cap) → `crates/payload/builder/src/lib.rs`
 
+## Nonce
+
+The Nonce precompile manages 2D nonces for accounts, enabling multiple independent nonce sequences per account identified by a nonce key.
+
+### Nonce Increment Invariants
+
+- **TEMPO-NON1**: Monotonic increment - nonces only ever increase by exactly 1 per increment operation.
+- **TEMPO-NON2**: Ghost state consistency - actual nonce values always match tracked ghost state.
+- **TEMPO-NON3**: Read consistency - `getNonce` returns the correct value after any number of increments.
+
+### Protocol Nonce Invariants
+
+- **TEMPO-NON4**: Protocol nonce rejection - nonce key 0 is reserved for protocol nonces and reverts with `ProtocolNonceNotSupported` when accessed through the precompile.
+
+### Independence Invariants
+
+- **TEMPO-NON5**: Account independence - incrementing one account's nonce does not affect any other account's nonces.
+- **TEMPO-NON6**: Key independence - incrementing one nonce key does not affect any other nonce key for the same account.
+
+### Edge Case Invariants
+
+- **TEMPO-NON7**: Large nonce key support - `type(uint256).max - 1` works correctly as a nonce key. Note: `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`.
+- **TEMPO-NON8**: Strict monotonicity - multiple sequential increments produce strictly increasing values with no gaps.
+
+### Overflow Invariants
+
+- **TEMPO-NON9**: Nonce overflow protection - incrementing a nonce at `u64::MAX` reverts with `NonceOverflow`. Rust uses `checked_add(1)` which returns an error on overflow.
+- **TEMPO-NON10**: Invalid key increment rejection - `increment_nonce(key=0)` reverts with `InvalidNonceKey` (distinct from `ProtocolNonceNotSupported` used for reads).
+
+### Reserved Key Invariants
+
+- **TEMPO-NON11**: Reserved expiring nonce key - `type(uint256).max` is reserved for `TEMPO_EXPIRING_NONCE_KEY`. Reading it returns 0 for uninitialized accounts (readable but reserved for special use).
+
 ## TIP20Factory
 
 The TIP20Factory is the factory contract for creating TIP-20 compliant tokens with deterministic addresses.
