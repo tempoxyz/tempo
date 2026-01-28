@@ -130,12 +130,14 @@ impl From<&TempoHardfork> for SpecId {
     }
 }
 
-// NOTE: Intentionally removed `impl From<SpecId> for TempoHardfork`
-// This conversion is semantically incorrect: Tempo hardforks (T0, T1) are independent
-// of Ethereum SpecId. Deriving TempoHardfork from SpecId always returns T1 when
-// SpecId is OSAKA (since all Tempo hardforks map to OSAKA), which is wrong for chains
-// like moderato where T1 is not configured. Always use `chainspec.tempo_hardfork_at(timestamp)`
-// to determine the active Tempo hardfork.
+impl From<SpecId> for TempoHardfork {
+    fn from(_spec: SpecId) -> Self {
+        // All Tempo hardforks map to SpecId::OSAKA, so we cannot derive the hardfork from SpecId.
+        // Default to the default hardfork when converting from SpecId.
+        // The actual hardfork should be passed explicitly where needed.
+        Self::default()
+    }
+}
 
 #[cfg(test)]
 mod tests {
