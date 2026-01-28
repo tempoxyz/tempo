@@ -11648,10 +11648,8 @@ dependencies = [
  "commonware-consensus",
  "commonware-cryptography",
  "commonware-math",
- "commonware-runtime",
  "commonware-utils",
  "eyre",
- "futures",
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.8.5",
@@ -11676,7 +11674,6 @@ dependencies = [
  "tempo-faucet",
  "tempo-node",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -11808,6 +11805,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
