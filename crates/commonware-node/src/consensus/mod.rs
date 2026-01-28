@@ -7,4 +7,4 @@ pub(crate) mod engine;
 
 pub use digest::Digest;
 
-pub use engine::{Builder, Engine};
+pub use engine::{Engine, EngineBuilder};

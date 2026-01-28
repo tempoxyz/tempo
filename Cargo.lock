@@ -11809,6 +11809,7 @@ dependencies = [
  "tempo-primitives",
  "tempo-telemetry-util",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
