@@ -111,10 +111,6 @@ pub enum TempoInvalidTransaction {
     #[error("value transfer not allowed")]
     ValueTransferNotAllowed,
 
-    /// Value transfer in Tempo Transaction not allowed.
-    #[error("value transfer in Tempo Transaction not allowed")]
-    ValueTransferNotAllowedInAATx,
-
     /// Failed to recover access key address from signature.
     ///
     /// This error occurs when attempting to recover the access key address from a Keychain signature fails.

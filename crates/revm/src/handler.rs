@@ -1319,14 +1319,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
             gas.initial_gas += gas_params.tx_initcode_cost(call.input.len());
         }
 
-        // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
-        // Check added in https://github.com/tempoxyz/tempo/pull/759
-        if !call.value.is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
-        }
-
         // 4c. Value transfer cost using revm constant
-        // left here for future reference.
+        // Per-call value transfers are supported in batch transactions.
         if !call.value.is_zero() && call.to.is_call() {
             gas.initial_gas += gas_params.get(GasId::transfer_value_cost()); // 9000 gas
         }
@@ -1930,31 +1924,60 @@ mod tests {
 
         let calldata = Bytes::from(vec![1]);
 
-        let call = Call {
+        // Test call without value transfer
+        let call_no_value = Call {
             to: TxKind::Call(Address::random()),
-            value: U256::from(1000), // Non-zero value
-            input: calldata,
+            value: U256::ZERO,
+            input: calldata.clone(),
         };
 
-        let aa_env = TempoBatchCallEnv {
+        let aa_env_no_value = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call_no_value],
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
         };
 
-        let res = calculate_aa_batch_intrinsic_gas(
-            &aa_env,
+        let gas_no_value = calculate_aa_batch_intrinsic_gas(
+            &aa_env_no_value,
             &GasParams::default(),
             None::<std::iter::Empty<&AccessListItem>>,
-        );
+        )
+        .unwrap();
 
+        // Test call with value transfer
+        let call_with_value = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::from(1000), // Non-zero value
+            input: calldata,
+        };
+
+        let aa_env_with_value = TempoBatchCallEnv {
+            signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            )),
+            aa_calls: vec![call_with_value],
+            key_authorization: None,
+            signature_hash: B256::ZERO,
+            ..Default::default()
+        };
+
+        let gas_with_value = calculate_aa_batch_intrinsic_gas(
+            &aa_env_with_value,
+            &GasParams::default(),
+            None::<std::iter::Empty<&AccessListItem>>,
+        )
+        .unwrap();
+
+        // Value transfer should add 9000 gas (CALLVALUE cost)
+        // GasParams::default() uses CANCUN spec where transfer_value_cost = 9000
         assert_eq!(
-            res.unwrap_err(),
-            TempoInvalidTransaction::ValueTransferNotAllowedInAATx
+            gas_with_value.initial_gas,
+            gas_no_value.initial_gas + 9000,
+            "Value transfer should add 9000 gas"
         );
     }
 

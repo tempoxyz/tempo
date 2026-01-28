@@ -1277,11 +1277,11 @@ mod tests {
         Ok(())
     }
 
-    /// Test validate_aa_initial_tx_gas error cases.
-    /// Tests all error paths in the AA initial transaction gas validation:
+    /// Test validate_aa_initial_tx_gas error cases and valid paths.
+    /// Tests error paths in the AA initial transaction gas validation:
     /// - CreateInitCodeSizeLimit: when initcode exceeds max size
-    /// - ValueTransferNotAllowedInAATx: when a call has non-zero value
     /// - InsufficientGasForIntrinsicCost: when gas_limit < intrinsic_gas
+    /// Also tests that value transfers in batch calls are supported.
     #[test]
     fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
         use revm::{context::result::EVMError, handler::Handler};
@@ -1329,23 +1329,20 @@ mod tests {
             );
         }
 
-        // Test 2: ValueTransferNotAllowedInAATx - call has non-zero value
+        // Test 2: Value transfer in batch calls is now supported
+        // Verify gas calculation succeeds and includes value transfer cost
         {
             let mut evm = create_evm_with_tx(
                 TxBuilder::new()
                     .call_with_value(IDENTITY_PRECOMPILE, &[0x01, 0x02], U256::from(1000))
+                    .gas_limit(100_000) // Sufficient gas for value transfer
                     .build(),
             )?;
 
             let result = handler.validate_initial_tx_gas(&mut evm);
             assert!(
-                matches!(
-                    result,
-                    Err(EVMError::Transaction(
-                        TempoInvalidTransaction::ValueTransferNotAllowedInAATx
-                    ))
-                ),
-                "Expected ValueTransferNotAllowedInAATx error, got: {result:?}"
+                result.is_ok(),
+                "Value transfer should succeed, got: {result:?}"
             );
         }
 
