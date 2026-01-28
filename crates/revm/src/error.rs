@@ -212,6 +212,16 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+
+    /// Destination not allowed for this access key (TIP-1011).
+    ///
+    /// The access key has destination restrictions and the transaction destination
+    /// is not in the allowed list.
+    #[error("destination {destination} not allowed for this access key")]
+    DestinationNotAllowed {
+        /// The destination address that was rejected.
+        destination: Address,
+    },
 }
 
 impl InvalidTxError for TempoInvalidTransaction {

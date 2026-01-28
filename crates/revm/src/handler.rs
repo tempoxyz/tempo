@@ -846,18 +846,54 @@ where
                     limits: precompile_limits,
                 };
 
-                // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(*root_account, authorize_call) {
-                    // all is good, we can do execution.
-                    Ok(_) => Ok(false),
-                    // on out of gas we are skipping execution but not invalidating the transaction.
-                    Err(TempoPrecompileError::OutOfGas) => Ok(true),
-                    Err(TempoPrecompileError::Fatal(err)) => Err(EVMError::Custom(err)),
-                    Err(err) => Err(TempoInvalidTransaction::KeychainPrecompileError {
-                        reason: err.to_string(),
+                // Helper to convert precompile errors
+                let handle_precompile_err = |err: TempoPrecompileError| -> Result<bool, EVMError<DB::Error, TempoInvalidTransaction>> {
+                    match err {
+                        TempoPrecompileError::OutOfGas => Ok(true),
+                        TempoPrecompileError::Fatal(err) => Err(EVMError::Custom(err)),
+                        err => Err(TempoInvalidTransaction::KeychainPrecompileError {
+                            reason: err.to_string(),
+                        }.into()),
                     }
-                    .into()),
+                };
+
+                // Call precompile to authorize the key (same phase as nonce increment)
+                if let Err(err) = keychain.authorize_key(*root_account, authorize_call) {
+                    return handle_precompile_err(err);
                 }
+
+                // TIP-1011: Store periodic limit data for each limit with period > 0
+                if let Some(limits) = &key_auth.limits {
+                    for limit in limits {
+                        if limit.is_periodic() {
+                            if let Err(err) = keychain.set_periodic_limit(
+                                *root_account,
+                                access_key_addr,
+                                limit.token,
+                                limit.limit,
+                                limit.period,
+                                limit.period_end,
+                            ) {
+                                return handle_precompile_err(err);
+                            }
+                        }
+                    }
+                }
+
+                // TIP-1011: Store allowed destinations if specified
+                if let Some(destinations) = &key_auth.allowed_destinations {
+                    if !destinations.is_empty() {
+                        if let Err(err) = keychain.set_allowed_destinations(
+                            *root_account,
+                            access_key_addr,
+                            destinations,
+                        ) {
+                            return handle_precompile_err(err);
+                        }
+                    }
+                }
+
+                Ok(false)
             })?;
 
             if spec.is_t1() {
@@ -942,7 +978,37 @@ where
                     // The TIP20 precompile will read this during execution to enforce spending limits
                     keychain
                         .set_transaction_key(access_key_addr)
-                        .map_err(|e| EVMError::Custom(e.to_string()))
+                        .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: e.to_string(),
+                        })?;
+
+                    // TIP-1011: Validate destinations for all calls in the transaction
+                    // Skip if authorizing this key in the same tx (destinations not stored yet)
+                    if !is_authorizing_this_key {
+                        let caller = tx.caller();
+
+                        // For AA transactions with batch calls, validate each call's destination
+                        if let Some(tempo_env) = tx.tempo_tx_env.as_ref() {
+                            for call in &tempo_env.aa_calls {
+                                if let alloy_primitives::TxKind::Call(to) = call.to {
+                                    keychain.validate_destination(caller, to).map_err(|_| {
+                                        TempoInvalidTransaction::DestinationNotAllowed {
+                                            destination: to,
+                                        }
+                                    })?;
+                                }
+                            }
+                        }
+
+                        // For single-call transactions, validate the main destination
+                        if let alloy_primitives::TxKind::Call(to) = tx.kind() {
+                            keychain.validate_destination(caller, to).map_err(|_| {
+                                TempoInvalidTransaction::DestinationNotAllowed { destination: to }
+                            })?;
+                        }
+                    }
+
+                    Ok::<_, TempoInvalidTransaction>(())
                 },
             )?;
         }

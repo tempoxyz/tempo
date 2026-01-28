@@ -32,6 +32,9 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
                 }
+                IAccountKeychainCalls::getAllowedDestinations(call) => {
+                    view(call, |c| self.get_allowed_destinations_sol(c))
+                }
             },
         )
     }

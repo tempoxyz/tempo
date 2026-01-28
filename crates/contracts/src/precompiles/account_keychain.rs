@@ -1,3 +1,5 @@
+use alloy_primitives::Address;
+
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
 };
@@ -93,6 +95,12 @@ crate::sol! {
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
 
+        /// Get allowed destinations for a key (TIP-1011)
+        /// @param account The account address
+        /// @param keyId The key ID
+        /// @return destinations Array of allowed destination addresses (empty = unrestricted)
+        function getAllowedDestinations(address account, address keyId) external view returns (address[] memory destinations);
+
         // Errors
         error UnauthorizedCaller();
         error KeyAlreadyExists();
@@ -104,6 +112,8 @@ crate::sol! {
         error ExpiryInPast();
         error KeyAlreadyRevoked();
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
+        /// Destination not in allowed list (TIP-1011)
+        error DestinationNotAllowed(address destination);
     }
 }
 
@@ -158,5 +168,10 @@ impl AccountKeychainError {
     /// This prevents replay attacks where a revoked key's authorization is reused.
     pub const fn key_already_revoked() -> Self {
         Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
+    }
+
+    /// Creates an error for destination not allowed (TIP-1011).
+    pub const fn destination_not_allowed(destination: Address) -> Self {
+        Self::DestinationNotAllowed(IAccountKeychain::DestinationNotAllowed { destination })
     }
 }

@@ -10,6 +10,8 @@ pragma solidity >=0.8.13 <0.9.0;
  * transactions on behalf of the account. Access Keys can be scoped by:
  * - Expiry timestamp (when the key becomes invalid)
  * - Per-TIP20 token spending limits that deplete as the key spends
+ * - Periodic spending limits that reset automatically (TIP-1011)
+ * - Destination address restrictions (TIP-1011)
  *
  * Only the Root Key can call authorizeKey, revokeKey, and updateSpendingLimit.
  * This restriction is enforced by the protocol at transaction validation time.
@@ -31,10 +33,13 @@ interface IAccountKeychain {
         WebAuthn
     }
 
-    /// @notice Token spending limit structure
+    /// @notice Token spending limit structure (TIP-1011 extended)
     struct TokenLimit {
-        address token; // TIP20 token address
-        uint256 amount; // Spending limit amount
+        address token;           // TIP20 token address
+        uint256 limit;           // Per-period limit when period > 0, one-time limit otherwise
+        uint256 remainingInPeriod; // Remaining allowance in current period
+        uint64 period;           // Period duration in seconds (0 = one-time limit)
+        uint64 periodEnd;        // Timestamp when current period expires
     }
 
     /// @notice Key information structure
@@ -77,6 +82,8 @@ interface IAccountKeychain {
     error ZeroPublicKey();
     error ExpiryInPast();
     error UnauthorizedCaller();
+    /// @notice Destination not in allowed list (TIP-1011)
+    error DestinationNotAllowed(address destination);
 
     /*//////////////////////////////////////////////////////////////
                         MANAGEMENT FUNCTIONS
@@ -135,12 +142,13 @@ interface IAccountKeychain {
      * @param account The account address
      * @param keyId The key ID
      * @param token The token address
-     * @return Remaining spending amount
+     * @return remaining Remaining spending amount for the current period
+     * @return periodEnd Timestamp when the current period ends (0 if one-time limit)
      */
     function getRemainingLimit(address account, address keyId, address token)
         external
         view
-        returns (uint256);
+        returns (uint256 remaining, uint64 periodEnd);
 
     /**
      * @notice Get the transaction key used in the current transaction
@@ -148,5 +156,16 @@ interface IAccountKeychain {
      * @return The key ID that signed the transaction
      */
     function getTransactionKey() external view returns (address);
+
+    /**
+     * @notice Get allowed destinations for a key (TIP-1011)
+     * @param account The account address
+     * @param keyId The key ID
+     * @return destinations Array of allowed destination addresses (empty = unrestricted)
+     */
+    function getAllowedDestinations(address account, address keyId)
+        external
+        view
+        returns (address[] memory destinations);
 
 }
