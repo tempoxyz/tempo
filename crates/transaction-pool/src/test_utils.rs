@@ -54,6 +54,8 @@ pub(crate) struct TxBuilder {
     valid_after: Option<u64>,
     valid_before: Option<u64>,
     chain_id: u64,
+    /// Custom calls for AA transactions. If None, a default call is created from `kind` and `value`.
+    calls: Option<Vec<Call>>,
 }
 
 impl Default for TxBuilder {
@@ -71,6 +73,7 @@ impl Default for TxBuilder {
             valid_after: None,
             valid_before: None,
             chain_id: 42431, // MODERATO chain_id
+            calls: None,
         }
     }
 }
@@ -146,18 +149,29 @@ impl TxBuilder {
         self
     }
 
+    /// Set custom calls for the AA transaction.
+    /// If not set, a default call is created from `kind` and `value`.
+    pub(crate) fn calls(mut self, calls: Vec<Call>) -> Self {
+        self.calls = Some(calls);
+        self
+    }
+
     /// Build an AA transaction.
     pub(crate) fn build(self) -> TempoPooledTransaction {
+        let calls = self.calls.unwrap_or_else(|| {
+            vec![Call {
+                to: self.kind,
+                value: self.value,
+                input: Default::default(),
+            }]
+        });
+
         let tx = TempoTransaction {
             chain_id: 1,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
-            calls: vec![Call {
-                to: self.kind,
-                value: self.value,
-                input: Default::default(),
-            }],
+            calls,
             nonce_key: self.nonce_key,
             nonce: self.nonce,
             fee_token: self.fee_token,

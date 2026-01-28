@@ -249,6 +249,14 @@ pub enum TempoPoolTransactionError {
     #[error("Too many calls in AA transaction: {count} exceeds maximum allowed {max_allowed}")]
     TooManyCalls { count: usize, max_allowed: usize },
 
+    /// Thrown when an AA transaction has no calls.
+    #[error("AA transaction has no calls")]
+    NoCalls,
+
+    /// Thrown when a call in an AA transaction is the second call and is a CREATE.
+    #[error("CREATE calls must be the first call in an AA transaction")]
+    CreateCallNotFirst,
+
     /// Thrown when a call in an AA transaction has input data exceeding the maximum allowed size.
     #[error(
         "Call input size {size} exceeds maximum allowed {max_allowed} bytes (call index: {call_index})"
@@ -350,7 +358,9 @@ impl PoolTransactionError for TempoPoolTransactionError {
             | Self::ExpiringNonceMissingValidBefore
             | Self::ExpiringNonceNonceNotZero
             | Self::AccessKeyExpired { .. }
-            | Self::KeyAuthorizationExpired { .. } => true,
+            | Self::KeyAuthorizationExpired { .. }
+            | Self::NoCalls
+            | Self::CreateCallNotFirst => true,
         }
     }
 

@@ -446,6 +446,10 @@ where
 
         let tx = aa_tx.tx();
 
+        if tx.calls.is_empty() {
+            return Err(TempoPoolTransactionError::NoCalls);
+        }
+
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
@@ -456,6 +460,10 @@ where
 
         // Check each call's input size
         for (idx, call) in tx.calls.iter().enumerate() {
+            if call.to.is_create() && idx != 0 {
+                return Err(TempoPoolTransactionError::CreateCallNotFirst);
+            }
+
             if call.input.len() > MAX_CALL_INPUT_SIZE {
                 return Err(TempoPoolTransactionError::CallInputTooLarge {
                     call_index: idx,
@@ -569,15 +577,22 @@ where
             );
         }
 
-        // Validate AA transaction intrinsic gas.
-        // This ensures the gas limit covers all AA-specific costs (per-call overhead,
-        // signature verification, etc.) to prevent mempool DoS attacks where transactions
-        // pass pool validation but fail at execution time.
-        if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
-            return TransactionValidationOutcome::Invalid(
-                transaction,
-                InvalidPoolTransactionError::other(err),
-            );
+        if transaction.inner().is_aa() {
+            // Validate AA transaction intrinsic gas.
+            // This ensures the gas limit covers all AA-specific costs (per-call overhead,
+            // signature verification, etc.) to prevent mempool DoS attacks where transactions
+            // pass pool validation but fail at execution time.
+            if let Err(err) = self.ensure_aa_intrinsic_gas(&transaction, spec) {
+                return TransactionValidationOutcome::Invalid(
+                    transaction,
+                    InvalidPoolTransactionError::other(err),
+                );
+            }
+        } else {
+            // validate intrinsic gas with additional TIP-1000 and T1 checks
+            if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
+                return TransactionValidationOutcome::Invalid(transaction, err);
+            }
         }
 
         // Validate AA transaction field limits (calls, access list, token limits).
@@ -696,11 +711,6 @@ where
             Err(err) => {
                 return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
             }
-        }
-
-        // validate intrinsic gas with additional TIP-1000 and T1 checks
-        if let Err(err) = ensure_intrinsic_gas_tempo_tx(&transaction, spec) {
-            return TransactionValidationOutcome::Error(*transaction.hash(), Box::new(err));
         }
 
         match self
@@ -932,7 +942,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Block, Header, Transaction};
-    use alloy_primitives::{Address, B256, U256, address, uint};
+    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -945,7 +955,7 @@ mod tests {
         tip20::{TIP20Token, slots as tip20_slots},
         tip403_registry::{ITIP403Registry, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::TempoTxEnvelope;
+    use tempo_primitives::{TempoTxEnvelope, transaction::tempo_transaction::Call};
     use tempo_revm::TempoStateAccess;
 
     /// Helper to create a mock sealed block with the given timestamp.
@@ -2828,6 +2838,180 @@ mod tests {
         }
     }
 
+    /// AA transactions must have at least one call.
+    #[tokio::test]
+    async fn test_aa_no_calls_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with no calls
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(vec![]) // Empty calls
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::NoCalls)
+                    ),
+                    "Expected NoCalls error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with NoCalls error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE calls (contract deployments) must be the first call in an AA transaction.
+    #[tokio::test]
+    async fn test_aa_create_call_not_first_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the second call
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()), // First call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create, // Second call is a CREATE - should be rejected
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallNotFirst)
+                    ),
+                    "Expected CreateCallNotFirst error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE call as the first call should be accepted.
+    #[tokio::test]
+    async fn test_aa_create_call_first_accepted() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the first call
+        let calls = vec![
+            Call {
+                to: TxKind::Create, // First call is a CREATE - should be accepted
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()), // Second call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should NOT fail with CreateCallNotFirst (may fail for other reasons)
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::CreateCallNotFirst)
+                ),
+                "CREATE call as first call should be accepted, got: {err:?}"
+            );
+        }
+    }
+
+    /// Multiple CREATE calls in the same transaction should be rejected.
+    #[tokio::test]
+    async fn test_aa_multiple_creates_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // calls = [CREATE, CALL, CREATE] -> should reject with CreateCallNotFirst
+        let calls = vec![
+            Call {
+                to: TxKind::Create, // First call is a CREATE - ok
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()), // Second call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create, // Third call is a CREATE - should be rejected
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallNotFirst)
+                    ),
+                    "Expected CreateCallNotFirst error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
     /// Paused tokens should be rejected as invalid fee tokens.
     #[test]
     fn test_paused_token_is_invalid_fee_token() {
@@ -2857,6 +3041,126 @@ mod tests {
             result.unwrap(),
             "Paused tokens should be detected as paused"
         );
+    }
+
+    /// Non-AA transaction with insufficient gas should be rejected with Invalid outcome
+    /// and IntrinsicGasTooLow error.
+    #[tokio::test]
+    async fn test_non_aa_intrinsic_gas_insufficient_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with very low gas limit (below intrinsic gas of ~21k)
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(1_000) // Way below intrinsic gas
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
+                );
+            }
+            TransactionValidationOutcome::Error(_, _) => {
+                panic!("Expected Invalid outcome, got Error - this was the bug we fixed!")
+            }
+            _ => panic!("Expected Invalid outcome with IntrinsicGasTooLow, got: {outcome:?}"),
+        }
+    }
+
+    /// Non-AA transaction with sufficient gas should pass intrinsic gas validation.
+    #[tokio::test]
+    async fn test_non_aa_intrinsic_gas_sufficient_passes() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with plenty of gas
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(100_000) // Well above intrinsic gas
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT fail with InsufficientGasForIntrinsicCost
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                "Non-AA tx with 100k gas should NOT fail intrinsic gas check, got: {err:?}"
+            );
+        }
+    }
+
+    /// Non-AA transaction should NOT trigger AA-specific intrinsic gas error.
+    /// This verifies the fix that gates AA intrinsic gas check to only AA transactions.
+    #[tokio::test]
+    async fn test_non_aa_tx_does_not_trigger_aa_intrinsic_gas_error() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create EIP-1559 transaction with low gas
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(1_000)
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        // Should NOT get AA-specific error
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::InsufficientGasForAAIntrinsicCost { .. })
+                ),
+                "Non-AA transaction should NOT trigger AA-specific intrinsic gas error"
+            );
+        }
+    }
+
+    /// Verify intrinsic gas error is returned for insufficient gas.
+    #[tokio::test]
+    async fn test_intrinsic_gas_error_contains_gas_details() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let gas_limit = 5_000u64;
+        let tx = TxBuilder::eip1559(Address::random())
+            .gas_limit(gas_limit)
+            .build_eip1559();
+
+        let validator = setup_validator(&tx, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, tx)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(err, InvalidPoolTransactionError::IntrinsicGasTooLow),
+                    "Expected IntrinsicGasTooLow error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome, got: {outcome:?}"),
+        }
     }
 
     /// Paused validator tokens should be rejected even though they would bypass the liquidity check.
