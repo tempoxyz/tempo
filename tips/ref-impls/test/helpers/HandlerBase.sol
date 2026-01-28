@@ -440,6 +440,35 @@ abstract contract HandlerBase is InvariantBase {
         }
     }
 
+    /// @notice Unified handler for protocol nonce transaction reverts
+    /// @dev Logs the revert, syncs nonce, and increments revert counter
+    function _handleRevertProtocol(string memory handlerName, address account) internal {
+        _logRevert(handlerName);
+        _syncNonceAfterFailure(account);
+        ghost_totalTxReverted++;
+    }
+
+    /// @notice Unified handler for 2D nonce transaction reverts
+    /// @dev Logs the revert, syncs 2D nonce, and increments revert counter
+    function _handleRevert2d(string memory handlerName, address account, uint64 nonceKey) internal {
+        _logRevert(handlerName);
+        _sync2dNonceAfterFailure(account, nonceKey);
+        ghost_totalTxReverted++;
+    }
+
+    // ============ Consolidated Catch Block Helpers ============
+
+    /// @notice No-op function for expected rejections that don't need counter updates
+    function _noop() internal {}
+
+    /// @notice Handle expected rejection with optional counter update
+    /// @param handlerName Name for logging
+    /// @param updateFn Counter update function (use _noop for no update)
+    function _handleExpectedReject(string memory handlerName, function() internal updateFn) internal {
+        _logExpectedReject(handlerName);
+        updateFn();
+    }
+
     // ============ CREATE Context Helpers ============
 
     /// @dev Context for CREATE operations

@@ -47,24 +47,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     mapping(address => mapping(uint256 => uint256)) public ghost_firstUseGas;
     mapping(address => mapping(uint256 => uint256)) public ghost_subsequentUseGas;
 
-    // Time window ghost state (T1-T4)
-    uint256 public ghost_timeBoundTxsExecuted;
-    uint256 public ghost_timeBoundTxsRejected;
-    uint256 public ghost_validAfterRejections;
-    uint256 public ghost_validBeforeRejections;
-    uint256 public ghost_openWindowTxsExecuted;
-
-    // Transaction type ghost state (TX4-TX12)
-    uint256 public ghost_totalEip1559Txs;
-    uint256 public ghost_totalEip1559BaseFeeRejected;
-    uint256 public ghost_totalEip7702Txs;
-    uint256 public ghost_totalEip7702AuthsApplied;
-    uint256 public ghost_totalEip7702CreateRejected;
-    uint256 public ghost_totalFeeSponsoredTxs;
-    uint256 public ghost_totalMulticallTxsTracked;
-    uint256 public ghost_totalTimeWindowTxsTracked;
-
-    // Note: ghost_total2dNonceCreates is defined in GhostState.sol
+    // Note: Time window (T1-T4) and transaction type (TX4-TX12) ghost state moved to GhostState.sol
 
     // ============ Setup ============
 
@@ -644,9 +627,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _logSuccess("handler_2dNonceIncrement");
             _record2dNonceTxSuccess(actor, uint64(nonceKey), currentNonce);
         } catch {
-            _logRevert("handler_2dNonceIncrement");
-            _sync2dNonceAfterFailure(actor, uint64(nonceKey));
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_2dNonceIncrement", actor, uint64(nonceKey));
         }
     }
 
@@ -694,9 +675,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _logSuccess("handler_multipleNonceKeys");
             _record2dNonceTxSuccess(actor, uint64(key1), nonce1);
         } catch {
-            _logRevert("handler_multipleNonceKeys");
-            _sync2dNonceAfterFailure(actor, uint64(key1));
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_multipleNonceKeys", actor, uint64(key1));
             return;
         }
 
@@ -712,9 +691,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _logSuccess("handler_multipleNonceKeys");
             _record2dNonceTxSuccess(actor, uint64(key2), nonce2);
         } catch {
-            _logRevert("handler_multipleNonceKeys");
-            _sync2dNonceAfterFailure(actor, uint64(key2));
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_multipleNonceKeys", actor, uint64(key2));
         }
     }
 
@@ -748,9 +725,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _logSuccess("handler_tempoTransfer");
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
         } catch {
-            _logRevert("handler_tempoTransfer");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoTransfer", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -829,9 +804,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
             }
         } catch {
-            _logRevert("handler_tempoUseAccessKey");
-            _sync2dNonceAfterFailure(ctx.owner, nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoUseAccessKey", ctx.owner, nonceKey);
         }
     }
 
@@ -880,9 +853,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 _recordKeySpending(ctx.owner, ctx.keyId, address(feeToken), amount);
             }
         } catch {
-            _logRevert("handler_tempoUseP256AccessKey");
-            _sync2dNonceAfterFailure(ctx.owner, nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoUseP256AccessKey", ctx.owner, nonceKey);
         }
     }
 
@@ -1002,9 +973,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logExpectedReject("handler_useRevokedKey");
-            // Expected: revoked key rejected
-            ghost_keyAuthRejectedWrongSigner++;
+            _handleExpectedReject("handler_useRevokedKey", _recordKeyWrongSigner);
         }
     }
 
@@ -1068,9 +1037,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logExpectedReject("handler_useExpiredKey");
-            // Expected: expired key rejected
-            ghost_keyAuthRejectedWrongSigner++;
+            _handleExpectedReject("handler_useExpiredKey", _recordKeyWrongSigner);
         }
     }
 
@@ -1223,9 +1190,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 ctx.sender, ctx.nonceKey, ctx.protocolNonce, expectedAddress
             );
         } catch {
-            _logRevert("handler_tempoCreate");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoCreate", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -1513,9 +1478,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // Replay unexpectedly succeeded - this is a BUG in the protocol!
             ghost_replayProtocolAllowed++;
         } catch {
-            _logExpectedReject("handler_replayProtocolNonce");
-            // Expected: replay rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_replayProtocolNonce", _noop);
         }
     }
 
@@ -1601,9 +1564,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // Replay unexpectedly succeeded - this is a BUG in the protocol!
             ghost_replay2dAllowed++;
         } catch {
-            _logExpectedReject("handler_replay2dNonce");
-            // Expected: replay rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_replay2dNonce", _noop);
         }
     }
 
@@ -1641,9 +1602,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // Tx with future nonce unexpectedly succeeded - this is a BUG!
             ghost_nonceTooHighAllowed++;
         } catch {
-            _logExpectedReject("handler_nonceTooHigh");
-            // Expected: tx rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_nonceTooHigh", _noop);
         }
     }
 
@@ -1772,9 +1731,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 }
             }
         } catch {
-            _logRevert("handler_2dNonceGasCost");
-            _sync2dNonceAfterFailure(sender, nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_2dNonceGasCost", sender, nonceKey);
         }
     }
 
@@ -1858,9 +1815,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logExpectedReject("handler_keyAuthWrongSigner");
-            // Expected: unauthorized key rejected
-            ghost_keyAuthRejectedWrongSigner++;
+            _handleExpectedReject("handler_keyAuthWrongSigner", _recordKeyWrongSigner);
         }
     }
 
@@ -2085,9 +2040,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 }
             }
         } catch {
-            _logRevert("handler_keySameTxAuthorizeAndUse");
-            _sync2dNonceAfterFailure(owner, nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_keySameTxAuthorizeAndUse", owner, nonceKey);
         }
     }
 
@@ -2337,9 +2290,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCallsExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logExpectedReject("handler_keyZeroSpendingLimit");
-            // Expected: zero-limit key rejected
-            ghost_keyZeroLimitRejected++;
+            _handleExpectedReject("handler_keyZeroSpendingLimit", _recordKeyZeroLimit);
         }
     }
 
@@ -2483,9 +2434,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 "M4: Multicall transfers not applied"
             );
         } catch {
-            _logRevert("handler_tempoMulticall");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoMulticall", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -2621,9 +2570,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
                 "M8/M9: State visibility - recipient balance should be unchanged after round-trip"
             );
         } catch {
-            _logRevert("handler_tempoMulticallStateVisibility");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_tempoMulticallStateVisibility", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -3322,10 +3269,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _logExpectedReject("handler_timeBoundValidAfter");
-            // Expected: validAfter not yet reached, tx rejected
-            ghost_timeBoundTxsRejected++;
-            ghost_validAfterRejections++;
+            _handleExpectedReject("handler_timeBoundValidAfter", _recordTimeBoundValidAfterRejection);
         }
     }
 
@@ -3363,10 +3307,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _logExpectedReject("handler_timeBoundValidBefore");
-            // Expected: validBefore already passed, tx rejected
-            ghost_timeBoundTxsRejected++;
-            ghost_validBeforeRejections++;
+            _handleExpectedReject("handler_timeBoundValidBefore", _recordTimeBoundValidBeforeRejection);
         }
     }
 
@@ -3408,9 +3349,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_timeBoundTxsExecuted++;
         } catch {
-            _logRevert("handler_timeBoundValid");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_timeBoundTxsRejected++;
+            _handleRevert2d("handler_timeBoundValid", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -3439,9 +3378,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             _record2dNonceTxSuccess(ctx.sender, ctx.nonceKey, ctx.currentNonce);
             ghost_openWindowTxsExecuted++;
         } catch {
-            _logRevert("handler_timeBoundOpen");
-            _sync2dNonceAfterFailure(ctx.sender, ctx.nonceKey);
-            ghost_totalTxReverted++;
+            _handleRevert2d("handler_timeBoundOpen", ctx.sender, ctx.nonceKey);
         }
     }
 
@@ -3707,10 +3644,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             ghost_totalCreatesExecuted++;
             ghost_totalProtocolNonceTxs++;
         } catch {
-            _logExpectedReject("handler_eip7702CreateRejection");
-            // Expected: CREATE with auth list rejected
-            ghost_totalTxReverted++;
-            ghost_totalEip7702CreateRejected++;
+            _handleExpectedReject("handler_eip7702CreateRejection", _recordEip7702CreateRejection);
         }
     }
 
@@ -4328,9 +4262,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // E1 VIOLATION: Replay within validity window succeeded!
             ghost_expiringNonceReplayAllowed++;
         } catch {
-            _logRevert("handler_expiringNonceReplay");
-            // Expected: replay rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_expiringNonceReplay", _noop);
         }
     }
 
@@ -4369,9 +4301,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // E2 VIOLATION: Expired tx was allowed!
             ghost_expiringNonceExpiredAllowed++;
         } catch {
-            _logRevert("handler_expiringNonceExpired");
-            // Expected: expired tx rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_expiringNonceExpired", _noop);
         }
     }
 
@@ -4414,9 +4344,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // E3 VIOLATION: validBefore exceeds max window but was allowed!
             ghost_expiringNonceWindowAllowed++;
         } catch {
-            _logRevert("handler_expiringNonceWindowTooFar");
-            // Expected: out-of-window tx rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_expiringNonceWindowTooFar", _noop);
         }
     }
 
@@ -4459,9 +4387,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // E4 VIOLATION: Non-zero nonce was allowed!
             ghost_expiringNonceNonZeroAllowed++;
         } catch {
-            _logRevert("handler_expiringNonceNonZeroNonce");
-            // Expected: non-zero nonce rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_expiringNonceNonZeroNonce", _noop);
         }
     }
 
@@ -4499,9 +4425,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             // E5 VIOLATION: Missing validBefore was allowed!
             ghost_expiringNonceMissingVBAllowed++;
         } catch {
-            _logRevert("handler_expiringNonceMissingValidBefore");
-            // Expected: missing validBefore rejected
-            ghost_totalTxReverted++;
+            _handleExpectedReject("handler_expiringNonceMissingValidBefore", _noop);
         }
     }
 
