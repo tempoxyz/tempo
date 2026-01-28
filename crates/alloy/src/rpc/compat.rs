@@ -44,6 +44,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     valid_before,
                     valid_after,
                     fee_payer_signature,
+                    fee_payer,
                 } = self;
                 let envelope = match TryIntoSimTx::<EthereumTxEnvelope<TxEip4844>>::try_into_sim_tx(
                     inner.clone(),
@@ -63,6 +64,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer,
                         }));
                     }
                 };
@@ -82,6 +84,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             valid_before,
                             valid_after,
                             fee_payer_signature,
+                            fee_payer,
                         })
                     },
                 )?)
@@ -110,11 +113,12 @@ impl TryIntoTxEnv<TempoTxEnv, TempoBlockEnv> for TempoTransactionRequest {
             valid_before,
             valid_after,
             fee_payer_signature: _,
+            fee_payer,
         } = self;
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            fee_payer: None,
+            fee_payer: fee_payer.map(Some),
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
@@ -289,5 +293,56 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
             timestamp_millis: header.timestamp_millis(),
             inner: FromConsensusHeader::from_consensus_header(header, block_size),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::address;
+    use reth_rpc_convert::TryIntoTxEnv;
+    use tempo_primitives::transaction::Call;
+
+    #[test]
+    fn test_try_into_tx_env_with_fee_payer() {
+        let fee_payer_addr = address!("0x1234567890123456789012345678901234567890");
+        let to_addr = address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D");
+
+        let mut request = TempoTransactionRequest::default().with_fee_payer(fee_payer_addr);
+        request.inner.from = Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        request.inner.gas = Some(100000);
+        request.inner.max_fee_per_gas = Some(1_000_000_000);
+        request.inner.max_priority_fee_per_gas = Some(1_000_000);
+        request.calls = vec![Call {
+            to: to_addr.into(),
+            value: Default::default(),
+            input: Default::default(),
+        }];
+
+        let evm_env = EvmEnv::<(), TempoBlockEnv>::default();
+        let tx_env: TempoTxEnv = request.try_into_tx_env(&evm_env).expect("should convert");
+
+        assert_eq!(tx_env.fee_payer, Some(Some(fee_payer_addr)));
+    }
+
+    #[test]
+    fn test_try_into_tx_env_without_fee_payer() {
+        let to_addr = address!("0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D");
+
+        let mut request = TempoTransactionRequest::default();
+        request.inner.from = Some(address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        request.inner.gas = Some(100000);
+        request.inner.max_fee_per_gas = Some(1_000_000_000);
+        request.inner.max_priority_fee_per_gas = Some(1_000_000);
+        request.calls = vec![Call {
+            to: to_addr.into(),
+            value: Default::default(),
+            input: Default::default(),
+        }];
+
+        let evm_env = EvmEnv::<(), TempoBlockEnv>::default();
+        let tx_env: TempoTxEnv = request.try_into_tx_env(&evm_env).expect("should convert");
+
+        assert_eq!(tx_env.fee_payer, None);
     }
 }
