@@ -214,7 +214,11 @@ abstract contract HandlerBase is InvariantBase {
     /// @param account The account to check
     /// @param required The required balance
     /// @return True if account has sufficient balance
-    function _checkBalanceWithTracking(address account, uint256 required) internal view returns (bool) {
+    function _checkBalanceWithTracking(address account, uint256 required)
+        internal
+        view
+        returns (bool)
+    {
         return feeToken.balanceOf(account) >= required;
     }
 

@@ -54,7 +54,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
     function setUp() public override {
         super.setUp();
 
-
         // Target this contract for handler functions
         targetContract(address(this));
 
@@ -175,7 +174,6 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
     /// @notice Called after invariant testing for final checks
     function afterInvariant() public view {
-
         // Existing check
         assertEq(
             ghost_totalCallsExecuted + ghost_totalCreatesExecuted,
@@ -380,8 +378,9 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         uint256 amount,
         uint256 sigTypeSeed
     ) external {
-        (TxContext memory ctx, bool skip) =
-            _setupTransferContext(actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6);
+        (TxContext memory ctx, bool skip) = _setupTransferContext(
+            actorSeed, recipientSeed, amount, sigTypeSeed, 1e6, 100e6
+        );
         if (skip) {
             return;
         }
@@ -868,8 +867,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
             uint256[] memory amounts = new uint256[](1);
             amounts[0] = limit;
             _authorizeKey(ctx.owner, ctx.keyId, expiry, true, tokens, amounts);
-        } catch {
-        }
+        } catch { }
     }
 
     /// @notice Handler: Revoke an access key (secp256k1 or P256)
@@ -883,8 +881,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
         vm.prank(ctx.owner);
         try keychain.revokeKey(ctx.keyId) {
             _revokeKey(ctx.owner, ctx.keyId);
-        } catch {
-        }
+        } catch { }
     }
 
     /// @notice Handler: Attempt to use a revoked key - should be rejected
@@ -3863,8 +3860,7 @@ contract TempoTransactionInvariantTest is InvariantChecker {
 
             _authorizeKey(owner, keyId, expiry, numLimits > 0, tokens, amounts);
             _recordGasTrackingKeyAuth();
-        } catch {
-        }
+        } catch { }
     }
 
     /*//////////////////////////////////////////////////////////////
