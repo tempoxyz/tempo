@@ -170,9 +170,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
         // TEMPO-REG1: Policy ID should equal counter before creation
         assertEq(
-            policyId,
-            counterBefore,
-            "TEMPO-REG1: Policy ID should match counter before creation"
+            policyId, counterBefore, "TEMPO-REG1: Policy ID should match counter before creation"
         );
 
         // TEMPO-REG2: Counter should increment
@@ -186,8 +184,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
         assertTrue(registry.policyExists(policyId), "TEMPO-REG3: Created policy should exist");
 
         // TEMPO-REG4: Policy data should be correct
-        (ITIP403Registry.PolicyType storedType, address storedAdmin) =
-            registry.policyData(policyId);
+        (ITIP403Registry.PolicyType storedType, address storedAdmin) = registry.policyData(policyId);
         assertEq(uint256(storedType), uint256(policyType), "TEMPO-REG4: Policy type mismatch");
         assertEq(storedAdmin, actor, "TEMPO-REG4: Policy admin mismatch");
 
@@ -326,7 +323,8 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-REG8 (whitelist modification)
     function modifyWhitelist(uint256 policySeed, uint256 accountSeed, bool allowed) external {
         address actor = _selectActor(policySeed);
-        (uint64 policyId, address policyAdmin) = _ensurePolicy(actor, policySeed, uint8(ITIP403Registry.PolicyType.WHITELIST));
+        (uint64 policyId, address policyAdmin) =
+            _ensurePolicy(actor, policySeed, uint8(ITIP403Registry.PolicyType.WHITELIST));
 
         address account = _selectActor(accountSeed);
 
@@ -364,7 +362,8 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Tests TEMPO-REG9 (blacklist modification)
     function modifyBlacklist(uint256 policySeed, uint256 accountSeed, bool restricted) external {
         address actor = _selectActor(policySeed);
-        (uint64 policyId, address policyAdmin) = _ensurePolicy(actor, policySeed, uint8(ITIP403Registry.PolicyType.BLACKLIST));
+        (uint64 policyId, address policyAdmin) =
+            _ensurePolicy(actor, policySeed, uint8(ITIP403Registry.PolicyType.BLACKLIST));
 
         address account = _selectActor(accountSeed);
 
@@ -469,7 +468,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Verifies default authorization behavior for whitelist (reject unknown) and blacklist (allow unknown)
     function checkUnknownAccountAuth(uint256 policySeed, uint256 accountSeed) external {
         address actor = _selectActor(policySeed);
-        (uint64 policyId, ) = _ensurePolicy(actor, policySeed, ANY_POLICY);
+        (uint64 policyId,) = _ensurePolicy(actor, policySeed, ANY_POLICY);
         address account = _selectActor(accountSeed);
 
         if (_policyAccountTracked[policyId][account]) {

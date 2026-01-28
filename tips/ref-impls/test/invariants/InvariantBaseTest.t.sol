@@ -360,7 +360,9 @@ abstract contract InvariantBaseTest is BaseTest {
 
     /// @dev Logs a handler revert
     function _logHandlerRevert(string memory handler, bytes4 selector) internal {
-        vm.writeLine(_logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector)));
+        vm.writeLine(
+            _logFile, string.concat("REVERT: ", handler, " selector=", vm.toString(selector))
+        );
     }
 
     /// @dev Gets actor index from address for logging
