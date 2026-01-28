@@ -1,5 +1,6 @@
 use alloy::{
     consensus::{BlockHeader, Transaction},
+    hex,
     network::{EthereumWallet, ReceiptResponse},
     primitives::{Address, B256, Bytes, Signature, U256, keccak256},
     providers::{Provider, ProviderBuilder},
@@ -6689,5 +6690,421 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
 
     println!("✓ eth_fillTransaction returned valid filled transaction");
 
+    Ok(())
+}
+
+/// Helper to parse a filled transaction response into a TempoTransaction
+fn parse_filled_tx(filled: &serde_json::Value) -> eyre::Result<TempoTransaction> {
+    let tx = filled
+        .get("tx")
+        .ok_or_else(|| eyre::eyre!("Missing 'tx' field in response"))?;
+
+    let chain_id = tx
+        .get("chainId")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(1);
+
+    let nonce = tx
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(0);
+
+    let gas_limit = tx
+        .get("gas")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(0);
+
+    let max_fee_per_gas = tx
+        .get("maxFeePerGas")
+        .and_then(|v| v.as_str())
+        .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(0);
+
+    let max_priority_fee_per_gas = tx
+        .get("maxPriorityFeePerGas")
+        .and_then(|v| v.as_str())
+        .map(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(0);
+
+    let nonce_key = tx
+        .get("nonceKey")
+        .and_then(|v| v.as_str())
+        .map(|s| U256::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?
+        .unwrap_or(U256::ZERO);
+
+    let valid_before = tx
+        .get("validBefore")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?;
+
+    let valid_after = tx
+        .get("validAfter")
+        .and_then(|v| v.as_str())
+        .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16))
+        .transpose()?;
+
+    let fee_token = tx
+        .get("feeToken")
+        .and_then(|v| v.as_str())
+        .map(|s| s.parse::<Address>())
+        .transpose()?;
+
+    let calls = tx
+        .get("calls")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|call| {
+                    let to = call
+                        .get("to")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.parse::<Address>())
+                        .transpose()?
+                        .map(TxKind::Call)
+                        .unwrap_or(TxKind::Create);
+                    let value = call
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .map(|s| U256::from_str_radix(s.trim_start_matches("0x"), 16))
+                        .transpose()?
+                        .unwrap_or(U256::ZERO);
+                    let input = call
+                        .get("data")
+                        .or_else(|| call.get("input"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| {
+                            let hex_str = s.trim_start_matches("0x");
+                            if hex_str.is_empty() {
+                                Ok(Bytes::new())
+                            } else {
+                                hex::decode(hex_str).map(Bytes::from)
+                            }
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    Ok(tempo_primitives::transaction::tempo_transaction::Call { to, value, input })
+                })
+                .collect::<eyre::Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(TempoTransaction {
+        chain_id,
+        nonce,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        nonce_key,
+        valid_before,
+        valid_after,
+        fee_token,
+        calls,
+        ..Default::default()
+    })
+}
+
+/// Nonce mode for E2E test matrix
+#[derive(Debug, Clone, Copy)]
+enum NonceMode {
+    Protocol,
+    TwoD(u64),
+    Expiring,
+    ExpiringAtBoundary,
+    ExpiringExceedsBoundary,
+}
+
+/// Key type for E2E test matrix
+#[derive(Debug, Clone, Copy)]
+enum KeyType {
+    Secp256k1,
+    P256,
+    WebAuthn,
+}
+
+/// Expected outcome for E2E test
+#[derive(Debug, Clone, Copy)]
+enum ExpectedOutcome {
+    Success,
+    Rejection,
+}
+
+/// Test case definition for the E2E matrix
+struct FillSignSendTestCase {
+    name: &'static str,
+    nonce_mode: NonceMode,
+    key_type: KeyType,
+    expected: ExpectedOutcome,
+}
+
+/// Run a single E2E test case from the matrix
+async fn run_fill_sign_send_test(test_case: &FillSignSendTestCase) -> eyre::Result<()> {
+    println!("\n=== E2E Test: {} ===\n", test_case.name);
+
+    let uses_p256 = matches!(test_case.key_type, KeyType::P256 | KeyType::WebAuthn);
+
+    if uses_p256 {
+        run_fill_sign_send_test_p256(test_case).await
+    } else {
+        run_fill_sign_send_test_secp256k1(test_case).await
+    }
+}
+
+/// Run test with secp256k1 key
+async fn run_fill_sign_send_test_secp256k1(test_case: &FillSignSendTestCase) -> eyre::Result<()> {
+    let (mut setup, provider, alice_signer, alice_addr) = setup_test_with_funded_account().await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+    let initial_protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+
+    let (nonce_key_str, valid_before_opt) = match test_case.nonce_mode {
+        NonceMode::Protocol => ("0x0".to_string(), None),
+        NonceMode::TwoD(key) => (format!("{key:#x}"), None),
+        NonceMode::Expiring => (
+            format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+            Some(current_timestamp + 20),
+        ),
+        NonceMode::ExpiringAtBoundary => (
+            format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS),
+        ),
+        NonceMode::ExpiringExceedsBoundary => (
+            format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+            Some(current_timestamp + TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS + 1),
+        ),
+    };
+
+    let recipient = Address::random();
+    let mut request = serde_json::json!({
+        "from": alice_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "nonceKey": nonce_key_str,
+        "keyType": "secp256k1"
+    });
+
+    if let Some(vb) = valid_before_opt {
+        request["validBefore"] = serde_json::json!(format!("0x{vb:x}"));
+    }
+
+    println!("  nonce_mode: {:?}", test_case.nonce_mode);
+    println!("  key_type: {:?}", test_case.key_type);
+
+    let filled: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let mut tx = parse_filled_tx(&filled)?;
+    tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+    if valid_before_opt.is_none() {
+        tx.valid_before = Some(u64::MAX);
+    }
+
+    let signature = sign_aa_tx_secp256k1(&tx, &alice_signer)?;
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+
+    let send_result = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await;
+
+    match test_case.expected {
+        ExpectedOutcome::Success => {
+            let _ = send_result?;
+            setup.node.advance_block().await?;
+
+            let raw_receipt: Option<serde_json::Value> = provider
+                .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+                .await?;
+            assert!(raw_receipt.is_some(), "Transaction should be mined");
+            let status = raw_receipt.unwrap()["status"]
+                .as_str()
+                .map(|s| s == "0x1")
+                .unwrap_or(false);
+            assert!(status, "Transaction should succeed");
+
+            let final_protocol_nonce = provider.get_transaction_count(alice_addr).await?;
+            let should_increment = matches!(test_case.nonce_mode, NonceMode::Protocol);
+            if should_increment {
+                assert_eq!(final_protocol_nonce, initial_protocol_nonce + 1);
+            } else {
+                assert_eq!(final_protocol_nonce, initial_protocol_nonce);
+            }
+        }
+        ExpectedOutcome::Rejection => {
+            assert!(send_result.is_err(), "Transaction should be rejected");
+        }
+    }
+
+    println!("✓ Test passed: {}", test_case.name);
+    Ok(())
+}
+
+/// Run test with P256 or WebAuthn key
+async fn run_fill_sign_send_test_p256(test_case: &FillSignSendTestCase) -> eyre::Result<()> {
+    let funding_amount = U256::from(1_000_000_000_000_000_000u128);
+    let (
+        mut setup,
+        provider,
+        signing_key,
+        pub_key_x,
+        pub_key_y,
+        signer_addr,
+        _funder_signer,
+        _funder_addr,
+        chain_id,
+        _fee_token,
+    ) = setup_test_with_p256_funded_account(funding_amount).await?;
+
+    for _ in 0..3 {
+        setup.node.advance_block().await?;
+    }
+
+    let block = provider
+        .get_block_by_number(Default::default())
+        .await?
+        .unwrap();
+    let current_timestamp = block.header.timestamp();
+
+    let valid_before = current_timestamp + 20;
+    let key_type_str = match test_case.key_type {
+        KeyType::P256 => "p256",
+        KeyType::WebAuthn => "webAuthn",
+        KeyType::Secp256k1 => unreachable!(),
+    };
+
+    let recipient = Address::random();
+    let request = serde_json::json!({
+        "from": signer_addr,
+        "type": "0x76",
+        "calls": [{"to": recipient, "value": "0x0", "data": "0x"}],
+        "nonceKey": format!("{TEMPO_EXPIRING_NONCE_KEY:#x}"),
+        "validBefore": format!("0x{valid_before:x}"),
+        "keyType": key_type_str
+    });
+
+    println!("  nonce_mode: {:?}", test_case.nonce_mode);
+    println!("  key_type: {:?}", test_case.key_type);
+
+    let filled: serde_json::Value = provider
+        .raw_request("eth_fillTransaction".into(), [request])
+        .await?;
+
+    let mut tx = parse_filled_tx(&filled)?;
+    tx.chain_id = chain_id;
+    tx.fee_token = Some(DEFAULT_FEE_TOKEN);
+
+    let signature = match test_case.key_type {
+        KeyType::P256 => sign_aa_tx_p256(&tx, &signing_key, pub_key_x, pub_key_y)?,
+        KeyType::WebAuthn => sign_aa_tx_webauthn(
+            &tx,
+            &signing_key,
+            pub_key_x,
+            pub_key_y,
+            "https://example.com",
+        )?,
+        KeyType::Secp256k1 => unreachable!(),
+    };
+
+    let envelope: TempoTxEnvelope = tx.into_signed(signature).into();
+    let tx_hash = *envelope.tx_hash();
+
+    let _ = provider
+        .send_raw_transaction(&envelope.encoded_2718())
+        .await?;
+    setup.node.advance_block().await?;
+
+    let raw_receipt: Option<serde_json::Value> = provider
+        .raw_request("eth_getTransactionReceipt".into(), [tx_hash])
+        .await?;
+    assert!(raw_receipt.is_some(), "Transaction should be mined");
+    let status = raw_receipt.unwrap()["status"]
+        .as_str()
+        .map(|s| s == "0x1")
+        .unwrap_or(false);
+    assert!(status, "Transaction should succeed");
+
+    println!("✓ Test passed: {}", test_case.name);
+    Ok(())
+}
+
+/// E2E test matrix: eth_fillTransaction -> sign -> eth_sendRawTransaction
+/// Tests all combinations of nonce modes and key types
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_fill_sign_send_matrix() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let test_matrix = [
+        FillSignSendTestCase {
+            name: "protocol_nonce_secp256k1",
+            nonce_mode: NonceMode::Protocol,
+            key_type: KeyType::Secp256k1,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "2d_nonce_secp256k1",
+            nonce_mode: NonceMode::TwoD(42),
+            key_type: KeyType::Secp256k1,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "expiring_nonce_secp256k1",
+            nonce_mode: NonceMode::Expiring,
+            key_type: KeyType::Secp256k1,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "expiring_nonce_p256",
+            nonce_mode: NonceMode::Expiring,
+            key_type: KeyType::P256,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "expiring_nonce_webauthn",
+            nonce_mode: NonceMode::Expiring,
+            key_type: KeyType::WebAuthn,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "expiring_at_boundary",
+            nonce_mode: NonceMode::ExpiringAtBoundary,
+            key_type: KeyType::Secp256k1,
+            expected: ExpectedOutcome::Success,
+        },
+        FillSignSendTestCase {
+            name: "expiring_exceeds_boundary",
+            nonce_mode: NonceMode::ExpiringExceedsBoundary,
+            key_type: KeyType::Secp256k1,
+            expected: ExpectedOutcome::Rejection,
+        },
+    ];
+
+    println!("\n=== E2E Test Matrix: fill -> sign -> send ===\n");
+    println!("Running {} test cases...\n", test_matrix.len());
+
+    for (i, test_case) in test_matrix.iter().enumerate() {
+        println!("[{}/{}] {}", i + 1, test_matrix.len(), test_case.name);
+        run_fill_sign_send_test(test_case).await?;
+    }
+
+    println!("\n✓ All {} test cases passed", test_matrix.len());
     Ok(())
 }
