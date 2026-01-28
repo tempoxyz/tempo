@@ -2,7 +2,7 @@
 id: TIP-XXXX
 title: Account-Level Transfer Policies
 description: Extends TIP-403 to allow individual accounts to set their own send, receive, and token receive policies, enabling regulated entities to enforce account-level compliance controls.
-authors: Mallesh Pai @malleshpai
+author: Mallesh Pai 
 status: Draft
 related: TIP-403
 ---
@@ -26,8 +26,8 @@ Regulated entities operating on Tempo need the ability to control their transact
 - A bank may want to only receive funds from KYC'd addresses (whitelist on receives)
 - An exchange may need to block sends to sanctioned addresses (blacklist on sends)
 - A custodian may require that all incoming and outgoing transfers pass through approved counterparties
-- **A regulated entity may only want to hold approved stablecoins** (whitelist on tokens)
-- **An institution may need to block specific tokens** known to be associated with illicit activity (blacklist on tokens)
+- **A regulated entity may only want to hold approved stablecoins** (whitelist on tokens, e.g. a 'MiCA'-only list)
+- **An institution may need to block specific tokens** known to be associated with illicit activity or memecoins (blacklist on tokens) 
 
 The current TIP-403 system only supports token-level policies: the token issuer sets a policy, and all transfers of that token must satisfy it. This does not allow individual account holders to impose their own restrictions on counterparties or tokens.
 
@@ -35,15 +35,9 @@ The current TIP-403 system only supports token-level policies: the token issuer 
 
 1. **Minimal changes**: Reuse the existing TIP-403 policy infrastructure (policy creation, membership management, isAuthorized logic)
 2. **Composable**: Account-level policies AND token-level policies must both pass (neither can override the other)
-3. **Opt-in**: Accounts without policies have zero overhead beyond two storage reads
+3. **Opt-in**: Accounts without policies do not have to do anything
 4. **Gas-efficient**: Minimize hot-path gas cost for transfers
 5. **State-efficient**: Minimize storage overhead per opted-in account
-
-### Alternatives Considered
-
-1. **Per-token account policies**: Store account policies per token. Rejected due to state bloat (N accounts × M tokens).
-2. **Merkle tree policies**: Store policy membership as merkle roots, require proofs at transfer time. Rejected due to UX burden (users must obtain and submit proofs).
-3. **Bloom filter policies**: Use probabilistic data structures. Rejected due to false positive risk (security hole for whitelists).
 
 ---
 
@@ -165,7 +159,7 @@ function getAccountPolicies(address account)
 /// @param to The receiver address
 /// @param token The token contract address being transferred
 /// @return True if the transfer is authorized under all account policies
-/// @dev Returns true if:
+/// @dev Returns true if all of the following are true:
 ///      - from's sendPolicy is 0 OR to is authorized under from's sendPolicy
 ///      - to's receivePolicy is 0 OR from is authorized under to's receivePolicy
 ///      - to's tokenReceivePolicy is 0 OR token is authorized under to's tokenReceivePolicy
@@ -266,7 +260,7 @@ function getAccountPolicies(address account)
 
 ### isTransferAuthorized
 
-This function checks account-level policies **without** reading `policyData` — the policy type is embedded in the account storage.
+This function checks account-level policies **without** reading `policyData` — the policy type is embedded in the `accountPolicy`.
 
 ```solidity
 function isTransferAuthorized(address from, address to, address token) external view returns (bool) {
@@ -388,7 +382,7 @@ Burning does not involve a counterparty, so account-level policies are not appli
 
 ### Fee Transfers
 
-Fee transfers via `transferFeePreTx` and `transferFeePostTx` do NOT check account-level policies. Rationale: fee transfers are system operations between the user and the FeeManager precompile, and should not be blocked by user-configured policies.
+Fee transfers via `transferFeePreTx` and `transferFeePostTx` are unchanged since they are system operations. 
 
 ## Gas Cost Analysis
 
@@ -426,143 +420,9 @@ The baseline ~4,200 gas is incurred on ALL transfers, even when no accounts have
 
 ## Shared Policy Semantics
 
-An account can reference **any existing TIP-403 policy**, including policies administered by other accounts. This enables shared compliance lists:
+An account can reference **any existing TIP-403 policy**, including policies administered by other accounts. This enables shared compliance lists, with the same tradeoffs as multiple TIP-20s sharing a policy. 
 
-```solidity
-// Consortium admin creates a shared "approved counterparties" policy
-uint64 sharedPolicy = TIP403_REGISTRY.createPolicy(consortiumAdmin, PolicyType.WHITELIST);
 
-// Multiple banks use the same policy
-TIP403_REGISTRY.setAccountPolicies(0, sharedPolicy, 0);  // Bank A: receives only from approved
-TIP403_REGISTRY.setAccountPolicies(0, sharedPolicy, 0);  // Bank B: uses same list
-TIP403_REGISTRY.setAccountPolicies(sharedPolicy, 0, 0);  // Bank C: sends only to approved
-```
-
-**Important considerations:**
-
-1. **Admin controls membership**: The policy admin can add/remove addresses from the policy. All accounts using that policy are affected.
-2. **No notification on changes**: Accounts using a shared policy are not notified when membership changes.
-3. **Policy type is cached**: The policy type (whitelist/blacklist) is cached when `setAccountPolicies` is called. Since policy types are immutable, this is always correct.
-4. **Self-administered policies**: For full control, accounts can create their own policies and serve as the admin.
-
-This design is intentional: shared policies reduce state duplication for entities with common compliance requirements (e.g., banks in the same regulatory jurisdiction).
-
-## Example Usage
-
-### Regulated Entity: Whitelist Receives
-
-A bank wants to only receive funds from KYC'd addresses:
-
-```solidity
-// 1. Bank creates a whitelist policy (or reuses existing)
-uint64 kycWhitelist = TIP403_REGISTRY.createPolicy(bankAdmin, PolicyType.WHITELIST);
-
-// 2. Bank adds KYC'd addresses to the whitelist
-TIP403_REGISTRY.modifyPolicyWhitelist(kycWhitelist, kycAddress1, true);
-TIP403_REGISTRY.modifyPolicyWhitelist(kycWhitelist, kycAddress2, true);
-
-// 3. Bank sets receive policy (send policy = 0, token policy = 0)
-TIP403_REGISTRY.setAccountPolicies(0, kycWhitelist, 0);
-
-// Result: Bank can only receive from addresses on kycWhitelist
-// Bank can send to anyone (subject to token-level policy)
-// Bank can receive any token
-```
-
-### Regulated Entity: Blacklist Sends
-
-An exchange wants to block sends to sanctioned addresses:
-
-```solidity
-// 1. Exchange creates a blacklist policy
-uint64 sanctionsBlacklist = TIP403_REGISTRY.createPolicy(exchangeAdmin, PolicyType.BLACKLIST);
-
-// 2. Exchange adds sanctioned addresses
-TIP403_REGISTRY.modifyPolicyBlacklist(sanctionsBlacklist, sanctionedAddr, true);
-
-// 3. Exchange sets send policy (receive policy = 0, token policy = 0)
-TIP403_REGISTRY.setAccountPolicies(sanctionsBlacklist, 0, 0);
-
-// Result: Exchange cannot send to addresses on sanctionsBlacklist
-// Exchange can receive from anyone (subject to token-level policy)
-```
-
-### Combined: Whitelist Both Directions
-
-A custodian wants to only transact with approved counterparties:
-
-```solidity
-// 1. Custodian creates a whitelist for approved counterparties
-uint64 approvedList = TIP403_REGISTRY.createPolicy(custodianAdmin, PolicyType.WHITELIST);
-
-// 2. Add approved addresses
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedList, approvedAddr1, true);
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedList, approvedAddr2, true);
-
-// 3. Set same policy for both send and receive (no token restriction)
-TIP403_REGISTRY.setAccountPolicies(approvedList, approvedList, 0);
-
-// Result: Custodian can only send to AND receive from approved addresses
-```
-
-### Token Whitelist: Only Approved Stablecoins
-
-A regulated institution only wants to hold approved stablecoins:
-
-```solidity
-// 1. Institution creates a whitelist for approved tokens
-uint64 approvedTokens = TIP403_REGISTRY.createPolicy(complianceAdmin, PolicyType.WHITELIST);
-
-// 2. Add approved token contract addresses
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedTokens, USDC_ADDRESS, true);
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedTokens, EURC_ADDRESS, true);
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedTokens, PATH_USD_ADDRESS, true);
-
-// 3. Set token receive policy (no counterparty restrictions in this example)
-TIP403_REGISTRY.setAccountPolicies(0, 0, approvedTokens);
-
-// Result: Institution can only receive USDC, EURC, and pathUSD
-// Any attempt to mint or transfer other tokens to this account will revert
-```
-
-### Token Blacklist: Block Specific Tokens
-
-An account wants to block tokens associated with known scams:
-
-```solidity
-// 1. Create a blacklist for blocked tokens
-uint64 blockedTokens = TIP403_REGISTRY.createPolicy(accountOwner, PolicyType.BLACKLIST);
-
-// 2. Add blocked token contract addresses
-TIP403_REGISTRY.modifyPolicyBlacklist(blockedTokens, SCAM_TOKEN_ADDRESS, true);
-
-// 3. Set token receive policy
-TIP403_REGISTRY.setAccountPolicies(0, 0, blockedTokens);
-
-// Result: Account blocks SCAM_TOKEN but can receive all other tokens
-```
-
-### Full Compliance Setup
-
-A fully regulated entity with all controls:
-
-```solidity
-// Create policies
-uint64 kycCounterparties = TIP403_REGISTRY.createPolicy(admin, PolicyType.WHITELIST);
-uint64 approvedTokens = TIP403_REGISTRY.createPolicy(admin, PolicyType.WHITELIST);
-
-// Populate policies
-TIP403_REGISTRY.modifyPolicyWhitelist(kycCounterparties, approvedAddr1, true);
-TIP403_REGISTRY.modifyPolicyWhitelist(approvedTokens, USDC_ADDRESS, true);
-
-// Set all three policies
-TIP403_REGISTRY.setAccountPolicies(kycCounterparties, kycCounterparties, approvedTokens);
-
-// Result:
-// - Can only send to KYC'd addresses
-// - Can only receive from KYC'd addresses  
-// - Can only receive approved tokens (USDC in this case)
-```
 
 ---
 
@@ -570,7 +430,7 @@ TIP403_REGISTRY.setAccountPolicies(kycCounterparties, kycCounterparties, approve
 
 The following invariants must always hold:
 
-1. **Account Sovereignty**: Only an account itself can set its own account-level policies via `setAccountPolicies`. No other account can modify another account's policies.
+1. **Account Sovereignty**: Only an account itself can set its own account-level policies via `setAccountPolicies`. No other account can modify another account's `policyId`.
 
 2. **Policy Existence**: `setAccountPolicies` MUST revert with `PolicyNotFound()` if any of `sendPolicyId`, `receivePolicyId`, or `tokenReceivePolicyId` is non-zero and does not correspond to an existing policy.
 
@@ -595,50 +455,3 @@ The following invariants must always hold:
 
 10. **Cached Policy Type Validity**: The policy type cached in `accountPolicies` MUST always match the policy type in `policyData[policyId]`. This is guaranteed because TIP-403 policy types are immutable after creation.
 
-## Critical Test Cases
-
-### Counterparty Policies (Send/Receive)
-
-1. **Basic send policy**: Account with send policy can only send to addresses authorized under that policy
-2. **Basic receive policy**: Account with receive policy can only receive from addresses authorized under that policy
-3. **Combined counterparty policies**: Account with both send and receive policies enforces both on all transfers
-4. **No policy (default)**: Account without policies set can send/receive freely (subject to token-level policy)
-5. **Policy ID 0**: Setting any policy to 0 removes that restriction
-6. **Token-level + account-level policies**: Both token-level AND account-level policies must pass
-7. **Self-transfer**: Account with policies can transfer to itself if authorized under its own policies
-8. **Whitelist send policy**: Account with whitelist send policy can only send to whitelisted addresses
-9. **Blacklist send policy**: Account with blacklist send policy cannot send to blacklisted addresses
-10. **Whitelist receive policy**: Account with whitelist receive policy can only receive from whitelisted addresses
-11. **Blacklist receive policy**: Account with blacklist receive policy cannot receive from blacklisted addresses
-12. **Cross-account policies**: A sends to B where A has send policy and B has receive policy; both must authorize
-13. **Bidirectional transfer**: A and B both have policies; transfer A→B checks A's send + B's receive; transfer B→A checks B's send + A's receive
-
-### Token Receive Policy
-
-14. **Basic token whitelist**: Account with token whitelist can only receive tokens on the list
-15. **Basic token blacklist**: Account with token blacklist cannot receive tokens on the list
-16. **Token policy on transfer**: Transfer of non-whitelisted token to account with token whitelist reverts
-17. **Token policy on mint**: Mint of non-whitelisted token to account with token whitelist reverts
-18. **Token policy + counterparty policy**: All three policies (send, receive, token) must pass for transfer to succeed
-19. **No token policy**: Account without token receive policy can receive any token
-
-### Mint/Burn/Fee Behavior
-
-20. **Mint receive policy**: Minting checks issuer against recipient's receive policy
-21. **Mint token policy**: Minting checks token against recipient's token receive policy
-22. **Burn exemption**: Burning from an account with send policy does NOT check the send policy
-23. **Fee transfer exemption**: Fee transfers bypass all account-level policies
-
-### Policy Management
-
-24. **Policy update**: Account can update its policies; new policies take effect immediately
-25. **Invalid policy**: Setting non-existent policy ID reverts with `PolicyNotFound()`
-26. **Shared policy**: Multiple accounts using same policy all see membership changes
-27. **Self-administered policy**: Account creates own policy and uses it (full control)
-
-### Storage and Gas
-
-28. **Storage packing**: Verify all six fields (3 IDs + 3 types) are correctly packed/unpacked in 256 bits
-29. **Gas measurement**: Verify gas costs match expected values for each scenario
-30. **Cached policy type**: Verify cached policy type matches registry policy type
-31. **Baseline gas**: Accounts without policies still incur ~4,200 gas overhead for accountPolicies reads
