@@ -246,6 +246,8 @@ pub async fn setup_validators(
             .with_mailbox_size(1024)
             .with_deque_size(10)
             .with_time_to_propose_duration(Duration::from_secs(2))
+            .with_time_to_collect_notarizations_duration(Duration::from_secs(3))
+            .with_time_to_retry_nullify_broadcast_duration(Duration::from_secs(10))
             .with_time_for_peer_response_duration(Duration::from_secs(2))
             .with_views_to_track(10)
             .with_views_until_leader_skip(5)
