@@ -1278,9 +1278,11 @@ mod tests {
     }
 
     /// Test validate_aa_initial_tx_gas error cases and valid paths.
+    ///
     /// Tests error paths in the AA initial transaction gas validation:
     /// - CreateInitCodeSizeLimit: when initcode exceeds max size
     /// - InsufficientGasForIntrinsicCost: when gas_limit < intrinsic_gas
+    ///
     /// Also tests that value transfers in batch calls are supported.
     #[test]
     fn test_validate_aa_initial_tx_gas_errors() -> eyre::Result<()> {
