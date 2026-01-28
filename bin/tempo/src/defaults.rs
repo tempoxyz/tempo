@@ -81,8 +81,8 @@ fn extract_telemetry_url(args: &[String]) -> Option<String> {
             return Some(value.to_string());
         }
     }
-    // Fall back to environment variable
-    std::env::var("TELEMETRY_URL").ok()
+
+    return None;
 }
 
 /// Expands `--telemetry-url` (or `TELEMETRY_URL` env var) into the equivalent telemetry arguments.

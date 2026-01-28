@@ -54,6 +54,22 @@ struct TempoArgs {
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
+    /// Unified telemetry URL that expands to configure logs, metrics, and consensus telemetry.
+    ///
+    /// When provided, this URL is expanded and overwrites set values for:
+    ///
+    ///  - `--logs-otlp=<url>/opentelemetry/v1/logs`
+    ///
+    ///  - `--logs-otlp.filter=debug`
+    ///
+    ///  - `--metrics.prometheus.push.url=<url>/api/v1/import/prometheus`
+    ///
+    ///  - `--consensus.metrics-otlp=<url>/opentelemetry/v1/metrics`
+    ///
+    /// The URL must include credentials: `https://user:pass@metrics.example.com`
+    #[arg(long, value_name = "URL")]
+    pub telemetry_url: Option<String>,
+
     #[command(flatten)]
     pub consensus: tempo_commonware_node::Args,
 
