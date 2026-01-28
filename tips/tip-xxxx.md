@@ -57,11 +57,13 @@ The `accountPolicies` mapping packs policy IDs and their types into a single 256
 
 | Bits | Field | Description |
 |------|-------|-------------|
-| 0–63 | `sendPolicyId` | Policy checked when this account is the sender |
+| 0–63 | `sendPolicyId` | Policy checked when this account is the sender (counterparty filter) |
 | 64–71 | `sendPolicyType` | Type of send policy (0 = whitelist, 1 = blacklist) |
-| 72–135 | `receivePolicyId` | Policy checked when this account is the receiver |
+| 72–135 | `receivePolicyId` | Policy checked when this account is the receiver (counterparty filter) |
 | 136–143 | `receivePolicyType` | Type of receive policy (0 = whitelist, 1 = blacklist) |
-| 144–255 | Reserved | For future use (must be 0) |
+| 144–207 | `tokenReceivePolicyId` | Policy checked on tokens being received (token filter) |
+| 208–215 | `tokenReceivePolicyType` | Type of token receive policy (0 = whitelist, 1 = blacklist) |
+| 216–255 | Reserved | For future use (must be 0) |
 
 A policy ID of `0` means "no policy" (always authorized). This differs from token-level TIP-403 semantics where policy ID 0 is "always-reject"; for account-level policies, ID 0 means "no account policy set" (defer to token policy only).
 
@@ -78,12 +80,16 @@ function encodeAccountPolicies(
     uint64 sendPolicyId, 
     PolicyType sendPolicyType,
     uint64 receivePolicyId, 
-    PolicyType receivePolicyType
+    PolicyType receivePolicyType,
+    uint64 tokenReceivePolicyId,
+    PolicyType tokenReceivePolicyType
 ) internal pure returns (uint256) {
     return uint256(sendPolicyId) 
         | (uint256(uint8(sendPolicyType)) << 64)
         | (uint256(receivePolicyId) << 72)
-        | (uint256(uint8(receivePolicyType)) << 136);
+        | (uint256(uint8(receivePolicyType)) << 136)
+        | (uint256(tokenReceivePolicyId) << 144)
+        | (uint256(uint8(tokenReceivePolicyType)) << 208);
 }
 
 function decodeAccountPolicies(uint256 packed) 
@@ -91,13 +97,17 @@ function decodeAccountPolicies(uint256 packed)
         uint64 sendPolicyId, 
         PolicyType sendPolicyType,
         uint64 receivePolicyId, 
-        PolicyType receivePolicyType
+        PolicyType receivePolicyType,
+        uint64 tokenReceivePolicyId,
+        PolicyType tokenReceivePolicyType
     ) 
 {
     sendPolicyId = uint64(packed);
     sendPolicyType = PolicyType(uint8(packed >> 64));
     receivePolicyId = uint64(packed >> 72);
     receivePolicyType = PolicyType(uint8(packed >> 136));
+    tokenReceivePolicyId = uint64(packed >> 144);
+    tokenReceivePolicyType = PolicyType(uint8(packed >> 208));
 }
 ```
 
@@ -106,35 +116,46 @@ function decodeAccountPolicies(uint256 packed)
 The following functions are added to the TIP-403 Registry:
 
 ```solidity
-/// @notice Sets the send and receive policies for the caller's account
+/// @notice Sets the send, receive, and token receive policies for the caller's account
 /// @param sendPolicyId Policy to check when caller sends (0 = no policy)
 /// @param receivePolicyId Policy to check when caller receives (0 = no policy)
-/// @dev Both policies must exist (or be 0). Caller can only set their own policies.
+/// @param tokenReceivePolicyId Policy to check on tokens being received (0 = no policy)
+/// @dev All policies must exist (or be 0). Caller can only set their own policies.
 /// @dev Policy types are cached from the registry at set time (immutable, so always valid).
-function setAccountPolicies(uint64 sendPolicyId, uint64 receivePolicyId) external;
+function setAccountPolicies(
+    uint64 sendPolicyId, 
+    uint64 receivePolicyId, 
+    uint64 tokenReceivePolicyId
+) external;
 
-/// @notice Returns the send and receive policies for an account
+/// @notice Returns all policies for an account
 /// @param account The account to query
 /// @return sendPolicyId The policy checked when account sends (0 = no policy)
 /// @return sendPolicyType The type of the send policy
 /// @return receivePolicyId The policy checked when account receives (0 = no policy)
 /// @return receivePolicyType The type of the receive policy
+/// @return tokenReceivePolicyId The policy checked on tokens being received (0 = no policy)
+/// @return tokenReceivePolicyType The type of the token receive policy
 function getAccountPolicies(address account) 
     external view returns (
         uint64 sendPolicyId, 
         PolicyType sendPolicyType,
         uint64 receivePolicyId, 
-        PolicyType receivePolicyType
+        PolicyType receivePolicyType,
+        uint64 tokenReceivePolicyId,
+        PolicyType tokenReceivePolicyType
     );
 
 /// @notice Checks if a transfer is authorized under account-level policies
 /// @param from The sender address
 /// @param to The receiver address
-/// @return True if the transfer is authorized under both accounts' policies
+/// @param token The token contract address being transferred
+/// @return True if the transfer is authorized under all account policies
 /// @dev Returns true if:
 ///      - from's sendPolicy is 0 OR to is authorized under from's sendPolicy
 ///      - to's receivePolicy is 0 OR from is authorized under to's receivePolicy
-function isTransferAuthorized(address from, address to) external view returns (bool);
+///      - to's tokenReceivePolicy is 0 OR token is authorized under to's tokenReceivePolicy
+function isTransferAuthorized(address from, address to, address token) external view returns (bool);
 ```
 
 ### Events
@@ -144,10 +165,12 @@ function isTransferAuthorized(address from, address to) external view returns (b
 /// @param account The account that updated its policies
 /// @param sendPolicyId The new send policy (0 = no policy)
 /// @param receivePolicyId The new receive policy (0 = no policy)
+/// @param tokenReceivePolicyId The new token receive policy (0 = no policy)
 event AccountPoliciesUpdated(
     address indexed account, 
     uint64 sendPolicyId, 
-    uint64 receivePolicyId
+    uint64 receivePolicyId,
+    uint64 tokenReceivePolicyId
 );
 ```
 
@@ -163,9 +186,14 @@ error PolicyNotFound();
 ### setAccountPolicies
 
 ```solidity
-function setAccountPolicies(uint64 sendPolicyId, uint64 receivePolicyId) external {
+function setAccountPolicies(
+    uint64 sendPolicyId, 
+    uint64 receivePolicyId,
+    uint64 tokenReceivePolicyId
+) external {
     PolicyType sendPolicyType;
     PolicyType receivePolicyType;
+    PolicyType tokenReceivePolicyType;
     
     // Validate and cache send policy type
     if (sendPolicyId != 0) {
@@ -183,15 +211,25 @@ function setAccountPolicies(uint64 sendPolicyId, uint64 receivePolicyId) externa
         (receivePolicyType, ) = policyData(receivePolicyId);
     }
     
+    // Validate and cache token receive policy type
+    if (tokenReceivePolicyId != 0) {
+        if (!policyExists(tokenReceivePolicyId)) {
+            revert PolicyNotFound();
+        }
+        (tokenReceivePolicyType, ) = policyData(tokenReceivePolicyId);
+    }
+    
     // Store packed policy data (IDs + types)
     accountPolicies[msg.sender] = encodeAccountPolicies(
         sendPolicyId, 
         sendPolicyType,
         receivePolicyId, 
-        receivePolicyType
+        receivePolicyType,
+        tokenReceivePolicyId,
+        tokenReceivePolicyType
     );
     
-    emit AccountPoliciesUpdated(msg.sender, sendPolicyId, receivePolicyId);
+    emit AccountPoliciesUpdated(msg.sender, sendPolicyId, receivePolicyId, tokenReceivePolicyId);
 }
 ```
 
@@ -203,7 +241,9 @@ function getAccountPolicies(address account)
         uint64 sendPolicyId, 
         PolicyType sendPolicyType,
         uint64 receivePolicyId, 
-        PolicyType receivePolicyType
+        PolicyType receivePolicyType,
+        uint64 tokenReceivePolicyId,
+        PolicyType tokenReceivePolicyType
     ) 
 {
     return decodeAccountPolicies(accountPolicies[account]);
@@ -215,11 +255,13 @@ function getAccountPolicies(address account)
 This function checks account-level policies **without** reading `policyData` — the policy type is embedded in the account storage.
 
 ```solidity
-function isTransferAuthorized(address from, address to) external view returns (bool) {
+function isTransferAuthorized(address from, address to, address token) external view returns (bool) {
     // Decode sender's policies (includes cached policy type)
     (
         uint64 fromSendPolicy, 
         PolicyType fromSendType,
+        ,
+        ,
         ,
     ) = decodeAccountPolicies(accountPolicies[from]);
     
@@ -237,13 +279,24 @@ function isTransferAuthorized(address from, address to) external view returns (b
         ,
         ,
         uint64 toReceivePolicy, 
-        PolicyType toReceiveType
+        PolicyType toReceiveType,
+        uint64 toTokenReceivePolicy,
+        PolicyType toTokenReceiveType
     ) = decodeAccountPolicies(accountPolicies[to]);
     
     // Check receiver's receive policy: "who can send to me?"
     if (toReceivePolicy != 0) {
         bool inSet = policySet[toReceivePolicy][from];
         bool authorized = (toReceiveType == PolicyType.WHITELIST) ? inSet : !inSet;
+        if (!authorized) {
+            return false;
+        }
+    }
+    
+    // Check receiver's token receive policy: "which tokens can I receive?"
+    if (toTokenReceivePolicy != 0) {
+        bool inSet = policySet[toTokenReceivePolicy][token];
+        bool authorized = (toTokenReceiveType == PolicyType.WHITELIST) ? inSet : !inSet;
         if (!authorized) {
             return false;
         }
@@ -265,8 +318,8 @@ modifier transferAuthorized(address from, address to) {
             || !TIP403_REGISTRY.isAuthorized(transferPolicyId, to)
     ) revert PolicyForbids();
     
-    // Account-level policy check (new)
-    if (!TIP403_REGISTRY.isTransferAuthorized(from, to)) {
+    // Account-level policy check (new) - includes counterparty and token filtering
+    if (!TIP403_REGISTRY.isTransferAuthorized(from, to, address(this))) {
         revert PolicyForbids();
     }
     _;
@@ -285,9 +338,12 @@ The following TIP-20 functions use the `transferAuthorized` modifier and will no
 
 ### Mint Behavior
 
-Minting checks both the token-level policy AND the recipient's account-level receive policy. This is important because TIP-20 creation is permissionless — anyone can create a token and attempt to mint to any address. A regulated entity with a receive policy can block mints from unauthorized issuers.
+Minting checks both the token-level policy AND the recipient's account-level policies (receive policy and token receive policy). This is important because TIP-20 creation is permissionless — anyone can create a token and attempt to mint to any address. A regulated entity can block:
 
-For account-level policy purposes, the **issuer** (msg.sender calling mint) is treated as the "from" address. If the recipient has a whitelist receive policy, the issuer must be on the whitelist.
+1. **Unauthorized issuers** via receive policy (counterparty filter)
+2. **Unwanted tokens** via token receive policy (token filter)
+
+For account-level policy purposes, the **issuer** (msg.sender calling mint) is treated as the "from" address.
 
 ```solidity
 function _mint(address to, uint256 amount) internal {
@@ -296,23 +352,21 @@ function _mint(address to, uint256 amount) internal {
         revert PolicyForbids();
     }
     
-    // Account-level receive policy check (new)
-    // Treat issuer (msg.sender) as "from" for policy purposes
-    (, , uint64 toReceivePolicy, PolicyType toReceiveType) = 
-        TIP403_REGISTRY.decodeAccountPolicies(TIP403_REGISTRY.accountPolicies(to));
-    if (toReceivePolicy != 0) {
-        bool inSet = TIP403_REGISTRY.policySet(toReceivePolicy, msg.sender);
-        bool authorized = (toReceiveType == PolicyType.WHITELIST) ? inSet : !inSet;
-        if (!authorized) {
-            revert PolicyForbids();
-        }
+    // Account-level policy check (new)
+    // Treat issuer (msg.sender) as "from", address(this) as the token
+    if (!TIP403_REGISTRY.isTransferAuthorized(msg.sender, to, address(this))) {
+        revert PolicyForbids();
     }
     
     // ... rest of mint logic
 }
 ```
 
-**Rationale:** A regulated entity (e.g., bank) may only want to receive tokens from approved issuers. Without this check, anyone could spam regulated accounts with unwanted tokens from malicious TIP-20 contracts.
+**Rationale:** A regulated entity (e.g., bank) may only want to:
+- Receive tokens from approved issuers (receive policy)
+- Hold approved tokens like USDC/EURC (token receive policy)
+
+Without these checks, anyone could spam regulated accounts with unwanted tokens from malicious TIP-20 contracts.
 
 ### Burn Behavior
 
@@ -331,7 +385,9 @@ Fee transfers via `transferFeePreTx` and `transferFeePostTx` do NOT check accoun
 | Neither account has policies set | ~4,200 gas (2 SLOADs for accountPolicies) |
 | Sender has send policy | ~6,300 gas (+1 policySet SLOAD) |
 | Receiver has receive policy | ~6,300 gas (+1 policySet SLOAD) |
-| Both have policies | ~8,400 gas (+2 policySet SLOADs) |
+| Receiver has token receive policy | ~6,300 gas (+1 policySet SLOAD) |
+| Receiver has receive + token policy | ~8,400 gas (+2 policySet SLOADs) |
+| Both parties, all policies | ~12,600 gas (+4 policySet SLOADs) |
 
 ### Breakdown
 
@@ -339,10 +395,11 @@ Fee transfers via `transferFeePreTx` and `transferFeePostTx` do NOT check accoun
 2. `accountPolicies[to]` SLOAD: ~2,100 gas
 3. If `fromSendPolicy != 0`: `policySet[fromSendPolicy][to]` SLOAD: ~2,100 gas
 4. If `toReceivePolicy != 0`: `policySet[toReceivePolicy][from]` SLOAD: ~2,100 gas
+5. If `toTokenReceivePolicy != 0`: `policySet[toTokenReceivePolicy][token]` SLOAD: ~2,100 gas
 
 **Note on optimization**: Because we embed the policy type in `accountPolicies`, we do NOT need to read `policyData[policyId]` during authorization. This saves ~2,100 gas per policy check compared to a naive implementation.
 
-The baseline ~4,200 gas is incurred on ALL transfers, even when no accounts have policies set. This is the cost of reading the two `accountPolicies` slots to check if policies exist.
+The baseline ~4,200 gas is incurred on ALL transfers, even when no accounts have policies set. This is the cost of reading the two `accountPolicies` slots to check if policies exist. Token receive policy adds no baseline cost (packed in same slot).
 
 ### State Creation Costs
 
