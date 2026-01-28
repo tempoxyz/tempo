@@ -34,9 +34,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @dev Track if account already added to policy account list
     mapping(uint64 => mapping(address => bool)) private _policyAccountTracked;
 
-    /// @dev Track policy creators for invariant verification
-    mapping(uint64 => address) private _policyCreators;
-
     /// @dev Sentinel value for "any policy type" in _ensurePolicy
     uint8 internal constant ANY_POLICY = type(uint8).max;
 
@@ -224,7 +221,6 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
 
             _totalPoliciesCreated++;
             _createdPolicies.push(policyId);
-            _policyCreators[policyId] = actor;
             _policyTypes[policyId] = policyType;
 
             // Track ghost state
