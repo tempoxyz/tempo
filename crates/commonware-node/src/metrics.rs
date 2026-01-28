@@ -133,8 +133,7 @@ pub fn install_otlp(context: Context, config: OtlpConfig) -> eyre::Result<OtlpMe
         use commonware_runtime::Clock as _;
 
         // Track last counter values to compute deltas (OTLP counters expect deltas, not absolutes)
-        let mut last_counter_values: HashMap<(String, Vec<(String, String)>), f64> =
-            HashMap::new();
+        let mut last_counter_values: HashMap<(String, Vec<(String, String)>), f64> = HashMap::new();
 
         loop {
             context.sleep(poll_interval).await;
@@ -324,9 +323,18 @@ runtime_process_rss 8224768
     #[test]
     fn test_strip_prometheus_suffix() {
         assert_eq!(strip_prometheus_suffix("requests_total"), "requests");
-        assert_eq!(strip_prometheus_suffix("http_duration_count"), "http_duration");
-        assert_eq!(strip_prometheus_suffix("http_duration_sum"), "http_duration");
-        assert_eq!(strip_prometheus_suffix("http_duration_bucket"), "http_duration");
+        assert_eq!(
+            strip_prometheus_suffix("http_duration_count"),
+            "http_duration"
+        );
+        assert_eq!(
+            strip_prometheus_suffix("http_duration_sum"),
+            "http_duration"
+        );
+        assert_eq!(
+            strip_prometheus_suffix("http_duration_bucket"),
+            "http_duration"
+        );
         assert_eq!(strip_prometheus_suffix("memory_usage"), "memory_usage");
         assert_eq!(strip_prometheus_suffix("total_requests"), "total_requests");
     }
