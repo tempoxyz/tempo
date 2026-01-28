@@ -23,7 +23,7 @@ use super::ConsensusNode;
 pub struct ConsensusNodeBuilder {
     args: CliArgs,
     execution_node: Option<TempoFullNode>,
-    feed_state: FeedStateHandle,
+    feed_state: Option<FeedStateHandle>,
     storage_directory: Option<PathBuf>,
 }
 
@@ -33,7 +33,7 @@ impl ConsensusNodeBuilder {
         Self {
             args,
             execution_node: None,
-            feed_state: FeedStateHandle::new(),
+            feed_state: None,
             storage_directory: None,
         }
     }
@@ -49,7 +49,7 @@ impl ConsensusNodeBuilder {
     /// Defaults to a new `FeedStateHandle`.
     #[must_use]
     pub fn with_feed_state(mut self, feed_state: FeedStateHandle) -> Self {
-        self.feed_state = feed_state;
+        self.feed_state = Some(feed_state);
         self
     }
 
@@ -87,7 +87,9 @@ impl ConsensusNodeBuilder {
         Ok(ConsensusNode {
             args: self.args,
             execution_node,
-            feed_state: self.feed_state,
+            feed_state: self
+                .feed_state
+                .context("feed state is required - call with_feed_state()")?,
             storage_directory,
         })
     }

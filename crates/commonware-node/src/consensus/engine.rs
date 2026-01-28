@@ -44,11 +44,6 @@ use crate::{
 
 use super::block::Block;
 
-fn into_duration(d: jiff::SignedDuration) -> eyre::Result<Duration> {
-    d.try_into()
-        .wrap_err("invalid consensus duration; was it negative or too large?")
-}
-
 // A bunch of constants to configure commonwarexyz singletons and copied over form alto.
 
 /// To better support peers near tip during network instability, we multiply
@@ -67,10 +62,10 @@ const BUFFER_POOL_PAGE_SIZE: NonZeroU16 = NonZeroU16::new(4_096).expect("value i
 const BUFFER_POOL_CAPACITY: NonZeroUsize = NonZeroUsize::new(8_192).expect("value is not zero"); // 32MB
 const MAX_REPAIR: NonZeroUsize = NonZeroUsize::new(20).expect("value is not zero");
 
-/// Builder for configuring and constructing an [`Engine`].
+/// Settings for [`Engine`].
 ///
-/// Set all required fields via `with_*` setters (or [`with_oracle`](EngineBuilder::with_oracle)
-/// when blocker and peer manager are the same), then call [`try_init`](EngineBuilder::try_init).
+// XXX: Mostly a one-to-one copy of alto for now. We also put the context in here
+// because there doesn't really seem to be a point putting it into an extra initializer.
 #[derive(Clone)]
 pub struct EngineBuilder<TBlocker, TPeerManager> {
     fee_recipient: Option<alloy_primitives::Address>,
