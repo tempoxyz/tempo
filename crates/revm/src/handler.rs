@@ -923,7 +923,13 @@ where
                         // Extract the signature type from the inner signature to validate it matches
                         // the key_type stored in the keychain. This prevents using a signature of one
                         // type to authenticate as a key registered with a different type.
-                        let sig_type: u8 = keychain_sig.signature.signature_type().into();
+                        // Only validate signature type on T1+ to maintain backward compatibility
+                        // with historical blocks during re-execution.
+                        let sig_type: Option<u8> = if spec.is_t1() {
+                            Some(keychain_sig.signature.signature_type().into())
+                        } else {
+                            None
+                        };
 
                         keychain
                             .validate_keychain_authorization(
