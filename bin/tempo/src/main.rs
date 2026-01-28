@@ -23,16 +23,13 @@ mod tempo_cmd;
 
 use clap::Parser;
 use eyre::WrapErr as _;
-use reth_ethereum::{cli::Commands, evm::revm::primitives::B256};
+use reth_ethereum::evm::revm::primitives::B256;
 use reth_ethereum_cli::Cli;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::DefaultRpcModuleValidator;
 use std::sync::Arc;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{
-    ConsensusDeadSignal, ConsensusNodeBuilder, ConsensusNodeHandle, ExecutionNodeInput,
-    feed as consensus_feed,
-};
+use tempo_commonware_node::{ConsensusNode, feed as consensus_feed};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::{TempoEvmConfig, TempoEvmFactory};
 use tempo_faucet::{
@@ -44,13 +41,14 @@ use tempo_node::{
     node::TempoNode,
     rpc::consensus::{TempoConsensusApiServer, TempoConsensusRpc},
 };
-use tokio::sync::oneshot;
+use tracing::info;
 
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
 struct TempoArgs {
     /// Follow this specific RPC node for block hashes.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
+    /// When set, consensus is skipped and the node follows the remote chain.
     #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1))]
     pub follow: Option<String>,
 
@@ -116,47 +114,6 @@ fn main() -> eyre::Result<()> {
         DefaultRpcModuleValidator,
         tempo_cmd::TempoSubcommand,
     >::parse();
-    let is_node = matches!(cli.command, Commands::Node(_));
-
-    let shutdown_token = tokio_util::sync::CancellationToken::new();
-    let cl_feed_state = consensus_feed::FeedStateHandle::new();
-
-    // Spawn consensus node (it will wait for execution node input internally)
-    let (execution_input_tx, execution_input_rx) = oneshot::channel::<ExecutionNodeInput>();
-
-    // Spawn consensus node and extract the dead signal for use in async code
-    let (consensus_handle, consensus_dead_signal): (
-        Option<ConsensusNodeHandle>,
-        Option<ConsensusDeadSignal>,
-    ) = if is_node {
-        // Extract consensus args from CLI for the builder
-        // We need to parse again to get the args before running
-        let cli_for_args = Cli::<
-            TempoChainSpecParser,
-            TempoArgs,
-            DefaultRpcModuleValidator,
-            tempo_cmd::TempoSubcommand,
-        >::parse();
-
-        let consensus_args = match &cli_for_args.command {
-            Commands::Node(node_cmd) => node_cmd.ext.consensus.clone(),
-            _ => unreachable!("is_node check ensures this is a Node command"),
-        };
-
-        let mut handle = ConsensusNodeBuilder::default()
-            .with_args(consensus_args)
-            .with_execution_node_receiver(execution_input_rx)
-            .with_feed_state(cl_feed_state.clone())
-            .with_shutdown_token(shutdown_token.clone())
-            .build()
-            .wrap_err("failed to build consensus node")?
-            .spawn();
-
-        let dead_signal = handle.take_dead_signal();
-        (Some(handle), dead_signal)
-    } else {
-        (None, None)
-    };
 
     let components = |spec: Arc<TempoChainSpec>| {
         (
@@ -164,6 +121,9 @@ fn main() -> eyre::Result<()> {
             TempoConsensus::new(spec),
         )
     };
+
+    // Feed state for RPC consensus info - shared between RPC and consensus
+    let feed_state = consensus_feed::FeedStateHandle::new();
 
     cli.run_with_components::<TempoNode>(components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
@@ -200,9 +160,9 @@ fn main() -> eyre::Result<()> {
             None
         };
 
+        // Determine if consensus should run
         let is_dev_mode = builder.config().dev.dev;
-        let skip_consensus = args.follow.is_some();
-        let storage_dir_override = args.consensus.storage_dir.clone();
+        let is_follow_mode = args.follow.is_some();
 
         let NodeHandle {
             node,
@@ -228,53 +188,66 @@ fn main() -> eyre::Result<()> {
 
                 builder
             })
-            .extend_rpc_modules(move |ctx| {
-                if faucet_args.enabled {
-                    let ext = TempoFaucetExt::new(
-                        faucet_args.addresses(),
-                        faucet_args.amount(),
-                        faucet_args.provider(),
-                    );
+            .extend_rpc_modules({
+                let feed_state = feed_state.clone();
+                move |ctx| {
+                    if faucet_args.enabled {
+                        let ext = TempoFaucetExt::new(
+                            faucet_args.addresses(),
+                            faucet_args.amount(),
+                            faucet_args.provider(),
+                        );
 
-                    ctx.modules.merge_configured(ext.into_rpc())?;
+                        ctx.modules.merge_configured(ext.into_rpc())?;
+                    }
+
+                    if validator_key.is_some() {
+                        ctx.modules
+                            .merge_configured(TempoConsensusRpc::new(feed_state).into_rpc())?;
+                    }
+
+                    Ok(())
                 }
-
-                if validator_key.is_some() {
-                    ctx.modules
-                        .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
-                }
-
-                Ok(())
             })
             .launch_with_debug_capabilities()
             .await
             .wrap_err("failed launching execution node")?;
 
-        // Send execution node input to consensus (consensus will handle all logic internally)
-        let _ = execution_input_tx.send(ExecutionNodeInput {
-            node,
-            is_dev_mode,
-            skip_consensus,
-            storage_dir_override,
-        });
+        // Spawn consensus after execution node is ready
+        // Handle is kept alive - consensus panics on failure (like spawn_critical)
+        let consensus_handle = if args.consensus.is_enabled(is_dev_mode, is_follow_mode) {
+            Some(
+                ConsensusNode::builder(args.consensus)
+                    .with_execution_node(node)
+                    .with_feed_state(feed_state)
+                    .build()
+                    .wrap_err("failed to build consensus node")?
+                    .spawn(),
+            )
+        } else {
+            info!(
+                dev_mode = is_dev_mode,
+                follow_mode = is_follow_mode,
+                "skipping consensus - running in dev/follow mode"
+            );
+            None
+        };
+
+        info!("Tempo node started");
 
         // Wait for shutdown
         tokio::select! {
             _ = node_exit_future => {
-                tracing::info!("execution node exited");
-            }
-            _ = async {
-                if let Some(signal) = consensus_dead_signal {
-                    signal.wait().await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => {
-                tracing::info!("consensus node exited");
+                info!("execution node exited");
             }
             _ = tokio::signal::ctrl_c() => {
-                tracing::info!("received shutdown signal");
+                info!("received shutdown signal");
             }
+        }
+
+        // Gracefully shutdown consensus
+        if let Some(handle) = consensus_handle {
+            handle.shutdown();
         }
 
         #[cfg(feature = "pyroscope")]
@@ -284,16 +257,5 @@ fn main() -> eyre::Result<()> {
 
         Ok(())
     })
-    .wrap_err("execution node failed")?;
-
-    shutdown_token.cancel();
-
-    // Wait for consensus node to complete
-    if let Some(handle) = consensus_handle {
-        if let Err(err) = handle.join() {
-            eprintln!("consensus node exited with error:\n{err:?}");
-        }
-    }
-
-    Ok(())
+    .wrap_err("execution node failed")
 }

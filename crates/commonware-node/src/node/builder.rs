@@ -1,99 +1,94 @@
 //! Builder for configuring and constructing a [`ConsensusNode`].
 
+use std::path::PathBuf;
+
 use eyre::{ContextCompat, Result};
-use tokio::sync::oneshot;
-use tokio_util::sync::CancellationToken;
+use reth_ethereum::chainspec::EthChainSpec as _;
 
-use crate::args::Args;
-use crate::feed::FeedStateHandle;
+use crate::{args::Args as CliArgs, feed::FeedStateHandle};
+use tempo_node::TempoFullNode;
 
-use super::{ConsensusNode, ConsensusNodeConfig, ExecutionNodeInput};
+use super::ConsensusNode;
 
 /// Builder for configuring and constructing a [`ConsensusNode`].
 ///
 /// # Example
 /// ```rust,ignore
-/// let handle = ConsensusNodeBuilder::default()
-///     .with_args(args)
-///     .with_execution_node_receiver(node_rx)
+/// let handle = ConsensusNode::builder(args.consensus)
+///     .with_execution_node(node)
 ///     .with_feed_state(feed_state)
-///     .with_shutdown_token(shutdown_token)
 ///     .build()?
 ///     .spawn();
 /// ```
-#[derive(Default)]
 pub struct ConsensusNodeBuilder {
-    args: Option<Args>,
-    execution_node_rx: Option<oneshot::Receiver<ExecutionNodeInput>>,
-    feed_state: Option<FeedStateHandle>,
-    shutdown_token: Option<CancellationToken>,
+    args: CliArgs,
+    execution_node: Option<TempoFullNode>,
+    feed_state: FeedStateHandle,
+    storage_directory: Option<PathBuf>,
 }
 
 impl ConsensusNodeBuilder {
-    /// Set the consensus arguments.
+    /// Create a new builder with the consensus CLI arguments.
+    pub(super) fn new(args: CliArgs) -> Self {
+        Self {
+            args,
+            execution_node: None,
+            feed_state: FeedStateHandle::new(),
+            storage_directory: None,
+        }
+    }
+
+    /// Set the execution node handle (required).
     #[must_use]
-    pub fn with_args(mut self, args: Args) -> Self {
-        self.args = Some(args);
+    pub fn with_execution_node(mut self, node: TempoFullNode) -> Self {
+        self.execution_node = Some(node);
         self
     }
 
-    /// Set the receiver for the execution node input.
-    ///
-    /// The consensus node will wait for this receiver to provide the
-    /// execution node handle and configuration before starting.
-    #[must_use]
-    pub fn with_execution_node_receiver(
-        mut self,
-        rx: oneshot::Receiver<ExecutionNodeInput>,
-    ) -> Self {
-        self.execution_node_rx = Some(rx);
-        self
-    }
-
-    /// Set the feed state handle.
+    /// Override the feed state handle for RPC consensus info.
+    /// Defaults to a new `FeedStateHandle`.
     #[must_use]
     pub fn with_feed_state(mut self, feed_state: FeedStateHandle) -> Self {
-        self.feed_state = Some(feed_state);
+        self.feed_state = feed_state;
         self
     }
 
-    /// Set the shutdown cancellation token.
+    /// Override the storage directory for consensus data.
+    /// If not set, derived from the execution node's datadir.
     #[must_use]
-    pub fn with_shutdown_token(mut self, shutdown_token: CancellationToken) -> Self {
-        self.shutdown_token = Some(shutdown_token);
+    pub fn with_storage_directory(mut self, path: PathBuf) -> Self {
+        self.storage_directory = Some(path);
         self
     }
 
-    /// Build the consensus node from this builder.
-    ///
-    /// Validates all required fields and returns a configured [`ConsensusNode`].
+    /// Build the consensus node.
     ///
     /// # Errors
-    /// Returns an error if any required field is missing.
+    /// Returns an error if the execution node is not set.
     pub fn build(self) -> Result<ConsensusNode> {
-        let args = self
-            .args
-            .context("Args are required - call with_args()")?;
+        let execution_node = self
+            .execution_node
+            .context("execution node is required - call with_execution_node()")?;
 
-        let execution_node_rx = self
-            .execution_node_rx
-            .context("Execution node receiver is required - call with_execution_node_receiver()")?;
+        // Resolve storage directory: explicit override > args.storage_dir > derived from datadir
+        let storage_directory = self
+            .storage_directory
+            .or_else(|| self.args.storage_dir.clone())
+            .unwrap_or_else(|| {
+                execution_node
+                    .config
+                    .datadir
+                    .clone()
+                    .resolve_datadir(execution_node.chain_spec().chain())
+                    .data_dir()
+                    .join("consensus")
+            });
 
-        let feed_state = self
-            .feed_state
-            .context("Feed state is required - call with_feed_state()")?;
-
-        let shutdown_token = self
-            .shutdown_token
-            .context("Shutdown token is required - call with_shutdown_token()")?;
-
-        let config = ConsensusNodeConfig {
-            args,
-            execution_node_rx,
-            feed_state,
-            shutdown_token,
-        };
-
-        Ok(ConsensusNode::new(config))
+        Ok(ConsensusNode {
+            args: self.args,
+            execution_node,
+            feed_state: self.feed_state,
+            storage_directory,
+        })
     }
 }

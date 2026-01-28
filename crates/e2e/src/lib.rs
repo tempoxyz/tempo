@@ -236,28 +236,25 @@ pub async fn setup_validators(
         );
         execution_config.feed_state = Some(feed_state.clone());
 
-        let engine_config = consensus::Builder {
-            fee_recipient: alloy_primitives::Address::ZERO,
-            execution_node: None,
-            blocker: oracle.control(private_key.public_key()),
-            peer_manager: oracle.socket_manager(),
-            partition_prefix: uid.clone(),
-            share,
-            signer: private_key.clone(),
-            mailbox_size: 1024,
-            deque_size: 10,
-            time_to_propose: Duration::from_secs(2),
-            time_to_collect_notarizations: Duration::from_secs(3),
-            time_to_retry_nullify_broadcast: Duration::from_secs(10),
-            time_for_peer_response: Duration::from_secs(2),
-            views_to_track: 10,
-            views_until_leader_skip: 5,
-            new_payload_wait_time: Duration::from_millis(200),
-            time_to_build_subblock: Duration::from_millis(100),
-            subblock_broadcast_interval: Duration::from_millis(50),
-            fcu_heartbeat_interval: Duration::from_secs(300),
-            feed_state,
-        };
+        let engine_config = consensus::EngineBuilder::default()
+            .with_fee_recipient(alloy_primitives::Address::ZERO)
+            .with_execution_node(execution_runtime.handle())
+            .with_blocker(oracle.control(private_key.public_key()))
+            .with_peer_manager(oracle.socket_manager())
+            .with_partition_prefix(uid.clone())
+            .with_share(share)
+            .with_signer(private_key.clone())
+            .with_mailbox_size(1024)
+            .with_deque_size(10)
+            .with_time_to_propose(Duration::from_secs(2))
+            .with_time_for_peer_response(Duration::from_secs(2))
+            .with_views_to_track(10)
+            .with_views_until_leader_skip(5)
+            .with_new_payload_wait_time(Duration::from_millis(200))
+            .with_time_to_build_subblock(Duration::from_millis(100))
+            .with_subblock_broadcast_interval(Duration::from_millis(50))
+            .with_fcu_heartbeat_interval(Duration::from_secs(300))
+            .with_feed_state(feed_state);
 
         nodes.push(TestingNode::new(
             uid,
