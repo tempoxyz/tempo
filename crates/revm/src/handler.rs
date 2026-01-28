@@ -804,6 +804,7 @@ where
                     SignatureType::Secp256k1 => PrecompileSignatureType::Secp256k1,
                     SignatureType::P256 => PrecompileSignatureType::P256,
                     SignatureType::WebAuthn => PrecompileSignatureType::WebAuthn,
+                    SignatureType::EvmContract => PrecompileSignatureType::EvmContract,
                 };
 
                 // Handle expiry: None means never expires (store as u64::MAX)

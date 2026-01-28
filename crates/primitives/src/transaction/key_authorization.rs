@@ -1,8 +1,12 @@
 use super::SignatureType;
 use crate::transaction::PrimitiveSignature;
 use alloy_consensus::crypto::RecoveryError;
-use alloy_primitives::{Address, B256, U256, keccak256};
+use alloy_primitives::{Address, B256, FixedBytes, U256, keccak256};
 use alloy_rlp::Encodable;
+
+/// Salt for EvmContract keys (12 bytes)
+/// Combined with verifier address (20 bytes) to form 32-byte public key encoding
+pub type ContractSalt = FixedBytes<12>;
 
 /// Token spending limit for access keys
 ///
@@ -58,6 +62,11 @@ pub struct KeyAuthorization {
     /// - `Some([])` = no spending allowed (enforce_limits=true but no tokens allowed)
     /// - `Some([TokenLimit{...}])` = specific limits enforced
     pub limits: Option<Vec<TokenLimit>>,
+
+    /// Salt for EvmContract keys (12 bytes).
+    /// Required when key_type is EvmContract, ignored otherwise.
+    /// Combined with key_id (verifier contract address) to derive keyHash.
+    pub contract_salt: Option<ContractSalt>,
 }
 
 impl KeyAuthorization {
@@ -93,6 +102,38 @@ impl KeyAuthorization {
                 .limits
                 .as_ref()
                 .map_or(0, |limits| limits.capacity() * size_of::<TokenLimit>())
+    }
+
+    /// Returns whether this is an EvmContract key type
+    pub fn is_evm_contract(&self) -> bool {
+        self.key_type == SignatureType::EvmContract
+    }
+
+    /// Computes the keyHash for EvmContract keys.
+    /// keyHash = keccak256(abi.encode(key_type, keccak256(verifier || salt)))
+    ///
+    /// Returns None if this is not an EvmContract key or if contract_salt is missing.
+    pub fn key_hash(&self) -> Option<B256> {
+        if !self.is_evm_contract() {
+            return None;
+        }
+
+        let salt = self.contract_salt?;
+
+        // public_key_bytes = abi.encodePacked(verifier, salt) = 32 bytes
+        let mut public_key_bytes = [0u8; 32];
+        public_key_bytes[..20].copy_from_slice(self.key_id.as_slice());
+        public_key_bytes[20..].copy_from_slice(salt.as_slice());
+
+        let public_key_hash = keccak256(public_key_bytes);
+
+        // keyHash = keccak256(abi.encode(key_type, keccak256(public_key_bytes)))
+        // abi.encode pads to 32 bytes each
+        let mut encoded = [0u8; 64];
+        encoded[31] = self.key_type.into(); // key_type as uint8 right-padded to 32 bytes
+        encoded[32..].copy_from_slice(public_key_hash.as_slice());
+
+        Some(keccak256(encoded))
     }
 }
 
@@ -156,13 +197,20 @@ impl reth_codecs::Compact for SignedKeyAuthorization {
 #[cfg(any(test, feature = "arbitrary"))]
 impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
     fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        let key_type: SignatureType = u.arbitrary()?;
+        let contract_salt = if key_type == SignatureType::EvmContract {
+            Some(u.arbitrary()?)
+        } else {
+            None
+        };
         Ok(Self {
             chain_id: u.arbitrary()?,
-            key_type: u.arbitrary()?,
+            key_type,
             key_id: u.arbitrary()?,
             // Ensure that Some(0) is not generated as it's becoming `None` after RLP roundtrip.
             expiry: u.arbitrary::<Option<u64>>()?.filter(|v| *v != 0),
             limits: u.arbitrary()?,
+            contract_salt,
         })
     }
 }
@@ -182,6 +230,7 @@ mod tests {
             key_id: Address::random(),
             expiry,
             limits,
+            contract_salt: None,
         }
     }
 
