@@ -446,6 +446,10 @@ where
 
         let tx = aa_tx.tx();
 
+        if tx.calls.len() == 0 {
+            return Err(TempoPoolTransactionError::NoCalls);
+        }
+
         // Check number of calls
         if tx.calls.len() > MAX_AA_CALLS {
             return Err(TempoPoolTransactionError::TooManyCalls {
@@ -456,6 +460,10 @@ where
 
         // Check each call's input size
         for (idx, call) in tx.calls.iter().enumerate() {
+            if call.to.is_create() && idx != 0 {
+                return Err(TempoPoolTransactionError::CreateCallNotFirst);
+            }
+
             if call.input.len() > MAX_CALL_INPUT_SIZE {
                 return Err(TempoPoolTransactionError::CallInputTooLarge {
                     call_index: idx,
@@ -932,7 +940,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::TxBuilder, transaction::TempoPoolTransactionError};
     use alloy_consensus::{Block, Header, Transaction};
-    use alloy_primitives::{Address, B256, U256, address, uint};
+    use alloy_primitives::{Address, B256, TxKind, U256, address, uint};
     use reth_primitives_traits::SignedTransaction;
     use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
     use reth_transaction_pool::{
@@ -2824,6 +2832,133 @@ mod tests {
             assert!(
                 !error_msg.contains("Too many authorizations"),
                 "Should not fail with TooManyAuthorizations at the limit, got: {error_msg}"
+            );
+        }
+    }
+
+    /// AA transactions must have at least one call.
+    #[tokio::test]
+    async fn test_aa_no_calls_rejected() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with no calls
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(vec![]) // Empty calls
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::NoCalls)
+                    ),
+                    "Expected NoCalls error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with NoCalls error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE calls (contract deployments) must be the first call in an AA transaction.
+    #[tokio::test]
+    async fn test_aa_create_call_not_first_rejected() {
+        use tempo_primitives::transaction::tempo_transaction::Call;
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the second call
+        let calls = vec![
+            Call {
+                to: TxKind::Call(Address::random()), // First call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Create, // Second call is a CREATE - should be rejected
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        match outcome {
+            TransactionValidationOutcome::Invalid(_, ref err) => {
+                assert!(
+                    matches!(
+                        err.downcast_other_ref::<TempoPoolTransactionError>(),
+                        Some(TempoPoolTransactionError::CreateCallNotFirst)
+                    ),
+                    "Expected CreateCallNotFirst error, got: {err:?}"
+                );
+            }
+            _ => panic!("Expected Invalid outcome with CreateCallNotFirst error, got: {outcome:?}"),
+        }
+    }
+
+    /// CREATE call as the first call should be accepted.
+    #[tokio::test]
+    async fn test_aa_create_call_first_accepted() {
+        use tempo_primitives::transaction::tempo_transaction::Call;
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Create an AA transaction with a CREATE call as the first call
+        let calls = vec![
+            Call {
+                to: TxKind::Create, // First call is a CREATE - should be accepted
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+            Call {
+                to: TxKind::Call(Address::random()), // Second call is a regular call
+                value: U256::ZERO,
+                input: Default::default(),
+            },
+        ];
+
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(address!("0000000000000000000000000000000000000002"))
+            .calls(calls)
+            .build();
+        let validator = setup_validator(&transaction, current_time);
+
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        // Should NOT fail with CreateCallNotFirst (may fail for other reasons)
+        if let TransactionValidationOutcome::Invalid(_, ref err) = outcome {
+            assert!(
+                !matches!(
+                    err.downcast_other_ref::<TempoPoolTransactionError>(),
+                    Some(TempoPoolTransactionError::CreateCallNotFirst)
+                ),
+                "CREATE call as first call should be accepted, got: {err:?}"
             );
         }
     }
