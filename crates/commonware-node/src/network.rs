@@ -18,8 +18,6 @@ use crate::config::{
     VOTES_CHANNEL_IDENT, VOTES_LIMIT,
 };
 
-// --- Builder -----------------------------------------------------------------
-
 /// Builder for configuring and constructing a [`TempoNetwork`].
 ///
 ///
@@ -141,8 +139,6 @@ impl TempoNetworkBuilder {
         })
     }
 }
-
-// --- Network ------------------------------------------------------------------
 
 /// Tempo commonware P2P network before start.
 ///
