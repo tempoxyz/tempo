@@ -6651,7 +6651,7 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
     let request = serde_json::json!({
         "from": alice_addr,
         "type": "0x76",
-        "calls": [{"to": recipient, "value": "0x1", "data": "0x"}],
+        "calls": [{"to": recipient, "data": "0x"}],
         "validBefore": format!("0x{:x}", valid_before),
         "validAfter": format!("0x{:x}", valid_after),
         "nonceKey": format!("{:#x}", TEMPO_EXPIRING_NONCE_KEY),
@@ -6666,7 +6666,9 @@ async fn test_eth_fill_transaction() -> eyre::Result<()> {
 
     println!("Response: {}", serde_json::to_string_pretty(&result)?);
 
-    let tx = result.get("tx").expect("response should contain 'tx' field");
+    let tx = result
+        .get("tx")
+        .expect("response should contain 'tx' field");
 
     assert_eq!(
         tx.get("from").and_then(|v| v.as_str()),
