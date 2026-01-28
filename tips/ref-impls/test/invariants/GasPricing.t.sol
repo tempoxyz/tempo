@@ -135,7 +135,7 @@ contract GasPricingInvariantTest is InvariantBase {
         );
     }
 
-    /// @notice Summary invariant - ensure tests are exercised
+    /// @notice Summary invariant - ensure tests are exercised and sufficient gas tests succeed
     function invariant_testsExecuted() public view {
         // Skip this check when not on Tempo (vmExec.executeTransaction not available)
         if (!isTempo) return;
@@ -143,6 +143,26 @@ contract GasPricingInvariantTest is InvariantBase {
         // At least one category of tests should run
         uint256 totalTests = ghost_sstoreTests + ghost_createTests + ghost_multiSlotTests;
         assertTrue(totalTests > 0, "No gas pricing tests were executed");
+
+        // Ensure "sufficient gas" tests actually succeed (detect regressions in gas costs)
+        if (ghost_sstoreTests > 0) {
+            assertTrue(
+                ghost_sstoreSufficientGasSucceeded > 0,
+                "SSTORE sufficient gas tests never succeeded"
+            );
+        }
+        if (ghost_createTests > 0) {
+            assertTrue(
+                ghost_createSufficientGasSucceeded > 0,
+                "CREATE sufficient gas tests never succeeded"
+            );
+        }
+        if (ghost_multiSlotTests > 0) {
+            assertTrue(
+                ghost_multiSlotSufficientGasSucceeded > 0,
+                "Multi-slot sufficient gas tests never succeeded"
+            );
+        }
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -222,13 +242,17 @@ contract GasPricingInvariantTest is InvariantBase {
 
         bytes memory initcode = InitcodeHelper.counterInitcode();
 
-        // Expected gas: base tx + CREATE base + code deposit + account creation
+        // Counter runtime size is ~200 bytes (measured from deployed code)
+        // Code deposit uses RUNTIME size, not initcode size per TIP-1000
+        uint256 counterRuntimeSize = 200;
+
+        // Expected gas: base tx + CREATE base + code deposit (runtime) + account creation
         uint256 expectedGas = BASE_TX_GAS + CREATE_BASE_GAS
-            + (initcode.length * CODE_DEPOSIT_PER_BYTE) + ACCOUNT_CREATION_GAS;
+            + (counterRuntimeSize * CODE_DEPOSIT_PER_BYTE) + ACCOUNT_CREATION_GAS;
 
         uint64 nonce = uint64(vm.getNonce(sender));
 
-        // Test 1: Insufficient gas (200k - way below ~800k expected)
+        // Test 1: Insufficient gas (200k - way below ~950k expected)
         uint64 lowGas = 200_000;
         bytes memory lowGasTx =
             TxBuilder.buildLegacyCreateWithGas(vmRlp, vm, initcode, nonce, lowGas, privateKey);
@@ -297,23 +321,12 @@ contract GasPricingInvariantTest is InvariantBase {
         vm.coinbase(validator);
 
         try vmExec.executeTransaction(lowGasTx) {
-            // Count how many slots were written
-            uint256 written = 0;
-            for (uint256 i = 0; i < slots.length; i++) {
-                if (storageContract.getValue(slots[i]) != 0) {
-                    written++;
-                }
-            }
-
-            // Violation: all slots written with gas for only 1
-            if (written == numSlots) {
-                ghost_multiSlotViolations++;
-            } else {
-                // Partial write is expected (reverted mid-execution)
-                ghost_multiSlotInsufficientGasFailed++;
-            }
+            // EVM reverts atomically on OOG, so if tx succeeded, all slots were written
+            // This is a violation: succeeded with gas for only ~1 slot
+            ghost_multiSlotViolations++;
             ghost_protocolNonce[sender]++;
         } catch {
+            // Expected: tx failed due to insufficient gas
             ghost_multiSlotInsufficientGasFailed++;
         }
 
