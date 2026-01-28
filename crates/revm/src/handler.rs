@@ -3093,12 +3093,16 @@ mod tests {
         // Case 1: nonce == 0 with 2D nonce key -> should include new_account_cost
         let mut evm_nonce_zero = make_evm(cfg.clone(), 0, TEST_NONCE_KEY);
         let handler: TempoEvmHandler<CacheDB<EmptyDB>, ()> = TempoEvmHandler::new();
-        let gas_nonce_zero = handler.validate_initial_tx_gas(&mut evm_nonce_zero).unwrap();
+        let gas_nonce_zero = handler
+            .validate_initial_tx_gas(&mut evm_nonce_zero)
+            .unwrap();
 
         // Case 2: nonce > 0 with same 2D nonce key -> should NOT include new_account_cost
         // This tests that only nonce == 0 triggers the +250k charge, regardless of nonce_key state
         let mut evm_nonce_five = make_evm(cfg.clone(), 5, TEST_NONCE_KEY);
-        let gas_nonce_five = handler.validate_initial_tx_gas(&mut evm_nonce_five).unwrap();
+        let gas_nonce_five = handler
+            .validate_initial_tx_gas(&mut evm_nonce_five)
+            .unwrap();
 
         // Delta-based assertion: the difference should be exactly new_account_cost
         let gas_delta = gas_nonce_zero.initial_gas - gas_nonce_five.initial_gas;
@@ -3115,7 +3119,9 @@ mod tests {
 
         // Case 3: nonce == 0 with regular nonce (nonce_key=0) -> same +250k charge
         let mut evm_regular_nonce = make_evm(cfg, 0, U256::ZERO);
-        let gas_regular = handler.validate_initial_tx_gas(&mut evm_regular_nonce).unwrap();
+        let gas_regular = handler
+            .validate_initial_tx_gas(&mut evm_regular_nonce)
+            .unwrap();
 
         assert_eq!(
             gas_nonce_zero.initial_gas, gas_regular.initial_gas,
