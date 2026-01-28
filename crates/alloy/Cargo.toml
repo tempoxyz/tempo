@@ -35,6 +35,7 @@ reth-rpc-eth-types = { workspace = true, optional = true }
 
 derive_more.workspace = true
 serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
