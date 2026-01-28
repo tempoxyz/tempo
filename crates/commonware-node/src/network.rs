@@ -187,8 +187,6 @@ impl TempoNetwork {
     }
 }
 
-// --- Channels -----------------------------------------------------------------
-
 /// All consensus P2P channel pairs.
 ///
 /// Obtained from [`TempoNetwork::register_channels`] and passed into
