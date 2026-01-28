@@ -1,0 +1,20 @@
+[package]
+name = "tempo-consensus-indexer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+eyre.workspace = true
+jsonrpsee = { workspace = true, features = ["server"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+consensus-indexer.workspace = true
+tempo-node.workspace = true
+
+[lints]
+workspace = true
