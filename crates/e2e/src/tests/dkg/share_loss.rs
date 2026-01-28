@@ -30,8 +30,7 @@ fn validator_lost_share_but_gets_share_in_next_epoch() {
                 .expect("we just asked for a couple of validators");
             last_node
                 .consensus_config_mut()
-                .share
-                .take()
+                .take_share()
                 .expect("the node must have had a share");
             last_node.uid().to_string()
         };

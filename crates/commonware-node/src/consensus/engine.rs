@@ -215,7 +215,7 @@ where
     }
 
     pub fn with_time_to_propose(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_to_propose = Some(into_duration(d)?);
+        self.time_to_propose = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -229,7 +229,7 @@ where
         mut self,
         d: jiff::SignedDuration,
     ) -> eyre::Result<Self> {
-        self.time_to_collect_notarizations = Some(into_duration(d)?);
+        self.time_to_collect_notarizations = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -243,7 +243,7 @@ where
         mut self,
         d: jiff::SignedDuration,
     ) -> eyre::Result<Self> {
-        self.time_to_retry_nullify_broadcast = Some(into_duration(d)?);
+        self.time_to_retry_nullify_broadcast = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -254,7 +254,7 @@ where
     }
 
     pub fn with_time_for_peer_response(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_for_peer_response = Some(into_duration(d)?);
+        self.time_for_peer_response = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -277,7 +277,7 @@ where
     }
 
     pub fn with_new_payload_wait_time(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.new_payload_wait_time = Some(into_duration(d)?);
+        self.new_payload_wait_time = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -288,7 +288,7 @@ where
     }
 
     pub fn with_time_to_build_subblock(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.time_to_build_subblock = Some(into_duration(d)?);
+        self.time_to_build_subblock = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -302,7 +302,7 @@ where
         mut self,
         d: jiff::SignedDuration,
     ) -> eyre::Result<Self> {
-        self.subblock_broadcast_interval = Some(into_duration(d)?);
+        self.subblock_broadcast_interval = Some(d.try_into()?);
         Ok(self)
     }
 
@@ -313,7 +313,7 @@ where
     }
 
     pub fn with_fcu_heartbeat_interval(mut self, d: jiff::SignedDuration) -> eyre::Result<Self> {
-        self.fcu_heartbeat_interval = Some(into_duration(d)?);
+        self.fcu_heartbeat_interval = Some(d.try_into()?);
         Ok(self)
     }
 
