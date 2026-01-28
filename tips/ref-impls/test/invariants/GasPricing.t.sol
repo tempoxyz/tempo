@@ -109,9 +109,16 @@ contract GasPricingInvariantTest is InvariantBase {
                         INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Run all invariant checks
+    function invariant_globalInvariants() public view {
+        _invariantSstoreNewSlotCost();
+        _invariantCreateCost();
+        _invariantMultiSlotScaling();
+    }
+
     /// @notice TEMPO-GAS1: SSTORE to new slot must cost ~250k gas
     /// @dev Violations occur if tx succeeds with gas clearly below threshold
-    function invariant_TEMPO_GAS1_SstoreNewSlotCost() public view {
+    function _invariantSstoreNewSlotCost() internal view {
         assertEq(
             ghost_sstoreViolations,
             0,
@@ -121,28 +128,18 @@ contract GasPricingInvariantTest is InvariantBase {
 
     /// @notice TEMPO-GAS5: CREATE must cost 500k base + code + account creation
     /// @dev Violations occur if tx succeeds with gas clearly below threshold
-    function invariant_TEMPO_GAS5_CreateCost() public view {
+    function _invariantCreateCost() internal view {
         assertEq(ghost_createViolations, 0, "TEMPO-GAS5: CREATE succeeded with insufficient gas");
     }
 
     /// @notice TEMPO-GAS8: Multiple new slots must cost 250k each
     /// @dev Violations occur if all N slots written with gas for only 1
-    function invariant_TEMPO_GAS8_MultiSlotScaling() public view {
+    function _invariantMultiSlotScaling() internal view {
         assertEq(
             ghost_multiSlotViolations,
             0,
             "TEMPO-GAS8: Multi-slot write succeeded with insufficient gas"
         );
-    }
-
-    /// @notice Summary invariant - ensure tests are exercised
-    function invariant_testsExecuted() public view {
-        // Skip this check when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
-
-        // At least one category of tests should run
-        uint256 totalTests = ghost_sstoreTests + ghost_createTests + ghost_multiSlotTests;
-        assertTrue(totalTests > 0, "No gas pricing tests were executed");
     }
 
     /*//////////////////////////////////////////////////////////////

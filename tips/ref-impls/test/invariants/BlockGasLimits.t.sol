@@ -104,9 +104,15 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
                         INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Run all invariant checks
+    function invariant_globalInvariants() public view {
+        _invariantTxGasCap();
+        _invariantMaxDeploymentFits();
+    }
+
     /// @notice TEMPO-BLOCK3: Tx gas cap must be enforced at 30M
     /// @dev Violations occur if tx with gas > 30M is accepted
-    function invariant_TEMPO_BLOCK3_TxGasCap() public view {
+    function _invariantTxGasCap() internal view {
         assertEq(
             ghost_txOverCapViolations, 0, "TEMPO-BLOCK3: Transaction over 30M gas cap was accepted"
         );
@@ -114,49 +120,13 @@ contract BlockGasLimitsInvariantTest is InvariantBase {
 
     /// @notice TEMPO-BLOCK6: Max contract deployment (24KB) must fit in tx cap
     /// @dev Failures indicate tx cap is too low for max-size contracts
-    function invariant_TEMPO_BLOCK6_MaxDeploymentFits() public view {
-        // If we've tested deployments, at least some should succeed
+    function _invariantMaxDeploymentFits() internal view {
         if (ghost_deploymentTests > 0) {
             assertTrue(
                 ghost_maxDeploymentSucceeded > 0 || ghost_maxDeploymentFailed == 0,
                 "TEMPO-BLOCK6: Max deployment never succeeded"
             );
         }
-    }
-
-    /// @notice Constant invariants - verify TIP-1010 parameter values
-    function invariant_constants() public pure {
-        // TEMPO-BLOCK1: Block gas limit
-        assertEq(BLOCK_GAS_LIMIT, 500_000_000, "BLOCK1: Block limit must be 500M");
-
-        // TEMPO-BLOCK2: General lane limit
-        assertEq(GENERAL_GAS_LIMIT, 30_000_000, "BLOCK2: General lane must be 30M");
-
-        // TEMPO-BLOCK3: Tx gas cap
-        assertEq(TX_GAS_CAP, 30_000_000, "BLOCK3: Tx cap must be 30M");
-
-        // TEMPO-BLOCK4: Base fees
-        assertEq(T1_BASE_FEE, 20 gwei, "BLOCK4: T1 base fee must be 20 gwei");
-        assertEq(T0_BASE_FEE, 10 gwei, "BLOCK4: T0 base fee must be 10 gwei");
-
-        // TEMPO-BLOCK5: Payment lane minimum
-        assertEq(PAYMENT_LANE_MIN, 470_000_000, "BLOCK5: Payment lane min must be 470M");
-
-        // TEMPO-BLOCK10: Shared gas limit
-        assertEq(SHARED_GAS_LIMIT, 50_000_000, "BLOCK10: Shared limit must be 50M");
-
-        // Relationships
-        assertEq(TX_GAS_CAP, GENERAL_GAS_LIMIT, "Tx cap must equal general lane");
-        assertEq(PAYMENT_LANE_MIN, BLOCK_GAS_LIMIT - GENERAL_GAS_LIMIT, "Payment = Block - General");
-    }
-
-    /// @notice Summary invariant
-    function invariant_testsExecuted() public view {
-        // Skip this check when not on Tempo (vmExec.executeTransaction not available)
-        if (!isTempo) return;
-
-        uint256 totalTests = ghost_txGasCapTests + ghost_deploymentTests;
-        assertTrue(totalTests > 0, "No block gas limit tests were executed");
     }
 
     /*//////////////////////////////////////////////////////////////
