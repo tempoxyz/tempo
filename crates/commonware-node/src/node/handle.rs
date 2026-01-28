@@ -39,4 +39,12 @@ impl ConsensusNodeHandle {
     pub fn shutdown(&self) {
         self.shutdown_token.cancel();
     }
+
+    /// Wait for the consensus node thread to complete.
+    pub fn join(self) -> eyre::Result<()> {
+        match self.thread_handle.expect("thread handle not set").join() {
+            Ok(result) => result,
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload),
+        }
+    }
 }
